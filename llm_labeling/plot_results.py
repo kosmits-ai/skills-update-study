@@ -1,8 +1,10 @@
-"""Bar charts of the LLM labelling results.
+"""Publication-style bar charts of the LLM labelling results.
 
-Reads label_sheet_llm.csv and compare_summary.json from --data and writes PNGs to
-<data>/figures/. Prevalence charts use only the random sample (sample_reason ==
-"random"), since the feature-sampled rows over-represent detector hits.
+Reads label_sheet_llm.csv and compare_summary.json from --data and writes each
+figure as PDF (vector) and PNG (300 dpi) to <data>/figures/, plus a 2x2 overview
+with panel letters. Prevalence panels use only the random sample
+(sample_reason == "random"), since the feature-sampled rows over-represent
+detector hits. Error bars are 95% Wilson score intervals.
 
     python3 llm_labeling/plot_results.py --data labelling_data
 """
@@ -10,54 +12,133 @@ import argparse
 import collections
 import csv
 import json
+import math
 import os
 
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-BLUE, ORANGE, AQUA = "#2a78d6", "#eb6834", "#1baf7a"
-INK, INK2, GRID, SURFACE = "#0b0b0b", "#52514e", "#e4e3df", "#fcfcfb"
+# Okabe-Ito colour-blind-safe palette.
+BLUE, VERMILLION, GREEN, GREY = "#0072B2", "#D55E00", "#009E73", "#999999"
 
 CATEGORIES = {
-    "1": "wording", "2": "docs", "3": "feature", "4": "fix", "5": "integration",
-    "6": "install", "7": "behaviour", "8": "security", "9": "refactor", "0": "other",
+    "1": "Wording", "2": "Docs", "3": "Feature", "4": "Fix", "5": "Integration",
+    "6": "Install", "7": "Behaviour", "8": "Security", "9": "Refactor", "0": "Other",
 }
 
 plt.rcParams.update({
-    "font.size": 10, "axes.edgecolor": GRID, "axes.labelcolor": INK2,
-    "xtick.color": INK2, "ytick.color": INK, "axes.titlesize": 12,
-    "axes.titleweight": "bold", "axes.titlelocation": "left",
-    "figure.facecolor": SURFACE, "axes.facecolor": SURFACE, "savefig.dpi": 200,
+    "font.family": "serif",
+    "font.serif": ["STIXGeneral", "DejaVu Serif"],
+    "mathtext.fontset": "stix",
+    "font.size": 9, "axes.labelsize": 9, "xtick.labelsize": 8, "ytick.labelsize": 8,
+    "legend.fontsize": 8, "legend.frameon": False,
+    "axes.linewidth": 0.6, "axes.spines.top": False, "axes.spines.right": False,
+    "xtick.direction": "out", "ytick.direction": "out",
+    "xtick.major.width": 0.6, "ytick.major.width": 0.6,
+    "xtick.major.size": 3, "ytick.major.size": 3,
+    "errorbar.capsize": 2, "savefig.dpi": 300, "savefig.bbox": "tight",
+    "pdf.fonttype": 42,
 })
+ERR = dict(ecolor="black", elinewidth=0.6, capthick=0.6)
 
 
-def style(ax, axis="x"):
-    for s in ("top", "right", "left"):
-        ax.spines[s].set_visible(False)
-    ax.grid(axis=axis, color=GRID, linewidth=0.8)
-    ax.set_axisbelow(True)
-    ax.tick_params(length=0)
+def wilson(k, n, z=1.96):
+    """95% Wilson score interval for k successes out of n, as (low, high)."""
+    if n == 0:
+        return 0.0, 0.0
+    p = k / n
+    d = 1 + z * z / n
+    c = (p + z * z / (2 * n)) / d
+    h = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / d
+    return c - h, c + h
 
 
-def hbar(ax, labels, values, color=BLUE, fmt="{}"):
-    """Horizontal bars, largest on top, value printed at the bar end."""
-    y = range(len(labels))[::-1]
-    ax.barh(list(y), values, color=color, height=0.7)
-    ax.set_yticks(list(y), labels)
-    for yi, v in zip(y, values):
-        ax.text(v, yi, " " + fmt.format(v), va="center", color=INK2, fontsize=9)
-    ax.set_xlim(0, max(values) * 1.15)
-    style(ax)
+def pct_err(k, n):
+    """Percentage and asymmetric error-bar half-widths for k/n."""
+    lo, hi = wilson(k, n)
+    p = k / n
+    return 100 * p, (100 * max(p - lo, 0), 100 * max(hi - p, 0))
 
 
-def save(fig, out, name, note):
-    fig.text(0.01, 0.01, note, color=INK2, fontsize=8)
-    fig.tight_layout(rect=(0, 0.04, 1, 1))
-    path = os.path.join(out, name)
-    fig.savefig(path)
+def load(data):
+    with open(os.path.join(data, "label_sheet_llm.csv"), newline="") as f:
+        rows = [r for r in csv.DictReader(f) if r["llm_status"] == "ok"]
+    with open(os.path.join(data, "compare_summary.json")) as f:
+        summary = json.load(f)
+    return rows, summary
+
+
+def plot_categories(ax, rnd):
+    n = len(rnd)
+    cat = collections.Counter(c for r in rnd for c in set(r["label_category"]))
+    keys = sorted(cat, key=lambda k: cat[k])
+    vals, errs = zip(*(pct_err(cat[k], n) for k in keys))
+    ax.barh(range(len(keys)), vals, color=BLUE, height=0.65,
+            xerr=list(zip(*errs)), error_kw=ERR)
+    ax.set_yticks(range(len(keys)), [CATEGORIES[k] for k in keys])
+    ax.set_xlabel(f"Updates (%, n = {n})")
+    ax.set_xlim(0, None)
+
+
+def plot_direction(ax, rnd):
+    groups = {"All": rnd,
+              "Code": [r for r in rnd if "code" in r["change_type"]],
+              "Instr./docs": [r for r in rnd if "code" not in r["change_type"]]}
+    dirs = [("expands", "Expands", VERMILLION), ("neutral", "Neutral", GREY),
+            ("reduces", "Reduces", GREEN)]
+    w = 0.26
+    for i, (d, label, color) in enumerate(dirs):
+        vals, errs = zip(*(pct_err(sum(r["security_direction"] == d for r in g),
+                                   len(g)) for g in groups.values()))
+        x = [j + (i - 1) * w for j in range(len(groups))]
+        ax.bar(x, vals, w, color=color, label=label, yerr=list(zip(*errs)),
+               error_kw=ERR)
+    ax.set_xticks(range(len(groups)),
+                  [f"{g}\n(n = {len(v)})" for g, v in groups.items()])
+    ax.set_ylabel("Updates (%) by security-sensitive access")
+    ax.set_ylim(0, 100)
+    ax.legend(loc="lower right", bbox_to_anchor=(1, 1.0), ncol=3, handlelength=1,
+              columnspacing=1, borderaxespad=0.2)
+
+
+def plot_declared(ax, rows):
+    sec = [r for r in rows if r["label_security_relevant"] == "y"]
+    n = len(sec)
+    keys = [("yes", "Fully"), ("partial", "Partly"), ("no", "Not")]
+    vals, errs = zip(*(pct_err(sum(r["declared"] == k for r in sec), n)
+                       for k, _ in keys))
+    ax.bar(range(len(keys)), vals, 0.6, color=VERMILLION, yerr=list(zip(*errs)),
+           error_kw=ERR)
+    ax.set_xticks(range(len(keys)), [l for _, l in keys])
+    ax.set_xlabel(f"Declared in changelog (n = {n} security-relevant updates)")
+    ax.set_ylabel("Updates (%)")
+    ax.set_ylim(0, 100)
+
+
+def plot_precision(ax, summary):
+    prec = summary["feature_precision_llm"]
+    feats = sorted(prec, key=lambda k: prec[k]["precision"])
+    vals, errs, labels = [], [], []
+    for k in feats:
+        c, n = prec[k]["correct"], prec[k]["correct"] + prec[k]["wrong"]
+        v, e = pct_err(c, n)
+        vals.append(v)
+        errs.append(e)
+        labels.append(f"{k.replace('_', ' ')} ({n})")
+    ax.barh(range(len(feats)), vals, color=BLUE, height=0.65,
+            xerr=list(zip(*errs)), error_kw=ERR)
+    ax.set_yticks(range(len(feats)), labels)
+    ax.set_xlabel("Detector precision (%)")
+    ax.set_xlim(0, 100)
+
+
+def save(fig, out, name):
+    for ext in ("pdf", "png"):
+        path = os.path.join(out, f"{name}.{ext}")
+        fig.savefig(path)
+        print("wrote", path)
     plt.close(fig)
-    print("wrote", path)
 
 
 def main():
@@ -66,89 +147,27 @@ def main():
     args = ap.parse_args()
     out = os.path.join(args.data, "figures")
     os.makedirs(out, exist_ok=True)
-
-    with open(os.path.join(args.data, "label_sheet_llm.csv"), newline="") as f:
-        rows = [r for r in csv.DictReader(f) if r["llm_status"] == "ok"]
-    with open(os.path.join(args.data, "compare_summary.json")) as f:
-        summary = json.load(f)
+    rows, summary = load(args.data)
     rnd = [r for r in rows if r["sample_reason"] == "random"]
-    n = len(rnd)
-    note = f"Random sample of {n} updates, labelled by LLM."
 
-    # 1. Update categories (a two-code label counts toward both codes).
-    cat = collections.Counter(c for r in rnd for c in set(r["label_category"]))
-    items = sorted(cat.items(), key=lambda kv: -kv[1])
-    fig, ax = plt.subplots(figsize=(7, 4))
-    hbar(ax, [CATEGORIES[k] for k, _ in items], [100 * v / n for _, v in items],
-         fmt="{:.0f}%")
-    ax.set_xlabel("% of updates (an update can have two categories)")
-    ax.set_title("What kind of change is a skill update?")
-    save(fig, out, "1_categories.png", note)
+    panels = [
+        ("1_categories", (3.4, 2.8), lambda ax: plot_categories(ax, rnd)),
+        ("2_security_direction", (3.4, 2.6), lambda ax: plot_direction(ax, rnd)),
+        ("3_declared", (3.0, 2.4), lambda ax: plot_declared(ax, rows)),
+        ("4_detector_precision", (3.4, 3.2), lambda ax: plot_precision(ax, summary)),
+    ]
+    for name, size, draw in panels:
+        fig, ax = plt.subplots(figsize=size)
+        draw(ax)
+        save(fig, out, name)
 
-    # 2. Security direction, overall and by what the update touches.
-    order = [("expands", ORANGE), ("neutral", "#c3c2b7"), ("reduces", AQUA)]
-    groups = collections.defaultdict(collections.Counter)
-    for r in rnd:
-        groups["all updates"][r["security_direction"]] += 1
-        kind = "code" if "code" in r["change_type"] else "instructions/docs only"
-        groups[kind][r["security_direction"]] += 1
-    names = ["all updates", "code", "instructions/docs only"]
-    labels = [f"{g}  (n={sum(groups[g].values())})" for g in names]
-    fig, ax = plt.subplots(figsize=(7, 2.8))
-    left = [0.0] * len(names)
-    y = list(range(len(names)))[::-1]
-    for d, color in order:
-        pct = [100 * groups[g][d] / sum(groups[g].values()) for g in names]
-        ax.barh(y, pct, left=left, color=color, height=0.6, label=d,
-                edgecolor=SURFACE, linewidth=2)
-        for yi, l, p in zip(y, left, pct):
-            if p >= 6:
-                ax.text(l + p / 2, yi, f"{p:.0f}%", ha="center", va="center",
-                        color=INK, fontsize=9)
-        left = [l + p for l, p in zip(left, pct)]
-    ax.set_yticks(y, labels)
-    ax.set_xlim(0, 100)
-    ax.set_xlabel("% of updates")
-    ax.legend(ncol=3, frameon=False, loc="lower left", bbox_to_anchor=(0, 1.0))
-    ax.set_title("Does the update expand security-sensitive access?", pad=26)
-    style(ax)
-    save(fig, out, "2_security_direction.png", note)
-
-    # 3. Were security-expanding updates declared in the changelog?
-    sec = [r for r in rows if r["label_security_relevant"] == "y"]
-    dec = collections.Counter(r["declared"] for r in sec)
-    keys = [("yes", "fully declared"), ("partial", "partly declared"),
-            ("no", "not declared")]
-    fig, ax = plt.subplots(figsize=(7, 2.6))
-    hbar(ax, [l for _, l in keys], [dec[k] for k, _ in keys], color=ORANGE)
-    ax.set_xlabel("updates")
-    ax.set_title("Is the security-relevant change in the changelog?")
-    save(fig, out, "3_declared.png",
-         f"All {len(sec)} security-relevant updates (random + feature samples), "
-         "labelled by LLM.")
-
-    # 4. Detector precision: correct vs wrong hits, sorted by precision.
-    prec = summary["feature_precision_llm"]
-    feats = sorted(prec, key=lambda k: prec[k]["precision"])
-    fig, ax = plt.subplots(figsize=(7.5, 5))
-    y = range(len(feats))
-    c = [prec[k]["correct"] for k in feats]
-    w = [prec[k]["wrong"] for k in feats]
-    ax.barh(list(y), c, color=BLUE, height=0.7, label="correct hit",
-            edgecolor=SURFACE, linewidth=2)
-    ax.barh(list(y), w, left=c, color=ORANGE, height=0.7, label="false positive",
-            edgecolor=SURFACE, linewidth=2)
-    ax.set_yticks(list(y), feats)
-    for yi, k, ci, wi in zip(y, feats, c, w):
-        ax.text(ci + wi, yi, f"  {100 * prec[k]['precision']:.0f}% precise",
-                va="center", color=INK2, fontsize=9)
-    ax.set_xlim(0, max(ci + wi for ci, wi in zip(c, w)) * 1.3)
-    ax.set_xlabel("detector hits judged by LLM")
-    ax.legend(ncol=2, frameon=False, loc="lower left", bbox_to_anchor=(0, 1.0))
-    ax.set_title("How often is each automated detector right?", pad=26)
-    style(ax)
-    save(fig, out, "4_detector_precision.png",
-         "All labelled updates where the detector fired; 'unsure' verdicts omitted.")
+    fig, axes = plt.subplots(2, 2, figsize=(7.2, 5.8),
+                             gridspec_kw=dict(wspace=0.55, hspace=0.45))
+    for ax, letter, (_, _, draw) in zip(axes.flat, "abcd", panels):
+        draw(ax)
+        ax.text(-0.02, 1.04, f"({letter})", transform=ax.transAxes,
+                fontweight="bold", fontsize=10, ha="right", va="bottom")
+    save(fig, out, "results_overview")
 
 
 if __name__ == "__main__":
