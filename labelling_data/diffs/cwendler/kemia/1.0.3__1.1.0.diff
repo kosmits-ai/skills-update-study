@@ -1,0 +1,468 @@
+cwendler/kemia  1.0.3 -> 1.1.0
+change_type: instructions+docs+code   changelog: Machine fingerprint for Re-Auth + ack endpoint call after enrollment
+
+### SKILL.md  [instructions]
+- ### `/connect <kemia-url>`
+- Connect this OpenClaw instance to a kemia deployment and export the current agent config.
+- **What it does:**
+- 1. `POST /api/v1/enroll` → get a one-time enrollment URL
+- 2. Show the URL to the user — they click it to confirm in the browser
+- 3. Poll until confirmed → receive API key
+- 4. Export workspace `.md` files to kemia
+- **Script:** `scripts/connect.sh <kemia-url>`
+- 1. Run `/connect https://kemia.byte5.ai` (or your kemia instance URL)
+- 2. Click the enrollment URL — confirm in browser → logged into kemia
+- 3. Agent config is exported automatically
+- 4. Shape the config in the kemia web UI (Persona, Role, Knowledge, Team)
+- 5. Create a snapshot → mark it "deploy ready"
+- 6. Run `/import` → restart OpenClaw
++ ### `/connect <kemia-url>` (two-step, resumable)
++ Connect this OpenClaw instance to a kemia deployment. Works in two steps because the confirmation happens in a browser and can take arbitrary time — the script never runs a long polling loop that could be killed by OpenClaw/Exec.
++ **Step 1 — start enrollment:** `/kemia connect https://kemia.byte5.ai`
++ - `POST /api/v1/enroll` → enrollment URL
++ - Persists state to `skills/kemia/enrollment.json`
++ - Prints the URL. **Exits immediately.**
++ **Step 2 — user clicks, confirms in the browser, returns to the agent.**
++ **Step 3 — complete:** `/kemia connect` (no argument)
++ - Reads `enrollment.json`, polls `/status` **once**.
++ - If still pending → tells the user to wait and run `/kemia connect` again; exits.
++ - If completed → saves `config.json`, exports workspace `.md` files, cleans up state.
++ - If expired → cleans up, asks the user to re-run with a URL.
++ **Already connected?** A fresh `/kemia connect` without arguments is safe: the script verifies `config.json` against `/api/v1/status` first. If the key works, it reports "already connected" and exits without touching anything.
++ **Re-connecting from the same machine:** the script sends a stable machine fingerprint (`sha256(hostname + workspace_path)`) with the enrollment request. If kemia recognizes the machine, the confirmation page offers **Re-Authenticate** (rotate the API key on the existing instance, keep all agents) or **Set up as a new instance** (fresh start). Duplicates are no longer silently created.
++ **Script:** `scripts/connect.sh [kemia-url]`
++ 1. Run `/kemia connect https://kemia.byte5.ai` (or your kemia instance URL) — prints enrollment URL, exits.
++ 2. Click the enrollment URL — confirm in the browser → logged into kemia.
++ 3. Run `/kemia connect` again (no arguments) — completes setup, exports agent config.
++ 4. Shape the config in the kemia web UI (Persona, Role, Knowledge, Team).
++ 5. Create a snapshot → mark it "deploy ready".
++ 6. Run `/import` → restart OpenClaw.
+
+### references/api.md  [docs]
+- POST /api/v1/enroll           → { enrollUrl, pollUrl }     (no auth)
+-   "orchestrator": "openclaw"
+- **Response (completed — API key returned once):**
+- The API key is returned **exactly once**. After the first successful poll, it is nulled from the database. Store it securely.
++ ```
++ ```
++ ```
++ ```
++ POST /api/v1/enroll              → { enrollUrl, pollUrl }  (no auth)
++ POST /api/v1/enroll/:code/ack    → { status: "acked" }     (no auth, code is auth)
++ ```json
++ ```json
++   "orchestrator": "openclaw",
++   "fingerprint": "sha256:abc123..."
++ | `fingerprint` | string | *(none)* | Optional stable ID for this machine (e.g. `sha256(hostname + workspace_path)`). If it matches an existing instance, the confirm page offers Re-Auth instead of silently creating a duplicate. Max 200 chars. |
++ **Response (200):**
++ **Auth:** None (the code IS the auth; rate-limited: 30/min per IP)
++ **Response (completed — API key returned within the retention window):**
++ The API key is retrievable for a short retention window (5 minutes) after
++ confirmation. Within that window, repeated polls return the same key — this
++ lets a client that crashes mid-save recover without re-enrolling. After the
++ window elapses, the next poll clears the stored key and returns without it:
++ { "status": "completed", "instanceId": "clxyz..." }
++ Clients that have persisted the key should call `POST .../ack` to clear it
++ server-side immediately, rather than waiting out the window.
++ ### Step 4 (optional): Ack the stored key
++ POST /api/v1/enroll/:code/ack
++ Signals that the client has persisted the API key and the server may clear
++ its stored (encrypted) copy now. Idempotent.
++ { "status": "acked" }
++ **Response (409):** Enrollment not yet completed.
+
+### scripts/connect.sh  [code]
+- # Flow:
+- #   1. POST /api/v1/enroll → get enrollment URL
+- #   2. Show enrollment URL to user (user clicks to confirm)
+- #   3. Poll /api/v1/enroll/:code/status until completed → receive API key
+- #   4. Export agent config files to kemia
+- KEMIA_URL="${1:?Usage: connect.sh <kemia-url>}"
+- KEMIA_URL="${KEMIA_URL%/}"
+- # Require jq
+- command -v jq &>/dev/null || { echo "ERROR: jq is required. Install with: apt-get install jq"; exit 1; }
+- # Check for existing connection
+-   EXISTING_URL=$(jq -r '.baseUrl // empty' "${CONFIG_FILE}")
+-   echo "WARNING: Already connected to kemia (${EXISTING_URL})."
+-   echo "Re-connecting will create a new instance and API key."
+-   read -rp "Continue? (y/N) " confirm
+-   [[ "${confirm}" =~ ^[Yy]$ ]] || exit 0
+- fi
+- # ---- Step 1: Start enrollment ----
+- echo "Starting enrollment with ${KEMIA_URL}..."
+- ENROLL_RESPONSE=$(curl -sf \
+-   -X POST \
+-   -H "Content-Type: application/json" \
+-   -d "$(jq -n --arg name "${INSTANCE_NAME}" '{name: $name, orchestrator: "openclaw"}')" \
+-   "${KEMIA_URL}/api/v1/enroll") || {
+-   echo "ERROR: Failed to start enrollment. Check URL and try again."
+-   exit 1
+-   exit 1
+- ENROLL_URL=$(echo "${ENROLL_RESPONSE}" | jq -r '.enrollUrl')
+- POLL_URL=$(echo "${ENROLL_RESPONSE}" | jq -r '.pollUrl')
+- EXPIRES=$(echo "${ENROLL_RESPONSE}" | jq -r '.expiresAt')
+- if [ -z "${ENROLL_URL}" ] || [ "${ENROLL_URL}" = "null" ]; then
+-   echo "ERROR: Invalid response from kemia: ${ENROLL_RESPONSE}"
+- echo ""
+- echo ""
+- echo ""
+- echo ""
+- echo ""
+- echo ""
+- echo "════════════════════════════════════════════"
+- echo "════════════════════════════════════════════"
+- echo "  Open this link to connect:"
+- echo "  ${ENROLL_URL}"
+- echo "  Expires: ${EXPIRES}"
+- echo "Waiting for confirmation..."
+- # ---- Step 2: Poll for completion ----
+- MAX_ATTEMPTS=90  # 15 min / 10s = 90 attempts
+- ATTEMPT=0
+- while [ "${ATTEMPT}" -lt "${MAX_ATTEMPTS}" ]; do
+-   sleep 10
+-   ATTEMPT=$((ATTEMPT + 1))
+-   STATUS_RESPONSE=$(curl -sf "${KEMIA_URL}${POLL_URL}" 2>/dev/null) || continue
+-   STATUS=$(echo "${STATUS_RESPONSE}" | jq -r '.status')
+-   case "${STATUS}" in
+-       API_KEY=$(echo "${STATUS_RESPONSE}" | jq -r '.apiKey // empty')
+-       INSTANCE_ID=$(echo "${STATUS_RESPONSE}" | jq -r '.instanceId // empty')
+-       if [ -z "${API_KEY}" ] || [ -z "${INSTANCE_ID}" ]; then
+-         echo "ERROR: Enrollment completed but missing credentials."
+-       fi
+-       # Save config
+-       mkdir -p "${SKILL_DIR}"
+-       cat >"${CONFIG_FILE}" <<EOF
+-   "apiKey": "${API_KEY}",
+-   "instanceId": "${INSTANCE_ID}",
+-   "baseUrl": "${KEMIA_URL}"
+-       chmod 600 "${CONFIG_FILE}"
+-       echo "✓ Connected! Instance ID: ${INSTANCE_ID}"
+-       echo "  Config saved: ${CONFIG_FILE}"
+-       break
+-       echo "ERROR: Enrollment expired. Run /connect again."
+-       exit 1
+-       exit 1
+-       # Still waiting — show progress dot
+-       printf "."
+-       echo "ERROR: Unexpected status: ${STATUS}"
+- done
+- done
+- if [ "${ATTEMPT}" -ge "${MAX_ATTEMPTS}" ]; then
+-   echo "ERROR: Timed out waiting for confirmation. Run /connect again."
+- # ---- Step 3: Export agent config files ----
+- echo "Exporting agent config files..."
+- FILES_JSON="[]"
+- for md_file in SOUL.md IDENTITY.md USER.md MEMORY.md AGENTS.md TOOLS.md HEARTBEAT.md; do
+-   filepath="${WORKSPACE}/${md_file}"
+-   if [ -f "${filepath}" ]; then
+-     content=$(jq -Rs '.' < "${filepath}")
+-     FILES_JSON=$(echo "${FILES_JSON}" | jq --arg fn "${md_file}" --argjson ct "${content}" '. + [{"filename": $fn, "content": $ct}]')
+-     echo "  ✓ ${md_file}"
+-     echo "  ⊘ ${md_file} (not found, skipping)"
+- if [ "$(echo "${FILES_JSON}" | jq 'length')" = "0" ]; then
+-   echo "WARNING: No .md files found in workspace. Nothing to export."
+- else
+-   EXPORT_RESPONSE=$(curl -sf \
+-     -X POST \
+-     -H "Authorization: Bearer ${API_KEY}" \
+-     -d "$(jq -n --arg name "${AGENT_NAME}" --argjson files "${FILES_JSON}" \
+-       '{name: $name, files: $files}')" \
+-     "${KEMIA_URL}/api/v1/agents") || {
+-     echo "ERROR: Failed to export agent config."
+-   AGENT_ID=$(echo "${EXPORT_RESPONSE}" | jq -r '.agentId')
+-   # Save agentId to config
+-   jq --arg aid "${AGENT_ID}" '. + {agentId: $aid}' "${CONFIG_FILE}" > "${CONFIG_FILE}.tmp" \
+-     && mv "${CONFIG_FILE}.tmp" "${CONFIG_FILE}"
+-   echo "✓ Agent '${AGENT_NAME}' exported (ID: ${AGENT_ID})"
+- echo "Done. The user is already logged in via the enrollment link."
+- echo "Use /kemia-link if they need a new login URL later."
++ #
++ # Resumable two-step design:
++ #   First call (no state):    POST /enroll → persist enrollment.json → show URL → EXIT
++ #   User clicks URL, confirms in browser, returns to OpenClaw.
++ #   Second call (state present): poll once →
++ #       pending   → "still waiting, try again in a moment"
++ #       completed → save config.json, export agents, clean up
++ #       expired   → clean up, tell user to re-run
++ # No long-running polling process — survives OpenClaw/Exec killing the shell.
++ KEMIA_URL_ARG="${1:-}"
++ STATE_FILE="${SKILL_DIR}/enrollment.json"
++ command -v jq >/dev/null 2>&1 || { echo "ERROR: jq is required. Install with: apt-get install jq"; exit 1; }
++ command -v curl >/dev/null 2>&1 || { echo "ERROR: curl is required."; exit 1; }
++ mkdir -p "${SKILL_DIR}"
++ # ─── Helpers ───────────────────────────────────────────────────────────────
++ json_get() {
++   # $1 = file, $2 = jq expression
++   jq -r "$2 // empty" "$1" 2>/dev/null || true
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ now_epoch() { date -u +%s; }
++ sha256_stdin() {
++   # Portable sha256 of stdin → hex digest (no filename suffix)
++   if command -v sha256sum >/dev/null 2>&1; then
++     sha256sum | awk '{print $1}'
++   elif command -v shasum >/dev/null 2>&1; then
++     shasum -a 256 | awk '{print $1}'
++   else
++   else
++     echo ""
++   fi
++   fi
++   fi
++   fi
++   fi
++   fi
++   fi
++   fi
++   fi
++   fi
++   fi
++ compute_fingerprint() {
++   # Stable per (hostname, workspace) pair. Used by kemia to offer Re-Auth
++   # instead of silently creating a duplicate instance when /connect is re-run
++   # on the same machine. Hash means no hostname leakage.
++   local raw digest
++   raw="$(hostname 2>/dev/null || echo unknown)::${WORKSPACE}"
++   digest=$(printf "%s" "${raw}" | sha256_stdin)
++   if [ -n "${digest}" ]; then
++     printf "sha256:%s" "${digest}"
++ iso_to_epoch() {
++   # Portable ISO-8601 → epoch (GNU date, BSD date fallback)
++   if date -u -d "$1" +%s >/dev/null 2>&1; then
++     date -u -d "$1" +%s
++     date -u -j -f "%Y-%m-%dT%H:%M:%S" "${1%.*}" +%s 2>/dev/null || echo "0"
++ export_agent_files() {
++   # $1 = kemia base URL, $2 = api key → writes agentId back to config.json
++   local base="$1" key="$2"
++   local files_json="[]"
++   for md_file in SOUL.md IDENTITY.md USER.md MEMORY.md AGENTS.md TOOLS.md HEARTBEAT.md; do
++     local filepath="${WORKSPACE}/${md_file}"
++     if [ -f "${filepath}" ]; then
++       local content
++       content=$(jq -Rs '.' < "${filepath}")
++       files_json=$(echo "${files_json}" | jq --arg fn "${md_file}" --argjson ct "${content}" '. + [{"filename": $fn, "content": $ct}]')
++       echo "  ✓ ${md_file}"
++     fi
++     fi
++   done
++   if [ "$(echo "${files_json}" | jq 'length')" = "0" ]; then
++     echo "  (no workspace .md files found — skipping export)"
++     return 0
++   local payload
++   payload=$(jq -n --arg name "${AGENT_NAME}" --argjson files "${files_json}" '{name: $name, files: $files}')
++   local response
++   local response
++   response=$(curl -sf -X POST \
++   response=$(curl -sf -X POST \
++     -H "Content-Type: application/json" \
++     -H "Authorization: Bearer ${key}" \
++     -d "${payload}" \
++     -d "${payload}" \
++     "${base}/api/v1/agents") || {
++     echo "ERROR: Agent export failed (HTTP error). Connection is saved; you can re-run /connect to retry export."
++     return 1
++     return 1
++     return 1
++   }
++   }
++   local agent_id
++   agent_id=$(echo "${response}" | jq -r '.agentId // empty')
++   if [ -n "${agent_id}" ]; then
++     jq --arg aid "${agent_id}" '. + {agentId: $aid}' "${CONFIG_FILE}" > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "${CONFIG_FILE}"
++     chmod 600 "${CONFIG_FILE}"
++     echo "✓ Agent '${AGENT_NAME}' exported (id: ${agent_id})"
++ finish_enrollment() {
++   # $1 = status response JSON (must be status=completed)
++   local response="$1"
++   local api_key instance_id kemia_url code
++   api_key=$(echo "${response}" | jq -r '.apiKey // empty')
++   instance_id=$(echo "${response}" | jq -r '.instanceId // empty')
++   kemia_url=$(json_get "${STATE_FILE}" '.kemiaUrl')
++   kemia_url=$(json_get "${STATE_FILE}" '.kemiaUrl')
++   code=$(json_get "${STATE_FILE}" '.code')
++   if [ -z "${api_key}" ] || [ -z "${instance_id}" ]; then
++     echo "ERROR: Enrollment completed but credentials missing in response."
++     echo "This can happen if the 5-minute key-retention window elapsed."
++     echo "Remove ${STATE_FILE} and run /connect again."
++     exit 1
++     exit 1
++   cat > "${CONFIG_FILE}" <<EOF
++ {
++   "apiKey": "${api_key}",
++   "instanceId": "${instance_id}",
++   "baseUrl": "${kemia_url}"
++ EOF
++   # Ack the server so it clears the stored encrypted key immediately.
++   # Best-effort: failure here is not fatal — the key will be cleared when
++   # the 5-minute retention window elapses anyway.
++   if [ -n "${code}" ]; then
++     curl -sf -X POST "${kemia_url}/api/v1/enroll/${code}/ack" >/dev/null 2>&1 || true
++   rm -f "${STATE_FILE}"
++   echo "✓ Connected. Instance: ${instance_id}"
++   echo ""
++   echo ""
++   echo ""
++   echo ""
++   echo ""
++   echo ""
++   echo "Exporting agent config files..."
++   export_agent_files "${kemia_url}" "${api_key}" || true
++   echo "Done. You're logged in at kemia via the enrollment link."
++   echo "Run /kemia-link anytime you need a fresh login URL."
++ poll_once() {
++   # Reads STATE_FILE, polls once, acts on result. Returns 0 on success/still-pending, 1 on fatal error.
++   local kemia_url poll_url
++   poll_url=$(json_get "${STATE_FILE}" '.pollUrl')
++   if [ -z "${kemia_url}" ] || [ -z "${poll_url}" ]; then
++     echo "ERROR: enrollment.json is malformed. Removing and starting over."
++     rm -f "${STATE_FILE}"
++   response=$(curl -sf "${kemia_url}${poll_url}" 2>/dev/null) || {
++     echo "ERROR: Could not reach ${kemia_url}. Check connectivity and try again."
++   local status
++   status=$(echo "${response}" | jq -r '.status // empty')
++   case "${status}" in
++       finish_enrollment "${response}"
++       local enroll_url expires_at
++       enroll_url=$(json_get "${STATE_FILE}" '.enrollUrl')
++       expires_at=$(json_get "${STATE_FILE}" '.expiresAt')
++       echo "Enrollment still pending — the user has not yet confirmed in the browser."
++       echo ""
++       echo ""
++       echo "  Link: ${enroll_url}"
++       echo "  Expires: ${expires_at}"
++       echo "After the user clicks and confirms, run /kemia connect again to complete."
++       echo "Enrollment expired. Cleaning up."
++       rm -f "${STATE_FILE}"
++       rm -f "${STATE_FILE}"
++       echo "Run /kemia connect <kemia-url> to start a new enrollment."
++       return 1
++       return 1
++       echo "ERROR: Unexpected enrollment status: ${status}"
++       echo "Raw response: ${response}"
++ start_new_enrollment() {
++   # $1 = kemia base URL
++   local kemia_url="$1"
++   echo "Starting enrollment with ${kemia_url}..."
++   local fingerprint payload response
++   fingerprint=$(compute_fingerprint)
++   if [ -n "${fingerprint}" ]; then
++     payload=$(jq -n --arg name "${INSTANCE_NAME}" --arg fp "${fingerprint}" \
++       '{name: $name, orchestrator: "openclaw", fingerprint: $fp}')
++     payload=$(jq -n --arg name "${INSTANCE_NAME}" \
++       '{name: $name, orchestrator: "openclaw"}')
++     "${kemia_url}/api/v1/enroll") || {
++     echo "ERROR: Could not start enrollment. Check the URL and try again."
++   local enroll_url poll_url expires_at
++   enroll_url=$(echo "${response}" | jq -r '.enrollUrl')
++   poll_url=$(echo "${response}" | jq -r '.pollUrl')
++   expires_at=$(echo "${response}" | jq -r '.expiresAt')
++   if [ -z "${enroll_url}" ] || [ "${enroll_url}" = "null" ]; then
++     echo "ERROR: Invalid response from kemia: ${response}"
++   # Extract code from enrollUrl (last path segment)
++   local code="${enroll_url##*/}"
++   cat > "${STATE_FILE}" <<EOF
++   "code": "${code}",
++   "enrollUrl": "${enroll_url}",
++   "pollUrl": "${poll_url}",
++   "expiresAt": "${expires_at}",
++   "kemiaUrl": "${kemia_url}"
++   chmod 600 "${STATE_FILE}"
++   echo "════════════════════════════════════════════"
++   echo "════════════════════════════════════════════"
++   echo "  Open this link to connect:"
++   echo "  ${enroll_url}"
++   echo "  Expires: ${expires_at}"
++   echo "After the user confirms in the browser, run /kemia connect again"
++   echo "(without arguments) to complete the setup."
++ # ─── Main dispatch ─────────────────────────────────────────────────────────
++ # Case A: already connected — verify and exit
++   BASE_URL=$(json_get "${CONFIG_FILE}" '.baseUrl')
++   API_KEY=$(json_get "${CONFIG_FILE}" '.apiKey')
++   if [ -n "${BASE_URL}" ] && [ -n "${API_KEY}" ]; then
++     HTTP_CODE=$(curl -s -o /tmp/kemia-connect-probe.$$ -w "%{http_code}" \
++       -H "Authorization: Bearer ${API_KEY}" \
++       "${BASE_URL}/api/v1/status" 2>/dev/null || echo "000")
++     case "${HTTP_CODE}" in
++       200)
++         INSTANCE_NAME_LIVE=$(jq -r '.instanceName // "unknown"' /tmp/kemia-connect-probe.$$ 2>/dev/null || echo "unknown")
++         rm -f /tmp/kemia-connect-probe.$$
++         rm -f /tmp/kemia-connect-probe.$$
++         rm -f /tmp/kemia-connect-probe.$$
++         rm -f /tmp/kemia-connect-probe.$$
++         echo "✓ Already connected to kemia at ${BASE_URL}"
++         echo "  Instance: ${INSTANCE_NAME_LIVE}"
++         echo ""
++         echo "To start fresh, delete ${CONFIG_FILE} and run /kemia connect <url> again."
++         exit 0
++         ;;
++         ;;
++         ;;
++         ;;
++       401|403)
++         echo "Config exists but API key is not accepted (HTTP ${HTTP_CODE}). Removing stale config."
++         rm -f "${CONFIG_FILE}"
++       000|5*)
++         echo "ERROR: Could not reach ${BASE_URL} (HTTP ${HTTP_CODE}). Check connectivity."
++         echo "Config is preserved. Try /kemia-status once kemia is reachable."
++         exit 1
++       *)
++         echo "ERROR: Unexpected status check result (HTTP ${HTTP_CODE}). Config preserved."
++     esac
++ # Case B: pending enrollment — resume by polling once
++ if [ -f "${STATE_FILE}" ]; then
++   EXPIRES_AT=$(json_get "${STATE_FILE}" '.expiresAt')
++   if [ -n "${EXPIRES_AT}" ]; then
++     EXPIRES_EPOCH=$(iso_to_epoch "${EXPIRES_AT}")
++     if [ "${EXPIRES_EPOCH}" != "0" ] && [ "$(now_epoch)" -gt "${EXPIRES_EPOCH}" ]; then
++       echo "Previous enrollment expired (deadline: ${EXPIRES_AT}). Cleaning up."
++       # Fall through to Case C
++     else
++       poll_once
++       exit $?
++ # Case C: fresh enrollment — argument required
++ if [ -z "${KEMIA_URL_ARG}" ]; then
++   echo "Usage: /kemia connect <kemia-url>"
++   echo "Example: /kemia connect https://kemia.byte5.ai"
++ start_new_enrollment "${KEMIA_URL_ARG%/}"
+
+### scripts/status.sh  [code]
+- # kemia status — Check connection and deploy state
+- # Require jq
+- command -v jq &>/dev/null || { echo "ERROR: jq is required."; exit 1; }
+-   echo "Run /connect <kemia-url> to connect."
+- # ---- Check connectivity ----
+- STATUS_RESPONSE=$(curl -sf \
+-   -H "Authorization: Bearer ${API_KEY}" \
+-   "${BASE_URL}/api/v1/status" 2>/dev/null) || {
+-   echo "Cannot reach kemia. Check URL or API key."
+- # ---- Check for pending deploy ----
+-   echo "  Agent ID:    (none — run /connect to export)"
++ # kemia status — Check connection, pending enrollment, and deploy state
++ STATE_FILE="${SKILL_DIR}/enrollment.json"
++ command -v jq >/dev/null 2>&1 || { echo "ERROR: jq is required."; exit 1; }
++ # ─── Case A: pending enrollment takes precedence ───────────────────────────
++ if [ -f "${STATE_FILE}" ]; then
++   ENROLL_URL=$(jq -r '.enrollUrl // empty' "${STATE_FILE}")
++   EXPIRES=$(jq -r '.expiresAt // empty' "${STATE_FILE}")
++   echo "kemia Status"
++   echo "════════════"
++   echo "  State:       ⏳ PENDING CONFIRMATION"
++   echo "  Link:        ${ENROLL_URL}"
++   echo "  Expires:     ${EXPIRES}"
++   echo ""
++   echo "The user must open the link above and confirm in the browser."
++   echo "Afterwards, run /kemia connect (no args) to complete."
++   exit 0
++ fi
++ # ─── Case B: not connected ─────────────────────────────────────────────────
++   echo "Run /kemia connect <kemia-url> to connect."
++ # ─── Case C: verify connection ─────────────────────────────────────────────
++ STATUS_RESPONSE=$(curl -sf -H "Authorization: Bearer ${API_KEY}" "${BASE_URL}/api/v1/status" 2>/dev/null) || {
++   echo "Cannot reach kemia or API key is not accepted. Check URL/credentials."
++   echo "  Agent ID:    (none — run /kemia connect to export)"

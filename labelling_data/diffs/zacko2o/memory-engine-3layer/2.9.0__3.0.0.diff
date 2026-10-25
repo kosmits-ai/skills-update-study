@@ -1,0 +1,825 @@
+zacko2o/memory-engine-3layer  2.9.0 -> 3.0.0
+change_type: instructions+docs+code   changelog: All 6 feedback items: memory-resume.js, auto-extract.js, search --last, maintain --gc, write dedup, session size warning, flush prompt fix
+
+### README.md  [docs]
++ # Memory Engine 🧠⚡
++ **Persistent memory for [OpenClaw](https://github.com/openclaw/openclaw) agents — with three layers of protection against amnesia.**
++ [![ClawHub](https://img.shields.io/badge/ClawHub-memory--engine--3layer-blue)](https://clawhub.com)
++ [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
++ [![Version](https://img.shields.io/badge/version-2.9.0-orange)](https://github.com/ZackO2o/memory-engine/releases)
++ ## The Problem
++ AI agents wake up blank every session. Existing solutions either:
++ - 💸 Need embedding APIs (cost money, need keys)
++ - 🔍 Only search (useless if nothing was written)
++ - 🧠 Rely on the AI "remembering" to save (it won't)
++ **Memory Engine solves all three.**
++ ## Three-Layer Anti-Amnesia Architecture
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ Layer 1: SYSTEM                        Layer 2: PLATFORM
++ ┌─────────────────────────┐           ┌──────────────────────────┐
++ │ cron job (every 6h)     │           │ memory-flush             │
++ │ • rebuild search index  │           │ • auto-triggers before   │
++ │ • health check          │           │   context compaction     │
++ │ • auto-create daily log │           │ • forces AI to write     │
++ │ • auto-compact old logs │           │   memory/YYYY-MM-DD.md   │
++ │ • rotate cron.log       │           │                          │
++ │                         │           │ ⚙️ Built into OpenClaw,  │
++ │ ⚙️ Pure shell, no AI    │           │   just needs config      │
++ └─────────────────────────┘           └──────────────────────────┘
++ Layer 3: AGENT (7 scripts)
++ ┌──────────────────────────────────────────────────┐
++ │ memory-write.js    → daily log + MEMORY.md       │
++ │ memory-search.js   → BM25/CJK search + date     │
++ │ memory-index.js    → FTS5 index build            │
++ │ memory-maintain.js → stats / rebuild / prune     │
++ │ memory-compact.js  → compress old logs           │
++ │ memory-cron.sh     → system auto-maintenance     │
++ │                                                  │
++ │ 📋 Session start: health check + read MEMORY.md  │
++ │ 📝 During: log key events                        │
++ │ 💾 Session end: summarize + promote + reindex    │
++ └──────────────────────────────────────────────────┘
++ **Why three layers?** Any single layer can fail:
++ - AI forgets → cron + memory-flush still capture data
++ - Cron stops → AI + memory-flush still work
++ - Short session → AI + cron still work
++ - All three failing simultaneously ≈ 0%
++ ## Features
++ - **Write-then-search**: Every write auto-triggers reindex — instant search, no waiting
++ - **Date filtering**: Auto-detects dates in queries (`4月2日完成了什么` → filters to April 2)
++ - **CJK support**: TF-density bigram scoring for Chinese/Japanese/Korean
++ - **English phrase matching**: `"hotel translation"` matched as phrase (2x boost)
++ - **Temporal decay**: 30-day half-life — recent memories rank higher
++ - **Core memory boost**: MEMORY.md gets 1.5× relevance score (never decays)
++ - **Concurrent-safe writes**: File locking prevents data loss from parallel writes
++ - **Auto-compact**: Compress old daily logs, originals saved to archive
++ - **Smart health scoring**: Only counts gaps since system install
++ - **Log rotation**: cron.log auto-rotates at 100KB
++ - **Zero external deps**: No embedding API, no cloud, no Docker
++ ## Token Budget
++ | Operation | Tokens |
++ |-----------|--------|
++ | Search (SQLite, local) | **0** |
++ | Results (3 snippets) | **~300** |
++ | Read full daily file | ~2,000 |
++ | Read 4 daily files | ~8,000 |
++ | **Savings** | **~95%** |
++ ## Quick Start
++ ### Install via ClawHub
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ clawhub install memory-engine-3layer
++ ### Or clone this repo
++ git clone https://github.com/ZackO2o/memory-engine.git
++ cp -r memory-engine ~/.openclaw/workspace/skills/
++ ### Dependencies
++ npm install -g better-sqlite3
++ ### Setup cron (Layer 1)
++ cd ~/.openclaw/workspace/skills/memory-engine
++ chmod +x scripts/memory-cron.sh
++ (crontab -l 2>/dev/null; echo "0 */6 * * * $(pwd)/scripts/memory-cron.sh") | crontab -
++ ### Enable memory-flush (Layer 2)
++ Add to `~/.openclaw/openclaw.json`:
++ ```json
++ {
++   "agents": {
++     "defaults": {
++       "compaction": {
++         "memoryFlush": {
++           "enabled": true,
++           "softThresholdTokens": 4000
++         }
++       },
++       "heartbeat": {
++         "enabled": true,
++         "intervalMinutes": 30
++       }
++     }
++   }
++ }
++ ### Add AGENTS.md rules (Layer 3)
++ ```markdown
++ ## Session Startup (MANDATORY)
++ 1. Read MEMORY.md
++ 2. Run: node skills/memory-engine/scripts/memory-write.js --status
++ 3. Run: node skills/memory-engine/scripts/memory-index.js
++ 4. Use memory-search.js for recall (NOT full file reads)
++ ## During Conversation
++ - node skills/memory-engine/scripts/memory-write.js --today "event" --tag decision
++ ## Session End
++ 1. node skills/memory-engine/scripts/memory-write.js --today "Session summary"
++ 2. node skills/memory-engine/scripts/memory-write.js --core "durable fact" --section category
++ 3. node skills/memory-engine/scripts/memory-index.js
++ ## Usage
++ ### Write memories
++ # Daily log (auto-creates memory/YYYY-MM-DD.md)
++ node scripts/memory-write.js --today "Deployed v2.0 to production"
++ node scripts/memory-write.js --today "User prefers dark mode" --tag preference
++ # Long-term memory (MEMORY.md, never decays)
++ node scripts/memory-write.js --core "Stack: Next.js + PostgreSQL" --section infrastructure
++ # Health check
++ node scripts/memory-write.js --status
++ ### Search
++ # Basic
++ node scripts/memory-search.js "deployment plan"          # English
++ node scripts/memory-search.js "API重构" --json --max 5   # CJK
++ # Date filtering
++ node scripts/memory-search.js "4月2日完成了什么"          # auto-detect
++ node scripts/memory-search.js "tasks" --date 2026-04-02  # exact date
++ node scripts/memory-search.js "progress" --recent 7      # last 7 days
++ node scripts/memory-search.js "bugs" --after 2026-04-01 --before 2026-04-08
++ # Minimal output
++ node scripts/memory-search.js "query" --max 1 --max-chars 100
++ ### Index
++ node scripts/memory-index.js          # incremental
++ node scripts/memory-index.js --force  # full rebuild
++ ### Maintain
++ node scripts/memory-maintain.js              # stats
++ node scripts/memory-maintain.js --reindex    # rebuild
++ node scripts/memory-maintain.js --prune-days 90  # trim old
++ ### Compact
++ node scripts/memory-compact.js --stats                    # show candidates
++ node scripts/memory-compact.js --older-than 30 --dry-run  # preview
++ node scripts/memory-compact.js --older-than 30            # execute
++ Compaction extracts headings + key bullets (✅/🔴/重要), saves originals to `memory/archive/`. Typical savings: **60-70%**.
++ ## How It Works
++ 1. **Chunking** — ~300 chars/chunk, 60 char overlap, split at markdown headings
++ 2. **Indexing** — SQLite FTS5 full-text index + file metadata
++ 3. **Search** — BM25 + phrase matching for English; TF-density bigram for CJK
++ 4. **Date filter** — Auto-detects `4月2日`, `April 2`, `2026-04-02` in queries
++ 5. **Ranking** — `TF_density × coverage × core_boost(1.5×) × temporal_decay(30d half-life)`
++ 6. **Output** — Truncated snippets with `file#line` source citations
++ ## Scripts Overview
++ | Script | Purpose | Auto-runs |
++ |--------|---------|-----------|
++ | `memory-write.js` | Append daily log / MEMORY.md | — |
++ | `memory-search.js` | BM25 + CJK search with date filter | — |
++ | `memory-index.js` | Build/update FTS5 index | After each write |
++ | `memory-maintain.js` | Stats / rebuild / prune index | — |
++ | `memory-compact.js` | Compress old logs (60-70% savings) | Monthly via cron |
++ | `memory-cron.sh` | System-level auto-maintenance | Every 6 hours |
++ | `SKILL.md` | Full documentation for AI agents | — |
++ ## Requirements
++ - OpenClaw (any version)
++ - Node.js 18+
++ - `better-sqlite3` (npm install -g)
++ - No API keys, no cloud, no Docker
++ ## Changelog
++ ### v2.2.0
++ - File locking for concurrent-safe writes
++ - Cron auto-compact (monthly, 60+ day old files)
++ - Cron log rotation (>100KB)
++ ### v2.1.0
++ - Date filtering: `--date`, `--after`, `--before`, `--recent`
++ - Auto-detect dates in natural language queries
++ - English phrase matching (2x boost)
++ - `memory-compact.js` for old log compression
++ ### v2.0.2
++ - Finer chunks (300 chars) for better CJK precision
++ - TF-density scoring replaces binary hit counting
++ ### v2.0.1
++ - Write-then-search: auto-reindex after every write
++ - Smart gap counting (only since system install)
++ ### v2.0.0
++ - Initial release: three-layer anti-amnesia architecture
++ - SQLite FTS5 + BM25 + CJK bigram search + temporal decay
++ ## License
++ MIT
++ ### v2.2.1 (2026-04-09)
++ - **FIX**: `heartbeat` config: `enabled`+`intervalMinutes` → `every: "30m"` (matches OpenClaw schema)
++ - **FIX**: Timezone-aware dates in all scripts (`TZ` env variable support, `en-CA` locale for YYYY-MM-DD)
++ - **FIX**: `memory-compact.js` skips already-compacted files, won't overwrite archive originals
++ - **FIX**: `memory-cron.sh` inherits system timezone via `/etc/timezone`
++ ### v2.3.0 (2026-04-09)
++ - **FIX (critical)**: Search now uses unified FTS5 + LIKE fallback — previously FTS5 missed substrings like `XYZ789`, alphanumeric tokens, and CJK-mixed queries
++ - **FIX**: Removed redundant code paths (CJK-only vs English-only vs date-filtered) — single unified search logic handles all cases
++ - **FIX**: `memory-compact.js` uses timezone-aware date comparison (`getToday()`)
++ - **IMPROVE**: LIKE fallback uses case-insensitive matching for both CJK and English
++ - **IMPROVE**: All search paths now use TF-density scoring for consistent ranking
++ ### v2.4.0 (2026-04-09)
++ - **FIX (critical)**: Search score merging — FTS5 and LIKE scores now take max instead of skipping, fixing cases where FTS5 found a chunk but scored it lower than LIKE would have
++ - **FIX**: Orphan cleanup — `memory-index.js` now removes entries for deleted files (previously accumulated stale records pointing to non-existent files)
++ - **IMPROVE**: Temporal decay half-life: 30d → 90d (old memories no longer vanish from search results)
++ - **IMPROVE**: Search precision — "Entry 499" now correctly ranks the chunk containing "499" first (was ranking random chunks higher due to score mismatch)
++ ### v2.5.0 (2026-04-09)
++ - **FIX (critical)**: memory-flush prompt no longer instructs writing to MEMORY.md (OpenClaw marks it read-only during flush) or running exec commands (may be restricted)
++ - **NEW**: `memory-boot.js` — single-command session startup (health + index + MEMORY.md output), saves 2 tool calls per session
++ - **NEW**: `postIndexSync: "async"` config — OpenClaw auto-syncs memory index after compaction
++ - **IMPROVE**: Cron now detects stale index (files changed but not reindexed) and auto-rebuilds — catches memory-flush writes that didn't trigger reindex
++ - **IMPROVE**: SKILL.md now includes warning about memory-flush write restrictions
++ ### v2.6.0 (2026-04-09)
++ - **FIX**: Corrupted database auto-recovery — search/index/boot now detect `SQLITE_NOTADB`/`SQLITE_CORRUPT` and auto-rebuild instead of crashing
++ - **FIX**: Date-only queries (e.g., "4月2日") now return all chunks from that date instead of empty results. Date tokens are stripped from search keywords to avoid literal matching.
++ - **FIX**: Date-only queries exclude undated files (MEMORY.md) to focus on the requested day's content
++ - **IMPROVE**: `memory-boot.js` retries with `--force` if initial index update fails
++ - **IMPROVE**: SKILL.md now documents `memory-boot.js` in Commands section
++ ### v2.7.0 (2026-04-09)
++ - **FIX (critical)**: Unified timezone resolution across all scripts — now reads `userTimezone` from `openclaw.json` automatically, matching OpenClaw's memory-flush date calculation. Previously scripts used `TZ` env var (often UTC in cron), causing date mismatches where flush writes `memory/2026-04-10.md` but our scripts think today is `2026-04-09`.
++ - **NEW**: `_timezone.js` shared module — single source of truth for timezone resolution
++ - **NEW**: Resolution order: `OPENCLAW_TZ` > `openclaw.json userTimezone` > `TZ` > `/etc/timezone` > `/etc/localtime` > `UTC`
++ - **IMPROVE**: `memory-cron.sh` reads timezone from `openclaw.json` instead of relying on system TZ
++ ### v2.8.0 (2026-04-09)
++ - **NEW**: `memory-backup.sh` — Auto-backup workspace to GitHub private repo (runs every 6h via cron, only pushes if changes exist)
++ - **NEW**: `memory-restore.sh` — One-command disaster recovery after reinstall (restores memories, config, skills, crontab, rebuilds search index)
++ - **NEW**: Cron Step 6 automatically triggers backup after memory maintenance
++ - **IMPROVE**: SKILL.md documents full backup & disaster recovery workflow
++ ### v2.9.0 (2026-04-09)
++ - **OPTIMIZE**: `boot.js` smart MEMORY.md truncation — keeps section headers + most recent entries per section. Default 1500 chars (~500 tokens). Prevents unbounded token growth (saves 94% at 18KB MEMORY.md).
++ - **OPTIMIZE**: Search results use keyword-context extraction — truncates around the matching keyword instead of from the start, showing more relevant snippets
++ - **NEW**: `boot.js --max-chars N` to control token budget; `--full` for no truncation
++ - **NEW**: `search.js --max-chars N` for per-result truncation control
+
+### SKILL.md  [instructions]
++ ```
++ ```
++ ```bash
++ ```bash
++ ### Resume (zero-latency session recovery) — NEW in v3.0
++ node scripts/memory-resume.js                    # generate recovery summary (<2000 tokens)
++ node scripts/memory-resume.js --max-chars 1000   # shorter for tight budgets
++ Use in AGENTS.md as the first session startup step. Outputs:
++ - Last session's final topic & status
++ - Recent 3 days' key entries (priority-sorted by tag)
++ - Active MEMORY.md sections summary
++ # Last N entries (no query needed, time-ordered) — NEW in v3.0
++ node scripts/memory-search.js --last 5                   # last 5 entries across all logs
++ node scripts/memory-search.js --last 10 --today          # today's last 10
++ node scripts/memory-search.js --last 3 --tag done        # last 3 [done] entries
++ node scripts/memory-search.js --last 5 --tag decision    # last 5 decisions
++ # GC: detect & remove stale MEMORY.md entries — NEW in v3.0
++ node scripts/memory-maintain.js --gc             # preview stale entries
++ node scripts/memory-maintain.js --gc --apply     # remove them
++ GC detects: old version references (>14d), completed TODOs, entries >60d old, duplicates.
++ ### Auto-Extract (session transcript mining) — NEW in v3.0
++ node scripts/memory-auto-extract.js                # extract from active session
++ node scripts/memory-auto-extract.js <path.jsonl>   # extract from specific file
++ node scripts/memory-auto-extract.js --scan          # scan all unprocessed reset sessions
++ node scripts/memory-auto-extract.js --dry-run       # preview without writing
++ Extracts: git commits, file writes, deployments, PM2 restarts, user instructions.
++ Automatically deduplicates against existing log entries.
++ Integrated into cron: auto-scans reset sessions every 6h.
+
+### scripts/memory-auto-extract.js  [code]
++ #!/usr/bin/env node
++ /**
++  * memory-auto-extract.js v1.0.0 — Auto-extract key events from session transcripts
++  * Scans session JSONL files for tool calls and extracts:
++  *   - git commit messages (from exec tool output)
++  *   - file create/modify records (from write/edit tool calls)
++  *   - deployment events (keywords: deploy, 部署)
++  *   - API errors (HTTP 4xx/5xx, error keywords)
++  *   - user explicit instructions (记住, remember, 部署, 回滚)
++  *
++  * Usage:
++  *   node memory-auto-extract.js                          # extract from active session
++  *   node memory-auto-extract.js <path-to-session.jsonl>  # extract from specific file
++  *   node memory-auto-extract.js --scan                   # scan all reset sessions not yet extracted
++  */
++ const fs = require('fs'), path = require('path');
++ const DEFAULT_WORKSPACE = process.env.OPENCLAW_WORKSPACE || path.join(process.env.HOME, '.openclaw/workspace');
++ const SESSIONS_DIR = path.join(process.env.HOME, '.openclaw/agents/main/sessions');
++ const args = process.argv.slice(2);
++ let workspace = DEFAULT_WORKSPACE, targetFile = '', scanAll = false, dryRun = false;
++ for (let i = 0; i < args.length; i++) {
++   if (args[i] === '--workspace' && args[i + 1]) { workspace = args[++i]; continue; }
++   if (args[i] === '--scan') { scanAll = true; continue; }
++   if (args[i] === '--dry-run') { dryRun = true; continue; }
++   if (!targetFile && !args[i].startsWith('--')) targetFile = args[i];
++ }
++ }
++ }
++ }
++ const MEMORY_DIR = path.join(workspace, 'memory');
++ const { getToday: _getToday, getTime: _getTime } = require('./_timezone');
++ function getToday() { return _getToday(workspace); }
++ function getTime() { return _getTime(workspace); }
++ // Patterns to extract from exec tool output
++ const EXTRACT_PATTERNS = [
++   { regex: /(?:git\s+)?commit\s+([a-f0-9]{7,40})\s+(.{5,80})/i, tag: 'auto-extract', fmt: (m) => `git commit ${m[1].slice(0,7)}: ${m[2].trim().replace(/[\n\r].*/,'').slice(0,80)}` },
++   { regex: /(?:PM2|pm2).*restart/i, tag: 'auto-extract', fmt: () => '后端服务重启 (PM2)' },
++   { regex: /deploy.*成功|发布成功|部署完成|deployed/i, tag: 'auto-extract', fmt: (m) => `部署: ${m[0].slice(0,80)}` },
++   { regex: /npm\s+(?:install|add)\s+(?:-[gDSE]\s+)*(\S+)/i, tag: 'auto-extract', fmt: (m) => m[1] && !m[1].startsWith('-') ? `安装依赖: ${m[1]}` : null },
++ ];
++ ];
++ // Patterns for user messages
++ const USER_PATTERNS = [
++   { regex: /记住|remember|别忘/i, tag: 'auto-extract', fmt: (m, full) => `用户要求记住: ${full.slice(0,100)}` },
++   { regex: /部署|deploy|上线/i, tag: 'auto-extract', fmt: (m, full) => `用户指令: ${full.slice(0,80)}` },
++   { regex: /回滚|rollback|撤回/i, tag: 'auto-extract', fmt: (m, full) => `用户指令: ${full.slice(0,80)}` },
++ function extractFromSessionFile(filePath) {
++   if (!fs.existsSync(filePath)) { console.error(`File not found: ${filePath}`); return []; }
++   const content = fs.readFileSync(filePath, 'utf8');
++   const lines = content.split('\n').filter(Boolean);
++   const extracted = [];
++   const seen = new Set(); // dedup
++   for (const line of lines) {
++     let entry;
++     try { entry = JSON.parse(line); } catch { continue; }
++     // OpenClaw session format: entries wrapped in {type:'message', message:{role, content}}
++     const msg = entry.message || entry;
++     const role = msg.role || '';
++     const content = msg.content || '';
++     const contentList = Array.isArray(content) ? content : [];
++     const contentText = typeof content === 'string' ? content
++       : contentList.filter(c => c.type === 'text').map(c => c.text).join(' ');
++     // Extract from toolResult messages (exec output, etc.)
++     if (role === 'toolResult' || role === 'tool') {
++       for (const pat of EXTRACT_PATTERNS) {
++         const match = contentText.match(pat.regex);
++         if (match) {
++           const desc = pat.fmt(match);
++           if (desc && typeof desc === 'string' && desc.length > 2 && !seen.has(desc)) {
++             seen.add(desc);
++             extracted.push({ tag: pat.tag, text: desc });
++           }
++           }
++           }
++         }
++         }
++         }
++       }
++       }
++       }
++     }
++     }
++     }
++     }
++     // Extract from assistant messages with toolCall blocks (OpenClaw format)
++     if (role === 'assistant') {
++       for (const block of contentList) {
++         if (!block || typeof block !== 'object') continue;
++         // OpenClaw uses 'toolCall' type with 'arguments' (not 'input')
++         if ((block.type === 'toolCall' || block.type === 'tool_use') &&
++             (block.name === 'write' || block.name === 'edit')) {
++           const args = block.arguments || block.input || {};
++           const fp = args.path || args.file_path || '';
++           if (fp && !seen.has(fp)) {
++             seen.add(fp);
++             extracted.push({ tag: 'auto-extract', text: `文件${block.name === 'write' ? '写入' : '编辑'}: ${fp}` });
++     // Extract from user messages (limited — only explicit instructions)
++     if (role === 'user') {
++       if (contentText.length > 5 && contentText.length < 500) {
++         for (const pat of USER_PATTERNS) {
++           const match = contentText.match(pat.regex);
++           if (match) {
++             const desc = pat.fmt(match, contentText);
++             if (desc && !seen.has(desc)) {
++               seen.add(desc);
++               extracted.push({ tag: pat.tag, text: desc });
++             }
++             break; // one match per message
++   }
++   }
++   }
++   }
++   }
++   return extracted;
++ function writeExtractedToLog(entries) {
++   if (entries.length === 0) return;
++   if (dryRun) {
++     console.log(`[dry-run] Would write ${entries.length} entries:`);
++     entries.forEach(e => console.log(`  - [${e.tag}] ${e.text}`));
++     return;
++   const today = getToday();
++   const fp = path.join(MEMORY_DIR, `${today}.md`);
++   if (!fs.existsSync(MEMORY_DIR)) fs.mkdirSync(MEMORY_DIR, { recursive: true });
++   let content = fs.existsSync(fp) ? fs.readFileSync(fp, 'utf8') : `# ${today} Daily Log\n\n`;
++   const time = getTime();
++   // Deduplicate against existing content
++   const existingLower = content.toLowerCase();
++   let added = 0;
++   for (const e of entries) {
++     const normText = e.text.toLowerCase().slice(0, 50);
++     if (existingLower.includes(normText)) continue;
++     content += `- ${time} [${e.tag}] ${e.text}\n`;
++     added++;
++   if (added > 0) {
++     fs.writeFileSync(fp, content, 'utf8');
++     console.log(`[auto-extract] Wrote ${added} entries to memory/${today}.md (${entries.length - added} deduped)`);
++   } else {
++     console.log(`[auto-extract] All ${entries.length} entries already exist in log.`);
++ // ── Main ──
++ if (targetFile) {
++   const entries = extractFromSessionFile(targetFile);
++   console.log(`[auto-extract] Found ${entries.length} events in ${path.basename(targetFile)}`);
++   writeExtractedToLog(entries);
++   writeExtractedToLog(entries);
++ } else if (scanAll) {
++   // Scan all .reset. files that haven't been extracted yet
++   if (!fs.existsSync(SESSIONS_DIR)) { console.log('[auto-extract] No sessions directory.'); process.exit(0); }
++   if (!fs.existsSync(SESSIONS_DIR)) { console.log('[auto-extract] No sessions directory.'); process.exit(0); }
++   const trackFile = path.join(workspace, '.memory', 'extracted-sessions.json');
++   const tracked = fs.existsSync(trackFile) ? JSON.parse(fs.readFileSync(trackFile, 'utf8')) : {};
++   const resetFiles = fs.readdirSync(SESSIONS_DIR)
++     .filter(f => f.includes('.reset.') && f.endsWith('.jsonl.reset.' + f.split('.reset.').pop()))
++     .concat(fs.readdirSync(SESSIONS_DIR).filter(f => f.match(/\.jsonl\.reset\.\d{4}/)));
++   // Actually just get all reset files properly
++   const allFiles = fs.readdirSync(SESSIONS_DIR).filter(f => f.includes('.reset.'));
++   let totalExtracted = 0;
++   for (const f of allFiles) {
++     if (tracked[f]) continue;
++     const fp = path.join(SESSIONS_DIR, f);
++     const entries = extractFromSessionFile(fp);
++     if (entries.length > 0) {
++       console.log(`[auto-extract] ${f}: ${entries.length} events`);
++       writeExtractedToLog(entries);
++       totalExtracted += entries.length;
++     tracked[f] = { extractedAt: new Date().toISOString(), count: entries.length };
++   if (!fs.existsSync(path.join(workspace, '.memory'))) fs.mkdirSync(path.join(workspace, '.memory'), { recursive: true });
++   fs.writeFileSync(trackFile, JSON.stringify(tracked, null, 2), 'utf8');
++   console.log(`[auto-extract] Scan complete. ${totalExtracted} new events from ${allFiles.filter(f => !tracked[f] || tracked[f].extractedAt === new Date().toISOString().slice(0,10)).length} sessions.`);
++ } else {
++   // Extract from active (non-reset) session
++   const active = fs.readdirSync(SESSIONS_DIR)
++     .filter(f => f.endsWith('.jsonl') && !f.includes('.reset.') && !f.includes('.deleted.') && !f.includes('.lock'))
++     .map(f => ({ name: f, size: fs.statSync(path.join(SESSIONS_DIR, f)).size }))
++     .sort((a, b) => b.size - a.size);
++   if (active.length === 0) { console.log('[auto-extract] No active sessions.'); process.exit(0); }
++   const fp = path.join(SESSIONS_DIR, active[0].name);
++   console.log(`[auto-extract] Scanning active session: ${active[0].name} (${(active[0].size/1024).toFixed(0)}KB)`);
++   const entries = extractFromSessionFile(fp);
++   console.log(`[auto-extract] Found ${entries.length} events`);
+
+### scripts/memory-boot.js  [code]
+- console.log(`[boot] Health: ${health.score}/100 | Files: ${health.dailyFiles} | Index: ${index.totalChunks || '?'} chunks${index.indexed > 0 ? ` (${index.indexed} updated)` : ''}${warnings.length ? ' | ' + warnings.join(' | ') : ''}`);
++ }
++ // 4. Session size warning
++ function checkSessionSize() {
++   const sessDir = path.join(process.env.HOME, '.openclaw/agents/main/sessions');
++   if (!fs.existsSync(sessDir)) return null;
++   const active = fs.readdirSync(sessDir)
++     .filter(f => f.endsWith('.jsonl') && !f.includes('.reset.') && !f.includes('.deleted.') && !f.includes('.lock'))
++     .map(f => ({ name: f, size: fs.statSync(path.join(sessDir, f)).size }))
++     .sort((a, b) => b.size - a.size);
++   if (active.length === 0) return null;
++   const sizeMB = active[0].size / 1048576;
++   return { file: active[0].name, sizeMB: Math.round(sizeMB * 10) / 10 };
++ const session = checkSessionSize();
++ if (session && session.sizeMB > 8) warnings.push(`🔴 Session ${session.sizeMB}MB — approaching reset!`);
++ else if (session && session.sizeMB > 4) warnings.push(`🟡 Session ${session.sizeMB}MB — consider summarizing`);
++ console.log(`[boot] Health: ${health.score}/100 | Files: ${health.dailyFiles} | Index: ${index.totalChunks || '?'} chunks${session ? ` | Session: ${session.sizeMB}MB` : ''}${index.indexed > 0 ? ` (${index.indexed} updated)` : ''}${warnings.length ? ' | ' + warnings.join(' | ') : ''}`);
+
+### scripts/memory-cron.sh  [code]
+- # 4. Auto-compact files older than 60 days (monthly, on the 1st)
++ fi
++ fi
++ # 4. Auto-extract from reset sessions (scan unprocessed sessions)
++ if [ -f "$SCRIPT_DIR/memory-auto-extract.js" ]; then
++     EXTRACT=$(node "$SCRIPT_DIR/memory-auto-extract.js" --workspace "$WORKSPACE" --scan 2>&1)
++     echo "[$(date '+%Y-%m-%d %H:%M:%S')] auto-extract: $EXTRACT" >> "$LOG"
++ # 5. Auto-compact files older than 60 days (monthly, on the 1st)
++ # 6. Session size warning (write to daily log if > 4MB)
++ SESS_DIR="$HOME/.openclaw/agents/main/sessions"
++ if [ -d "$SESS_DIR" ]; then
++     ACTIVE=$(find "$SESS_DIR" -name "*.jsonl" ! -name "*.reset.*" ! -name "*.deleted.*" ! -name "*.lock" -printf '%s %p\n' 2>/dev/null | sort -rn | head -1)
++     if [ -n "$ACTIVE" ]; then
++         SIZE_BYTES=$(echo "$ACTIVE" | awk '{print $1}')
++         SIZE_MB=$(echo "$SIZE_BYTES" | awk '{printf "%.1f", $1/1048576}')
++         if [ "$(echo "$SIZE_MB > 8" | bc -l 2>/dev/null || echo 0)" = "1" ]; then
++             node "$SCRIPT_DIR/memory-write.js" --workspace "$WORKSPACE" --today "[warning] 会话已达 ${SIZE_MB}MB，即将触发 reset！请主动做摘要压缩" --tag warning
++             echo "[$(date '+%Y-%m-%d %H:%M:%S')] WARNING: session ${SIZE_MB}MB" >> "$LOG"
++         elif [ "$(echo "$SIZE_MB > 4" | bc -l 2>/dev/null || echo 0)" = "1" ]; then
++             echo "[$(date '+%Y-%m-%d %H:%M:%S')] session size: ${SIZE_MB}MB" >> "$LOG"
++         fi
++     fi
+
+### scripts/memory-maintain.js  [code]
+-  * memory-maintain.js — Index stats, rebuild, and prune
+-  * Usage: node memory-maintain.js [--stats] [--reindex] [--prune-days 90]
+- let workspace = DEFAULT_WORKSPACE, showStats = false, reindex = false, pruneDays = 0;
++  * memory-maintain.js v2.1.0 — Index stats, rebuild, prune, and GC
++  * Usage:
++  *   node memory-maintain.js [--stats] [--reindex] [--prune-days 90]
++  *   node memory-maintain.js --gc                # Analyze MEMORY.md for stale entries
++  *   node memory-maintain.js --gc --apply        # Actually remove stale entries
++ let workspace = DEFAULT_WORKSPACE, showStats = false, reindex = false, pruneDays = 0, gc = false, gcApply = false;
++   if (args[i] === '--gc') gc = true;
++   if (args[i] === '--apply') gcApply = true;
++ }
++   process.exit(0);
++ // ── GC: analyze MEMORY.md for stale entries ──
++ if (gc) {
++   const MEMORY_MD = path.join(workspace, 'MEMORY.md');
++   if (!fs.existsSync(MEMORY_MD)) { console.log('[gc] No MEMORY.md found.'); process.exit(0); }
++   const content = fs.readFileSync(MEMORY_MD, 'utf8');
++   const lines = content.split('\n');
++   // Detect stale patterns
++   const stalePatterns = [
++     // "当前版本" / "current version" entries older than 14 days
++     { regex: /当前.*版本|current.*version|commit [a-f0-9]{7}/i, maxAgeDays: 14, reason: '版本信息可能过时' },
++     // Completed TODOs still in memory
++     { regex: /^\s*-\s*\[x\]/i, maxAgeDays: 0, reason: '已完成待办' },
++     // Very old entries (>60 days)
++     { regex: /_\((\d{4}-\d{2}-\d{2})\)_/, maxAgeDays: 60, reason: '超过60天的条目' },
++   ];
++   const { getToday: _gt } = require('./_timezone');
++   const today = _gt(workspace);
++   const todayMs = new Date(today + 'T00:00:00').getTime();
++   const staleLines = [];
++   for (let i = 0; i < lines.length; i++) {
++     const line = lines[i];
++     if (!line.match(/^- /)) continue; // Only check list entries
++     for (const pat of stalePatterns) {
++       if (pat.regex.test(line)) {
++         // Extract date if present
++         const dateMatch = line.match(/_\((\d{4}-\d{2}-\d{2})\)_/);
++         if (dateMatch && pat.maxAgeDays > 0) {
++           const entryMs = new Date(dateMatch[1] + 'T00:00:00').getTime();
++           const ageDays = Math.floor((todayMs - entryMs) / 86400000);
++           if (ageDays > pat.maxAgeDays) {
++             staleLines.push({ lineNum: i + 1, text: line.trim(), reason: pat.reason, ageDays });
++           }
++         } else if (pat.maxAgeDays === 0) {
++           staleLines.push({ lineNum: i + 1, text: line.trim(), reason: pat.reason, ageDays: 0 });
++         }
++         }
++       }
++       }
++     }
++     }
++     }
++     }
++   }
++   }
++   }
++   // Detect duplicate entries (>80% similarity by simple char overlap)
++   const listLines = lines.map((l, i) => ({ i, text: l })).filter(x => x.text.match(/^- /));
++   for (let a = 0; a < listLines.length; a++) {
++     for (let b = a + 1; b < listLines.length; b++) {
++       const ta = listLines[a].text.replace(/\s*_\(\d{4}-\d{2}-\d{2}\)_\s*$/, '').toLowerCase();
++       const tb = listLines[b].text.replace(/\s*_\(\d{4}-\d{2}-\d{2}\)_\s*$/, '').toLowerCase();
++       if (ta === tb || (ta.length > 20 && tb.length > 20 && ta.includes(tb.slice(2, -2)))) {
++         // b is the duplicate (later line), mark for removal
++         if (!staleLines.find(s => s.lineNum === listLines[b].i + 1)) {
++           staleLines.push({ lineNum: listLines[b].i + 1, text: listLines[b].text.trim(), reason: '重复条目', ageDays: 0 });
++   if (staleLines.length === 0) {
++     console.log(`[gc] MEMORY.md clean (${content.length} chars, ${listLines.length} entries). No stale entries.`);
++   } else {
++     console.log(`[gc] Found ${staleLines.length} potentially stale entries:`);
++     for (const s of staleLines) {
++       console.log(`  L${s.lineNum}: ${s.reason}${s.ageDays ? ` (${s.ageDays}d old)` : ''} → ${s.text.slice(0, 80)}`);
++     if (gcApply) {
++       const removeSet = new Set(staleLines.map(s => s.lineNum - 1));
++       const cleaned = lines.filter((_, i) => !removeSet.has(i)).join('\n');
++       // Remove consecutive blank lines
++       const tidied = cleaned.replace(/\n{3,}/g, '\n\n');
++       fs.writeFileSync(MEMORY_MD, tidied, 'utf8');
++       console.log(`[gc] Removed ${staleLines.length} entries. ${content.length} → ${tidied.length} chars.`);
++     } else {
++       console.log(`[gc] Run with --apply to remove. Preview only.`);
+
+### scripts/memory-resume.js  [code]
++ #!/usr/bin/env node
++ /**
++  * memory-resume.js v1.0.0 — Zero-latency session recovery
++  * Generates a <2000 token recovery summary after session reset.
++  *
++  *
++  * Usage:
++  *   node memory-resume.js [--workspace /path] [--max-chars 2000]
++  * Output: compact recovery context for immediate session continuity
++  *   1. Last session's final topic & status
++  *   2. Recent 3 days' key entries (prioritized by tag)
++  *   3. Active MEMORY.md sections
++  */
++ const fs = require('fs'), path = require('path');
++ const DEFAULT_WORKSPACE = process.env.OPENCLAW_WORKSPACE || path.join(process.env.HOME, '.openclaw/workspace');
++ const args = process.argv.slice(2);
++ let workspace = DEFAULT_WORKSPACE, maxChars = 2000;
++ for (let i = 0; i < args.length; i++) {
++   if (args[i] === '--workspace' && args[i + 1]) workspace = args[++i];
++   if (args[i] === '--max-chars' && args[i + 1]) maxChars = parseInt(args[++i]) || 2000;
++ }
++ }
++ }
++ }
++ }
++ const MEMORY_DIR = path.join(workspace, 'memory');
++ const MEMORY_MD = path.join(workspace, 'MEMORY.md');
++ const { getToday: _getToday } = require('./_timezone');
++ function getToday() { return _getToday(workspace); }
++ // Tag priority: higher = more important for recovery context
++ const TAG_PRIORITY = {
++   'decision': 10, 'done': 9, 'blocked': 9, 'todo': 8, 'important': 10,
++   'deploy': 8, 'error': 7, 'fix': 7, 'warning': 6, 'progress': 5,
++   'note': 3, 'auto-extract': 4, 'flush': 4
++ };
++ function parseLogEntries(content) {
++   const entries = [];
++   for (const line of content.split('\n')) {
++     const m = line.match(/^- (\d{2}:\d{2})\s*(?:\[([^\]]+)\])?\s*(.+)/);
++     if (m) {
++       const [, time, tag, text] = m;
++       const priority = TAG_PRIORITY[tag] || 2;
++       entries.push({ time, tag: tag || '', text: text.trim(), priority });
++     }
++     }
++     }
++     }
++     }
++     }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   return entries;
++ function getRecentLogs(days = 3) {
++   if (!fs.existsSync(MEMORY_DIR)) return [];
++   const today = getToday();
++   const files = [];
++   for (let i = 0; i < days; i++) {
++     const d = new Date(today + 'T00:00:00');
++     d.setDate(d.getDate() - i);
++     const ds = d.toISOString().slice(0, 10);
++     const fp = path.join(MEMORY_DIR, `${ds}.md`);
++     if (fs.existsSync(fp)) {
++       files.push({ date: ds, content: fs.readFileSync(fp, 'utf8') });
++   return files;
++ function getActiveMemorySections() {
++   if (!fs.existsSync(MEMORY_MD)) return '';
++   const content = fs.readFileSync(MEMORY_MD, 'utf8');
++   const lines = content.split('\n');
++   // Extract section headers and their most recent entries
++   const sections = [];
++   let current = null;
++   for (const line of lines) {
++     if (line.match(/^## /)) {
++       if (current) sections.push(current);
++       current = { header: line.replace('## ', ''), entries: [] };
++     } else if (current && line.match(/^- /)) {
++       current.entries.push(line);
++   if (current) sections.push(current);
++   // Keep last 2 entries per section, skip empty sections
++   return sections
++     .filter(s => s.entries.length > 0)
++     .map(s => `**${s.header}**: ${s.entries.slice(-2).map(e => e.replace(/^- /, '').replace(/\s*_\(\d{4}-\d{2}-\d{2}\)_\s*$/, '')).join(' | ')}`)
++     .join('\n');
++ function buildResumeSummary() {
++   const recentLogs = getRecentLogs(3);
++   if (recentLogs.length === 0 && !fs.existsSync(MEMORY_MD)) {
++     console.log('[resume] No memory data found. Fresh start.');
++     return;
++   let output = '## Session Recovery\n\n';
++   let charBudget = maxChars - output.length;
++   // 1. Last session entries (most recent day, sorted by priority)
++   if (recentLogs.length > 0) {
++     const latest = recentLogs[0];
++     const entries = parseLogEntries(latest.content);
++     // Sort by priority desc, then by time desc (latest first)
++     entries.sort((a, b) => b.priority - a.priority || b.time.localeCompare(a.time));
++     // Last entry = most recent activity
++     const lastEntry = entries.length > 0
++       ? entries.reduce((a, b) => a.time > b.time ? a : b)
++       : null;
++     output += `**最后活动** (${latest.date}):\n`;
++     if (lastEntry) {
++       output += `> ${lastEntry.time} ${lastEntry.tag ? `[${lastEntry.tag}]` : ''} ${lastEntry.text}\n\n`;
++     // Top priority entries from today
++     const topEntries = entries
++       .filter(e => e.priority >= 5)
++       .slice(0, 8);
++     if (topEntries.length > 0) {
++       output += `**关键记录** (${latest.date}):\n`;
++       for (const e of topEntries) {
++         const line = `- ${e.time} ${e.tag ? `[${e.tag}]` : ''} ${e.text}\n`;
++         if (output.length + line.length > charBudget * 0.6) break;
++         output += line;
++         output += line;
++       }
++       }
++       output += '\n';
++       output += '\n';
++   // 2. Previous days' highlights (if budget allows)
++   for (let i = 1; i < recentLogs.length && output.length < charBudget * 0.75; i++) {
++     const log = recentLogs[i];
++     const entries = parseLogEntries(log.content)
++       .filter(e => e.priority >= 7)
++       .sort((a, b) => b.priority - a.priority)
++       .slice(0, 3);
++     if (entries.length > 0) {
++       output += `**${log.date} 重点**:\n`;
++       for (const e of entries) {
++         const line = `- ${e.tag ? `[${e.tag}]` : ''} ${e.text}\n`;
++         if (output.length + line.length > charBudget * 0.85) break;
++   // 3. Active memory sections (remaining budget)
++   const memSections = getActiveMemorySections();
++   if (memSections && output.length + memSections.length < charBudget) {
++     output += '**长期记忆摘要**:\n' + memSections + '\n';
++   // Truncate if over budget
++   if (output.length > maxChars) {
++     output = output.slice(0, maxChars - 20) + '\n\n_(truncated)_';
++   console.log(output);
++ buildResumeSummary();
+
+### scripts/memory-search.js  [code]
+-  * memory-search.js v2.1.0 — BM25 + CJK bigram + date filter + phrase matching
+- if (!query) { console.error('Usage: memory-search.js "query" [--max N] [--date YYYY-MM-DD] [--recent N] [--json]'); process.exit(1); }
++  * memory-search.js v2.2.0 — BM25 + CJK bigram + date filter + phrase matching + --last N
++  *   node memory-search.js --last 5                       # last N log entries (no query needed)
++  *   node memory-search.js --last 10 --today              # today's last 10 entries
++  *   node memory-search.js --last 3 --tag done            # last 3 entries with [done] tag
++ let lastN = 0, tagFilter = '', todayOnly = false;
++   if (args[i] === '--last' && args[i + 1]) { lastN = parseInt(args[++i]); continue; }
++   if (args[i] === '--tag' && args[i + 1]) { tagFilter = args[++i]; continue; }
++   if (args[i] === '--today') { todayOnly = true; continue; }
++ }
++ // --last N mode: read recent log entries directly (no FTS5 needed)
++ if (lastN > 0) {
++   const { getToday: _gt } = require('./_timezone');
++   const today = _gt(workspace);
++   const MDIR = path.join(workspace, 'memory');
++   if (!fs.existsSync(MDIR)) { console.log('[memory] No memory directory.'); process.exit(0); }
++   const files = fs.readdirSync(MDIR).filter(f => f.match(/^\d{4}-\d{2}-\d{2}\.md$/)).sort().reverse();
++   if (todayOnly) {
++     const tf = files.find(f => f === `${today}.md`);
++     if (!tf) { console.log(`[memory] No log for today (${today}).`); process.exit(0); }
++   }
++   }
++   }
++   const entries = [];
++   for (const f of files) {
++     if (todayOnly && f !== `${today}.md`) continue;
++     const date = f.replace('.md', '');
++     const content = fs.readFileSync(path.join(MDIR, f), 'utf8');
++     for (const line of content.split('\n')) {
++       const m = line.match(/^- (\d{2}:\d{2})\s*(?:\[([^\]]+)\])?\s*(.+)/);
++       if (m) {
++         const [, time, tag, text] = m;
++         if (tagFilter && tag !== tagFilter) continue;
++         entries.push({ date, time, tag: tag || '', text: text.trim() });
++       }
++     }
++     }
++     if (entries.length >= lastN * 3 && !todayOnly) break; // read enough files
++   // Sort by date+time descending, take lastN
++   entries.sort((a, b) => `${b.date} ${b.time}`.localeCompare(`${a.date} ${a.time}`));
++   const top = entries.slice(0, lastN);
++   if (jsonOutput) {
++     console.log(JSON.stringify({ status: 'ok', mode: 'last', count: top.length, entries: top }));
++   } else if (top.length === 0) {
++     console.log(`[memory] No entries found${tagFilter ? ` with tag [${tagFilter}]` : ''}.`);
++   } else {
++     for (const e of top) {
++       console.log(`${e.date} ${e.time} ${e.tag ? `[${e.tag}]` : ''} ${e.text}`);
++   process.exit(0);
++ if (!query) { console.error('Usage: memory-search.js "query" [--max N] [--date YYYY-MM-DD] [--recent N] [--last N] [--tag T] [--today] [--json]'); process.exit(1); }
+
+### scripts/memory-write.js  [code]
+-   const len = withLock(fp, () => {
+-     return content.length;
+-   console.log(JSON.stringify({ status: 'ok', action: 'append_daily', file: `memory/${today}.md`, chars: len }));
++ }
++ }
++     }
++     }
++   }
++   }
++ function simpleNormalize(s) {
++   return s.toLowerCase().replace(/[^\w\u4e00-\u9fff]/g, '').trim();
++ function isDuplicate(existing, newText) {
++   // Check last 5 entries for >80% similarity
++   const lines = existing.split('\n').filter(l => l.match(/^- \d{2}:\d{2}/)).slice(-5);
++   const normNew = simpleNormalize(newText);
++   if (normNew.length < 5) return false; // too short to deduplicate
++   for (const line of lines) {
++     const m = line.match(/^- \d{2}:\d{2}\s*(?:\[[^\]]+\])?\s*(.+)/);
++     if (!m) continue;
++     const normOld = simpleNormalize(m[1]);
++     // Exact match after normalization
++     if (normOld === normNew) return true;
++     // One contains the other (>80% overlap)
++     if (normOld.length > 15 && normNew.length > 15) {
++       if (normOld.includes(normNew) || normNew.includes(normOld)) return true;
++   return false;
++   const result = withLock(fp, () => {
++     // Dedup check: skip if very similar to recent entries
++     if (isDuplicate(content, text)) {
++       return { len: content.length, skipped: true };
++     return { len: content.length, skipped: false };
++   if (result.skipped) {
++     console.log(JSON.stringify({ status: 'ok', action: 'skipped_duplicate', file: `memory/${today}.md`, chars: result.len, note: 'Similar entry exists in last 5 entries' }));
++   } else {
++     console.log(JSON.stringify({ status: 'ok', action: 'append_daily', file: `memory/${today}.md`, chars: result.len }));

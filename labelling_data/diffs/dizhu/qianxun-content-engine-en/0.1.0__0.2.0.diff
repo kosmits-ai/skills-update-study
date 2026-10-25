@@ -1,0 +1,2104 @@
+dizhu/qianxun-content-engine-en  0.1.0 -> 0.2.0
+change_type: instructions+docs+code   changelog: v0.2.0 adds generate mode: produce your own script / cover / desc / tags / reference frames from the deconstruction card + brand info, using Ofox (LLM + Nano Banana). Video output is a Seedance 2.0 prompt as substitute; real video gen planned for v2.1. New examples/ directory with real reference outputs. New required config: OFOX_API_KEY for generate mode.
+
+### SKILL.md  [instructions]
+- description: "Content Engine — cross-platform content deconstruction + knowledge graph. v1: deconstruct mode for Xiaohongshu (XHS) only. Input a viral XHS link, get an 18-field structured deconstruction card. Maintains a graph/ knowledge graph (brand voice, platform playbook, hook library, style dictionary) so deconstruction outputs become brand-aware and new findings auto-write back to the graph — the system gets smarter over time. Architecture inspired by Ronin's Skill Graph. Future phases add Douyin / WeChat Channels / etc + generate / evaluate modes. Chinese version: ~/.agents/skills/content-engine/"
+- Cross-platform content deconstruction + knowledge graph. The bottom layer is a **graph that grows over time**; the top layer hosts multiple modes across multiple platforms.
+- | generate | 🔜 v2 | Deconstruction card + graph → our scripts / copy / assets |
+- > **Current state**: this document fully describes the **Xiaohongshu** v1 implementation. Future platforms will reuse the same architecture (`extract_{platform}.py` + `content_engine/{platform}/` submodules), and the graph/ knowledge graph is shared cross-platform.
+- This document is the v1 execution manual — covering **Xiaohongshu + deconstruct mode only**.
+- └── scripts/                          ← symlink to ../content-engine/scripts/ (shared code)
+-     ├── extract_xhs.py                XHS one-shot orchestrator: link → workspace
+-     │                                  (v1.1+ will add extract_douyin.py etc)
+-         ├── client.py                  TikhubClient
+-         ├── parsers.py                 NoteData / Comment dataclass parsing
+-         ├── linkresolve.py             short link → note_id
+-         ├── video.py                   download + ffmpeg frame extraction
+-         ├── images.py                  image post downloader
+- ## Boundaries and principles (re-emphasized)
+- 2. **Deconstruction is observation, not commentary**: factual fields write "the visual shows X", not "this looks great". Subjective judgment only allowed in three fields: emotion-hook / viral theme / takeaways
+- 4. **Token control**: when video frames > 30, aggregate by time segments first (1 representative per 5s) before detailed description
+- 5. **No content generation**: this mode only outputs deconstruction cards + graph writeback. Generation is v2.
+- ### TikHub API token (required)
+- [TikHub](https://tikhub.io) is a paid third-party XHS data API. Sign up → Dashboard → API Keys.
+- **Configure** (pick one):
+- # Option 1 (temporary): environment variable
+- export TIKHUB_API_TOKEN='your_token'
+- # Option 2 (recommended for long-term): XDG config dir
+- echo 'TIKHUB_API_TOKEN=your_token' > ~/.config/content-engine/.env
+- # Option 3: drop a .env in cwd or skill root (see .env.example)
+- 1. `TIKHUB_API_TOKEN` env var
++ ---
++ description: "Content Engine (Xiaohongshu). Two modes: ① Deconstruct (v1) — input a viral XHS link, get an 18-field structured card. ② Generate (v2) — combine the deconstruction with your brand info and use Ofox (LLM + Nano Banana) to produce your own version: script / caption / cover / desc / tags / reference frames. Video generation (Seedance 2.0) planned for v2.1. Maintains a shared graph/ knowledge graph across modes so the system gets smarter over time. Architecture inspired by Ronin's Skill Graph. Chinese version: ~/.agents/skills/content-engine/"
++ Cross-platform content deconstruction + generation + knowledge graph. The bottom layer is a **graph that grows over time**; the top layer hosts multiple modes across multiple platforms.
++ |---|---|---|
++ |---|---|---|
++ | **generate** | ✅ v2.0 | Deconstruction + graph + your brand → script / caption / cover / desc / tags / reference frames. Video → outputs Seedance prompt (real video gen in v2.1) |
++ > **Current state**: this document covers **Xiaohongshu deconstruct (v1) + generate (v2.0 text+image)**. Real video generation (Seedance) planned for v2.1. Future platforms reuse the same architecture (`extract_{platform}.py` / `generate_{platform}.py` + `content_engine/{platform}/` submodules); the graph is shared cross-platform.
++ ```
++ ```
++ ```
++ ```
++ ```
++ └── scripts/
++     ├── extract_xhs.py                v1 deconstruct CLI: link → workspace
++     ├── generate_xhs.py               v2 generate CLI: link → script + images + copy
++     │                                  (v1.1+ will add extract_douyin.py / generate_douyin.py)
++         ├── client.py                  TikhubClient (v1)
++         ├── parsers.py                 NoteData / Comment parsing (v1)
++         ├── linkresolve.py             short link → note_id (shared)
++         ├── video.py                   download + ffmpeg frame extraction (v1)
++         ├── images.py                  image post downloader (v1)
++         ├── llm.py                     Ofox LLM client (v2)
++         ├── nano_banana.py             Ofox image generation (v2, Nano Banana Pro)
++         ├── lookup.py                  link → card lookup + freshness (v2)
++         ├── prompts.py                 5 text prompt templates (v2)
++         ├── generate.py                generate mode orchestration (v2)
++         ├── preflight.py               environment self-check (v1+v2)
++ ## When to trigger
++ ## Input
++ | Required | Field | Notes |
++ ```bash
++ |---|---|---|---|
++ # v2 Generate Mode (v0.2.0+)
++ Use the v1 deconstruction card as a competitor reference + your brand info → generate your own version of script / copy / reference frames / cover / tags.
++ User says something like:
++ - "Based on https://xhslink.com/o/xxx, generate a same-theme video for our brand"
++ - "Learn from this post and produce 8 image cards for us"
++ - "This viral post has a great hook — make a version of it for our brand"
++ | ✅ | XHS link | User passes only the link; agent doesn't ask for filename |
++ | ✅ | --type | `video` / `image` / `script` |
++ | ✅ | --count | 1-N (image count / video count) |
++ |  | --product-imgs | Path to product images (dir or single file) — text-only in v2.0; image-to-image in v2.1 |
++ |  | --product-usp | Free-text USP / material / craft description |
++ |  | --fresh | Force re-deconstruct v1 (bypass cache) |
++ ## Output workspace
++ docs/deconstructions/AIC-260426-001-xxx-generated/    ← v1 card name + "-generated"
++ └── GEN-260427-001-image/                            ← one GEN-N per generate run
++     ├── script.md                                    ← full script (image plan / video shots / shoot brief)
++     ├── caption.txt                                  ← (video type) on-screen captions
++     ├── cover.png + cover.txt                        ← cover image (with overlay text) + text backup
++     ├── frames/frame_NNN.png                         ← N reference images (Nano Banana, vertical 9:16)
++     ├── desc.txt                                     ← XHS post body
++     ├── tags.txt                                     ← hashtags (10-15)
++     └── seedance-prompt.md                           ← (video type) Seedance 2.0 cinema prompt (v2.1 will execute)
++ ## Workflow (10 steps)
++ ### Step 0: Preflight + mode select
++ - Check OFOX_API_KEY (required) + TIKHUB_API_TOKEN (for fallback v1 deconstruct)
++ - Check graph state (brand-aware vs objective mode)
++ ### Step 1: Link → deconstruction card
++ 1. Resolve link → note_id (reuse v1 linkresolve)
++ 2. Grep `docs/deconstructions/` for note_id
++ 3. Found (≤7 days) → use directly
++ 4. Found (>7 days) → ask user "reuse / re-deconstruct?"
++ 5. Not found → fallback trigger v1 `extract_xhs.py` (M2.0 stub asks user; later auto)
++ ### Step 2: Read graph context
++ - brand-voice / brand-story / segments / taboo / hooks / style-tags / xiaohongshu
++ ### Step 3: Collect input args
++ - type / count / product-imgs / product-usp
++ ### Step 4: Generate script (core)
++ - Prompt template: deconstruction + brand-voice + hooks library + USP
++ - Output: `script.md`
++ - Critical constraint for image type: **each frame MUST be a single isolated subject** (prevents downstream image gen from producing collages)
++ ### Step 5: Parallel generate 4 ancillary text
++ - caption.txt (video only)
++ - cover.txt
++ - desc.txt
++ - tags.txt (depends on desc, runs after)
++ ### Step 6: Image generation (image / video types)
++ - N frames (per `--count` for image; 1 key frame for video) + 1 cover
++ - Nano Banana **three-path constraint** prompt:
++   1. **Layout reference** ← from script.md single-frame description
++   2. **Brand style anchors** ← from graph/brand/brand-voice
++   3. **Product description** ← from --product-usp + --product-imgs
++ - Hard rules baked into `build_prompt`:
++   - STRICTLY VERTICAL 9:16 portrait
++   - SINGLE IMAGE only, NO collage / grid / multi-panel
++   - frame: ABSOLUTELY NO text; cover: text overlay allowed
++ ### Step 7: seedance-prompt.md (video type only)
++ - LLM translates script into Seedance 2.0 cinema-style prompt
++ - v2.0 generates the file only; v2.1 will call Seedance API to produce real video
++ ### Step 8: (M3 planned) validator
++ - Hard errors (taboo words / empty copy / tags < 5) → auto-retry
++ - Soft errors (desc length anomaly / style drift suspected) → write quality_report.md
++ ### Step 9: Publish
++ - Reuses v1 Step 7: Feishu first + local fallback
++ - Returns the GEN-xxx directory path as the deliverable
++ ### Step 10: 4-line summary
++ 1. Generated: based on {card} + {brand}, {type} ({count} items)
++ 2. Outputs: script.md + cover + N frames + desc + tags + (seedance-prompt)
++ 3. Workspace: {absolute path}
++ 4. Time / calls: {seconds} / {LLM calls} + {image calls}
++ ## CLI usage
++ # 8 reference images for an image post
++ python3 scripts/generate_xhs.py "<XHS link>" --type image --count 8 \
++   --product-usp "Premium knitwear: silk vest + embroidered shirt" \
++   --product-imgs ~/photos/spring-2026/
++ # 1 video (script + cover + 1 key frame + Seedance prompt; no real video gen)
++ python3 scripts/generate_xhs.py "<XHS link>" --type video --count 1
++ # Shoot brief only
++ python3 scripts/generate_xhs.py "<XHS link>" --type script --count 1
++ # Force re-deconstruct (bypass cache)
++ python3 scripts/generate_xhs.py "<XHS link>" --type image --count 8 --fresh
++ # Environment check (includes OFOX_API_KEY)
++ python3 scripts/generate_xhs.py --check
++ ## Known limitations / roadmap
++ | Limitation | Solution direction | Plan |
++ | Video not really generated (prompt only) | Integrate Seedance 2.0 API | v2.1 |
++ | No hook variants (1 set per run) | LLM multi-round with N hook directions | v2.2 |
++ | Weak character consistency (different faces) | IP-Adapter / InstantID | v2.x |
++ | No automatic QA | validator.py with hard+soft error detection | v2.0 M3 |
++ | Fallback v1 deconstruct is manual | Auto-trigger built in | v2.0 M3 |
++ ## Boundaries (generate mode)
++ 1. **No fabricated product info**: if user provides no product images / USPs → prompt explicitly notes "user did not supply visual reference"; LLM avoids inventing concrete colors/materials
++ 2. **No copy-paste from competitor**: script must not contain reference video's specific proper nouns (brand / founder / location)
++ 3. **Images are reference, not finals**: v2.0's image generation is a mood board / shooting reference, not direct-publish assets (see spec §1)
++ 4. **Brand consistency uses three-path constraint**: product image + brand-voice prompt + deconstruction layout — any path missing is OK (degrades but doesn't block)
++ 5. **Ofox calls are metered**: each generate ~4-7 LLM + N+1 image calls; recommend `--count 1` first to verify before scaling up
++ ## v1 boundaries (deconstruct mode)
++ 2. **Deconstruction is observation, not commentary**: factual fields write "the visual shows X", not "this looks great". Subjective judgment only in three fields: emotion-hook / viral theme / takeaways
++ 4. **Token control**: when video frames > 30, aggregate by time segments (1 representative per 5s) before detailed description
++ 5. **No content generation here**: deconstruct mode only outputs cards + graph writeback (v2 generate handles generation)
++ ### API tokens
++ **v1 deconstruct needs `TIKHUB_API_TOKEN`** (required for deconstruct)
++ **v2 generate needs `OFOX_API_KEY`** (required for generate; covers LLM + Nano Banana image gen)
++ # v1 deconstruct: TikHub
++ echo 'TIKHUB_API_TOKEN=your_tikhub_token' >> ~/.config/content-engine/.env
++ # v2 generate: Ofox (one key covers everything, including future Seedance)
++ echo 'OFOX_API_KEY=ofox-your_key' >> ~/.config/content-engine/.env
++ | Token | Sign up | Use | Required? |
++ | `TIKHUB_API_TOKEN` | [tikhub.io](https://tikhub.io) | XHS API (raw deconstruct data) | v1 deconstruct |
++ | `OFOX_API_KEY` | [ofox.ai](https://ofox.ai) | LLM + Nano Banana + future Seedance | v2 generate |
++ | `OPENROUTER_API_KEY` | [openrouter.ai](https://openrouter.ai) | (optional) alternate LLM provider | optional |
++ 1. Corresponding env var (`TIKHUB_API_TOKEN` / `OFOX_API_KEY` / `OPENROUTER_API_KEY`)
+
+### examples/README.md  [docs]
++ # Examples · Real Outputs as Reference
++ These are **actual outputs** produced by Content Engine v0.2.0, kept here as learning samples and a quality baseline.
++ Not templates — real artifacts. You can see the entire chain "deconstruction card → our brand version" in concrete form.
++ ---
++ ---
++ ---
++ ---
++ ---
++ ## Three samples
++ ```
++ ```
++ ```
++ examples/
++ ├── v1-deconstruction-card/         ← Starting point: the v1 deconstruction of a viral XHS link
++ │   └── AIC-260426-001-deconstruction.md
++ │
++ │
++ ├── v2-image-example/               ← v2 image-type output (based on the card above)
++ │   ├── script.md                   Image plan (6 images + holistic narrative)
++ │   ├── cover.png + cover.txt       Cover image (with Chinese overlay text) + text backup
++ │   ├── frames/frame_001.png        Reference frame (Nano Banana, vertical 9:16)
++ │   ├── desc.txt                    XHS post body
++ │   └── tags.txt                    Hashtags
++ └── v2-video-example/               ← v2 video-type output (same source card)
++     ├── script.md                   Video script (5 cinema shots)
++     ├── caption.txt                 On-screen captions
++     ├── cover.png + cover.txt       Cover image + text
++     ├── frames/frame_001.png        Key frame (1 image, for shoot reference)
++     ├── desc.txt + tags.txt         Post-publishing assets
++     └── seedance-prompt.md          Seedance 2.0 cinema-style prompt
++                                     (v2.0 doesn't generate real video; outputs this prompt
++                                      as substitute. v2.1 will auto-execute it.)
++ ## How these samples were produced
++ ### Commands
++ ```bash
++ # Deconstruct (v1) — produces the card
++ python3 scripts/extract_xhs.py "https://www.xiaohongshu.com/explore/69d4e2f7000000002202853a"
++ # Generate (v2) — based on the card + your brand
++ python3 scripts/generate_xhs.py "https://www.xiaohongshu.com/explore/69d4e2f7000000002202853a" \
++ python3 scripts/generate_xhs.py "https://www.xiaohongshu.com/explore/69d4e2f7000000002202853a" \
++   --type image --count 1 \
++   --product-usp "Heritage womenswear: silk vest + embroidered shirt"
++   --type video --count 1 \
++   --product-usp "Heritage womenswear: silk vest"
++ ### The reference content
++ XHS link `69d4e2f7000000002202853a` is a 34-second product display video from "见花开 / Shenzhen / What does wearing a season of spring feel like?" — 330 likes / 231 saves / 133 comments (save-to-like ratio 70%). Classic "immersive merchandising" viral format.
++ ### Brand setup (demo)
++ `--product-usp "Heritage womenswear: silk vest + embroidered shirt"` is **fictional demo data**, not a real brand. In production you'd pass your actual product USPs.
++ ### Performance data
++ | Type | LLM calls | Image calls | Total time | Estimated cost |
++ |---|---|---|---|---|
++ | image (count=1) | 4 | 2 | ~127s | ~$0.20 |
++ | video (count=1) | 5 | 2 | ~190s | ~$0.30 |
++ ## What to look at in these samples
++ ### v1 → v2 correspondence
++ Open `v1-deconstruction-card/...md` and `v2-image-example/script.md` side by side:
++ - Card §4 "Reference content deconstruction" shows the immersive merchandising 3-layer structure → image script.md reproduces this as "image plan, 3-layer narrative"
++ - Card §7 "Emotion hook" identifies "Aspiration｜atmospheric immersion" → image script.md reuses this hook
++ - Card §13 "Reference body copy" has restrained negative-space tone → desc.txt continues that
++ **v2 isn't free generation — it's evidence-based competitor mirroring.**
++ ### Visual consistency
++ Open `v2-image-example/cover.png` and `v2-image-example/frames/frame_001.png`:
++ - ✅ Both vertical 9:16
++ - ✅ Both single images (no collage)
++ - ✅ Same aesthetic (restrained eastern, natural light, craft texture)
++ - ✅ Cover has Chinese overlay text "把一朵花绣进春天里" ("Embroider a flower into spring")
++ These are the post-fix v2 stable quality — `build_prompt`'s "three-path constraint + anti-collage" mechanism in action.
++ ### Seedance prompt format
++ Open `v2-video-example/seedance-prompt.md` to see 5 shots in standard Seedance 6-dim format (shot type / subject / setting / camera movement / mood / duration). This is the format v2.1 will feed Seedance directly when integrated.
++ The file header has a blockquote explaining v2.0's current usage paths (run manually / wait for v2.1 / hand to a videographer).
++ ## NOT how to use these samples
++ ⚠️ **Do not directly copy these outputs and publish them**. Reasons:
++ 1. The brand data is fictional demo (the source XHS account is "见花开", which is the *competitor*, not you)
++ 2. In your real use case, brand-voice / brand-story / segments should be filled (these examples were generated in objective mode with empty graph templates)
++ 3. Real usage: fill graph first, then generate — output upgrades from "generic style" to "brand-specific"
++ Proper usage: **treat these as a quality baseline** — your outputs should hit this bar (or higher) before you publish.
++ ## Reproduction cost
++ - 1 deconstruction ≈ $0.50 (TikHub API + LLM analyzing 17 frames)
++ - 1 image generation (count=1) ≈ $0.20
++ - 1 video generation (count=1) ≈ $0.30
++ - **Full pipeline ≈ $1 per cycle**
++ In production batches (1 deconstruction + N generation variants), the deconstruction cost amortizes across multiple generations.
+
+### examples/v1-deconstruction-card/AIC-260426-001-deconstruction.md  [docs]
++ # AIC-260426-001 | 深圳新中式｜把江南春色穿在身上是什么体验？
++ > 参考链接：https://www.xiaohongshu.com/explore/69d4e2f7000000002202853a
++ > 拆解时间：2026-04-26 22:45
++ > 平台：小红书
++ > 内容类型：视频（34s · 720×1280 竖屏）
++ > **拆解模式：客观拆解**（graph/ 7 个文件含 TODO，含 brand-voice / brand-story / segments）
++ ## 元数据
++ - **作者**：见花开新中式女装深圳南山（red_id `27404511293`）
++ - **发布时间**：2026-04-04（IP 广东）
++ - **互动**：👍 330 ｜ ⭐ 231 ｜ 💬 133 ｜ 📤 72
++ - **note_id**：`69d4e2f7000000002202853a`
++ - **关键比例**：藏赞比 70%（XHS 上 >50% 视为高保存价值）
++ ---
++ ---
++ ---
++ ---
++ ---
++ ---
++ ## 一、定位
++ ### 1. 内容目标
++ 未指定（推测：门店引流 + 春夏新款种草）
++ ### 2. 目标客群
++ 30-45 岁追求东方美学的女性，看重材质（真丝、亚麻）和工艺（钉珠、刺绣），有"穿出底气、不取悦"的审美自觉。决策周期长、重收藏、看重线下体验。
++ **证据**：
++ - desc 出现「祖母绿真丝、手工钉珠、清透天然面料、上身透气又显贵」等具体材质工艺词，命中对面料敏感人群
++ - 评论高频出现具体颜色单品名（"绿色裤子" / "白色裙子" / "第一套绿色无袖+白裙"），说明视觉钩子精准击中
++ - 评论里出现"线上"询问（"怎么购买？线上"），说明用户对"线下到店"的不便有摩擦
++ - 藏赞比 70%（远超 XHS 平均），决策周期长、不冲动
++ - ⚠️ graph/audience/segments.md 未填充，无法对照客群分层
++ ### 3. 爆款主题
++ 借画面美感把"看视频"变成"想象自己穿上"，激活高保存意愿——34 秒纯陈列短视频用工艺特写（祖母绿盘扣 / 油菜花珠绣）+ 标题设问（"穿在身上是什么体验？"）共同构建"代入式向往"，绕开说教式种草。
++ ## 二、拆解
++ ### 4. 参考内容拆解
++ > 17 帧抽样（0.5fps），按主体/景别变化聚合成 7 个时间段：
++ ```
++ ```
++ ```
++ ```
++ 第 0-6 秒｜镜头：固定 → 缓推 + 左移｜景别：中景 → 中景偏近
++ 画面：木质横杆衣架挂三件单品（左：白衬衫绣黄色油菜花；中：祖母绿无袖立领马甲；右：祖母绿长背心裙），前景虚化绿植，背景玻璃橱窗透光。底部水印「见花开 JIANHUAKAI / 春夏新款 / 地址：深圳南山区粤海门G出口」全程在线。镜头缓慢左移又推进建立店铺空间感。
++ 第 7-12 秒｜镜头：固定｜景别：特写 → 极特写
++ 画面：祖母绿无袖立领马甲领口和门襟，绿色玉石盘扣 + 白色钉珠勾勒的几何花纹，搭配白色玉牌项链作为穿搭示范。极特写镜头给到下摆与白色长裙交接处的真丝光泽。
++ 第 13-14 秒｜镜头：固定｜景别：中景
++ 画面：绿色无袖马甲单品悬挂在白色长裙前，作为一套搭配的完整收尾。
++ 第 15-22 秒｜镜头：固定 → 极推近 → 退回中景｜景别：中景 → 极特写 → 中景
++ 画面：切到第二件单品——白色衬衫，胸前一朵立体黄色油菜花刺绣居中（金黄色珠子堆叠成花瓣、绿色叶茎线绣穿插），下方搭配祖母绿裙。镜头极近距特写让单颗珠子和针脚都清晰可见。
++ 第 23-26 秒｜镜头：固定｜景别：全景 → 特写
++ 画面：第三件单品上场——祖母绿长款无袖背心裙单品悬挂，侧面盘扣可见。立领刺绣领口和盘扣特写，与第 7-12 秒的绿马甲领口形成结构呼应。
++ 第 27-30 秒｜镜头：固定｜景别：近景 → 特写
++ 画面：祖母绿马甲再次出现，绿色面料上的白色刺绣花纹和盘扣特写，光线变得更加柔和。
++ 第 31-34 秒｜镜头：固定｜景别：中景 → 全景
++ 画面：三件套整体悬挂展示后，回到与开场几乎一致的全景——绿植 + 玻璃橱窗 + 三件衣物，呼应收束。
++ ### 5. 风格标签
++ `新中式（已有）` `手工艺（已有）` `清透（已有，AIC-260426-001 首次写入）` `沉浸式陈列（已有，AIC-260426-001 首次写入）` `春日感（已有，AIC-260426-001 首次写入）`
++ > 全部命中 `graph/engine/style-tags.md` 词典，**无新增**。
++ ### 6. 场景标签
++ `门店陈列区 / 木质衣架 / 玻璃橱窗 / 绿植点缀`
++ ### 7. 情绪钩子
++ **核心情绪**：向往感｜画面氛围代入（无人声陈列）
++ **佐证**：
++ - 全程无旁白、无字幕条，纯靠画面（绿+白主色 + 钉珠/刺绣特写 + 玻璃橱窗光线）建立"东方浪漫"视觉氛围
++ - 标题「把江南春色穿在身上是什么体验？」用设问把"看视频"和"想象自己穿上"链接
++ - 立体油菜花珠绣的极特写（4 秒）把抽象"高级"转换为可感"工艺细节"，激活"我也想拥有"
++ > **命中 graph hooks**：`graph/engine/hooks.md` → "向往感｜画面氛围代入（无人声陈列）"（AIC-260426-001 首次写入）。
++ > **同时命中**：标题结构「在 {地点} 挖到 {品类} 的天花板」对应 graph 中的"探索感｜探店悬念"。
++ ### 8. 评论关键词
++ > 来源：`keywords.json`（regex 自动提取）+ Step 5c 防伪约束（每词带原文证据）。
++ > ⚠️ **API 高频但未被 regex 命中的额外信号**：「怎么卖啊」/「这套啥价」 — 这是询价的另两种说法，建议下次 regex 补充 `怎么卖|啥价`。本次手动归到 ask 类。
++ - **怎么买**（5 条原评：「绿色裤子怎么买」「怎么购买？线上」「第一套怎么买」「第一和第二套怎么买」「怎么买呢 好喜欢绿色」）— **最高频转化信号**
++ - **怎么卖 / 啥价**（2 条原评：「怎么卖啊」「这套啥价」）— regex 漏抓，但语义相同
++ - **多少钱**（评论：「白色裙子多少钱」）
++ - **绿色 / 白色单品**（高频颜色词：「绿色马甲怎么」「绿色裤子怎么买」「白色裙子多少钱」「第一套绿色无袖+白裙怎么买？」「好喜欢绿色」）— 视觉钩子精准击中颜色词
++ - **线上购买**（评论：「怎么购买？线上」）— 用户对"线下到店"定位有摩擦
++ - **⚠️ 异议·满族服饰**（评论：「这是新宾满族服饰，请不要叫它新中式！」👍1）— 1 条但获赞，提示「新中式」标签存在垂类社群边界
++ > 注：商家置顶评论是反诈骗提示，已被 parser 自动过滤（`is_pinned=True`），不计入关键词。
++ ## 三、文案
++ ### 9. 参考视频旁白文案
++ **无旁白 / 无字幕条，纯画面表达。**
++ 仅底部固定 watermark（始终在线）：
++ - 品牌标识：「见花开 JIANHUAKAI」
++ - 系列：「春夏新款」
++ - 地址：「深圳南山区粤海门G出口」
++ ### 10. 参考视频旁白文案逻辑分析
++ 视频无口播也无字幕条，**叙事完全靠镜头节奏 + BGM 驱动**。三层结构：
++ **第一层 · 全景建立场域（0-6 秒）**
++ 开场 6 秒固定 + 缓推的全景，让观众"走进"店铺，建立第一印象。三件单品在画面正中并列展示，是后续叙事的"目录"。
++ **第二层 · 单品轮播 + 工艺特写（7-30 秒）**
++ "中景 → 近景 → 特写 → 极特写"的递进节奏，依次展示三件单品的核心工艺：
++ - 绿马甲：盘扣 + 钉珠纹样
++ - 白衬衫：立体油菜花珠绣（视频最大亮点，4 秒纯特写）
++ - 绿长裙：盘扣 + 立领刺绣
++ 每件单品的"中景—特写—中景"三段式让观众"看见全貌 → 看清细节 → 记住印象"。
++ **第三层 · 全景收尾呼应（31-34 秒）**
++ 回到与开场几乎一致的全景，让观众"走出"店铺，留下回味空间。
++ **关键设计**：
++ - **沉默是底气**：不用旁白解释"我们多好"，靠画面让用户自己得出结论
++ - **特写权重 > 全景**：30 秒里 14 秒在做特写，把"高级感"从口号变成可视证据
++ - **底部 watermark 是默认 CTA**：地址全程可见，无需在最后弹出
++ ### 11. 参考封面文案
++ 无显式封面文字（封面靠产品视觉本身表达；watermark 持续可见）
++ ### 12. 参考发布主题
++ `深圳新中式｜把江南春色穿在身上是什么体验？`
++ > 套用 graph hooks 中"探索感｜探店悬念"模板：地点（深圳）+ 品类反差（新中式）+ 体验设问（穿在身上是什么体验）。
++ ### 13. 参考发布文案
++ 谁懂啊家人们！在深圳南山挖到了新中式的天花板✨
++ 见花开这家2000平的国风美学大店，真的把东方浪漫玩明白了！
++ 这一季的春夏新款直接美到失语💚
++ 祖母绿的真丝马甲，手工钉珠勾勒出江南韵味，
++ 搭配飘逸的白纱半裙，一整个江南温婉大小姐既视感；
++ 还有这件绣着油菜花的白衬衫，把春天的生机直接穿在身上，
++ 清透的天然面料，上身透气又显贵，完全不挑身形！
++ 📍地址：深圳南山区粤海门G出口见花开新中式女装店
++ 春天就该穿这样的新中式！姐妹们快冲，来一场东方美学的邂逅吧～
++ > 文案与视频形成**画面-文字互补**：视频负责"看见美"，文案负责"读懂美"——把祖母绿、真丝、钉珠、油菜花等细节用文字补全，让无声画面也能把信息传完整。
++ ### 14. 参考热门标签
++ `#深圳新中式 #深圳南山探店 #见花开新中式 #新中式穿搭 #深圳女装店 #国风穿搭 #天然面料穿搭 #深圳同城探店 #新中式马甲 #春夏穿搭`
++ > 来源 `note.json.hashtags`（parser 自动清理 `[话题]` 渲染标记）。
++ > 标签结构：地点（4 个）+ 品类（4 个）+ 季节（1 个）+ 单品（1 个），覆盖搜索路径 + 同城推流 + 垂类社群。
++ ## 四、可学习要点（模式 B · 客观拆解）
++ > 每条按「**现象 → 推论 → 建议**」三段式。
++ 1. **无人声陈列也能拿高互动**（现象：本条 34s 纯画面，藏赞比 70%）→（推论：高客单 / 高审美品类下，画面美感本身能驱动收藏行为，远超口播种草的转化效果）→（建议：自身产品视觉力够强时，优先做"沉默陈列"，把成本从拍摄/剪辑转移到选品/打光）
++ 2. **特写权重应大于全景**（现象：30 秒里 14 秒做特写，且关键工艺给到 4 秒极特写）→（推论：用"看清细节"替代"听到主张"，让"高级"从形容词变成可看见的物质证据）→（建议：陈列视频里至少 40% 时长给特写镜头，且每个单品至少 1 个 4+秒的极特写聚焦工艺细节）
++ 3. **画面-文字互补设计**（现象：视频极简无声，发布文案 351 字详写材质细节）→（推论：视频负责唤起感受，文案负责给出依据，二者互补让用户既被打动也能记住产品）→（建议：纯陈列视频必须配长文字 desc，且 desc 必须包含具体材质名词、价格档暗示、地址信息）
++ 4. **常驻 watermark 是隐形 CTA**（现象：地址 / 品牌标 / 系列名全程在底部）→（推论：比末尾弹出的"地址在这里"更自然，转化干扰为零）→（建议：所有门店类视频固定底部 watermark 含「地址 / 品牌名 / 当前系列」三件套，全程在线）
++ 5. **评论区"怎么买"是诊断信号**（现象：133 条评论里 7+ 条直接问购买路径，覆盖"怎么买/怎么卖/啥价"等多种问法）→（推论：决策意愿已到位但缺购买路径，是看得见的转化漏损）→（建议：商家置顶位应放"购买/到店指引"，不是反诈骗提示——目前商家用了置顶位放反诈，浪费了这个高曝光转化点）
++ 6. **"线上"摩擦不能忽视**（现象："怎么购买？线上" 的提问明确）→（推论：线下定位会过滤掉非本地用户，但 XHS 流量本身带跨城曝光，强制线下会浪费这部分流量）→（建议：评论区或主页放一个"线上购买入口"（哪怕是私域链接 / 客服微信），把跨城询问的用户接住）
++ 7. **垂类社群边界要小心**（现象：评论里有"这是新宾满族服饰，请不要叫它新中式"且获赞）→（推论：XHS 垂类社群对名词使用敏感，"新中式"在传统服饰群体里有边界）→（建议：使用「新中式」时配合更精准的描述（如"新中式 / 国风 / 东方美学"复合标签），降低被挑战的概率）
++ ## 图谱回写日志
++ 本次拆解触发以下 graph 更新：
++ ✅ **0 项新写入**——所有钩子模式 / 风格词 / 平台观察均**复用 graph 现有节点**（v1/v2 拆解已写入，v3 印证有效）。
++ 证明：
++ - 情绪钩子「向往感｜画面氛围代入」、「探索感｜探店悬念」 → 命中 `graph/engine/hooks.md` 已有
++ - 风格标签「新中式 / 手工艺 / 清透 / 沉浸式陈列 / 春日感」 → 命中 `graph/engine/style-tags.md` 已有
++ - 平台观察「沉浸式陈列短视频公式」 → 命中 `graph/platforms/xiaohongshu.md` 已有
++ > ✨ **图谱效应再次验证**：v1 首次拆解写入 4 项；v2 复用全部 0 写入；v3 复用全部 0 写入。**系统已"认识"这种模式**。
++ ⚠️ **代码改进建议**（不写入图谱，单独记一笔）：
++ - `parsers.py` 的 `_KEYWORD_PATTERNS` 应该补充 `怎么卖|啥价` 模式 — 本次有 2 条评论命中这种说法但 regex 漏抓
++ - 待人工确认：是否在 `graph/audience/segments.md` 新增"东方美学型独立女性"客群层（本条评论行为高度匹配此画像）
++ ⚠️ **graph/ 未填充提示**：当前 7 个文件含 TODO 占位（segments / brand-voice / brand-story / xiaohongshu / index / taboo），建议优先补 `graph/brand/brand-voice.md` + `graph/brand/brand-story.md` + `graph/audience/segments.md`，下次拆解的"目标客群"和"可学习要点"会从客观要点升级为"我方做同主题怎么用"的品牌化建议。
+
+### examples/v2-image-example/cover.txt  [docs]
++ 把一朵花绣进春天里 🌸
+
+### examples/v2-image-example/desc.txt  [docs]
++ 把一朵花绣进衬衫里，是什么感觉？
++ 不是印上去的，是一针一针堆出来的。
++ 珠子、线、光叠在一起，才有那个厚度，那个重量感。
++ 凑近了看，才发现每一处都有交代。
++ 真丝的光不刺眼。
++ 但你一眼就会停在那里。
++ 马甲的领口和盘扣，克制，没有多余的东西。
++ 衬衫胸前那朵花，是春天该有的样子。
++ 两件叠在一起，是一个完整的答案。
++ 春天是什么颜色，我们说不清楚。
++ 但穿上这一件，你自己会知道。
++ 📌 真丝马甲 · 立体绣衬衫 · 春夏在架
++ #新中式穿搭 #真丝马甲 #立体刺绣 #国风穿搭 #东方美学 #春夏穿搭 #新中式女装 #手工刺绣 #春日穿搭 #质感穿搭
+
+### examples/v2-image-example/script.md  [docs]
++ # 我方内容脚本｜新中式图组规划
++ ---
++ ---
++ ---
++ ---
++ ---
++ ---
++ ---
++ ---
++ ---
++ ---
++ ## 一、封面文案
++ **标题**
++ 把一朵花绣进衬衫里，是什么感觉？
++ **副文案（图内可选叠加，字少即止）**
++ 真丝 · 立体绣 · 一件春天
++ ## 二、发布文案
++ 有些东西，不说工艺，你也能感觉到。
++ 真丝的光是漫反射的，不刺眼，但你一眼就会停在那里。
++ 衬衫胸前那朵花是一针一针堆出来的，珠子、线、光——
++ 叠在一起才有那个厚度，那个重量感。
++ 马甲的领口和盘扣，是克制的。
++ 没有多余的东西，但你凑近了看，才发现每一处都有交代。
++ 春天是什么颜色，我们没有答案。
++ 但穿上这一件，你自己会知道。
++ 📌 真丝马甲 · 立体绣衬衫 · 春夏在架
++ ## 三、图组规划（共 6 张）
++ ### 图 1｜封面 / 主推
++ **构图**
++ **构图**
++ **构图**
++ **构图**
++ **构图**
++ **构图**
++ 竖幅，立领真丝马甲悬挂于浅木色衣架，居中单件，占画面 70% 高度，下摆自然垂落，背景为柔和散射光的素白或浅灰墙面。
++ **主体**
++ **主体**
++ **主体**
++ **主体**
++ **主体**
++ **主体**
++ 真丝马甲整体——领口、门襟、下摆完整可见，面料光泽在自然光下隐约流动。
++ **风格**
++ **风格**
++ **风格**
++ **风格**
++ **风格**
++ **风格**
++ 东方极简，留白充足，无文字叠加（或仅叠加品牌标识于画面右下角，字号极小）。
++ **在整组里的角色**
++ **在整组里的角色**
++ **在整组里的角色**
++ **在整组里的角色**
++ **在整组里的角色**
++ **在整组里的角色**
++ 第一帧，建立整体气质印象，让观众"走进"这件衣服的世界；是后续细节图的情绪底色。
++ ### 图 2｜工艺特写 A
++ 极近距，马甲领口盘扣局部充满画面，焦点落在盘扣与面料的交接处，背景完全虚化为真丝本色的色域。
++ 单颗盘扣——绳结的纹路、与面料的贴合方式、周边若有刺绣纹样的针脚走向，一个细节一个角度。
++ 质感纪录，光线侧打以凸显立体感，无滤镜感，真实可信。
++ 把"高级"从形容词转为可见的物质证据；是图 1 气质印象的工艺注脚。
++ ### 图 3｜工艺特写 B
++ 极近距，立体绣衬衫胸前花卉刺绣局部，单朵花卉居中，珠绣的颗粒感与线绣的走向同时清晰，背景为衬衫面料本身的肌理。
++ 立体绣花卉——单颗珠子的反光、花瓣堆叠的层次、叶茎线迹的细密，一个细节一个角度。
++ 极特写纪录，焦外柔化，突出工艺的手工温度。
++ 本组最核心的"工艺证据"帧；用可感的手工细节激活"我也想拥有"的向往感。
++ ### 图 4｜单品全身 B
++ 竖幅，立体绣衬衫悬挂于同款浅木色衣架，居中单件，正面朝向，胸前刺绣花卉在画面中轴线上清晰可见，背景与图 1 保持一致的素白或浅灰。
++ 立体绣衬衫整体——领型、袖型、下摆、胸前刺绣的整体位置关系完整呈现。
++ 东方极简，与图 1 形成视觉呼应，构成同一空间叙事。
++ 在工艺特写之后给出全貌，让观众把"那朵花"和"整件衣服"在脑海里对应起来。
++ ### 图 5｜搭配场景
++ 竖幅，真丝马甲叠穿于立体绣衬衫外，作为一套完整穿搭悬挂展示，单套单件，背景引入一枝绿植虚化入画（仅占画面边角），光线柔和自然。
++ 马甲 + 衬衫叠穿的整体轮廓——领口层次、马甲下摆与衬衫下摆的长度关系、整体色调。
++ 生活感轻介入，比前四张多一点温度，少一点陈列感。
++ 从"看见单品"过渡到"想象穿上"；是情绪钩子"向往感"的视觉落点。
++ ### 图 6｜收尾留白
++ 竖幅，真丝马甲单件悬挂，与图 1 构图高度相似但光线更柔、景别略退，画面下方三分之一为大面积留白，可叠加一行小字文案。
++ 真丝马甲——与图 1 同一主体，但因光线和景别的微调，呈现出"回望"而非"初见"的气质。
++ **叠加文字（可选）**
++ 慢慢做，慢慢穿。
++ 呼应开篇，收束有余韵，不做促销指令。
++ 整组叙事的句号；让观众"走出"这组图时带走一个完整的情绪印象，而非一个购买指令。
++ ## 四、标签建议
++ `#新中式穿搭` `#真丝马甲` `#立体刺绣` `#国风穿搭` `#东方美学` `#春夏穿搭` `#新中式女装` `#手工刺绣` `#春日穿搭` `#质感穿搭`
+
+### examples/v2-image-example/tags.txt  [docs]
++ #新中式穿搭 #新中式女装 #真丝马甲 #立体刺绣衬衫 #手工刺绣 #东方美学穿搭 #国风穿搭 #春夏新中式 #春日穿搭inspo #真丝衬衫 #叠穿搭配 #质感穿搭 #春夏穿搭
+
+### examples/v2-video-example/caption.txt  [docs]
++ 真丝的光，是藏在里面的
++ 细节不说话，但你看得见
++ 春天该是什么样子，你已经看见了
+
+### examples/v2-video-example/cover.txt  [docs]
++ 光藏在丝里，春天也是 ✨
+
+### examples/v2-video-example/desc.txt  [docs]
++ 真丝的光，不是照出来的
++ 是藏在布里的那种
++ ——
++ ——
++ 一件马甲，从领口到门襟
++ 盘扣、纱线走向、收口的针脚
++ 没有一处是多余的
++ 也没有一处在说话
++ 它只是在那里
++ 你看见了，就懂了
++ 春天该有的样子
++ 大概就是这样
++ 不用解释，不用强调
++ 🌿
++ 📍 欢迎来店里慢慢看
+
+### examples/v2-video-example/script.md  [docs]
++ # 视频脚本｜真丝马甲 · 沉浸式陈列版
++ **预估时长**：32s　**画幅**：720×1280 竖屏　**旁白形式**：无口播，纯画面 + 字幕条（克制出现）
++ ---
++ ---
++ ---
++ ---
++ ---
++ ---
++ ---
++ ## 分镜结构
++ ### 镜头 01｜0–6s
++ **景别**：全景 → 缓推中景
++ **画面内容**：
++ **画面内容**：
++ **画面内容**：
++ **画面内容**：
++ **画面内容**：
++ 木质衣架横杆上，真丝马甲居中悬挂，两侧各搭一件同色系单品。前景有一株低矮绿植虚化入画，背景是大面积柔和自然光（窗光或柔光箱模拟）。镜头从全景缓缓推进，建立"走进一个有质感的空间"的第一印象。底部固定 watermark 全程在线（品牌名 + 当前系列名）。
++ **字幕**：无
++ **服化道**：木质衣架、真丝马甲（主角）、同色系搭配单品 × 2、绿植道具、柔光光源
++ ### 镜头 02｜7–13s
++ **景别**：中景 → 近景
++ 镜头下移，聚焦真丝马甲的领口与门襟。盘扣居中，真丝面料在光线下呈现轻微流光感——不是强反光，是那种"光在布里"的哑光流动。画面停留足够长，让面料肌理自己说话。
++ **字幕**：（第 10s 出现，停留 3s，淡入淡出）
++ > 真丝的光，是藏在里面的
++ **服化道**：马甲近景打光需侧光（45°），突出真丝经纬纹理；盘扣清晰可见
++ ### 镜头 03｜14–20s
++ **景别**：极特写 → 特写
++ 从盘扣处推进至极特写——单颗盘扣的结头、真丝面料的纱线走向、针脚边缘的收口工艺，逐一呈现。镜头极缓慢地沿门襟向下移动，像在阅读一件器物。这是全片信息密度最高的 6 秒。
++ **字幕**：（第 17s 出现，停留 3s）
++ > 细节不说话，但你看得见
++ **服化道**：微距镜头或长焦压缩；光线需稳定，避免抖动；盘扣工艺要求清晰无模糊
++ ### 镜头 04｜21–27s
++ **景别**：特写 → 中景
++ 镜头缓缓退回中景，真丝马甲整体重新入画。此时搭配一条同色系或对比色的长裙/长裤悬挂于后方，形成一套完整穿搭的视觉想象。面料在轻微气流下有极细微的摆动——不刻意，像呼吸。
++ **字幕**：无（让画面安静）
++ **服化道**：搭配单品颜色由实际产品决定；若有风扇辅助制造微动感，风速调至最低档
++ ### 镜头 05｜28–32s｜升华收束
++ **景别**：全景（与开场几乎一致的机位）
++ 回到镜头 01 的全景构图——木质衣架、绿植、柔和窗光、三件单品。画面静止 3 秒，无任何字幕干扰。最后 2 秒，一行字幕淡入画面中下方：
++ **字幕**：（第 30s 淡入，停留至结尾）
++ > 春天该是什么样子，你已经看见了
++ 画面渐暗（非黑场，是曝光自然收敛），watermark 最后留存 1 秒后随画面一起收束。
++ **服化道**：与开场道具完全一致，保持视觉呼应闭环
++ ## 脚本备注
++ | 项目 | 说明 |
++ |---|---|
++ | 全片旁白 | 无口播，靠画面节奏 + 克制字幕驱动 |
++ | 字幕出现次数 | 共 3 条，总计约 9s，其余时间画面独立表达 |
++ | 特写占比 | 镜头 02+03 共约 13s，占全片 40%，符合拆解卡建议的工艺可视化原则 |
++ | BGM 建议 | 古琴或箫 + 极简现代编曲混音，BPM 60 以下，无歌词 |
++ | watermark | 品牌名 + 系列名，全程底部居中，字号小于画面宽度 15% |
++ | 禁用词自检 | 无极限词 / 无功效承诺 / 无购物指令 / 无价格信息 ✅ |
+
+### examples/v2-video-example/seedance-prompt.md  [docs]
++ ```markdown
++ ## Shot 1 (0–6s)
++ **Shot type**: wide → medium (slow push)
++ **Subject + action**: A silk vest hangs centered on a horizontal wooden rack; two tonal garments drape on either side, still.
++ **Setting**: Softbox or north-facing window light fills the frame from the right; a low potted plant sits out-of-focus in the foreground lower-left; light wood tones and neutral linen background dominate; daytime interior.
++ **Camera movement**: Slow push forward on a dolly or slider, starting at full-frame wide and ending at medium, covering roughly 30% of the original distance over 6 seconds.
++ **Mood / aesthetic**: Quiet editorial, wabi-sabi stillness, unhurried pace, muted warm tones, negative space preserved.
++ **Duration**: 6s
++ ---
++ ---
++ ---
++ ---
++ ## Shot 2 (7–13s)
++ **Shot type**: medium → close-up (slow tilt-down)
++ **Subject + action**: The collar and center placket of the silk vest fill the frame; a fabric-covered frog button sits at center; the silk surface catches side-light and shows a soft internal luminosity—no specular glare, a diffused sheen moving through the weave.
++ **Setting**: 45-degree side lighting (single softbox or reflector card) raking across the fabric surface to reveal warp-and-weft texture; background falls to soft neutral blur; no movement in the garment.
++ **Camera movement**: Slow tilt downward from collar to mid-placket, transitioning from medium to close-up over 4 seconds, then holding on close-up for 2 seconds.
++ **Mood / aesthetic**: Material-focused, contemplative, the light behaves as if originating inside the cloth rather than hitting its surface.
++ **Duration**: 7s
++ **Duration**: 7s
++ **Duration**: 7s
++ ## Shot 3 (14–20s)
++ **Shot type**: extreme close-up → close-up (slow downward drift)
++ **Subject + action**: A single frog-button knot node fills the frame; the camera drifts downward along the placket edge, revealing silk thread direction, seam finishing, and hand-stitched trim in sequence—each detail held for 1–2 seconds before the drift continues.
++ **Setting**: Stable, diffused directional light (no flicker, no wind); macro or long-focal-length lens to compress depth and isolate texture; background is pure soft neutral tone.
++ **Camera movement**: Extremely slow downward drift (near-static), approximately 1 cm of real subject travel over 6 seconds; no shake, no rack-focus mid-movement.
++ **Mood / aesthetic**: Object-as-artifact, meditative scrutiny, the pace of reading a handwritten letter; high information density delivered through slowness rather than speed.
++ ## Shot 4 (21–27s)
++ **Shot type**: close-up → medium (slow pull back)
++ **Subject + action**: The silk vest re-enters full-frame as the camera pulls back; a tonal or softly contrasting long skirt or wide-leg trouser is now visible hanging behind it on the same rack; both garments shift with a barely perceptible micro-movement, as if responding to a distant breath.
++ **Setting**: Same window or softbox light source as Shot 1; the micro-movement is produced by a fan set to minimum speed positioned off-frame; the sway amplitude is under 1 cm—rhythmic, not dramatic.
++ **Camera movement**: Slow pull back on slider from close-up to medium over 4 seconds, then static hold for 3 seconds.
++ **Mood / aesthetic**: Breathing stillness, the suggestion of a complete outfit without a body present, unhurried and unforced.
++ ## Shot 5 (28–32s)
++ **Shot type**: wide (static)
++ **Subject + action**: Identical framing to Shot 1—wooden rack centered, silk vest and two tonal companions hanging still, low potted plant in foreground, soft window light from the right; no human presence; the scene is motionless.
++ **Setting**: All props and lighting match Shot 1 exactly for visual closure; no new elements introduced; ambient natural light; late-morning quality of light.
++ **Camera movement**: Fully static; no movement for the entire 5 seconds; at the final 2 seconds a single line of subtitle fades in at the lower-center of frame, then the exposure gently rolls down to a dim (not black) close—natural light falloff, not a hard cut.
++ **Mood / aesthetic**: Circular return, exhale after attention, the frame asks nothing more of the viewer; the brand watermark at bottom-center persists through the fade and extinguishes with the last frame.
++ **Duration**: 5s
++ ```
+
+### examples/v2-video-example/tags.txt  [docs]
++ #新中式穿搭 #真丝马甲 #盘扣工艺 #东方美学 #新中式女装 #春日穿搭 #真丝穿搭 #新中式马甲 #中式美学穿搭 #春夏新中式 #工艺细节 #新中式日常穿搭
+
+### scripts/content_engine/generate.py  [code]
++ """Generate mode 主编排（M2：文本 + 图片）。
++ 流程（v2.0 M2）：
++ 1. 解析链接 → 找/拆解 deconstruction card
++ 2. 读 graph 必读节点（brand-voice / brand-story / segments / taboo / hooks / style-tags）
++ 3. 调 LLM 生成 5 类文本（脚本 → 字幕 / 封面文案 / desc / tags）
++ 4. (video 类型) 额外生成 seedance-prompt.md（v2.0 仅生成不执行）
++ 5. (M2) Nano Banana 出 N 张参考素材图（基于脚本 + 拆解卡 layout + 品牌风格）
++ 6. (M2) Nano Banana 出 1 张封面图
++ 7. 写入 generated/GEN-xxx-{type}/ 目录
++ 8. 返回 summary
++ M3 会加：validator 质检
++ v2.1 会加：Seedance 真生视频
++ """
++ from __future__ import annotations
++ import json
++ import re
++ import time
++ from concurrent.futures import ThreadPoolExecutor, as_completed
++ from dataclasses import dataclass, field
++ from pathlib import Path
++ from .llm import OfoxLLMClient, OfoxError
++ from .lookup import find_card_by_note_id, make_v2_generated_dir, DEFAULT_FRESHNESS_DAYS
++ from .nano_banana import generate_image, build_prompt as build_image_prompt
++ from .prompts import (
++     system_for_brand,
++     prompt_script,
++     prompt_caption,
++     prompt_cover_text,
++     prompt_desc,
++     prompt_tags,
++     prompt_seedance_video,
++ )
++ # ─── 数据结构 ───
++ @dataclass
++ @dataclass
++ @dataclass
++ class GenerateInput:
++     """v2 generate 的全部输入。"""
++     link: str
++     type: str = "video"           # video / image / script
++     count: int = 1
++     product_imgs: list[Path] = field(default_factory=list)
++     product_usp: str = ""
++     out_dir: Path | None = None
++     fresh: bool = False
++     freshness_days: int = DEFAULT_FRESHNESS_DAYS
++ class GraphContext:
++     """从 graph/ 读出的品牌上下文（容错：缺啥都能跑）。"""
++     brand_voice: str = ""
++     brand_story: str = ""
++     segments: str = ""
++     taboo: str = ""
++     hooks: str = ""
++     style_tags: str = ""
++     xiaohongshu: str = ""
++ class GenerateOutput:
++     """generate 的完整产出 metadata。"""
++     note_id: str
++     card_path: Path
++     gen_dir: Path
++     type: str
++     count: int
++     files: list[str] = field(default_factory=list)
++     duration_seconds: float = 0
++     llm_calls: int = 0
++ # ─── 工具：读 graph ───
++ def read_graph_context(skill_root: Path) -> GraphContext:
++     """读 graph/ 所有必需节点，缺失文件不阻断（容错）。"""
++     graph = skill_root / "graph"
++     def read_safe(rel: str) -> str:
++         p = graph / rel
++         if not p.exists():
++             return ""
++             return ""
++         try:
++             text = p.read_text(encoding="utf-8")
++             # 跳过含大量 # TODO: 的占位文件（说明用户没填）
++             if text.count("# TODO:") >= 3:
++                 return ""  # 视为空，让 prompt 走"无品牌上下文"路径
++             return text
++         except (OSError, UnicodeDecodeError):
++     return GraphContext(
++         brand_voice=read_safe("brand/brand-voice.md"),
++         brand_story=read_safe("brand/brand-story.md"),
++         segments=read_safe("audience/segments.md"),
++         taboo=read_safe("engine/taboo.md"),
++         hooks=read_safe("engine/hooks.md"),
++         style_tags=read_safe("engine/style-tags.md"),
++         xiaohongshu=read_safe("platforms/xiaohongshu.md"),
++     )
++     )
++     )
++     )
++     )
++ # ─── 主流程 ───
++ def generate(
++     input_: GenerateInput,
++     skill_root: Path | None = None,
++     deconstructions_dir: Path | None = None,
++     log=print,
++ ) -> GenerateOutput:
++     """v2.0 M1 主入口（文本类 only，不出图）。
++     Args:
++         input_: GenerateInput 包
++         skill_root: skill 根目录（默认推断）
++         deconstructions_dir: 拆解卡目录（默认 cwd/docs/deconstructions/）
++         log: 进度输出函数（默认 print）
++     Returns:
++     Returns:
++     Returns:
++         GenerateOutput summary
++     """
++     """
++     """
++     """
++     t0 = time.time()
++     if skill_root is None:
++         skill_root = Path(__file__).resolve().parent.parent.parent
++     if deconstructions_dir is None:
++         deconstructions_dir = Path.cwd() / "docs" / "deconstructions"
++     # ─── Step 1: 链接 → note_id ───
++     log("[1] Resolving link...")
++     from .linkresolve import resolve_xhs_link
++     note_id, _ = resolve_xhs_link(input_.link)
++     log(f"    note_id = {note_id}")
++     # ─── Step 2: 找拆解卡 ───
++     log("[2] Looking up deconstruction card...")
++     if input_.fresh:
++         log("    --fresh: skip cache, will trigger v1 deconstruct")
++         card_path = None
++     else:
++     else:
++     else:
++     else:
++         result = find_card_by_note_id(note_id, deconstructions_dir, input_.freshness_days)
++         if result.found:
++             log(f"    found: {result.card_path.name} (age {result.age_days}d, fresh={result.is_fresh})")
++             if not result.is_fresh:
++                 log(f"    ⚠️ card is older than {input_.freshness_days} days — consider --fresh to re-deconstruct")
++             card_path = result.card_path
++         else:
++             log("    not found — would trigger v1 deconstruct here (M1 stub: please run extract_xhs.py first)")
++             raise RuntimeError(
++                 f"No deconstruction card for note_id={note_id}.\n"
++                 f"M1 stub: please run `python3 scripts/extract_xhs.py {input_.link}` first.\n"
++                 f"(M2 will auto-trigger v1 fallback transparently.)"
++             )
++             )
++     deconstruction = card_path.read_text(encoding="utf-8")
++     # ─── Step 3: 读 graph 上下文 ───
++     log("[3] Reading graph context...")
++     ctx = read_graph_context(skill_root)
++     nonempty = sum(1 for v in vars(ctx).values() if v)
++     log(f"    loaded {nonempty}/7 graph nodes (others empty/template)")
++     # ─── Step 4: 准备工作区 ───
++     log("[4] Preparing workspace...")
++     if input_.out_dir:
++         gen_dir = input_.out_dir
++         gen_dir.mkdir(parents=True, exist_ok=True)
++         gen_dir.mkdir(parents=True, exist_ok=True)
++         # 默认放在拆解卡所在目录的 generated/ 子目录
++         # 兼容两种结构：
++         # - v1 旧（.md 单文件）：放到 deconstructions/AIC-xxx-slug.md → generated 应放到 deconstructions/AIC-xxx-slug-generated/
++         # - v2 新（目录）：放到 deconstructions/AIC-xxx-slug/generated/
++         if card_path.suffix == ".md":  # v1 旧结构
++             stem = card_path.stem
++             gen_root = card_path.parent / f"{stem}-generated"
++         else:  # v2 新结构
++             gen_root = card_path.parent / "generated"
++         gen_id = f"GEN-{time.strftime('%y%m%d')}-{int(time.time()) % 1000:03d}"
++         gen_dir = gen_root / f"{gen_id}-{input_.type}"
++     log(f"    workspace = {gen_dir}")
++     # ─── Step 5: LLM 生成脚本（核心） ───
++     log("[5] Generating script (core)...")
++     llm = OfoxLLMClient()
++     sys_msg = system_for_brand(
++         brand_voice=ctx.brand_voice,
++         brand_story=ctx.brand_story,
++         audience=ctx.segments,
++         taboo=ctx.taboo,
++     product_imgs_desc = (
++         f"用户提供 {len(input_.product_imgs)} 张产品图（路径见命令行参数）"
++         if input_.product_imgs else ""
++     script_prompt = prompt_script(
++         deconstruction=deconstruction,
++         product_usp=input_.product_usp,
++         product_imgs_desc=product_imgs_desc,
++         output_type=input_.type,
++         output_count=input_.count,
++     script_md = llm.chat([
++         {"role": "system", "content": sys_msg},
++         {"role": "user", "content": script_prompt},
++     ])
++     (gen_dir / "script.md").write_text(script_md, encoding="utf-8")
++     log(f"    script.md written ({len(script_md)} chars)")
++     llm_calls = 1
++     # ─── Step 6: 并行生成 4 类辅助文本 ───
++     log("[6] Generating ancillary text in parallel (caption / cover / desc / tags)...")
++     tasks = {}
++     if input_.type == "video":
++     if input_.type == "video":
++         tasks["caption.txt"] = ("caption", prompt_caption(script_md))
++     tasks["cover.txt"] = ("cover", prompt_cover_text(script_md, deconstruction))
++     tasks["desc.txt"] = ("desc", prompt_desc(script_md, deconstruction))
++     # tags 依赖 desc，先单线程出
++     # (其他可并行)
++     parallel_results: dict[str, str] = {}
++     with ThreadPoolExecutor(max_workers=3) as pool:
++     with ThreadPoolExecutor(max_workers=3) as pool:
++         future_to_name = {
++             pool.submit(
++                 llm.chat, [
++                     {"role": "system", "content": sys_msg},
++                     {"role": "user", "content": prompt_text},
++                 ]
++             ): (filename, label)
++             for filename, (label, prompt_text) in tasks.items()
++         }
++         for future in as_completed(future_to_name):
++             filename, label = future_to_name[future]
++             try:
++             try:
++                 result = future.result()
++                 parallel_results[filename] = result
++                 (gen_dir / filename).write_text(result, encoding="utf-8")
++                 log(f"    {filename} written ({len(result)} chars)")
++                 llm_calls += 1
++             except Exception as e:
++                 log(f"    ⚠️ {filename} failed: {e}")
++                 parallel_results[filename] = ""
++     # ─── Step 7: tags（依赖 desc）───
++     desc_text = parallel_results.get("desc.txt", "")
++     if desc_text:
++         log("[7] Generating tags (depends on desc)...")
++         tags_text = llm.chat([
++             {"role": "system", "content": sys_msg},
++             {"role": "system", "content": sys_msg},
++             {"role": "user", "content": prompt_tags(desc_text, deconstruction)},
++         ])
++         ])
++         (gen_dir / "tags.txt").write_text(tags_text, encoding="utf-8")
++         log(f"    tags.txt written ({len(tags_text)} chars)")
++         llm_calls += 1
++         llm_calls += 1
++         log("[7] Skipping tags (desc generation failed)")
++     # ─── Step 8: Seedance prompt（仅 video 类型）───
++     # v2.0 设计：video 请求时，此 prompt 取代真生视频。v2.1 接 API 后才真生视频。
++         log("[8] Video type: generating Seedance 2.0 prompt (substitutes for real video gen in v2.0)...")
++         seedance_md = llm.chat([
++             {"role": "user", "content": prompt_seedance_video(script_md, deconstruction)},
++         (gen_dir / "seedance-prompt.md").write_text(seedance_md, encoding="utf-8")
++         log(f"    seedance-prompt.md written ({len(seedance_md)} chars)")
++         log(f"    ⚠️ NOTE: video not actually generated in v2.0 — use this prompt with Seedance "
++             f"manually, or wait for v2.1 to auto-execute it")
++     # ─── Step 9: 图片生成（Nano Banana 三路约束 prompt） ───
++     image_calls = 0
++     if input_.type in ("video", "image"):
++         log("[9] Generating images via Nano Banana...")
++         image_calls = _generate_images(
++             gen_dir=gen_dir,
++             input_=input_,
++             script_md=script_md,
++             deconstruction=deconstruction,
++             ctx=ctx,
++             log=log,
++         )
++         )
++     # ─── Step 10: 总结 ───
++     files = sorted(p.name for p in gen_dir.iterdir())
++     if (gen_dir / "frames").exists():
++         files = [f for f in files if f != "frames"]
++         files.append(f"frames/ ({len(list((gen_dir / 'frames').iterdir()))} 张)")
++     duration = time.time() - t0
++     log(f"[10] Done in {duration:.1f}s · {llm_calls} LLM + {image_calls} image calls · {len(files)} entries")
++     return GenerateOutput(
++         note_id=note_id,
++         card_path=card_path,
++         gen_dir=gen_dir,
++         type=input_.type,
++         count=input_.count,
++         files=files,
++         duration_seconds=round(duration, 1),
++         llm_calls=llm_calls + image_calls,
++ # ─── 图片生成子流程 ───
++ def _extract_brand_anchors(brand_voice: str, style_tags: str) -> str:
++     """从 graph/brand/brand-voice + graph/engine/style-tags 提关键词组合成图片风格锚点。
++     很简单的实现：抽前 2 段非空内容，拼接成 prompt-friendly 短语。
++     out = []
++     if brand_voice:
++         # 取 brand-voice 的"价值观三关键词"区段，没有就取前 200 字
++         m = re.search(r"价值观.*?\n((?:.+\n){1,5})", brand_voice)
++         snippet = m.group(1) if m else brand_voice[:200]
++         out.append(f"Brand voice: {snippet.strip()[:200]}")
++     if style_tags:
++         # 取已有词典的"美学流派"section
++         m = re.search(r"美学流派.*?\n((?:[|*\-].+\n){1,8})", style_tags)
++         if m:
++         if m:
++             out.append(f"Aesthetic dictionary: {m.group(1).strip()[:300]}")
++     return "\n".join(out) if out else "Premium aesthetic, restrained, magazine editorial quality"
+
+### scripts/content_engine/llm.py  [code]
++ """Ofox LLM client — stdlib urllib, OpenAI-compatible.
++ Ofox 是聚合网关，支持 Claude / GPT / Gemini 等多家模型，
++ endpoint 走 OpenAI compat 标准。一个 key 还能用 Nano Banana 出图（见 nano_banana.py）。
++ 设计原则：
++ - stdlib 不引入 openai SDK
++ - token 走 v1 同款多源解析（env / cwd .env / XDG / skill 根）
++ - 重试 1 次 + 友好错误
++ """
++ from __future__ import annotations
++ import json
++ import os
++ import time
++ import urllib.error
++ import urllib.request
++ from pathlib import Path
++ # 默认值
++ OFOX_BASE_URL = "https://api.ofox.ai"
++ DEFAULT_MODEL = "claude-sonnet-4-6"   # 可被 OFOX_LLM_MODEL 覆盖
++ DEFAULT_TIMEOUT = 120                  # LLM 长 prompt 可能慢
++ class OfoxError(RuntimeError):
++     """Ofox API 错误。"""
++     def __init__(self, message: str, status: int | None = None, body: str = ""):
++         super().__init__(message)
++         self.status = status
++         self.body = body
++ def _xdg_config_dir() -> Path:
++     """复用 client.py 的 helper，避免循环依赖单独实现。"""
++     base = Path(os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config"))
++     return base / "content-engine"
++ def _skill_root_dir() -> Path:
++     return Path(__file__).resolve().parent.parent.parent
++ _TOKEN_SEARCH_PATHS = [
++     lambda: Path.cwd() / ".env",
++     lambda: _xdg_config_dir() / ".env",
++     lambda: _skill_root_dir() / ".env",
++ ]
++ def _load_ofox_key() -> str | None:
++     """env > .env 文件三源。允许 OPENROUTER_API_KEY 作为兼容备选。"""
++     for var in ("OFOX_API_KEY", "OPENROUTER_API_KEY"):
++         if v := os.environ.get(var):
++             return v.strip()
++     for path_fn in _TOKEN_SEARCH_PATHS:
++         try:
++         try:
++             path = path_fn()
++         except Exception:
++             continue
++             continue
++             continue
++         if not path.exists() or not path.is_file():
++             for line in path.read_text(encoding="utf-8").splitlines():
++                 line = line.strip()
++                 for var in ("OFOX_API_KEY", "OPENROUTER_API_KEY"):
++                     if line.startswith(f"{var}="):
++                         val = line.split("=", 1)[1].strip()
++                         return val.strip('"').strip("'")
++         except (OSError, UnicodeDecodeError):
++     return None
++ def _help_message() -> str:
++     config_dir = _xdg_config_dir()
++     return (
++         "OFOX_API_KEY 未配置。Ofox 是聚合 LLM + 图片生成的网关，注册：https://ofox.ai\n\n"
++         "  1) 环境变量：\n"
++         "     export OFOX_API_KEY='ofox-...'\n\n"
++         f"  2) 配置文件：\n"
++         f"     mkdir -p {config_dir}\n"
++         f"     echo 'OFOX_API_KEY=ofox-...' > {config_dir}/.env\n\n"
++         "  3) 兼容：OPENROUTER_API_KEY 也会被识别"
++     )
++ def ofox_credentials_present() -> bool:
++     """preflight 用。"""
++     return bool(_load_ofox_key())
++ class OfoxLLMClient:
++     """同步 LLM 客户端。
++     Usage:
++         llm = OfoxLLMClient()
++         text = llm.chat([
++             {"role": "system", "content": "你是..."},
++             {"role": "user", "content": "..."},
++         ])
++     """
++     def __init__(
++         self,
++         self,
++         api_key: str | None = None,
++         base_url: str | None = None,
++         model: str | None = None,
++         model: str | None = None,
++         timeout: int = DEFAULT_TIMEOUT,
++     ):
++         self.api_key = api_key or _load_ofox_key()
++         if not self.api_key:
++             raise OfoxError(_help_message())
++         self.base_url = (base_url or os.environ.get("OFOX_BASE_URL") or OFOX_BASE_URL).rstrip("/")
++         self.model = model or os.environ.get("OFOX_LLM_MODEL") or DEFAULT_MODEL
++         self.timeout = timeout
++     def chat(
++         messages: list[dict],
++         temperature: float = 0.7,
++         max_tokens: int | None = None,
++         retry: int = 1,
++     ) -> str:
++         """OpenAI compat /v1/chat/completions。返回 assistant 消息内容。
++         Args:
++             messages: [{"role": "system|user|assistant", "content": "..."}]
++             model: 模型名（覆盖默认）
++             temperature: 0-2
++             max_tokens: 上限
++             retry: 网络/5xx 失败时重试次数
++         Returns:
++             assistant 消息的纯文本内容
++         """
++         url = f"{self.base_url}/v1/chat/completions"
++         payload: dict = {
++             "model": model or self.model,
++             "messages": messages,
++             "temperature": temperature,
++         }
++         if max_tokens:
++             payload["max_tokens"] = max_tokens
++         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
++         last_err: OfoxError | None = None
++         for attempt in range(retry + 1):
++             try:
++                 req = urllib.request.Request(
++                     url, data=body,
++                     headers={
++                         "Content-Type": "application/json; charset=utf-8",
++                         "Authorization": f"Bearer {self.api_key}",
++                     },
++                     method="POST",
++                 )
++                 )
++                 with urllib.request.urlopen(req, timeout=self.timeout) as resp:
++                     data = json.loads(resp.read())
++                 # OpenAI compat: data.choices[0].message.content
++                 choices = data.get("choices") or []
++                 if not choices:
++                     raise OfoxError(f"Empty choices: {json.dumps(data)[:300]}")
++                 msg = (choices[0].get("message") or {}).get("content", "")
++                 if not msg:
++                     raise OfoxError(f"Empty content: {json.dumps(data)[:300]}")
++                 return msg
++             except urllib.error.HTTPError as e:
++                 err_body = e.read().decode("utf-8", errors="replace")[:500]
++                 last_err = OfoxError(
++                     f"HTTP {e.code} from /v1/chat/completions: {err_body}",
++                     status=e.code, body=err_body,
++                 # 5xx 重试，4xx 直接 raise
++                 if e.code < 500 or attempt >= retry:
++                     raise last_err from e
++                     raise last_err from e
++                 time.sleep(2 ** attempt)  # 指数退避
++             except (urllib.error.URLError, OSError) as e:
++                 last_err = OfoxError(f"Network error: {e}")
++                 if attempt >= retry:
++                 time.sleep(2 ** attempt)
++             except json.JSONDecodeError as e:
++                 raise OfoxError(f"Invalid JSON response: {e}") from e
++         raise last_err or OfoxError("Unknown failure")
+
+### scripts/content_engine/lookup.py  [code]
++ """链接 → v1 拆解卡 查找 + freshness 判断。
++ 用户传 XHS 链接，v2 不让用户记拆解卡文件名。本模块负责：
++ 1. 解析链接 → note_id（复用 v1 linkresolve）
++ 2. 在 docs/deconstructions/ 查找包含此 note_id 的拆解卡
++ 3. 判断 freshness（≤7 天直接复用；>7 天需用户决定）
++ 4. 找不到 → fallback 触发 v1 拆解（透明）
++ 兼容两种拆解卡结构：
++ - 旧（v1）：docs/deconstructions/AIC-xxx-slug.md
++ - 新（v2 后）：docs/deconstructions/AIC-xxx-slug/deconstruction.md
++ """
++ from __future__ import annotations
++ import re
++ import time
++ from dataclasses import dataclass
++ from pathlib import Path
++ # 默认拆解卡 freshness：7 天以内直接复用，超期需 prompt 用户
++ DEFAULT_FRESHNESS_DAYS = 7
++ # 拆解卡里嵌入 note_id 的形式（实测 v1 输出格式）
++ # - "> note_id: `xxx`"
++ # - "> 参考链接：https://www.xiaohongshu.com/explore/xxx"
++ _NOTE_ID_PATTERNS = [
++     re.compile(r"`([a-f0-9]{24})`"),  # `note_id` style
++     re.compile(r"explore/([a-f0-9]{24})"),  # explore URL
++     re.compile(r"discovery/item/([a-f0-9]{24})"),  # discovery URL
++ ]
++ @dataclass
++ class CardLookupResult:
++     found: bool
++     card_path: Path | None = None
++     note_id: str | None = None
++     age_days: int | None = None  # mtime 距今天数
++     is_fresh: bool = False        # age_days <= freshness_days
++     is_v2_structure: bool = False  # True = 目录/deconstruction.md, False = 单 .md
++ def _extract_note_ids_from_card(card_text: str) -> set[str]:
++     """从拆解卡文本提取所有 24-hex note_id 候选。"""
++     out = set()
++     for pat in _NOTE_ID_PATTERNS:
++         for m in pat.findall(card_text):
++             out.add(m)
++     return out
++     return out
++ def _list_card_files(deconstructions_dir: Path) -> list[tuple[Path, bool]]:
++     """列出所有拆解卡，返回 [(path, is_v2_structure)]。
++     - v1 旧结构: docs/deconstructions/*.md (单文件)
++     - v2 新结构: docs/deconstructions/*/deconstruction.md
++     """
++     """
++     """
++     """
++     out: list[tuple[Path, bool]] = []
++     if not deconstructions_dir.exists():
++         return out
++     for p in deconstructions_dir.iterdir():
++         if p.is_file() and p.suffix == ".md":
++             # 跳过 .v1.md / .v2.md 备份
++             if any(s in p.stem for s in (".v1", ".v2", ".v3")):
++                 continue
++             out.append((p, False))
++         elif p.is_dir():
++             decon = p / "deconstruction.md"
++             if decon.exists():
++                 out.append((decon, True))
++ def find_card_by_note_id(
++     note_id: str,
++     deconstructions_dir: Path | None = None,
++     freshness_days: int = DEFAULT_FRESHNESS_DAYS,
++ ) -> CardLookupResult:
++     """在 docs/deconstructions/ 找含此 note_id 的拆解卡。
++     Args:
++         note_id: 24-hex XHS note ID
++         deconstructions_dir: 默认 cwd/docs/deconstructions/
++         freshness_days: 复用阈值（>= 此天数会标 is_fresh=False）
++     Returns:
++         CardLookupResult — found/path/freshness 信息
++     if deconstructions_dir is None:
++         deconstructions_dir = Path.cwd() / "docs" / "deconstructions"
++     elif not isinstance(deconstructions_dir, Path):
++         deconstructions_dir = Path(deconstructions_dir)
++     for path, is_v2 in _list_card_files(deconstructions_dir):
++         try:
++             text = path.read_text(encoding="utf-8")
++         except (OSError, UnicodeDecodeError):
++             continue
++         if note_id in _extract_note_ids_from_card(text):
++             mtime = path.stat().st_mtime
++             age_seconds = time.time() - mtime
++             age_days = int(age_seconds // 86400)
++             return CardLookupResult(
++                 found=True,
++                 card_path=path,
++                 note_id=note_id,
++                 age_days=age_days,
++                 is_fresh=(age_days <= freshness_days),
++                 is_v2_structure=is_v2,
++             )
++     return CardLookupResult(found=False, note_id=note_id)
++ def make_v2_card_dir(
++     deconstructions_dir: Path,
++     task_id: str,
++     title_slug: str,
++ ) -> Path:
++     """构造 v2 风格拆解卡目录 + deconstruction.md 路径。
++     返回 deconstruction.md 的绝对路径（目录已 mkdir）。
++     safe_slug = re.sub(r"[^\w一-龥\-_·]+", "-", title_slug)[:30].strip("-") or "untitled"
++     card_dir = deconstructions_dir / f"{task_id}-{safe_slug}"
++     card_dir.mkdir(parents=True, exist_ok=True)
++     return card_dir / "deconstruction.md"
++ def make_v2_generated_dir(card_dir: Path, gen_id: str, type_: str) -> Path:
++     """在拆解卡目录下创建一次 generate 的产出子目录。
++     形如 GEN-260427-001-{type}/
++     gen_dir = card_dir / "generated" / f"{gen_id}-{type_}"
++     gen_dir.mkdir(parents=True, exist_ok=True)
++     return gen_dir
+
+### scripts/content_engine/nano_banana.py  [code]
++ """Nano Banana 图片生成 wrapper（通过 Ofox endpoint）。
++ Ofox 把"Nano Banana Pro"作为模型名包装了 google/gemini-3-pro-image-preview，
++ endpoint 是 OpenAI compat 风格的 /v1/images/generations。
++ 设计原则：
++ - 沿用 v1 同款多源 token 解析（复用 llm.py 的 _load_ofox_key）
++ - 流式 / 大小限制（沿用 v2 的 video.py 模式）
++ - 不直接把图丢内存——base64 解出立刻写文件
++ """
++ from __future__ import annotations
++ import base64
++ import json
++ import os
++ import time
++ import urllib.error
++ import urllib.request
++ from pathlib import Path
++ from .llm import OfoxError, _load_ofox_key, OFOX_BASE_URL
++ # Ofox 上的 Nano Banana Pro 模型名
++ DEFAULT_IMAGE_MODEL = "google/gemini-3-pro-image-preview"
++ DEFAULT_TIMEOUT = 180  # 出图慢，180s 够稳
++ DEFAULT_SIZE = "1024x1792"  # XHS 竖版默认（接近 9:16）
++ def generate_image(
++     prompt: str,
++     out_path: Path,
++     size: str = DEFAULT_SIZE,
++     model: str | None = None,
++     api_key: str | None = None,
++     base_url: str | None = None,
++     timeout: int = DEFAULT_TIMEOUT,
++ ) -> Path:
++     """生成 1 张图，base64 解码后写入 out_path。
++     Args:
++     Args:
++         prompt: 完整 image prompt（含品牌一致性 / 拆解卡 layout / 我方产品描述）
++         out_path: 输出文件路径（.png）
++         size: WxH，默认 1024x1792（XHS 竖版）
++         model: Ofox 上的模型名，默认 google/gemini-3-pro-image-preview
++         api_key: 覆盖默认 token
++         base_url: 覆盖默认 endpoint
++         timeout: 整体超时（秒）
++     Returns:
++     Returns:
++         out_path 的绝对路径
++     Raises:
++         OfoxError: API 错误 / 解析失败
++     """
++     """
++     """
++     api_key = api_key or _load_ofox_key()
++     if not api_key:
++         raise OfoxError("OFOX_API_KEY 未配置（生图必需）")
++     base_url = (base_url or os.environ.get("OFOX_BASE_URL") or OFOX_BASE_URL).rstrip("/")
++     model = model or os.environ.get("OFOX_IMAGE_MODEL") or DEFAULT_IMAGE_MODEL
++     payload = json.dumps({
++         "model": model,
++         "prompt": prompt,
++         "size": size,
++         "response_format": "b64_json",
++     }).encode("utf-8")
++     req = urllib.request.Request(
++         f"{base_url}/v1/images/generations",
++         data=payload,
++         headers={
++             "Content-Type": "application/json; charset=utf-8",
++             "Authorization": f"Bearer {api_key}",
++         },
++         method="POST",
++     )
++     try:
++         with urllib.request.urlopen(req, timeout=timeout) as resp:
++             data = json.loads(resp.read())
++     except urllib.error.HTTPError as e:
++         err_body = e.read().decode("utf-8", errors="replace")[:500]
++         raise OfoxError(
++             f"HTTP {e.code} from /v1/images/generations: {err_body}",
++             status=e.code,
++         ) from e
++     except urllib.error.URLError as e:
++         raise OfoxError(f"Network error: {e}") from e
++     except json.JSONDecodeError as e:
++         raise OfoxError(f"Invalid JSON response: {e}") from e
++     imgs = data.get("data", [])
++     if not imgs or not imgs[0].get("b64_json"):
++         raise OfoxError(f"No image in response: {json.dumps(data)[:300]}")
++     img_bytes = base64.b64decode(imgs[0]["b64_json"])
++     out_path.parent.mkdir(parents=True, exist_ok=True)
++     out_path.write_bytes(img_bytes)
++     return out_path.absolute()
++ def build_prompt(
++     layout_description: str,
++     brand_anchors: str = "",
++     product_description: str = "",
++     negative: str = "",
++     is_cover: bool = False,
++     cover_text: str = "",
++ ) -> str:
++     """组装"三路约束"的图片 prompt。
++         layout_description: 来自拆解卡 §4「参考内容拆解」的画面描述
++                             （决策 #3 的"路 1：layout reference from deconstruction"）
++         brand_anchors: 来自 graph/brand/brand-voice 的视觉关键词
++                        （路 2：brand style anchors）
++         product_description: 我方产品图描述 + 我方产品卖点
++                              （路 3：product visual reference — 文本形式，
++                               v2.0 不做 image-to-image）
++         negative: 排除项（来自 brand-voice 慎用词 + graph/engine/taboo）
++         is_cover: 是否封面图（封面允许大字层；frame 严格无文字）
++         cover_text: 封面大字的目标内容（仅 is_cover=True 用）
++         组装好的完整 prompt 字符串
++     parts = []
++     # ─── 关键开头：方向 + 单图约束 ───
++     # 必须在 prompt 最前面，避免被后面 layout 描述覆盖
++     parts.append("CRITICAL FORMAT REQUIREMENTS (must follow):")
++     parts.append("- STRICTLY VERTICAL orientation, portrait 9:16 ratio (1024x1792)")
++     parts.append("- ONE SINGLE photograph, one continuous frame, ONE subject only")
++     parts.append("- NO collage, NO grid, NO multi-panel layout, NO photo-stack")
++     parts.append("- NO split-screen, NO side-by-side comparison, NO multiple angles compiled")
++     parts.append("- NO product showcase compilation, NO 'magazine catalog spread' style")
++     parts.append("- The output is ONE photograph of ONE moment / ONE composition")
++     parts.append("")
++     if layout_description:
++         parts.append("VISUAL DESCRIPTION (single image, follow this exactly):")
++         # 清理掉容易误导成"拼图"的结构性词汇
++         cleaned = _strip_collage_keywords(layout_description.strip())
++         parts.append(cleaned)
++         parts.append("")
++         parts.append("")
++         parts.append("")
++         parts.append("")
++         parts.append("")
++     if brand_anchors:
++         parts.append("BRAND STYLE ANCHORS:")
++         parts.append(brand_anchors.strip())
++     if product_description:
++         parts.append("PRODUCT TO DEPICT:")
++         parts.append(product_description.strip())
++     parts.append("STYLE DIRECTIVES:")
++     parts.append("- Cinematic still photography, magazine editorial quality")
++     parts.append("- Soft natural light, premium feel, restrained palette")
++     parts.append("- No watermarks, no logos")
++     if is_cover and cover_text:
++         # 封面允许文字大字层
++         parts.append(f"- Include large overlay text reading: \"{cover_text.strip()}\"")
++         parts.append("  (text positioned at upper-center or lower-center, "
++                      "elegant Chinese typography, color matches scene)")
++     else:
++     else:
++         # 普通 frame 严格禁文字
++         parts.append("- ABSOLUTELY NO text, NO captions, NO Chinese characters in image")
++     if negative:
++         parts.append("AVOID:")
++         parts.append(negative.strip())
++         parts.append("AVOID: cheap saturated colors, vibrant highlights, busy composition, "
++                      "casual smartphone-snapshot quality, generic AI-aesthetic, "
++                      "stock photo feel, distorted hands or faces, "
++                      "horizontal landscape orientation, multi-image collage, "
++                      "panel layout, grid view, side-by-side comparison, "
++                      "photo collection compiled together, multi-angle composite, "
++                      "magazine catalog spread, product showcase array, "
++                      "split frame, multiple subjects in separate panels")
++     return "\n".join(parts)
++ # ─── 辅助：去掉"图 N"/"图组"等容易误导成拼图的结构性词汇 ───
++ import re as _re
++ # 整行清理（markdown H2 标题如 "## 图 1｜封面..."）
++ _COLLAGE_LINE = _re.compile(r"^#{1,3}\s*图\s*\d+[^\n]*$", _re.MULTILINE)
++ # 行内清理（仅"图 N"或"图 N｜"短形式 + 集合性 layout 词汇）
++ _COLLAGE_INLINE = _re.compile(
++     r"图\s*\d+\s*[｜|]?(?![一-鿿的张图])|"   # "图 1" / "图 1｜"，但不吃"图样"等
++     r"图组|整组叙事(?:逻辑)?|多图|拼图|对比图|"
++     r"第\s*[\d一二三四五六七八九]+\s*张?\s*图|"
++     r"image\s+\d+|grid layout|collage|multi-?panel|"
++     # 集合性 layout 关键词（针对 frame_001 拼图 issue）
++     r"两件并排|并列悬挂|三件同框|两件一起|多件并排|"
++     r"对比展示|对照展示|侧对比|"
++     r"作为(?:整组|本组)?\s*(?:目录|整体|总览)|"
++     r"整组(?:目录|总览|结构)"
++ )
++ def _strip_collage_keywords(text: str) -> str:
++     """从 layout 描述里移除容易让模型理解成"拼图"的结构性词汇。
++     保留实际画面描述，只删结构性词汇。
++     # 先删整行 markdown 标题
++     cleaned = _COLLAGE_LINE.sub("", text)
++     # 再删行内短词
++     cleaned = _COLLAGE_INLINE.sub("", cleaned)
++     # 折叠多空白
++     cleaned = _re.sub(r"\n{3,}", "\n\n", cleaned)
++     cleaned = _re.sub(r" {2,}", " ", cleaned)
++     return cleaned.strip()
+
+### scripts/content_engine/preflight.py  [code]
++ from .llm import ofox_credentials_present
++     return Check(
++         fix=(
++     )
++         return Check(
++         )
++ def check_ofox_credentials() -> Check:
++     """Ofox API key（v2 generate mode 用）— 非阻断，v1 拆解 mode 不需要。"""
++     if ofox_credentials_present():
++         from .llm import _load_ofox_key
++         token = _load_ofox_key() or ""
++         masked = token[:6] + "..." + token[-4:] if len(token) > 12 else "****"
++             name="OFOX_API_KEY (v2 generate)",
++             ok=True,
++             fatal=False,
++             message=f"OK ({masked})",
++         name="OFOX_API_KEY (v2 generate)",
++         ok=False,
++         fatal=False,  # 不阻断 v1 拆解
++         message="未配置（v1 拆解 mode 不需要；v2 generate mode 必需）",
++             "v2 生成模式需要 Ofox API key（聚合 LLM + Nano Banana 出图）：\n"
++             "  1) 注册：https://ofox.ai\n"
++             "  2) 在 .env 加：OFOX_API_KEY=ofox-...\n"
++             "  3) 兼容：OPENROUTER_API_KEY 也会被识别"
++         ),
++         check_ofox_credentials(),
+
+### scripts/content_engine/prompts.py  [code]
++ """Prompt 模板集合 — 5 类文本 + 图片 prompt 构造。
++ 每个函数接收"上下文 dict"（拆解卡 + graph + 我方输入）返回完整 prompt 字符串。
++ 不在这里调 LLM；只构造 prompt。LLM 调用在 generate.py 编排。
++ 设计原则：
++ - prompt 模板放在 Python 字符串里（方便 import / unit test）
++ - 每个模板都明示"你是谁 / 输出格式 / 硬约束"三段
++ - 输出格式偏向"少修饰多结构"，方便后续解析
++ """
++ """
++ from __future__ import annotations
++ # ─────────────────────────────────────────────────
++ # ─────────────────────────────────────────────────
++ # ─────────────────────────────────────────────────
++ # ─────────────────────────────────────────────────
++ # ─────────────────────────────────────────────────
++ # ─────────────────────────────────────────────────
++ # ─────────────────────────────────────────────────
++ # ─────────────────────────────────────────────────
++ # ─────────────────────────────────────────────────
++ # ─────────────────────────────────────────────────
++ # ─────────────────────────────────────────────────
++ # ─────────────────────────────────────────────────
++ # ─────────────────────────────────────────────────
++ # ─────────────────────────────────────────────────
++ # 通用 system prompt 构造
++ def system_for_brand(
++     brand_voice: str = "",
++     brand_story: str = "",
++     audience: str = "",
++     taboo: str = "",
++ ) -> str:
++ ) -> str:
++ ) -> str:
++ ) -> str:
++ ) -> str:
++ ) -> str:
++     """构造品牌侧 system message — 所有生成都需要这一段。
++     任意字段空字符串 → 跳过那段（容错：graph 没填也能跑）。
++     """
++     """
++     """
++     parts = [
++         "你是一个专业的小红书内容策划，正在为「我方」品牌生成对标参考视频/图文的同主题创作。",
++         "你的任务是：基于参考拆解卡 + 我方品牌信息 → 生成符合我方 brand-voice 的内容。",
++         "",
++         "硬性原则：",
++         "1. 严守我方 brand-voice 的语气和用词偏好",
++         "2. 严守禁忌词清单（包括平台合规 + 品牌调性双约束）",
++         "3. 不生成对标视频/图文里的具体专有名词（避免抄袭）",
++         "4. 输出格式严格按 user message 要求，不加多余寒暄",
++     ]
++     if brand_voice:
++         parts.extend(["", "── 我方 Brand Voice ──", brand_voice])
++     if brand_story:
++         parts.extend(["", "── 我方 Brand Story ──", brand_story])
++     if audience:
++         parts.extend(["", "── 目标客群 ──", audience])
++     if taboo:
++         parts.extend(["", "── 禁忌词 / 合规要求 ──", taboo])
++     return "\n".join(parts)
++ # 1) 脚本（核心，先出）
++ def prompt_script(
++     deconstruction: str,
++     deconstruction: str,
++     deconstruction: str,
++     deconstruction: str,
++     deconstruction: str,
++     product_usp: str = "",
++     product_imgs_desc: str = "",
++     output_type: str = "video",  # video / image / script
++     output_count: int = 1,
++     """生成脚本 prompt。
++     Args:
++         deconstruction: v1 拆解卡完整 markdown
++         product_usp: 我方产品卖点（材质 / 工艺 / 价格带）
++         product_imgs_desc: 我方产品图描述（如「8 张多角度图，米白色羊绒大衣」）
++         output_type: 决定脚本结构（video=分镜 / image=图组规划 / script=拍摄指引）
++         output_count: 视频时长档/图片张数
++     type_guide = {
++         "video": (
++             f"输出形式：视频脚本（推断目标时长 15-45s 之间，{output_count} 条同主题视频）。\n"
++             "结构：分镜 N 个 × 每个镜头含 [景别 / 画面内容 / 旁白或字幕 / 服化道]。\n"
++             "结尾必须有 1 个 5 秒以内的「升华句」或「画面收束」，对应拆解卡里观察到的钩子模式。"
++         ),
++         ),
++         ),
++         "image": (
++             f"输出形式：图组规划（{output_count} 张图）。\n"
++             "结构：图 1 (封面 / 主推) → 图 2-N (细节 / 搭配 / 场景)。\n"
++             "每张图需明示：[构图 / 主体 / 风格 / 在整组里的角色]。"
++         "script": (
++             f"输出形式：拍摄指引（{output_count} 套，给摄影师/团队看的 mood 文档）。\n"
++             "结构：核心理念 → 镜头清单 → 服化道清单 → 道具清单 → 灯光建议。\n"
++             "不必出旁白；侧重可执行的拍摄方案。"
++     }.get(output_type, "")
++     # 图片类型有特殊约束：每张图必须是 single isolated subject，否则下游生图会拼图
++     image_isolation_constraint = ""
++     if output_type == "image":
++         image_isolation_constraint = """
++ ## 图片描述硬约束（must follow，下游生图模型会按此严格执行）
++ - **每张图的"构图/主体"描述必须是 ONE SINGLE isolated subject in ONE frame**
++ - 禁止用"并排" / "并列" / "两件一起" / "三件同框" / "对比展示" / "目录" / "全部" / "整组" 等集合性词汇
++ - 一张图只展示一个主体 / 一个 angle / 一个工艺细节
++ - 即使对标视频是"沉浸式陈列多件并排"，我方图组也要拆成单图序列（图 1 单品 A 全身 → 图 2 单品 A 工艺 → 图 3 单品 B 全身 → ...）
++ - "在整组里的角色"段落只描述本图叙事位置，不要用画面语言描述其他图
++     return f"""## 任务
++     return f"""## 任务
++     return f"""## 任务
++     return f"""## 任务
++     return f"""## 任务
++     return f"""## 任务
++ 基于下面的对标拆解卡，给我方品牌生成一条同主题的【{output_type}】内容。
++ ## 参考拆解卡（v1 产出）
++ {deconstruction}
++ ## 我方产品卖点
++ {product_usp or "（未提供，agent 自己从拆解卡推断同品类的我方产品类型）"}
++ ## 我方产品图
++ {product_imgs_desc or "（未提供视觉参考，文案侧自由发挥但不可虚构具体颜色/材质细节）"}
++ ## 输出要求
++ ## 输出要求
++ ## 输出要求
++ ## 输出要求
++ ## 输出要求
++ {type_guide}
++ {image_isolation_constraint}
++ ## 关键约束
++ - 复用拆解卡里学到的"情绪钩子"和"旁白逻辑分层"，但**用我方品牌的语气重写**
++ - 不能出现对标内容里的具体专有名词（品牌 / 主理人 / 地点 / 产品款型）
++ - 输出纯 markdown，不加 ``` 包裹
++ 直接输出脚本内容。"""
++ # 2) 视频内字幕 (caption)
++ def prompt_caption(script_md: str) -> str:
++     """从脚本里提取"屏幕字幕层"——比旁白更精炼，用于无声播放时也能看懂。"""
++ 从下面的视频脚本里提取"屏幕字幕"——观众静音播放时也能完整理解内容。
++ ## 输入脚本
++ {script_md}
++ {script_md}
++ {script_md}
++ {script_md}
++ - 一行一条字幕，对应脚本里的一个分镜或时间段
++ - 每条字幕 ≤ 18 字（屏幕显示舒适度上限）
++ - 字幕之间空一行，方便人工二次编辑
++ - 不带时间戳（剪辑时再加）
++ - 纯文本，不加 markdown 标记
++ - 纯文本，不加 markdown 标记
++ 直接输出字幕，从第一条开始。"""
++ # 3) 封面文案 (cover.txt)
++ def prompt_cover_text(
++     script_md: str,
++     script_md: str,
++     script_md: str,
++     title_hint: str = "",
++     """生成封面大字 — 钩子句 + 1 个 emoji 点缀。"""
++ 为下面这条脚本设计封面大字（XHS 视频封面 1 行字 + 1 个 emoji）。
++ ## 脚本
++ ## 脚本
++ ## 脚本
++ ## 对标参考的封面文案（拆解卡里学到的钩子模式）
++ {title_hint or "（参见拆解卡情绪钩子部分）"}
++ - 1 行字，≤ 15 字
++ - 加 1 个 emoji（💚✨📍 这种偏审美感的；不要 💰🔥🎁）
++ - 用我方 brand-voice 语气
++ - 不能照搬对标的封面文案
++ 直接输出 1 行，不解释。"""
++ # 4) 发布正文 (desc.txt)
++ def prompt_desc(
++     cta_hint: str = "",
++     """生成 XHS 发布正文 — 长文 + emoji + 段落空行 + 地址 / CTA。"""
++ 为下面这条脚本生成 XHS 发布正文（desc）。
++ ## 对标参考（拆解卡里 §13 参考发布文案）的 vibe
++ {deconstruction[:2000]}
++ ## CTA 提示
++ {cta_hint or "（默认：📍 地址 + 一句温和邀请）"}
++ - 200-400 字
++ - 第一段是钩子句 + emoji 点缀（学拆解卡的 vibe 但用我方语气）
++ - 段落短，空行多（XHS 视觉留白）
++ - emoji 用 1-2 个，不堆
++ - 末尾段：📍地址 + 一句温和邀请（不用"快冲""必入"）
++ 直接输出正文。"""
++ # 5) 发布标签 (tags.txt)
++ def prompt_tags(
++     desc: str,
++     location: str = "",
++     category: str = "",
++     """生成 XHS 发布标签 — 地点 + 品类 + 季节 + 单品 4 类，10-15 个。"""
++ 为下面这条 XHS 发布正文生成 hashtag 标签。
++ ## 正文
++ {desc}
++ ## 对标参考标签（拆解卡里 §14）
++ {deconstruction[:1500]}
++ ## 我方信息
++ - 地点（本地服务必填）：{location or "（未指定）"}
++ - 品类：{category or "（从正文推断）"}
++ - 10-15 个标签，覆盖 4 类：地点（{2 if location else 0}-4）+ 品类（3-5）+ 季节/场景（1-2）+ 单品（1-3）
++ - 格式：`#标签1 #标签2 #标签3 ...`（一行，空格分隔）
++ - 每个标签自带 `#`
++ - 大词 + 中长尾混合（避免全大词导致竞争激烈，也避免全长尾没流量）
++ - 不照搬对标，但可参考其结构
++ 直接输出一行 hashtag。"""
++ # 6) Seedance prompt（v2.0 仅生成，v2.1 才执行）
++ def prompt_seedance_video(
++     """从脚本生成 Seedance 2.0 cinema-style prompt。
++     **v2.0 设计**：用户要视频时，v2.0 输出此 prompt 取代真视频生成。
++     v2.1 接 Seedance API 后会用此 prompt 直接生视频。
++ 把下面的脚本翻译成 Seedance 2.0 视频生成模型的 cinema-style prompt。
++ ## 用途说明（必须放在输出最顶部）
++ 请在 markdown 最开头加一段：
++ > ⚠️ **此文件是 v2.0 对"视频生成"请求的产出物——用 Seedance 2.0 prompt
++ > 取代真实视频。当 v2.1 接入 Seedance API 后，此 prompt 会被直接执行。
++ > 现阶段你可以：(a) 等待 v2.1 自动跑；(b) 手动复制此 prompt 到 Seedance
++ > 控制台 / 火山引擎执行；(c) 拿给摄影师作为分镜参考拍摄真实视频。**
++ ## 输出格式（Seedance 2.0 prompt 规范）
++ 为脚本里每个分镜各写一段 prompt，每段含：
++ - **Shot type**: close-up / medium / wide
++ - **Subject + action**: 主体 + 动作（具体名词，避免形容词）
++ - **Setting**: 环境 / 灯光 / 时间
++ - **Camera movement**: static / push / pull / pan / dolly
++ - **Mood / aesthetic**: 借拆解卡的风格关键词
++ - **Duration**: 该镜头时长（秒）
++ ## 输出 markdown 结构
++ ```markdown
++ > ⚠️ [上方"用途说明"那段引用块]
++ ## Shot 1 (0-3s)
++ - Shot type: ...
++ - Subject + action: ...
++ ...
++ ...
++ ## Shot 2 (3-8s)
++ ```
++ 直接输出 markdown，不加额外解释。"""
+
+### scripts/generate_xhs.py  [code]
++ #!/usr/bin/env python3
++ """generate_xhs — content-engine 生成 mode (v2.0 M1) 的一键编排脚本。
++ 输入 XHS 链接 + 我方品牌输入 → 输出我方版本的脚本 / 文案 / 标签 / Seedance prompt
++ （M1：文本类 only。M2 加 Nano Banana 出图，v2.1 加 Seedance 真生视频。）
++ 工作区结构：
++     docs/deconstructions/AIC-xxx-slug.md (v1 拆解卡)
++     docs/deconstructions/AIC-xxx-slug-generated/   ← v2 产出
++     └── GEN-260427-001-video/
++         ├── script.md
++         ├── caption.txt
++         ├── cover.txt
++         ├── desc.txt
++         ├── tags.txt
++         └── seedance-prompt.md  (仅 video 类型)
++ Usage:
++     python3 generate_xhs.py <link> --type video --count 1
++     python3 generate_xhs.py <link> --type image --count 8 --product-imgs ./photos/
++     python3 generate_xhs.py <link> --type script --count 1
++     python3 generate_xhs.py --check                # 仅环境检查
++ """
++ from __future__ import annotations
++ import argparse
++ import json
++ import sys
++ from dataclasses import asdict
++ from pathlib import Path
++ # Python 版本守卫
++ if sys.version_info < (3, 10):
++     print(
++         f"❌ Python {sys.version_info.major}.{sys.version_info.minor} 不支持。"
++         f" 本 skill 需要 Python 3.10+。",
++         file=sys.stderr,
++     )
++     )
++     )
++     )
++     )
++     )
++     )
++     sys.exit(2)
++ sys.path.insert(0, str(Path(__file__).parent))
++ from content_engine import __version__
++ from content_engine.generate import generate, GenerateInput
++ from content_engine.llm import OfoxError
++ def log(msg: str) -> None:
++     """所有进度信息走 stderr，stdout 只输出最终 JSON 摘要。"""
++     print(msg, file=sys.stderr, flush=True)
++ def main() -> int:
++     ap = argparse.ArgumentParser(
++         description=__doc__,
++         formatter_class=argparse.RawDescriptionHelpFormatter,
++     ap.add_argument("link", nargs="?", help="XHS 链接（短链/长链/note_id/分享口令）")
++     ap.add_argument(
++     ap.add_argument(
++     ap.add_argument(
++     ap.add_argument(
++         "--type",
++         choices=["video", "image", "script"],
++         default="video",
++         help="生成类型（默认 video）",
++         "--count",
++         type=int,
++         default=1,
++         help="生成数量（视频时长档/图片张数，默认 1）",
++         "--product-imgs",
++         type=Path,
++         help="我方产品图目录或单张路径",
++         "--product-usp",
++         default="",
++         help="我方产品卖点（材质/工艺/价格带）",
++     ap.add_argument("--out", type=Path, help="自定义输出目录")
++     ap.add_argument("--fresh", action="store_true", help="强制重拆解（绕开缓存）")
++     ap.add_argument("--check", action="store_true", help="仅环境检查（含 OFOX_API_KEY）")
++     ap.add_argument("--version", action="version", version=f"content-engine {__version__}")
++     args = ap.parse_args()
++     # ─── Preflight 检查 ───
++     from content_engine import preflight
++     workspace_for_check = args.out.expanduser().resolve() if args.out else None
++     checks = preflight.run_all(workspace=workspace_for_check)
++     if args.check:
++         return preflight.print_report(checks)
++     # 阻断检查 + Ofox 必需检查（generate 用）
++     fatal_failures = [c for c in checks if not c.ok and c.fatal]
++     if fatal_failures:
++         log("❌ 环境检查未通过：")
++         for c in fatal_failures:
++             log(f"   - {c.name}: {c.message}")
++         return 2
++         return 2
++         return 2
++         return 2
++     # generate mode 必须有 OFOX_API_KEY（preflight 标 fatal=False，这里强制）
++     ofox_check = next((c for c in checks if "OFOX" in c.name), None)
++     if ofox_check and not ofox_check.ok:
++         log("❌ generate mode 必需 OFOX_API_KEY：")
++         log(f"   {ofox_check.fix}")
++     if not args.link:
++         ap.error("缺少 link 参数（除非用 --check）")
++     # ─── 收集产品图列表 ───
++     product_imgs: list[Path] = []
++     if args.product_imgs:
++         p = args.product_imgs.expanduser().resolve()
++         if p.is_file():
++             product_imgs = [p]
++         elif p.is_dir():
++             product_imgs = sorted(
++                 f for f in p.iterdir()
++                 if f.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}
++             )
++         else:
++             log(f"⚠️ --product-imgs 路径不存在：{p}（继续，但视觉风格可能飘）")
++     # ─── 调主流程 ───
++     input_ = GenerateInput(
++         link=args.link,
++         type=args.type,
++         count=args.count,
++         product_imgs=product_imgs,
++         product_usp=args.product_usp,
++         out_dir=args.out.expanduser().resolve() if args.out else None,
++         fresh=args.fresh,
++     try:
++         output = generate(input_, log=log)
++     except OfoxError as e:
++         log(f"❌ Ofox API 错误：{e}")
++     except (ValueError, RuntimeError) as e:
++         log(f"❌ 生成失败：{e}")
++         return 1
++     # ─── 输出 stdout 结构化 summary ───
++     summary = {
++         "note_id": output.note_id,
++         "card_path": str(output.card_path.absolute()),
++         "gen_dir": str(output.gen_dir.absolute()),
++         "type": output.type,
++         "count": output.count,
++         "files": output.files,
++         "duration_seconds": output.duration_seconds,
++         "llm_calls": output.llm_calls,
++         "next": "Read gen_dir/script.md and other files; review and adjust before publishing.",
++     }
++     print(json.dumps(summary, ensure_ascii=False, indent=2))
++     return 0
++ if __name__ == "__main__":
++     sys.exit(main())
+
+### tests/test_llm.py  [code]
++ """llm.py 单元测试 — 不调真实 API，只测纯函数 + 客户端构造。"""
++ import os
++ import sys
++ import tempfile
++ import unittest
++ from pathlib import Path
++ from unittest.mock import patch
++ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
++ from content_engine.llm import (
++     OfoxLLMClient,
++     OfoxError,
++     ofox_credentials_present,
++     _load_ofox_key,
++     _xdg_config_dir,
++ )
++ class TestKeyLoading(unittest.TestCase):
++     def setUp(self):
++         # 备份环境
++         self._saved = {
++             k: os.environ.pop(k, None)
++             for k in ("OFOX_API_KEY", "OPENROUTER_API_KEY")
++         }
++     def tearDown(self):
++         for k, v in self._saved.items():
++             if v is not None:
++                 os.environ[k] = v
++     def test_loads_from_env(self):
++         os.environ["OFOX_API_KEY"] = "ofox-test"
++         self.assertEqual(_load_ofox_key(), "ofox-test")
++     def test_falls_back_to_openrouter(self):
++         os.environ["OPENROUTER_API_KEY"] = "or-test"
++         self.assertEqual(_load_ofox_key(), "or-test")
++     def test_ofox_takes_priority(self):
++         os.environ["OFOX_API_KEY"] = "ofox-priority"
++         os.environ["OPENROUTER_API_KEY"] = "or-fallback"
++         self.assertEqual(_load_ofox_key(), "ofox-priority")
++     def test_strips_whitespace(self):
++         os.environ["OFOX_API_KEY"] = "  ofox-padded  "
++         self.assertEqual(_load_ofox_key(), "ofox-padded")
++     def test_returns_none_when_missing(self):
++         with patch("content_engine.llm._TOKEN_SEARCH_PATHS", []):
++         with patch("content_engine.llm._TOKEN_SEARCH_PATHS", []):
++             self.assertIsNone(_load_ofox_key())
++     def test_credentials_present_when_set(self):
++         os.environ["OFOX_API_KEY"] = "ofox-anything"
++         self.assertTrue(ofox_credentials_present())
++     def test_credentials_absent_when_missing(self):
++             self.assertFalse(ofox_credentials_present())
++ class TestClientInit(unittest.TestCase):
++     def test_raises_when_no_key(self):
++         with patch("content_engine.llm._load_ofox_key", return_value=None):
++             with self.assertRaises(OfoxError) as ctx:
++                 OfoxLLMClient()
++             self.assertIn("OFOX_API_KEY", str(ctx.exception))
++     def test_constructs_with_explicit_key(self):
++         client = OfoxLLMClient(api_key="explicit-key", model="my-model")
++         self.assertEqual(client.api_key, "explicit-key")
++         self.assertEqual(client.model, "my-model")
++         self.assertTrue(client.base_url.startswith("https://"))
++     def test_base_url_strips_trailing_slash(self):
++         client = OfoxLLMClient(api_key="k", base_url="https://foo.com/")
++         self.assertEqual(client.base_url, "https://foo.com")
++     def test_default_endpoint(self):
++         client = OfoxLLMClient(api_key="k")
++         self.assertIn("ofox.ai", client.base_url)
++ class TestXDGConfig(unittest.TestCase):
++     def test_xdg_default(self):
++         with patch.dict(os.environ, {}, clear=False):
++             os.environ.pop("XDG_CONFIG_HOME", None)
++             d = _xdg_config_dir()
++             d = _xdg_config_dir()
++             self.assertIn(".config", str(d))
++             self.assertTrue(str(d).endswith("content-engine"))
++     def test_xdg_override(self):
++         with patch.dict(os.environ, {"XDG_CONFIG_HOME": "/tmp/myxdg"}):
++             self.assertEqual(str(d), "/tmp/myxdg/content-engine")
++ if __name__ == "__main__":
++     unittest.main()
+
+### tests/test_lookup.py  [code]
++ """lookup.py 单元测试。"""
++ import sys
++ import tempfile
++ import time
++ import unittest
++ from pathlib import Path
++ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
++ from content_engine.lookup import (
++     find_card_by_note_id,
++     make_v2_card_dir,
++     make_v2_generated_dir,
++     _extract_note_ids_from_card,
++ )
++ # ─── helpers ───
++ def _write_card(parent: Path, name: str, note_id: str, is_v2: bool = False) -> Path:
++     """造一个含 note_id 的拆解卡（v1 单文件 or v2 目录结构）。"""
++     body = f"""# {name}
++ > note_id: `{note_id}`
++ > 参考链接: https://www.xiaohongshu.com/explore/{note_id}
++ 正文略...
++ """
++     if is_v2:
++         d = parent / name
++         d.mkdir(parents=True)
++         f = d / "deconstruction.md"
++     else:
++         f = parent / f"{name}.md"
++     f.write_text(body)
++     return f
++ # ─── tests ───
++ class TestExtractNoteIds(unittest.TestCase):
++     def test_backtick_note_id(self):
++         text = "> note_id: `665ea88c0000000003031383`\nbody"
++         ids = _extract_note_ids_from_card(text)
++         ids = _extract_note_ids_from_card(text)
++         ids = _extract_note_ids_from_card(text)
++         ids = _extract_note_ids_from_card(text)
++         self.assertIn("665ea88c0000000003031383", ids)
++         self.assertIn("665ea88c0000000003031383", ids)
++         self.assertIn("665ea88c0000000003031383", ids)
++     def test_explore_url(self):
++         text = "https://www.xiaohongshu.com/explore/665ea88c0000000003031383?xsec=xxx"
++     def test_discovery_url(self):
++         text = "https://www.xiaohongshu.com/discovery/item/665ea88c0000000003031383"
++     def test_no_note_id(self):
++         text = "no hex here, just words"
++         self.assertEqual(ids, set())
++ class TestFindCard(unittest.TestCase):
++     def test_finds_v1_card(self):
++         with tempfile.TemporaryDirectory() as tmp:
++         with tempfile.TemporaryDirectory() as tmp:
++         with tempfile.TemporaryDirectory() as tmp:
++         with tempfile.TemporaryDirectory() as tmp:
++         with tempfile.TemporaryDirectory() as tmp:
++         with tempfile.TemporaryDirectory() as tmp:
++         with tempfile.TemporaryDirectory() as tmp:
++         with tempfile.TemporaryDirectory() as tmp:
++         with tempfile.TemporaryDirectory() as tmp:
++         with tempfile.TemporaryDirectory() as tmp:
++             d = Path(tmp)
++             d = Path(tmp)
++             d = Path(tmp)
++             d = Path(tmp)
++             d = Path(tmp)
++             note_id = "665ea88c0000000003031383"
++             note_id = "665ea88c0000000003031383"
++             note_id = "665ea88c0000000003031383"
++             note_id = "665ea88c0000000003031383"
++             note_id = "665ea88c0000000003031383"
++             card = _write_card(d, "AIC-001-test", note_id, is_v2=False)
++             result = find_card_by_note_id(note_id, d)
++             result = find_card_by_note_id(note_id, d)
++             result = find_card_by_note_id(note_id, d)
++             self.assertTrue(result.found)
++             self.assertTrue(result.found)
++             self.assertTrue(result.found)
++             self.assertTrue(result.found)
++             self.assertEqual(result.card_path, card)
++             self.assertEqual(result.card_path, card)
++             self.assertFalse(result.is_v2_structure)
++             self.assertTrue(result.is_fresh)  # 新建的肯定 fresh
++     def test_finds_v2_card(self):
++             card = _write_card(d, "AIC-001-test", note_id, is_v2=True)
++             self.assertTrue(result.is_v2_structure)
++     def test_not_found(self):
++             result = find_card_by_note_id("doesnotexist000000000000", Path(tmp))
++             self.assertFalse(result.found)
++             self.assertIsNone(result.card_path)
++     def test_freshness_old_card(self):
++             card = _write_card(d, "AIC-old", note_id)
++             # 把 mtime 改到 30 天前
++             old_time = time.time() - 30 * 86400
++             import os
++             os.utime(card, (old_time, old_time))
++             result = find_card_by_note_id(note_id, d, freshness_days=7)
++             self.assertFalse(result.is_fresh)
++             self.assertGreaterEqual(result.age_days, 29)
++     def test_skips_v1_v2_v3_backups(self):
++             # 主文件
++             primary = _write_card(d, "AIC-001-test", note_id)
++             # 备份不应被找到
++             (d / "AIC-001-test.v1.md").write_text(f"backup with `{note_id}`")
++             (d / "AIC-001-test.v2.md").write_text(f"backup with `{note_id}`")
++             self.assertEqual(result.card_path, primary)
++     def test_str_path_accepted(self):
++         """验证：deconstructions_dir 传 str 也工作（不是 Path）"""
++             _write_card(Path(tmp), "AIC-001-test", note_id)
++             # 故意传 str
++             result = find_card_by_note_id(note_id, tmp)
++ class TestMakeDirs(unittest.TestCase):
++     def test_make_v2_card_dir(self):
++             decon_path = make_v2_card_dir(d, "AIC-001", "测试-标题")
++             self.assertTrue(decon_path.parent.is_dir())
++             self.assertEqual(decon_path.name, "deconstruction.md")
++             self.assertIn("AIC-001", decon_path.parent.name)
++     def test_make_v2_generated_dir(self):
++             card_dir = Path(tmp) / "AIC-001-test"
++             card_dir.mkdir()
++             gen_dir = make_v2_generated_dir(card_dir, "GEN-001", "video")
++             self.assertTrue(gen_dir.is_dir())
++             self.assertIn("GEN-001", gen_dir.name)
++             self.assertIn("video", gen_dir.name)
++             self.assertEqual(gen_dir.parent.name, "generated")
++     def test_slug_safe_chars(self):
++             # title 含 emoji 和特殊符号
++             decon = make_v2_card_dir(Path(tmp), "AIC-001", "✨深圳新中式｜把江南春色")
++             # 应清理掉特殊符号
++             self.assertNotIn("✨", decon.parent.name)
++             self.assertNotIn("｜", decon.parent.name)
++     def test_slug_truncated(self):
++             long_title = "a" * 100
++             decon = make_v2_card_dir(Path(tmp), "AIC-001", long_title)
++             # slug 截到 30 字
++             self.assertLessEqual(len(decon.parent.name) - len("AIC-001-"), 30)
++ if __name__ == "__main__":
++     unittest.main()
+
+### tests/test_prompts.py  [code]
++ """prompts.py 单元测试 — 模板渲染。"""
++ import sys
++ import unittest
++ from pathlib import Path
++ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
++ from content_engine.prompts import (
++     system_for_brand,
++     prompt_script,
++     prompt_caption,
++     prompt_cover_text,
++     prompt_desc,
++     prompt_tags,
++     prompt_seedance_video,
++ )
++ class TestSystemPrompt(unittest.TestCase):
++     def test_full_context(self):
++         msg = system_for_brand(
++             brand_voice="温和克制",
++             brand_story="17 年女装",
++             audience="35+ 高审美女性",
++             taboo="不用最/绝对",
++         )
++         for piece in ["温和克制", "17 年女装", "35+ 高审美女性", "不用最/绝对"]:
++             self.assertIn(piece, msg)
++     def test_partial_context_skips_empty_sections(self):
++         msg = system_for_brand(brand_voice="只有这个")
++         self.assertIn("只有这个", msg)
++         self.assertNotIn("Brand Story", msg)
++         self.assertNotIn("目标客群", msg)
++     def test_empty_context_still_renders_base(self):
++         msg = system_for_brand()
++         self.assertIn("brand-voice", msg.lower())
++         self.assertIn("禁忌词", msg)
++ class TestPromptScript(unittest.TestCase):
++     def test_video_type(self):
++         p = prompt_script("拆解卡内容", "羊绒大衣", "8 张多角度", "video", 1)
++         self.assertIn("video", p)
++         self.assertIn("分镜", p)
++         self.assertIn("羊绒大衣", p)
++     def test_image_type(self):
++         p = prompt_script("拆解卡", "首饰", "", "image", 8)
++         self.assertIn("image", p)
++         self.assertIn("8", p)
++         self.assertIn("封面", p)  # 图组规划应提到封面
++     def test_script_type(self):
++         p = prompt_script("拆解卡", "服装", "", "script", 1)
++         self.assertIn("script", p)
++         self.assertIn("拍摄指引", p)
++     def test_no_product_usp_falls_back(self):
++         p = prompt_script("拆解卡", "", "", "video", 1)
++         self.assertIn("agent", p.lower())  # 应有 fallback 提示
++ class TestSimplePrompts(unittest.TestCase):
++     def test_caption_includes_script(self):
++         script = "镜头 1: 全景\n镜头 2: 特写"
++         p = prompt_caption(script)
++         self.assertIn(script, p)
++         self.assertIn("字幕", p)
++     def test_cover_text_includes_script(self):
++         p = prompt_cover_text("scriptmd", "deconmd", "")
++         self.assertIn("封面", p)
++         self.assertIn("emoji", p)
++     def test_desc_includes_truncation(self):
++         long_decon = "X" * 5000
++         p = prompt_desc("scriptmd", long_decon)
++         # desc 应只用 deconstruction 的前 2000 字
++         self.assertIn("X" * 100, p)
++         # 不应全文 5000 字都进 prompt
++         self.assertLess(p.count("X"), 3000)
++     def test_tags_includes_count_guidance(self):
++         p = prompt_tags("desc", "decon")
++         self.assertIn("10-15", p)
++         self.assertIn("hashtag", p.lower())
++     def test_seedance_format(self):
++         p = prompt_seedance_video("script", "decon")
++         self.assertIn("Shot type", p)
++         self.assertIn("Camera movement", p)
++         self.assertIn("Duration", p)
++ if __name__ == "__main__":
++     unittest.main()

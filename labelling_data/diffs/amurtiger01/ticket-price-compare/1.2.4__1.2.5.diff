@@ -1,0 +1,90 @@
+amurtiger01/ticket-price-compare  1.2.4 -> 1.2.5
+change_type: instructions+docs+code   changelog: Security: SSL fallback opt-in, declare env vars and network access in manifest
+
+### README.md  [docs]
+- [![Version](https://img.shields.io/badge/Version-v1.2.0-blue)]()
+- - **SSL Security** - 12306 endpoints use a "verify first, fallback on error" strategy: full TLS verification is attempted first; only if SSL certificate errors occur does it fall back to unverified mode. All other connections always use full TLS verification.
++ [![Version](https://img.shields.io/badge/Version-v1.2.5-blue)]()
++ | `TICKET_ALLOW_UNVERIFIED_SSL` | N/A (user opt-in) | `true` | No |
++ - **SSL Security** - 12306 endpoints use full TLS verification by default. If certificate verification fails, the error is raised (no silent bypass). To allow unverified SSL fallback for 12306, set `TICKET_ALLOW_UNVERIFIED_SSL=true` (opt-in, not recommended on untrusted networks). All other connections always use full TLS verification.
+
+### SKILL.md  [instructions]
+- - **SSL verification**: 12306 endpoints use a "verify first, fallback on error" strategy — full TLS verification is attempted first; only if SSL certificate errors occur does it fall back to unverified mode. All other connections use full TLS verification at all times.
++ version: 1.2.5
++ environment_variables:
++   - name: FIRECRAWL_API_KEY
++     required: false
++     required: false
++     required: false
++     required: false
++     required: false
++     description: "Firecrawl API key for JS rendering of Ctrip flight pages. Register at firecrawl.dev. Free tier available (500 credits/month)."
++   - name: TEQUILA_API_KEY
++     description: "Kiwi.com Tequila API key for international flight data. Self-service registration is closed."
++   - name: AMADEUS_CLIENT_ID
++     description: "Amadeus API client ID. Self-service registration is closed."
++   - name: AMADEUS_CLIENT_SECRET
++     description: "Amadeus API client secret. Self-service registration is closed."
++   - name: TICKET_ALLOW_UNVERIFIED_SSL
++     description: "Set to 'true' to allow fallback to unverified SSL for 12306.cn when certificate verification fails. Default: disabled (SSL errors raise exceptions instead of silently bypassing). Only enable on trusted networks."
++ network_access:
++   - domain: kyfw.12306.cn
++     purpose: "12306 train schedule & fare queries (public API, no auth)"
++   - domain: flights.ctrip.com
++     purpose: "Ctrip PC flight search page (scraping / Firecrawl JS rendering)"
++   - domain: m.ctrip.com
++     purpose: "Ctrip mobile H5 flight page (Firecrawl fallback for price calendar)"
++   - domain: flight.qunar.com
++     purpose: "Qunar flight search page (link generation)"
++   - domain: api.firecrawl.dev
++     purpose: "Firecrawl /v2/scrape API for JS rendering (optional, requires FIRECRAWL_API_KEY)"
++   - domain: api.tequila.kiwi.com
++     purpose: "Kiwi.com Tequila flight search API (optional, requires TEQUILA_API_KEY)"
++   - domain: api.amadeus.com
++     purpose: "Amadeus production API (optional, requires AMADEUS credentials)"
++   - domain: test.api.amadeus.com
++     purpose: "Amadeus test API (optional, for development)"
++ - **SSL verification**: 12306 endpoints use full TLS verification by default. If certificate verification fails, the script raises an error rather than silently bypassing. To opt in to the unverified SSL fallback (reduces MITM protection), set `TICKET_ALLOW_UNVERIFIED_SSL=true` environment variable — only recommended on trusted networks. All other connections always use full TLS verification.
+
+### scripts/ticket_search.py  [code]
+- # SSL context for 12306: try with verification first, fall back to unverified.
+- # 12306.cn has known certificate chain issues on some networks/systems,
+- # but we should NOT blindly disable SSL verification. Instead, we use a
+- # "verify first, fallback on error" approach to minimize MITM risk.
+- _ssl_ctx_unverified = ssl.create_default_context()
+- _ssl_ctx_unverified.check_hostname = False
+- _ssl_ctx_unverified.verify_mode = ssl.CERT_NONE
+-     """Open a URL to 12306 with SSL verification, falling back to unverified on cert errors.
+-     This limits the MITM exposure window: only if the verified connection
+-     fails due to certificate issues do we retry without verification.
+-     All other errors (network, timeout, HTTP) propagate normally.
+-         # Only fallback on SSL certificate errors, not other network errors
+-         if isinstance(e, ssl.SSLError) or "CERTIFICATE" in str(e).upper() or "SSL" in str(e).upper():
+-             print(f"[12306] SSL verification failed, falling back to unverified: {e}", file=sys.stderr)
+-             return urllib.request.urlopen(req, timeout=timeout, context=_ssl_ctx_unverified)
++ # SSL context for 12306: full verification by default.
++ # 12306.cn has known certificate chain issues on some networks/systems.
++ # Previously we auto-fell back to unverified SSL — this was flagged as a security risk
++ # (MITM exposure). Now the fallback is OPT-IN only: set TICKET_ALLOW_UNVERIFIED_SSL=true
++ # to enable it. Without this env var, SSL cert errors will raise an exception with
++ # a helpful message instead of silently bypassing verification.
++ _ALLOW_UNVERIFIED_SSL = os.environ.get("TICKET_ALLOW_UNVERIFIED_SSL", "").lower() == "true"
++ if _ALLOW_UNVERIFIED_SSL:
++     _ssl_ctx_unverified = ssl.create_default_context()
++     _ssl_ctx_unverified.check_hostname = False
++     _ssl_ctx_unverified.verify_mode = ssl.CERT_NONE
++     """Open a URL to 12306 with full SSL verification.
++     If SSL certificate verification fails:
++     - When TICKET_ALLOW_UNVERIFIED_SSL=true: falls back to unverified connection (MITM risk!)
++     - Otherwise: raises the SSL error with a helpful message suggesting the env var.
++     All non-SSL errors (network, timeout, HTTP) propagate normally.
++         is_ssl_error = isinstance(e, ssl.SSLError) or "CERTIFICATE" in str(e).upper() or "SSL" in str(e).upper()
++         if is_ssl_error:
++             if _ALLOW_UNVERIFIED_SSL:
++                 print(f"[12306] SSL verification failed, falling back to unverified (MITM risk): {e}", file=sys.stderr)
++                 return urllib.request.urlopen(req, timeout=timeout, context=_ssl_ctx_unverified)
++             else:
++                 print(f"[12306] SSL verification failed: {e}", file=sys.stderr)
++                 print("[12306] Set environment variable TICKET_ALLOW_UNVERIFIED_SSL=true to allow "
++                       "unverified fallback (not recommended on untrusted networks).", file=sys.stderr)
++                 raise

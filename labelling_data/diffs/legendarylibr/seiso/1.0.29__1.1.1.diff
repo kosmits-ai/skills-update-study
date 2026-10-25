@@ -1,0 +1,673 @@
+legendarylibr/seiso  1.0.29 -> 1.1.1
+change_type: instructions+code   changelog: Unified media gateway: discover tools, x402/API key auth, image/video/audio/3D. Agent-scoped safety controls.
+
+### SKILL.md  [instructions]
+- description: "Generate images, videos, music, 3D models, and audio via SeisoAI (120+ tools). Pay-per-request with x402 USDC on Base. Use when user asks to generate, edit, upscale, or train AI content."
+- homepage: https://seisoai.com
+- version: 2.1.0
+- last_synced: 2026-02-15
+- files: ["scripts/x402-sign.mjs", "scripts/package.json"]
+- metadata: {"openclaw": {"emoji": "🎨", "homepage": "https://seisoai.com", "requires": {"bins": ["curl", "node"], "env": ["SEISOAI_WALLET_KEY"]}, "primaryEnv": "SEISOAI_WALLET_KEY"}}
+- # SeisoAI
+- 120+ AI generation tools. Payment: x402 USDC on Base.
+- ## Setup
+- ### `SEISOAI_WALLET_KEY`
+- x402 signing key — used only to authorize per-request USDC payments to SeisoAI via EIP-3009 `transferWithAuthorization`. The key never leaves your machine; the signing script hard-codes SeisoAI's recipient address and rejects any other payTo.
+- Use a dedicated wallet with a small USDC balance ($5–$20). Most generations cost $0.01–$0.33.
+- ```bash
+- ```bash
+- ```bash
+- ```bash
+- ```bash
+- ```bash
+- export SEISOAI_WALLET_KEY="0x<key>"
+- ```
+- ### Dependencies
+- cd {baseDir}/scripts && npm ci --ignore-scripts
+- Pinned via lockfile. Run once before first use.
+- ## Discovery
+- curl -s "https://seisoai.com/api/gateway/tools"
+- curl -s "https://seisoai.com/api/gateway/tools/{toolId}"
+- curl -s "https://seisoai.com/api/gateway/price/{toolId}"
+- ## Invoke (full x402 flow)
+- ### Step 1: Send request, capture 402 challenge
+- CHALLENGE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "https://seisoai.com/api/gateway/invoke/{toolId}" \
+-   -H "Content-Type: application/json" \
+-   -H "Content-Type: application/json" \
+-   -H "Content-Type: application/json" \
+-   -d '{"prompt": "..."}')
+-   -d '{"prompt": "..."}')
+- # Expect HTTP 402. Capture the full body:
+- BODY=$(curl -s -X POST "https://seisoai.com/api/gateway/invoke/{toolId}" \
+- echo "$BODY"
+- The 402 response contains a standard x402 payment challenge:
+- {
+- {
+-   "x402Version": 2,
+-   "error": "Payment required",
+-   "resource": { "url": "...", "description": "...", "mimeType": "application/json" },
+-   "accepts": [{
+-     "scheme": "exact",
+-     "network": "eip155:8453",
+-     "maxAmountRequired": "32500",
+-     "asset": "USDC",
+-     "payTo": "0xa0aE05e2766A069923B2a51011F270aCadFf023a",
+-     "extra": { "priceUsd": "$0.0325" }
+-   }]
+- }
+- }
+- The `PAYMENT-REQUIRED` response header contains the same payload base64-encoded.
+- ### Step 2: Display payment to user, get approval
+- Parse `accepts[0]` from the 402 JSON. Show the user:
+- - Tool name and what it does
+- - `asset`: USDC
+- - Amount: `maxAmountRequired` (divide by 1000000 for human-readable USD)
+- - Recipient (`payTo`): `0xa0aE05e2766A069923B2a51011F270aCadFf023a` (SeisoAI)
+- - Network: Base (`eip155:8453`)
+- **Wait for explicit user approval. Never auto-approve.**
+- ### Step 3: Sign and retry
+- PAYMENT=$(echo "$BODY" | node {baseDir}/scripts/x402-sign.mjs)
+- curl -s -X POST "https://seisoai.com/api/gateway/invoke/{toolId}" \
+-   -H "payment-signature: $PAYMENT" \
+-   -d '{"prompt": "..."}'
+- The request body MUST be identical to step 1.
+- ### Step 4: Handle response
+- **Sync** (`executionMode: "sync"`): result is in the response body, with settlement info:
+-   "success": true,
+-   "result": { ... },
+-   "x402": {
+-     "settled": true,
+-     "transactionHash": "0x...",
+-     "amount": "32500",
+-     "status": "settled"
+-   },
+-   "x402_amount": "32500",
+-   "x402_status": "settled",
+-   "x402_confirmation_id": "...",
+-   "x402_timestamp": "2025-06-15T00:00:00.000Z",
+-   "x402_recipient": "0xa0aE05e2766A069923B2a51011F270aCadFf023a"
+- **Queue** (`executionMode: "queue"`): poll every 5s:
+- curl -s "https://seisoai.com/api/gateway/jobs/{jobId}?model={model}"
+- curl -s "https://seisoai.com/api/gateway/jobs/{jobId}/result?model={model}"
+- ## Result fields
+- | Type | Field | Fallback |
+- |------|-------|----------|
+- | Image | `result.images[0].url` | `result.images[0]` |
+- | Video | `result.video.url` | `result.video_url` |
+- | Audio | `result.audio.url` | `result.audio_url` |
+- | 3D | `result.model_glb.url` | `result.model_mesh.url` |
+- ## Error handling
+- | HTTP | Action |
+- |------|--------|
+- | 402 | Normal — parse, sign, retry (steps above) |
+- | 402 + "already used" | Fresh signature, retry |
+- | 400 | Check payload vs tool schema (`GET /tools/{toolId}`) |
+- | 429 | Wait `Retry-After` seconds |
+- | 500 | Retry with backoff |
+- ## Tools (120+ total)
+- ### Image Generation (19)
+- `image.generate.flux-pro-kontext` $0.065 · `image.generate.flux-2` $0.03 · `image.generate.flux-2-flex` $0.03 · `image.generate.flux-2-klein-realtime` $0.016 · `image.generate.nano-banana-pro` $0.33 (360°) · `image.generate.flux-controlnet-canny` $0.065 · `image.generate.grok-imagine` $0.05 · `image.generate.kling-image-v3` $0.06 · `image.generate.kling-image-o3` $0.065 · `image.generate.hunyuan-instruct` $0.05 · `image.generate.qwen-image-max` $0.04 · `image.generate.bria-fibo` $0.05 · `image.generate.seedream-4` $0.05 · `image.generate.recraft-v3` $0.05 (SOTA, vector) · `image.generate.omnigen-v2` $0.05 (try-on, multi-modal) · `image.generate.pulid` $0.04 (face ID) · `image.generate.imagineart` $0.05 · `training.lora-inference` $0.04
+- ### Image Editing (15)
+- `image.generate.flux-pro-kontext-edit` $0.065 · `image.generate.flux-pro-kontext-multi` $0.065 · `image.generate.flux-2-edit` $0.03 · `image.edit.flux-2-flex` $0.03 (multi-ref) · `image.generate.nano-banana-pro-edit` $0.33 · `image.edit.grok-imagine` $0.05 · `image.edit.seedream-4` $0.05 · `image.edit.recraft-v3` $0.05 · `image.edit.kling-image-v3` $0.06 · `image.edit.kling-image-o3` $0.065 · `image.edit.bria-fibo` $0.05 · `image.edit.reve` $0.05 · `image.face-swap` $0.03 · `image.inpaint` $0.04 · `image.outpaint` $0.04
+- ### Image Processing (9)
+- `image.upscale` $0.04 · `image.upscale.topaz` $0.065 (premium) · `image.extract-layer` $0.01 · `image.background-remove` $0.01 · `image.segment.sam2` $0.01 · `image.depth.depth-anything-v2` $0.01 · `image.generate.genfocus` $0.03 · `image.generate.genfocus-all-in-focus` $0.03
+- ### Vision (3)
+- `vision.describe` $0.01 · `vision.describe.florence-2` $0.01 (OCR, detection) · `vision.nsfw-detect` $0.007
+- ### Video Generation (29) — per second
+- `video.generate.veo3` $0.13/s · `video.generate.veo3-image-to-video` $0.13/s · `video.generate.veo3-first-last-frame` $0.13/s · `video.generate.veo3-reference` $0.13/s · `video.generate.sora-2-text` $0.20/s · `video.generate.sora-2-image` $0.20/s · `video.generate.sora-2-pro-text` $0.26/s · `video.generate.sora-2-pro-image` $0.26/s · `video.generate.ltx-2-19b-image` $0.13/s · `video.generate.kling-3-pro-text` $0.20/s · `video.generate.kling-3-pro-image` $0.20/s · `video.generate.kling-3-std-text` $0.16/s · `video.generate.kling-3-std-image` $0.16/s · `video.generate.kling-o3-image` $0.18/s · `video.generate.kling-o3-reference` $0.18/s · `video.generate.kling-o3-pro-text` $0.23/s · `video.generate.kling-o3-pro-image` $0.23/s · `video.generate.kling-o3-pro-reference` $0.23/s · `video.generate.kling-o3-std-text` $0.18/s · `video.generate.grok-imagine-text` $0.16/s · `video.generate.grok-imagine-image` $0.16/s · `video.generate.vidu-q3-text` $0.18/s · `video.generate.vidu-q3-image` $0.18/s · `video.generate.wan-2.6-reference` $0.09/s · `video.generate.dreamactor-v2` $0.13/s · `video.generate.pixverse-v5` $0.13/s · `video.generate.lucy-14b` $0.10/s · `audio.lip-sync` $0.05
+- ### Video Editing (10)
+- `video.animate.wan` $0.065/s · `video.edit.grok-imagine` $0.13/s · `video.edit.sora-2-remix` $0.20/s · `video.edit.kling-o3-std` $0.18/s · `video.edit.kling-o3-pro` $0.23/s · `video.generate.kling-o3-std-reference` $0.18/s · `video.generate.kling-o3-pro-reference` $0.23/s · `video.upscale.topaz` $0.13/s · `video.background-remove` $0.04/s
+- ### Avatar & Lip Sync (6)
+- `avatar.creatify-aurora` $0.13/s · `avatar.veed-fabric` $0.13/s · `avatar.omnihuman-v15` $0.13/s · `avatar.ai-text` $0.10/s · `avatar.sync-lipsync-v2` $0.065/s · `avatar.pixverse-lipsync` $0.065/s
+- ### Audio Generation (10)
+- `audio.tts` $0.03 · `audio.tts.minimax-hd` $0.04 · `audio.tts.minimax-turbo` $0.03 · `audio.tts.chatterbox` $0.03 · `audio.tts.dia-voice-clone` $0.04 · `audio.personaplex` $0.05 · `audio.kling-video-to-audio` $0.05 · `audio.sfx` $0.04 · `audio.sfx.stable-audio` $0.04 · `audio.sfx.beatoven` $0.04 · `audio.sfx.mirelo-video` $0.04 · `video.video-to-audio` $0.04
+- ### Audio Processing (2)
+- `audio.transcribe` $0.01 · `audio.stem-separation` $0.04
+- ### Music (2)
+- `music.generate` $0.03/min · `music.generate.beatoven` $0.04/min (royalty-free)
+- ### 3D Generation (9)
+- `3d.image-to-3d` $0.065 · `3d.image-to-3d.hunyuan-pro` $0.13 · `3d.text-to-3d.hunyuan-pro` $0.16 · `3d.image-to-3d.hunyuan-rapid` $0.05 · `3d.text-to-3d.hunyuan-rapid` $0.065 · `3d.smart-topology` $0.04 · `3d.part-splitter` $0.04 · `3d.image-to-3d.meshy-v6` $0.10 · `3d.text-to-3d.meshy-v6` $0.10
+- ### Training (12) — per step
+- `training.flux-lora` $0.004/step · `training.flux-2` $0.007/step · `training.flux-2-v2` $0.007/step · `training.flux-kontext` $0.005/step · `training.flux-portrait` $0.005/step · `training.flux-2-klein-4b` $0.004/step · `training.flux-2-klein-9b` $0.005/step · `training.qwen-image` $0.007/step · `training.qwen-image-edit` $0.007/step · `training.wan-video` $0.007/step · `training.wan-22-image` $0.005/step · `training.z-image` $0.004/step
+- ### Workflow Utilities (5)
+- `utility.trim-video` $0.007 · `utility.blend-video` $0.007 · `utility.extract-frame` $0.007 · `utility.audio-compressor` $0.007 · `utility.impulse-response` $0.007
+- ## Claude API Features
+- The chat assistant supports these advanced Anthropic API capabilities:
+- - **Web Search** (`web_search_20250305`): Claude searches the web for real-time info, auto-cites sources. Great for creative research.
+- - **Code Execution** (`code_execution_20250825`): Claude runs Python/Bash in a sandbox for data analysis, calculations, and visualizations.
+- - **Citations**: Claude cites specific passages from provided documents for source-grounded responses.
+- - **Prompt Caching**: System prompts cached up to 1 hour for reduced costs on repeated conversations.
+- - **Message Batches**: Process up to 10,000 requests at 50% lower cost for bulk operations.
+- ## Notes
+- - `GET /api/gateway/tools/{toolId}` returns the full input schema — check before invoking.
+- - Payment signatures are one-time use. Never reuse between requests.
+- - Request body must be identical between 402 challenge and paid retry.
+- - Cheapest image: `flux-2-klein-realtime` ($0.016). Cheapest video: `wan-2.6-reference` ($0.09/s).
+- - The signing script requires `SEISOAI_WALLET_KEY` — see **Setup** above.
+- - The script only authorizes payments to SeisoAI's hard-coded address; any other payTo is rejected.
++ description: Unified media generation gateway for agents. Discover tools dynamically, choose API key or x402 auth, invoke image/video/audio/music/3D/training tools, and handle queue jobs reliably.
++ metadata: {"openclaw":{"homepage":"https://seisoai.com","emoji":"🎨"}}
++ version: 1.1.1
++ last_synced: 2026-02-09
++ # Seisoai
++ Base URL: `https://seisoai.com`
++ Primary endpoint: `POST /api/gateway/invoke/{toolId}` or `POST /api/gateway/invoke` with `toolId` in body.
++ Auth: `X-API-Key` or x402 payment (USDC on Base).
++ ## Agent-First Workflow (Do This Every Session)
++ 1. Discover live tools:
++    - `GET /api/gateway/tools`
++ 2. For selected tools, fetch exact schema:
++    - `GET /api/gateway/tools/{toolId}`
++ 3. Optionally pre-price inputs:
++    - `GET /api/gateway/price/{toolId}`
++ 4. Invoke with API key or x402.
++ 5. If queue tool, poll job status/result URLs from response.
++ Do not rely on static tool lists when a live registry is available.
++ ## Auth Strategy
++ Use this decision order:
++ 1. If you have a project API key, use `X-API-Key`.
++ 2. If you do not have a key, use x402 pay-per-request.
++ 3. Do not send browser CSRF tokens for machine clients.
++ ### API Key Example
++ ```http
++ POST /api/gateway/invoke/image.generate.flux-2
++ X-API-Key: sk_live_xxx
++ Content-Type: application/json
++ {"prompt":"a sunset over mountains"}
++ ### x402 Example (2-step)
++ 1. Call without payment header.
++ 2. Receive `402` with payment requirements.
++ 3. Sign/pay on Base.
++ 4. Retry same request with one of:
++    - `payment-signature`
++    - `x-payment`
++    - `payment`
++ ## High-Value Endpoints
++ - Discovery:
++   - `GET /api/gateway/tools`
++   - `GET /api/gateway/tools/{toolId}`
++   - `GET /api/gateway/price/{toolId}`
++   - `GET /api/gateway/mcp-manifest`
++ - Invoke:
++   - `POST /api/gateway/invoke/{toolId}`
++   - `POST /api/gateway/invoke`
++ - Jobs:
++   - `GET /api/gateway/jobs/{jobId}?model=...`
++   - `GET /api/gateway/jobs/{jobId}/result?model=...`
++ - Agent-scoped:
++   - `GET /api/gateway/agents`
++   - `GET /api/gateway/agent/{agentId}`
++   - `POST /api/gateway/agent/{agentId}/invoke/{toolId?}`
++   - `POST /api/gateway/agent/{agentId}/orchestrate`
++ ## Agent-Scoped Safety Controls (Mandatory)
++ For normal media generation (images, video, audio, 3D), use **`/api/gateway/invoke`** and the discovery endpoints above; no extra checks. The rules below apply only when the user explicitly asks to run or orchestrate a **specific agent** (e.g. a named bot or workflow).
++ Default posture: **deny by default** for agent-scoped routes (`/api/gateway/agent/*`). Use agent-scoped endpoints only when all checks pass:
++ 1. **Explicit task requirement**
++    - Do not call `/agent/*` routes unless the current task explicitly requires operating a specific agent.
++ 2. **Exact agent binding**
++    - Resolve `agentId` from a trusted source (`GET /api/gateway/agents` or user-provided exact ID).
++    - Never infer or guess agent IDs from names/prompts.
++ 3. **Authorization boundary**
++    - Use only the current caller credentials.
++    - Never attempt to reuse, escalate, or proxy credentials to access other tenants/owners.
++ 4. **Single-agent scope**
++    - For one task, operate on one approved `agentId` unless the user explicitly requests multi-agent execution.
++ 5. **Tool allowlist enforcement**
++    - Before invoke/orchestrate, fetch `GET /api/gateway/agent/{agentId}` and only use tool IDs declared for that agent.
++    - Reject tool IDs not listed in that agent definition.
++ 6. **No recursive orchestration**
++    - Do not create self-referential orchestrations, orchestration loops, or fan-out patterns across unknown agents.
++ 7. **No broad discovery exfiltration**
++    - Do not enumerate all agents unless needed for user task; prefer direct lookup when `agentId` is known.
++ 8. **Audit trail requirement**
++    - Log `agentId`, route, tool ID, and reason for each agent-scoped call in agent run notes.
++ 9. **On mismatch or ambiguity: stop**
++    - If ownership/scope/tool authorization is ambiguous, do not call `/agent/*`; fall back to `/api/gateway/invoke`.
++ ## Tool Selection Cheatsheet (Verified IDs)
++ ### Images
++ - Fast text->image: `image.generate.flux-2`
++ - Premium cinematic: `image.generate.kling-image-v3`
++ - Premium consistency: `image.generate.kling-image-o3`
++ - 360/panorama: `image.generate.nano-banana-pro`
++ - Prompted edit: `image.generate.flux-pro-kontext-edit`
++ - Face swap: `image.face-swap`
++ - Inpaint/outpaint: `image.inpaint`, `image.outpaint`
++ - Background removal/layer: `image.extract-layer`
++ - Upscale: `image.upscale`
++ ### Video
++ - Text->video (Veo): `video.generate.veo3`
++ - Image->video (Veo): `video.generate.veo3-image-to-video`
++ - First/last frame: `video.generate.veo3-first-last-frame`
++ - Kling text: `video.generate.kling-3-pro-text`, `video.generate.kling-3-std-text`
++ - Kling image: `video.generate.kling-3-pro-image`, `video.generate.kling-3-std-image`
++ - Motion transfer: `video.generate.dreamactor-v2`
++ ### Audio / Speech / Music
++ - Voice clone TTS: `audio.tts`
++ - TTS quality tiers: `audio.tts.minimax-hd`, `audio.tts.minimax-turbo`
++ - Lip sync: `audio.lip-sync`
++ - Transcription: `audio.transcribe`
++ - Music: `music.generate`
++ - Sound FX: `audio.sfx`
++ - Stem separation: `audio.stem-separation`
++ ### 3D
++ - Image->3D standard: `3d.image-to-3d`
++ - Image->3D pro: `3d.image-to-3d.hunyuan-pro`
++ - Text->3D pro: `3d.text-to-3d.hunyuan-pro`
++ - Fast image->3D: `3d.image-to-3d.hunyuan-rapid`
++ - Mesh post-processing: `3d.smart-topology`, `3d.part-splitter`
++ ## Minimal Payload Patterns
++ Text->image:
++ ```json
++ ```json
++ ```json
++ ```json
++ {"prompt":"..."}
++ Image edit:
++ {"prompt":"...","image_url":"https://..."}
++ Text->video:
++ {"prompt":"...","duration":"6s"}
++ DreamActor motion transfer:
++ {"source_image_url":"https://...","driving_video_url":"https://..."}
++ Voice clone TTS:
++ {"text":"...","audio_url":"https://..."}
++ 3D image->mesh:
++ {"image_url":"https://...","output_format":"glb"}
++ ## Queue Handling Contract
++ If `executionMode` is `queue`, response includes job metadata. Use:
++ 1. `statusUrl` until completed/failed.
++ 2. `resultUrl` when completed.
++ Treat queue submit success as billable success (x402 settlement/API-key credit deduction already handled server-side).
++ ## Error Policy
++ - `400`: Schema/input mismatch. Re-fetch tool schema and correct fields.
++ - `402`: Missing/invalid payment or insufficient API key credits.
++ - `404`: Tool/agent not found. Refresh registry.
++ - `503`: Tool disabled. Select fallback in same category.
++ - `500`: Retry with backoff; then switch model/tool.
++ ## Reliability Rules for Agents
++ 1. Always discover live tools before planning multi-step flows.
++ 2. Use exact schema from `GET /tools/{toolId}` for required fields.
++ 3. Keep one tool call per request; chain in your agent.
++ 4. Prefer explicit model/tool IDs over natural-language routing assumptions.
++ 5. For retries, do not reuse stale x402 signatures.
++ 6. Treat `/api/gateway/agent/*` as privileged routes and apply the mandatory safety controls above.
++ ## Self-Maintenance
++ When this file is updated:
++ - Keep IDs aligned with `backend/services/toolRegistry.ts`.
++ - Update `last_synced` and `version`.
++ - Keep examples minimal and executable.
++ ## Changelog
++ - [2026-02-09] v1.1.1 - Added mandatory safety controls for agent-scoped endpoints (deny-by-default, agent/tool scoping, anti-recursion, and audit requirements).
++ - [2026-02-09] v1.1.0 - Rewrote for agent discovery-first flow, corrected stale tool IDs/params, tightened auth/x402 guidance, and added queue/error reliability policy.
++ - [2026-02-08] v1.0.0 - Initial self-improvement protocol added.
+
+### scripts/package-lock.json  [code]
+- {
+-   "name": "seisoai-x402-signer",
+-   "version": "1.0.0",
+-   "lockfileVersion": 3,
+-   "requires": true,
+-   "packages": {
+-     "": {
+-       "name": "seisoai-x402-signer",
+-       "version": "1.0.0",
+-       "dependencies": {
+-       "dependencies": {
+-       "dependencies": {
+-       "dependencies": {
+-       "dependencies": {
+-       "dependencies": {
+-       "dependencies": {
+-       "dependencies": {
+-         "@x402/core": "^2.2.0",
+-         "@x402/evm": "^2.2.0",
+-         "viem": "^2.30.0"
+-       }
+-       }
+-       }
+-       }
+-       }
+-       }
+-       }
+-       }
+-       }
+-       }
+-       }
+-       }
+-       }
+-       }
+-       }
+-     },
+-     },
+-     },
+-     },
+-     },
+-     },
+-     },
+-     },
+-     },
+-     },
+-     },
+-     },
+-     },
+-     },
+-     },
+-     },
+-     "node_modules/@adraffy/ens-normalize": {
+-       "version": "1.11.1",
+-       "resolved": "https://registry.npmjs.org/@adraffy/ens-normalize/-/ens-normalize-1.11.1.tgz",
+-       "integrity": "sha512-nhCBV3quEgesuf7c7KYfperqSS14T8bYuvJ8PcLJp6znkZpFc0AuW4qBtr8eKVyPPe/8RSr7sglCWPU5eaxwKQ==",
+-       "license": "MIT"
+-       "license": "MIT"
+-     "node_modules/@noble/ciphers": {
+-       "version": "1.3.0",
+-       "resolved": "https://registry.npmjs.org/@noble/ciphers/-/ciphers-1.3.0.tgz",
+-       "integrity": "sha512-2I0gnIVPtfnMw9ee9h1dJG7tp81+8Ob3OJb3Mv37rx5L40/b0i7djjCVvGOVqc9AEIQyvyu1i6ypKdFw8R8gQw==",
+-       "license": "MIT",
+-       "license": "MIT",
+-       "license": "MIT",
+-       "license": "MIT",
+-       "license": "MIT",
+-       "license": "MIT",
+-       "license": "MIT",
+-       "license": "MIT",
+-       "license": "MIT",
+-       "license": "MIT",
+-       "license": "MIT",
+-       "license": "MIT",
+-       "engines": {
+-       "engines": {
+-       "engines": {
+-       "engines": {
+-         "node": "^14.21.3 || >=16"
+-         "node": "^14.21.3 || >=16"
+-         "node": "^14.21.3 || >=16"
+-       },
+-       },
+-       },
+-       },
+-       },
+-       },
+-       },
+-       },
+-       },
+-       },
+-       },
+-       },
+-       },
+-       },
+-       "funding": {
+-       "funding": {
+-       "funding": {
+-       "funding": {
+-       "funding": {
+-       "funding": {
+-       "funding": {
+-       "funding": {
+-         "url": "https://paulmillr.com/funding/"
+-         "url": "https://paulmillr.com/funding/"
+-         "url": "https://paulmillr.com/funding/"
+-         "url": "https://paulmillr.com/funding/"
+-         "url": "https://paulmillr.com/funding/"
+-         "url": "https://paulmillr.com/funding/"
+-     "node_modules/@noble/curves": {
+-       "version": "1.9.1",
+-       "resolved": "https://registry.npmjs.org/@noble/curves/-/curves-1.9.1.tgz",
+-       "integrity": "sha512-k11yZxZg+t+gWvBbIswW0yoJlu8cHOC7dhunwOzoWH/mXGBiYyR4YY6hAEK/3EUs4UpB8la1RfdRpeGsFHkWsA==",
+-         "@noble/hashes": "1.8.0"
+-     "node_modules/@noble/hashes": {
+-       "version": "1.8.0",
+-       "resolved": "https://registry.npmjs.org/@noble/hashes/-/hashes-1.8.0.tgz",
+-       "integrity": "sha512-jCs9ldd7NwzpgXDIf6P3+NrHh9/sD6CQdxHyjQI+h/6rDNo88ypBxxz45UDuZHz9r3tNz7N/VInSVoVdtXEI4A==",
+-     "node_modules/@scure/base": {
+-       "version": "1.2.6",
+-       "resolved": "https://registry.npmjs.org/@scure/base/-/base-1.2.6.tgz",
+-       "integrity": "sha512-g/nm5FgUa//MCj1gV09zTJTaM6KBAHqLN907YVQqf7zC49+DcO4B1so4ZX07Ef10Twr6nuqYEH9GEggFXA4Fmg==",
+-     "node_modules/@scure/bip32": {
+-       "version": "1.7.0",
+-       "resolved": "https://registry.npmjs.org/@scure/bip32/-/bip32-1.7.0.tgz",
+-       "integrity": "sha512-E4FFX/N3f4B80AKWp5dP6ow+flD1LQZo/w8UnLGYZO674jS6YnYeepycOOksv+vLPSpgN35wgKgy+ybfTb2SMw==",
+-         "@noble/curves": "~1.9.0",
+-         "@noble/hashes": "~1.8.0",
+-         "@noble/hashes": "~1.8.0",
+-         "@scure/base": "~1.2.5"
+-         "@scure/base": "~1.2.5"
+-     "node_modules/@scure/bip39": {
+-       "version": "1.6.0",
+-       "resolved": "https://registry.npmjs.org/@scure/bip39/-/bip39-1.6.0.tgz",
+-       "integrity": "sha512-+lF0BbLiJNwVlev4eKelw1WWLaiKXw7sSl8T6FvBlWkdX+94aGJ4o8XjUdlyhTCjd8c+B3KT3JfS8P0bLRNU6A==",
+-     "node_modules/@x402/core": {
+-       "version": "2.3.1",
+-       "version": "2.3.1",
+-       "resolved": "https://registry.npmjs.org/@x402/core/-/core-2.3.1.tgz",
+-       "integrity": "sha512-CWvsf09tslISoVOzQ2TIoBLBP+bUycPsYmmRVe3EV5X2FtD7eXXpiPsiXLEVtWP7zhqLNP/5OIATsA2hSVLSfw==",
+-       "license": "Apache-2.0",
+-       "license": "Apache-2.0",
+-         "zod": "^3.24.2"
+-         "zod": "^3.24.2"
+-     "node_modules/@x402/evm": {
+-       "resolved": "https://registry.npmjs.org/@x402/evm/-/evm-2.3.1.tgz",
+-       "integrity": "sha512-aN40OHG0HN1PhBXNFMRi5ISLHsExpF4qIvWUoVMKhFCfaXQDrqsfOKOC3PfcFtK/2Q8/SoiXNN7LsCkChL62lw==",
+-         "@x402/core": "~2.3.1",
+-         "viem": "^2.39.3",
+-     "node_modules/abitype": {
+-       "version": "1.2.3",
+-       "resolved": "https://registry.npmjs.org/abitype/-/abitype-1.2.3.tgz",
+-       "integrity": "sha512-Ofer5QUnuUdTFsBRwARMoWKOH1ND5ehwYhJ3OJ/BQO+StkwQjHw0XyVh4vDttzHB7QOFhPHa/o413PJ82gU/Tg==",
+-         "url": "https://github.com/sponsors/wevm"
+-       "peerDependencies": {
+-       "peerDependencies": {
+-       "peerDependencies": {
+-       "peerDependencies": {
+-       "peerDependencies": {
+-         "typescript": ">=5.0.4",
+-         "zod": "^3.22.0 || ^4.0.0"
+-       "peerDependenciesMeta": {
+-       "peerDependenciesMeta": {
+-       "peerDependenciesMeta": {
+-       "peerDependenciesMeta": {
+-         "typescript": {
+-         "typescript": {
+-         "typescript": {
+-           "optional": true
+-           "optional": true
+-           "optional": true
+-           "optional": true
+-           "optional": true
+-           "optional": true
+-         },
+-         },
+-         "zod": {
+-         }
+-         }
+-         }
+-         }
+-         }
+-         }
+-         }
+-     "node_modules/eventemitter3": {
+-       "version": "5.0.1",
+-       "resolved": "https://registry.npmjs.org/eventemitter3/-/eventemitter3-5.0.1.tgz",
+-       "integrity": "sha512-GWkBvjiSZK87ELrYOSESUYeVIc9mvLLf/nXalMOS5dYrgZq9o5OVkbZAVM06CVxYsCwH9BDZFPlQTlPA1j4ahA==",
+-     "node_modules/isows": {
+-       "version": "1.0.7",
+-       "resolved": "https://registry.npmjs.org/isows/-/isows-1.0.7.tgz",
+-       "integrity": "sha512-I1fSfDCZL5P0v33sVqeTDSpcstAg/N+wF5HS033mogOVIp4B+oHC7oOCsA3axAbBSGTJ8QubbNmnIRN/h8U7hg==",
+-       "funding": [
+-       "funding": [
+-       "funding": [
+-         {
+-         {
+-         {
+-           "type": "github",
+-           "type": "github",
+-           "type": "github",
+-           "url": "https://github.com/sponsors/wevm"
+-           "url": "https://github.com/sponsors/wevm"
+-           "url": "https://github.com/sponsors/wevm"
+-       ],
+-       ],
+-       ],
+-         "ws": "*"
+-     "node_modules/ox": {
+-       "version": "0.12.1",
+-       "resolved": "https://registry.npmjs.org/ox/-/ox-0.12.1.tgz",
+-       "integrity": "sha512-uU0llpthaaw4UJoXlseCyBHmQ3bLrQmz9rRLIAUHqv46uHuae9SE+ukYBRIPVCnlEnHKuWjDUcDFHWx9gbGNoA==",
+-         "@adraffy/ens-normalize": "^1.11.0",
+-         "@noble/ciphers": "^1.3.0",
+-         "@noble/curves": "1.9.1",
+-         "@noble/curves": "1.9.1",
+-         "@noble/hashes": "^1.8.0",
+-         "@scure/bip32": "^1.7.0",
+-         "@scure/bip39": "^1.6.0",
+-         "abitype": "^1.2.3",
+-         "eventemitter3": "5.0.1"
+-         "typescript": ">=5.4.0"
+-     "node_modules/viem": {
+-       "version": "2.46.0",
+-       "resolved": "https://registry.npmjs.org/viem/-/viem-2.46.0.tgz",
+-       "integrity": "sha512-6RSRSe41WneE7zouAALGzHSOx4uQn6ISJjswKeLxyOd+k/3gqvVm8K4J43ubAJPNSy9ZU8ygG7nKU+EhYf5RdQ==",
+-         "@noble/hashes": "1.8.0",
+-         "@scure/bip32": "1.7.0",
+-         "@scure/bip39": "1.6.0",
+-         "abitype": "1.2.3",
+-         "isows": "1.0.7",
+-         "ox": "0.12.1",
+-         "ws": "8.18.3"
+-         "typescript": ">=5.0.4"
+-     "node_modules/ws": {
+-       "version": "8.18.3",
+-       "resolved": "https://registry.npmjs.org/ws/-/ws-8.18.3.tgz",
+-       "integrity": "sha512-PEIGCY5tSlUt50cqyMXfCzX+oOPqN0vuGqWzbcJ2xvnkzkq46oOpz7dQaTDBdfICb4N14+GARUDw2XV2N4tvzg==",
+-         "node": ">=10.0.0"
+-         "bufferutil": "^4.0.1",
+-         "utf-8-validate": ">=5.0.2"
+-         "bufferutil": {
+-         "utf-8-validate": {
+-     "node_modules/zod": {
+-       "version": "3.25.76",
+-       "resolved": "https://registry.npmjs.org/zod/-/zod-3.25.76.tgz",
+-       "integrity": "sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ==",
+-         "url": "https://github.com/sponsors/colinhacks"
+-     }
+-   }
+- }
+
+### scripts/package.json  [code]
+- {
+-   "name": "seisoai-x402-signer",
+-   "version": "1.0.0",
+-   "private": true,
+-   "type": "module",
+-   "dependencies": {
+-     "@x402/evm": "^2.2.0",
+-     "@x402/core": "^2.2.0",
+-     "viem": "^2.30.0"
+-   }
+- }
+
+### scripts/x402-sign.mjs  [code]
+- #!/usr/bin/env node
+- /**
+-  * x402 Payment Signer for SeisoAI
+-  *
+-  *
+-  *
+-  *
+-  * Usage:
+-  *   echo '<402_response_json>' | node {baseDir}/scripts/x402-sign.mjs
+-  *   node {baseDir}/scripts/x402-sign.mjs --challenge '<402_response_json>'
+-  * Env:
+-  *   SEISOAI_WALLET_KEY  — x402 signing key (0x-prefixed hex)
+-  * Output: payment-signature header value (JSON string) to stdout
+-  * Deps: npm ci --ignore-scripts (once, from scripts/ dir)
+-  */
+- import { existsSync } from 'node:fs';
+- import { fileURLToPath } from 'node:url';
+- import { dirname, join } from 'node:path';
+- const __dirname = dirname(fileURLToPath(import.meta.url));
+- const nodeModules = join(__dirname, 'node_modules');
+- // Verify deps are pre-installed — never auto-install while a private key may be in scope
+- if (!existsSync(join(nodeModules, 'viem')) || !existsSync(join(nodeModules, '@x402'))) {
+-   console.error(
+-     'ERROR: Dependencies not installed.\n' +
+-     'Run this ONCE (without SEISOAI_WALLET_KEY in your env):\n' +
+-     `  cd ${__dirname} && npm ci --ignore-scripts\n` +
+-     'Then re-run the signing command.'
+-   );
+-   );
+-   process.exit(1);
+-   process.exit(1);
+- }
+- }
+- const { privateKeyToAccount } = await import('viem/accounts');
+- const { ExactEvmScheme } = await import('@x402/evm');
+- const EXPECTED_PAY_TO = '0xa0aE05e2766A069923B2a51011F270aCadFf023a'.toLowerCase();
+- // USDC on Base — EIP-712 domain defaults (required by @x402/evm EIP-3009)
+- const USDC_BASE_DEFAULTS = {
+-   name: 'USD Coin',
+-   version: '2',
+-   asset: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', // USDC on Base
+- };
+- async function main() {
+-   const pk = process.env.SEISOAI_WALLET_KEY;
+-   if (!pk) {
+-     console.error('ERROR: Set SEISOAI_WALLET_KEY env var (0x-prefixed x402 signing key).');
+-     process.exit(1);
+-     process.exit(1);
+-     process.exit(1);
+-   }
+-   }
+-   }
+-   }
+-   }
+-   // Read 402 challenge from stdin or --challenge arg
+-   let raw = '';
+-   const idx = process.argv.indexOf('--challenge');
+-   if (idx !== -1 && process.argv[idx + 1]) {
+-     raw = process.argv[idx + 1];
+-   } else {
+-     const chunks = [];
+-     for await (const chunk of process.stdin) chunks.push(chunk);
+-     raw = Buffer.concat(chunks).toString('utf8').trim();
+-   if (!raw) {
+-     console.error('ERROR: No 402 challenge. Pipe JSON or use --challenge');
+-   let challenge;
+-   try { challenge = JSON.parse(raw); } catch {
+-     console.error('ERROR: Invalid JSON'); process.exit(1);
+-   const req = challenge.accepts?.[0];
+-   if (!req) { console.error('ERROR: No accepts[] in 402'); process.exit(1); }
+-   // Safety: verify payTo
+-   if (req.payTo.toLowerCase() !== EXPECTED_PAY_TO) {
+-     console.error(`BLOCKED: payTo ${req.payTo} != expected SeisoAI address`);
+-   // Fill in EIP-712 domain defaults for USDC on Base if missing
+-   if (!req.extra) req.extra = {};
+-   if (!req.extra.name) req.extra.name = USDC_BASE_DEFAULTS.name;
+-   if (!req.extra.version) req.extra.version = USDC_BASE_DEFAULTS.version;
+-   // Resolve USDC contract address (asset field needs to be the contract, not symbol)
+-   const assetAddress = (req.asset === 'USDC' || req.asset === 'usdc')
+-     ? USDC_BASE_DEFAULTS.asset
+-     : req.asset;
+-   const account = privateKeyToAccount(pk);
+-   const paymentRequirements = {
+-     scheme: req.scheme || 'exact',
+-     network: req.network || 'eip155:8453',
+-     amount: req.maxAmountRequired,
+-     payTo: req.payTo,
+-     asset: assetAddress,
+-     maxTimeoutSeconds: req.maxTimeoutSeconds || 300,
+-     resource: challenge.resource?.url || '',
+-     extra: req.extra,
+-   };
+-   };
+-   const signer = {
+-     address: account.address,
+-     signTypedData: async (args) => account.signTypedData(args),
+-   const scheme = new ExactEvmScheme(signer);
+-   const payload = await scheme.createPaymentPayload(
+-     challenge.x402Version || 2,
+-     paymentRequirements,
+-   // Output the header value
+-   console.log(JSON.stringify(payload));
+- main().catch(err => {
+-   console.error('ERROR:', err.message);
+- });

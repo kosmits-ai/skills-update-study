@@ -1,0 +1,1327 @@
+kajukabla/clawdraw  0.9.8 -> 0.9.16
+change_type: instructions+docs+code   changelog: Fix --no-waypoint silently dropping strokes; add surfaceTrees collaborator; scan/nearby --detail flag
+
+### README.md  [docs]
+- - **24 collaborator behaviors** — extend, branch, contour, morph, echo, mirror, and more — auto-fetch nearby strokes and transform them
+-   collaborator.mjs # 24 collaborator behavior transforms
++ - **25 collaborator behaviors** — extend, branch, contour, morph, echo, mirror, and more — auto-fetch nearby strokes and transform them
++   collaborator.mjs # 25 collaborator behavior transforms
+
+### SKILL.md  [instructions]
+- version: 0.9.8
+- description: "Create algorithmic art on ClawDraw's infinite multiplayer canvas. Use when asked to draw, paint, create visual art, generate patterns, or make algorithmic artwork. Supports custom stroke generators, 75 primitives (fractals, flow fields, L-systems, spirographs, noise, simulation, 3D), 24 collaborator behaviors (extend, branch, contour, morph, etc.), SVG templates, stigmergic markers, symmetry transforms, composition, image painting (5 artistic modes: pointillist, sketch, vangogh, slimemold, freestyle), and canvas vision snapshots."
+- | **references/COLLABORATORS.md** | Detailed guide to all 24 collaborator behaviors |
+- - **Collaborator** (24): extend, branch, connect, coil, morph, hatchGradient, stitch, bloom, gradient, parallel, echo, cascade, mirror, shadow, counterpoint, harmonize, fragment, outline, contour, physarum, attractorBranch, attractorFlow, interiorFill, vineGrowth
+- 24 transform primitives that work *on* existing strokes. They auto-fetch nearby data, transform it, and send new strokes. Use them like top-level commands:
+- **Spatial:** physarum, attractorBranch, attractorFlow, interiorFill, vineGrowth
+- See `{baseDir}/references/COLLABORATORS.md` for full documentation of all 24 behaviors including parameters, spatial effects, and when to use each one.
+- **Claude Code:** Use the Task tool with `subagent_type: "clawdraw-worker"` for each agent in the plan. Pass the agent's task object and creative direction.
+-   --no-history                            Skip stroke history write (use in scripts/workers; default: off)
++ version: 0.9.16
++ description: "Create algorithmic art on ClawDraw's infinite multiplayer canvas. Use when asked to draw, paint, create visual art, generate patterns, or make algorithmic artwork. Supports custom stroke generators, 75 primitives (fractals, flow fields, L-systems, spirographs, noise, simulation, 3D), 25 collaborator behaviors (extend, branch, contour, morph, etc.), SVG templates, stigmergic markers, symmetry transforms, composition, image painting (5 artistic modes: pointillist, sketch, vangogh, slimemold, freestyle), and canvas vision snapshots."
++ | **references/COLLABORATORS.md** | Detailed guide to all 25 collaborator behaviors |
++ - **Collaborator** (25): extend, branch, connect, coil, morph, hatchGradient, stitch, bloom, gradient, parallel, echo, cascade, mirror, shadow, counterpoint, harmonize, fragment, outline, contour, physarum, attractorBranch, surfaceTrees, attractorFlow, interiorFill, vineGrowth
++ 25 transform primitives that work *on* existing strokes. They auto-fetch nearby data, transform it, and send new strokes. Use them like top-level commands:
++ **Spatial:** physarum, attractorBranch, surfaceTrees, attractorFlow, interiorFill, vineGrowth
++ See `{baseDir}/references/COLLABORATORS.md` for full documentation of all 25 behaviors including parameters, spatial effects, and when to use each one.
++ **Claude Code:** Spawn workers using the Task tool with `subagent_type: "clawdraw-worker"`. Launch all same-stage agents in a **single message** (multiple parallel Task tool calls) so they draw simultaneously. For choreographed swarms (`--stages`), wait for each stage to complete before launching the next stage's agents together.
++ - **Per-session cursors:** Each swarm worker gets its own independent cursor and name tag on the canvas, even when sharing the same API key. Viewers see N distinct painters working simultaneously.
++ - **Smooth animation:** Swarm workers use ideal animation pacing (no time cap) so each cursor draws at a natural brush speed.
++   --no-history                            Skip stroke history write (default: off; workers use CLAWDRAW_SWARM_ID instead)
+
+### agents/clawdraw-worker.md  [docs]
+- multi-agent composition.
+-   `CLAWDRAW_NO_HISTORY=1` and `CLAWDRAW_DISPLAY_NAME`)
+- - Use `--cx` and `--cy` from your task on all draw commands
++ multi-agent composition. Each worker gets its own cursor and name tag on the
++ canvas — viewers see you drawing independently alongside the other workers.
++   `CLAWDRAW_SWARM_ID`, `CLAWDRAW_DISPLAY_NAME`, and `CLAWDRAW_PAINT_CORNER` if present).
++   Do NOT set `CLAWDRAW_NO_HISTORY=1` — swarm history is tracked automatically with locking.
++ - If your task has a `stage` field, you are part of a choreographed swarm —
++   wait for your stage to be reached before drawing
++ - If your task has a `waitFor` field, wait until those agents finish before starting
++ - If your task has a `tools` field, prefer those primitives
++ - If your task has an `instructions` field, follow them as creative direction
++ - **Always pass `--cx` and `--cy`** from your task on all draw commands —
++   this applies to `draw`, `stroke --stdin`, `compose`, `paint`, `template`, and collaborators
++ ## Choreographed workflows (stage 1+)
++ If your role is a collaborator (outliner, contour, fill, etc.):
++ 1. Run `clawdraw scan --cx <cx> --cy <cy> --json` to find existing strokes
++ 2. For each stroke ID, run `clawdraw <tool> --source <id> --no-waypoint`
++ 3. Use the tool from your `tools` field (e.g. `outline`, `contour`, `interiorFill`)
+
+### community/parallel-swarm-demo.sh  [code]
++ #!/usr/bin/env bash
++ #
++ #
++ #
++ #
++ # parallel-swarm-demo.sh — 8 agents drawing simultaneously
++ # Demonstrates true parallel swarm execution:
++ #   - All workers share CLAWDRAW_SWARM_ID (grouped undo)
++ #   - Each worker has its own CLAWDRAW_DISPLAY_NAME (separate cursors)
++ #   - Agent 0 creates the waypoint; agents 1-7 use --no-waypoint
++ #   - Background jobs (&) with staggered launches = true parallel execution
++ #   - Every agent gets --cx and --cy (no auto-placement in swarm)
++ # Usage:
++ #   bash claw-draw/community/parallel-swarm-demo.sh
++ # Undo all at once:
++ #   clawdraw undo
++ set -euo pipefail
++ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
++ CLAWDRAW="$SCRIPT_DIR/../scripts/clawdraw.mjs"
++ # ── 1. Find empty canvas space ────────────────────────────────────────────────
++ echo "Finding empty canvas space..."
++ SPACE_JSON=$(node "$CLAWDRAW" find-space --mode empty --json)
++ CENTER_X=$(echo "$SPACE_JSON" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['canvasX'])")
++ CENTER_Y=$(echo "$SPACE_JSON" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['canvasY'])")
++ echo "Center: ($CENTER_X, $CENTER_Y)"
++ # ── 2. Generate shared swarm ID ───────────────────────────────────────────────
++ SWARM_ID="swarm-$(date +%Y%m%d%H%M%S)-$(openssl rand -hex 3)"
++ export CLAWDRAW_SWARM_ID="$SWARM_ID"
++ echo "Swarm ID: $SWARM_ID"
++ # ── 3. Compute 8 positions in a circle (single python3 call) ─────────────────
++ SPREAD=1500
++ IFS=$'\n' read -r -d '' -a POSITIONS < <(
++   python3 -c "
++ import math
++ cx, cy, r = $CENTER_X, $CENTER_Y, $SPREAD
++ for i in range(8):
++     a = math.radians(i * 45)
++     print(f'{int(cx + r * math.cos(a))},{int(cy + r * math.sin(a))}')
++ " && printf '\0'
++ )
++ )
++ )
++ # ── 4. Agent definitions ─────────────────────────────────────────────────────
++ NAMES=(
++   swarm-spirograph
++   swarm-flower
++   swarm-mandala
++   swarm-star
++   swarm-fractal
++   swarm-lissajous
++   swarm-spiral
++   swarm-snowflake
++ PRIMITIVES=(spirograph flower mandala star fractalTree lissajous spiral kochSnowflake)
++ ARGS=(
++   "--outerR 200 --innerR 75 --traceR 40 --revolutions 12 --color #ff6600 --brushSize 4"
++   "--petals 12 --petalLength 120 --petalWidth 40 --centerRadius 30 --petalColor #e84393 --brushSize 5"
++   "--radius 200 --symmetry 12 --complexity 4 --brushSize 4"
++   "--outerR 180 --innerR 70 --points 7 --color #f9ca24 --brushSize 5"
++   "--trunkLength 120 --branchAngle 25 --depth 8 --color #2ecc71 --brushSize 4"
++   "--a 3 --b 4 --radius 180 --color #3498db --brushSize 4"
++   "--turns 6 --startRadius 20 --endRadius 180 --color #9b59b6 --brushSize 5"
++   "--sideLength 250 --depth 4 --color #1abc9c --brushSize 4"
++ # ── 5. Launch agent 0 in foreground (creates waypoint) ────────────────────────
++ IFS=',' read -r AX AY <<< "${POSITIONS[0]}"
++ export CLAWDRAW_DISPLAY_NAME="${NAMES[0]}"
++ echo ""
++ echo ""
++ echo ""
++ echo ""
++ echo "Agent 0 (${NAMES[0]}): drawing at ($AX, $AY) — creating waypoint..."
++ node "$CLAWDRAW" draw ${PRIMITIVES[0]} ${ARGS[0]} --cx "$AX" --cy "$AY"
++ echo "Agent 0 done — waypoint created."
++ # ── 6. Launch agents 1-7 with staggered starts ───────────────────────────────
++ echo "Launching agents 1-7 (1 s apart)..."
++ PIDS=()
++ for i in $(seq 1 7); do
++   IFS=',' read -r AX AY <<< "${POSITIONS[$i]}"
++   (
++     export CLAWDRAW_DISPLAY_NAME="${NAMES[$i]}"
++     echo "  Agent $i (${NAMES[$i]}): drawing at ($AX, $AY)"
++     node "$CLAWDRAW" draw ${PRIMITIVES[$i]} ${ARGS[$i]} --cx "$AX" --cy "$AY" --no-waypoint
++     echo "  Agent $i (${NAMES[$i]}): done"
++   ) &
++   PIDS+=($!)
++   sleep 1
++ done
++ done
++ # ── 7. Wait for all background agents ────────────────────────────────────────
++ echo "Waiting for all agents to finish..."
++ FAILED=0
++ for PID in "${PIDS[@]}"; do
++   if ! wait "$PID"; then
++     ((FAILED++))
++   fi
++ # ── 8. Summary ────────────────────────────────────────────────────────────────
++ echo "══════════════════════════════════════════"
++ echo "══════════════════════════════════════════"
++ echo "  Parallel swarm complete!"
++ echo "  Swarm ID: $SWARM_ID"
++ echo "  Center:   ($CENTER_X, $CENTER_Y)"
++ echo "  Agents:   8 ($(( 8 - FAILED )) succeeded, $FAILED failed)"
++ echo "  Undo all: clawdraw undo"
+
+### lib/image-trace.mjs  [code]
+-   const spacing = Math.max(2, Math.round(6 / density));
+-   const noiseFreq = 0.04;
+-   const swirlStrength = 1.5;
+-   // --- First pass: dense grid seeding ---
+-       const jx = (Math.random() - 0.5) * spacing;
+-       const jy = (Math.random() - 0.5) * spacing;
+-       const px = clamp(gx + jx, 0, width - 1);
+-       const py = clamp(gy + jy, 0, height - 1);
+-       const steps = 15 + Math.floor(Math.random() * 16); // 15–30 points
+-       const pts = traceParticle(px, py, steps, 1.5);
+-       if (pts.length < 3) continue;
+-       if (pts.length < 3) continue;
+-       const [r, g, b] = sampleRgb(rgba, px, py, width, height);
+-       const [r, g, b] = sampleRgb(rgba, px, py, width, height);
+-       const grayVal = sampleGray(gray, px, py, width, height) / 255;
+-       const grayVal = sampleGray(gray, px, py, width, height) / 255;
+-       const idx = clamp(Math.round(py), 0, height - 1) * width + clamp(Math.round(px), 0, width - 1);
+-       const contrast = clamp(sobel.magnitude[idx] / 400, 0, 1);
+-       // Thicker in darker/flatter regions for full coverage
+-       const brushSize = clamp(Math.round(4 + (1 - contrast) * 8 + (1 - grayVal) * 4), 3, 20);
+-       strokes.push(makeStroke(pts, rgbToHex(r, g, b), brushSize, 0.85));
+-       // Mark coverage cell
+-       const ci = Math.floor(gy / spacing) * covW + Math.floor(gx / spacing);
+-       if (ci >= 0 && ci < covered.length) covered[ci] = 1;
+-   // --- Second pass: fill uncovered cells ---
+-       if (covered[ccy * covW + ccx]) continue;
+-       const px = clamp((ccx + 0.5) * spacing, 0, width - 1);
+-       const py = clamp((ccy + 0.5) * spacing, 0, height - 1);
+-       const pts = traceParticle(px, py, 12, 1.2);
+-       const brushSize = clamp(Math.round(6 + (1 - grayVal) * 6), 3, 18);
+-       strokes.push(makeStroke(pts, rgbToHex(r, g, b), brushSize, 0.8));
++   }
++   }
++     if (pts.length < 2) continue;
++   const spacing = Math.max(1, Math.floor(2 / density));
++   const noiseFreq = 0.08;
++   const swirlStrength = 1.0;
++   // --- Corner-based iteration (CLAWDRAW_PAINT_CORNER: nw/ne/sw/se) ---
++   // Sort grid cells by distance from the target corner so painting radiates from corner inward
++   const paintCorner = (options.paintCorner || 'nw').toLowerCase();
++   const cornerX = (paintCorner === 'ne' || paintCorner === 'se') ? width : 0;
++   const cornerY = (paintCorner === 'sw' || paintCorner === 'se') ? height : 0;
++   // Collect all grid positions and sort by distance from corner
++   const gridCells = [];
++       gridCells.push({ gx, gy });
++   gridCells.sort((a, b) => {
++     const da = (a.gx - cornerX) ** 2 + (a.gy - cornerY) ** 2;
++     const db = (b.gx - cornerX) ** 2 + (b.gy - cornerY) ** 2;
++     return da - db;
++     return da - db;
++   });
++   });
++   // --- First pass: dense grid seeding (from corner outward) ---
++   for (const { gx, gy } of gridCells) {
++     const jx = (Math.random() - 0.5) * spacing;
++     const jy = (Math.random() - 0.5) * spacing;
++     const px = clamp(gx + jx, 0, width - 1);
++     const py = clamp(gy + jy, 0, height - 1);
++     const steps = 4 + Math.floor(Math.random() * 5); // 4–8 points
++     const pts = traceParticle(px, py, steps, 0.5);
++     if (pts.length < 3) continue;
++     const [r, g, b] = sampleRgb(rgba, px, py, width, height);
++     const [r, g, b] = sampleRgb(rgba, px, py, width, height);
++     const grayVal = sampleGray(gray, px, py, width, height) / 255;
++     const grayVal = sampleGray(gray, px, py, width, height) / 255;
++     const idx = clamp(Math.round(py), 0, height - 1) * width + clamp(Math.round(px), 0, width - 1);
++     const contrast = clamp(sobel.magnitude[idx] / 400, 0, 1);
++     // Medium brushes for visible strokes with fine detail
++     const brushSize = clamp(Math.round(4 + (1 - contrast) * 3 + (1 - grayVal) * 3), 4, 10);
++     strokes.push(makeStroke(pts, rgbToHex(r, g, b), brushSize, 0.85));
++     // Mark coverage cell
++     const ci = Math.floor(gy / spacing) * covW + Math.floor(gx / spacing);
++     if (ci >= 0 && ci < covered.length) covered[ci] = 1;
++   // Collect fill-pass cells and sort by distance from corner
++   const fillCells = [];
++       if (!covered[ccy * covW + ccx]) fillCells.push({ ccx, ccy });
++   fillCells.sort((a, b) => {
++     const ax = (a.ccx + 0.5) * spacing, ay = (a.ccy + 0.5) * spacing;
++     const bx = (b.ccx + 0.5) * spacing, by = (b.ccy + 0.5) * spacing;
++     const da = (ax - cornerX) ** 2 + (ay - cornerY) ** 2;
++     const db = (bx - cornerX) ** 2 + (by - cornerY) ** 2;
++   // --- Second pass: fill uncovered cells (from corner outward) ---
++   for (const { ccx, ccy } of fillCells) {
++     const px = clamp((ccx + 0.5) * spacing, 0, width - 1);
++     const py = clamp((ccy + 0.5) * spacing, 0, height - 1);
++     const pts = traceParticle(px, py, 4, 0.4);
++     const brushSize = clamp(Math.round(4 + (1 - grayVal) * 3), 4, 8);
++     strokes.push(makeStroke(pts, rgbToHex(r, g, b), brushSize, 0.8));
+
+### package.json  [code]
+-   "version": "0.9.8",
++   "version": "0.9.16",
+
+### primitives/collaborator.mjs  [code]
+-   for (const s of nearCache.strokes) {
+-     if (s.id === id) return s;
+-     const pts = s.path || s.points || [];
+-   if (typeof idOrPoint === 'string') {
+-         });
+-   });
+-     name: 'physarum', description: 'Grow tube networks connecting exterior edges (slime mold simulation)', category: 'collaborator',
+-     name: 'attractorBranch', description: 'Grow fractal branches outward from exterior edge points', category: 'collaborator',
+-     name: 'attractorFlow', description: 'Flow field biased toward exterior attractors, repelled by dense areas', category: 'collaborator',
+-     for (let i = 0; i <= nPts; i++) {
+-       const t = i / nPts;
+-   return strokes;
+-   nearX = nearX || 0;
+-   nearX = nearX || 0;
+-   nearX = nearX || 0;
+-   nearX = nearX || 0;
+-   nearX = nearX || 0;
+-   nearX = nearX || 0;
+-   nearY = nearY || 0;
+-   nearY = nearY || 0;
+-   nearY = nearY || 0;
+-   nearY = nearY || 0;
+-   nearY = nearY || 0;
+-   nearY = nearY || 0;
+-   radius = radius || 200;
+-   loops = loops || 3;
+-   radius = radius || 20;
+-   const nSamples = Math.max(100, loops * 40);
+-     const phase = t * loops * 2 * Math.PI;
+-     const r = taper ? radius * (1 - t * 0.5) : radius;
+-     const offset = Math.sin(phase) * r * sign;
+-       x: resampled[i].x + norm.x * offset,
+-       y: resampled[i].y + norm.y * offset,
+-   return [makeStroke(result, getStrokeColor(src), getStrokeBrushSize(src) * 0.6, getStrokeOpacity(src))];
+-   color = color || '#ffffff';
+-   brushSize = brushSize || 3;
+-   brushSize = brushSize || 4;
+-   count = count || 3;
+-   radius = radius || 300;
+-   radius = radius || 300;
+-   radius = radius || 300;
+-   radius = radius || 300;
+-   radius = radius || 300;
+-   // Filter strokes within radius
+-   const nearby = nc.strokes.filter(s => {
+-     if (pts.length === 0) return false;
+-     return Math.sqrt(dx * dx + dy * dy) <= radius;
+-   if (nearby.length < 2) return [];
+-   // Analyze pattern: compute centroid offsets between consecutive strokes
+-   const centroids = nearby.map(s => centroid(getStrokePoints(s)));
+-   let avgDx = 0, avgDy = 0;
+-   for (let i = 1; i < centroids.length; i++) {
+-     avgDx += centroids[i].x - centroids[i - 1].x;
+-     avgDy += centroids[i].y - centroids[i - 1].y;
+-   avgDx /= (centroids.length - 1);
+-   avgDy /= (centroids.length - 1);
+-   // Override with explicit direction if provided
+-   if (directionX !== undefined && directionX !== null) avgDx = directionX;
+-   if (directionY !== undefined && directionY !== null) avgDy = directionY;
+-   // Analyze average style from nearby strokes
+-   const lastStroke = nearby[nearby.length - 1];
+-   const lastPts = getStrokePoints(lastStroke);
+-   const lastCentroid = centroids[centroids.length - 1];
+-   const avgColor = getStrokeColor(lastStroke);
+-   const avgSize = getStrokeBrushSize(lastStroke);
+-   const avgOpacity = getStrokeOpacity(lastStroke);
+-     // Offset points from last stroke
+-     const shifted = lastPts.map(p => ({
+-   style = style || 'convex';
+-   if (allPts.length < 3) return [];
+-     const first = findStroke(ids[0], nc);
+-   // Compute convex hull
+-   // Expand hull outward by padding
+-   const expanded = hull.map(p => {
+-   // Close the loop
+-   style = style || 'hatch';
+-   style = style || 'hatch';
+-   const layerAngles = [0, Math.PI / 2, Math.PI / 4]; // primary, perpendicular, diagonal
+-       const spacing = 5 + lit * intensity * 15;
+-       if (lit > 0.75 && layer > 0) continue;
+-       const hatchLen = srcSize * 2;
+-   agents = clamp(agents || 30, 5, 100);
+-   steps = clamp(steps || 50, 10, 200);
+-   trailWidth = trailWidth || 3;
+-   // Build attractors from exterior endpoints
+-   const attractors = buildAttractors(nc.strokes, Math.min(agents, 20));
+-   if (attractors.length === 0) return [];
+-   // Build density map for pheromone-like trail avoidance
+-   // Initialize virtual agents at center with random directions
+-     const angle = (i / agents) * Math.PI * 2 + (noise2d(i * 0.7, 0.3) - 0.5) * 0.5;
+-       x: nearX + (noise2d(i * 0.3, 1.7) - 0.5) * radius * 0.3,
+-       y: nearY + (noise2d(1.7, i * 0.3) - 0.5) * radius * 0.3,
+-       trail: [],
+-   const SENSOR_ANGLE = 22.5 * Math.PI / 180;
+-   const SENSOR_DIST = radius * 0.08;
+-   const STEP_SIZE = radius * 0.015;
+-       const senseAhead = senseAttractors(agent.x, agent.y, agent.angle, SENSOR_DIST, attractors, density);
+-       const senseLeft = senseAttractors(agent.x, agent.y, agent.angle - SENSOR_ANGLE, SENSOR_DIST, attractors, density);
+-       const senseRight = senseAttractors(agent.x, agent.y, agent.angle + SENSOR_ANGLE, SENSOR_DIST, attractors, density);
+-         agent.angle -= SENSOR_ANGLE * 0.5;
+-         agent.angle += SENSOR_ANGLE * 0.5;
+-       agent.angle += (noise2d(step * 0.1, agent.x * 0.01) - 0.5) * 0.3;
+-       agent.x += Math.cos(agent.angle) * STEP_SIZE;
+-       agent.y += Math.sin(agent.angle) * STEP_SIZE;
+-       const dx = agent.x - nearX;
+-       const dy = agent.y - nearY;
+-       if (d > radius) {
+-         agent.x = nearX + (dx / d) * radius;
+-         agent.y = nearY + (dy / d) * radius;
+-         agent.angle += Math.PI * 0.5; // bounce
+-       agent.trail.push({ x: agent.x, y: agent.y });
+-     const maxSegLen = 30;
+-         const opacity = clamp(0.4 + t * 0.4, 0.3, 0.85);
+-         strokes.push(makeStroke(seg, color, trailWidth, opacity, 'taper'));
+- function senseAttractors(x, y, angle, dist, attractors, density) {
+-     signal += a.strength / (1 + d2 * 0.001);
+-   signal -= d * 2;
+-   length = length || 30;
+-   generations = clamp(generations || 3, 1, 6);
+-   const attractors = buildAttractors(nc.strokes, 10);
+-   const branchAngle = 30 * Math.PI / 180;
+-   const shrink = 0.7;
+-   function growBranch(x, y, angle, len, gen, size) {
+-     if (gen <= 0 || len < 3) return;
+-     const nPts = Math.max(8, Math.round(len / 3));
+-     const pts = [];
+-       pts.push({
+-         x: x + Math.cos(angle) * len * t + (noise2d(gen * 3.7, t * 5) - 0.5) * len * 0.1,
+-         y: y + Math.sin(angle) * len * t + (noise2d(t * 5, gen * 3.7) - 0.5) * len * 0.1,
+-     const opacity = clamp(0.9 - (generations - gen) * 0.15, 0.3, 0.9);
+-     strokes.push(makeStroke(pts, color, size, opacity, 'taper'));
+-     const endX = x + Math.cos(angle) * len;
+-     const endY = y + Math.sin(angle) * len;
+-     // Branch left and right
+-     growBranch(endX, endY, angle - branchAngle, len * shrink, gen - 1, size * 0.8);
+-     growBranch(endX, endY, angle + branchAngle, len * shrink, gen - 1, size * 0.8);
+-     const dx = attr.x - nearX;
+-     const dy = attr.y - nearY;
+-     if (Math.sqrt(dx * dx + dy * dy) > radius) continue;
+-     const angle = Math.atan2(attr.direction.y, attr.direction.x);
+-     growBranch(attr.x, attr.y, angle, length, generations, brushSize);
+-   lines = clamp(lines || 20, 3, 80);
+-   steps = clamp(steps || 40, 10, 150);
+-   const attractors = buildAttractors(nc.strokes, 15);
+-   const stepSize = radius * 0.02;
+-     // Start lines distributed in a ring around center
+-     const startAngle = (i / lines) * Math.PI * 2;
+-     const startR = radius * (0.2 + noise2d(i * 0.7, 0.5) * 0.3);
+-     let x = nearX + Math.cos(startAngle) * startR;
+-     let y = nearY + Math.sin(startAngle) * startR;
+-       // Compute flow direction: sum of attractor pulls minus density repulsion
+-       let fx = 0, fy = 0;
+-         fx += (adx / d) * a.strength / (1 + d * 0.01);
+-         fy += (ady / d) * a.strength / (1 + d * 0.01);
+-       // Repel from dense areas using density gradient approximation
+-       x += (fx / fLen) * stepSize;
+-       y += (fy / fLen) * stepSize;
+-       if (dx * dx + dy * dy > radius * radius) break;
+-       const opacity = clamp(0.5 + noise2d(i * 1.3, 0.7) * 0.3, 0.3, 0.85);
+-       strokes.push(makeStroke(pts, color, brushSize, opacity, 'taper'));
+-   brushSize = brushSize || 2;
+-       // Generate hatch lines with gradient: stroke color → darker shade, fading opacity
+-               hatchColor, brushSize, hatchOpacity, 'flat'
+-       // Generate random dots — only emit if inside polygon
+-       const count = Math.round((shape.area || polyW * polyH) * density * 0.01);
+-       for (let i = 0; i < count; i++) {
+-       for (let i = 0; i < count; i++) {
+-           [{ x: px, y: py }, { x: px + 1, y: py + 1 }],
+-           shapeColor, brushSize, clamp(0.3 + noise2d(i * 0.3, 0.5) * 0.4, 0.2, 0.7)
+-       // Generate overlapping soft strokes — start points checked against polygon
+-       const count = Math.round(5 + density * 10);
+-           strokes.push(makeStroke(pts, shapeColor, brushSize * 3, 0.15 + density * 0.2));
+-   maxBranches = clamp(maxBranches || 200, 5, 2000);
+-   stepLen = clamp(stepLen || 8, 3, 30);
+-   branchProb = clamp(branchProb || 0.08, 0.01, 0.3);
+-   driftRange = driftRange !== undefined ? clamp(driftRange, 0, 1) : 0.4;
+-   const sdf = buildSDF(nc.strokes, bounds, 120);
+-   // Inline RGB → HSL conversion
+-   function _rgbToHsl(r, g, b) {
+-     r /= 255; g /= 255; b /= 255;
+-     const max = Math.max(r, g, b), min = Math.min(r, g, b);
+-     let h = 0, s = 0;
+-     const l = (max + min) / 2;
+-     if (max !== min) {
+-       const d = max - min;
+-       s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+-       if (max === r) h = ((g - b) / d + (g < b ? 6 : 0)) / 6;
+-       else if (max === g) h = ((b - r) / d + 2) / 6;
+-       else h = ((r - g) / d + 4) / 6;
+-     return { h: h * 360, s: s * 100, l: l * 100 };
+-   const NOISE_STRENGTH = 0.6;
+-     const faces = extractPlanarFaces(nc.strokes, bounds);
+-       const srcColor = getStrokeColor(nearStroke);
+-       const srcSize = getStrokeBrushSize(nearStroke);
+-       const rgb = hexToRgb(srcColor);
+-       const hsl = _rgbToHsl(rgb.r, rgb.g, rgb.b);
+-       const hsl = _rgbToHsl(rgb.r, rgb.g, rgb.b);
+-       const tipCount = Math.min(Math.ceil(polygon.length / 3), maxBranches - totalBranches);
+-         tips.push({
+-           h: hsl.h, s: hsl.s, l: hsl.l,
+-           brushSize: srcSize * 0.8,
+-           generation: 0, distFromOrigin: 0, stepCount: 0,
+-           stepsRemaining: TIP_BUDGET,
+-           alive: true, cooldown: 0,
+-         totalBranches++;
+-     // Grow mode — seed from EVERY endpoint (both start + end of every stroke)
+-       const pts = (stroke.path || stroke.points || []).map(p => ({ x: p.x, y: p.y }));
+-       const srcColor = getStrokeColor(stroke);
+-       const srcSize = getStrokeBrushSize(stroke);
+-       // Seed both start and end
+-       const endpoints = [
+-         { pt: pts[0], angle: Math.atan2(pts[1].y - pts[0].y, pts[1].x - pts[0].x) + Math.PI }, // start — flip outward
+-         { pt: pts[pts.length - 1], angle: Math.atan2(pts[pts.length - 1].y - pts[pts.length - 2].y, pts[pts.length - 1].x - pts[pts.length - 2].x) }, // end — already outward
+-       ];
+-       for (const ep of endpoints) {
+-         if (totalBranches >= maxBranches) break;
+-           x: ep.pt.x, y: ep.pt.y, angle: ep.angle,
+-           sourceAngle: ep.angle,
+-           points: [{ x: ep.pt.x, y: ep.pt.y }],
+-       // 2. SDF edge interaction (unsigned distance — open polylines have unreliable sign)
+-       const dist = Math.abs(sdf.query(tip.x, tip.y));
+-       // Kill if overlapping a stroke (after momentum phase grace period)
+-       if (tip.stepCount > 15 && dist < stepLen * 0.8) {
+-       if (dist < EDGE_THRESHOLD) {
+-         const grad = sdf.gradient(tip.x, tip.y);
+-           * (tip.generation < 2 ? 1.0 : 0.5);
+-           const branchAngle = tip.angle + forkSign * forkAngle;
+-       if (offX * offX + offY * offY > radius * radius * 16) {  // 4× radius boundary
+-       if (tip.stepCount > 15) {
+-           if (cdx * cdx + cdy * cdy < COLLISION_DIST * COLLISION_DIST) {
++ function normalizeStrokeId(id) {
++   if (id === null || id === undefined) return null;
++   const s = String(id).trim();
++   if (!s) return null;
++   return s.toLowerCase();
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ function buildIdAliases(id) {
++   const norm = normalizeStrokeId(id);
++   if (!norm) return [];
++   const aliases = new Set([norm]);
++   const unquoted = norm.replace(/^['"]+|['"]+$/g, '');
++   aliases.add(unquoted);
++   for (const delim of [':', '/', '|', '@', '#']) {
++     if (unquoted.includes(delim)) {
++       const parts = unquoted.split(delim).map(p => p.trim()).filter(Boolean);
++       if (parts.length > 0) {
++         aliases.add(parts[0]);
++         aliases.add(parts[parts.length - 1]);
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   if (/^\d+$/.test(unquoted)) {
++     aliases.add(String(Number(unquoted)));
++   const coMatch = unquoted.match(/^co[-_]?(\d+)$/);
++   if (coMatch) {
++     aliases.add(coMatch[1]);
++     aliases.add(`co-${coMatch[1]}`);
++     aliases.add(`co_${coMatch[1]}`);
++   return [...aliases];
++ function strokeIdCandidates(stroke) {
++   const raw = [
++     stroke?.id,
++     stroke?.strokeId,
++     stroke?.sourceId,
++     stroke?.originalId,
++     stroke?.originId,
++     stroke?.clientId,
++     stroke?.meta?.id,
++     stroke?.meta?.sourceId,
++     stroke?.metadata?.id,
++     stroke?.metadata?.sourceId,
++     stroke?.topology?.id,
++     stroke?.topology?.strokeId,
++   ];
++   const out = new Set();
++   for (const value of raw) {
++     for (const alias of buildIdAliases(value)) out.add(alias);
++   return out;
++   const strokes = nearCache.strokes;
++   const queryRaw = id === null || id === undefined ? '' : String(id);
++   // Fast path: exact raw string match.
++   for (const s of strokes) {
++   for (const s of strokes) {
++   for (const s of strokes) {
++     if (s && s.id !== undefined && s.id !== null && String(s.id) === queryRaw) return s;
++   const queryAliases = buildIdAliases(id);
++   if (queryAliases.length === 0) return null;
++   // Exact alias matching (unique if possible).
++   const exact = [];
++     const cand = strokeIdCandidates(s);
++     const cand = strokeIdCandidates(s);
++     if (queryAliases.some(q => cand.has(q))) exact.push(s);
++   if (exact.length === 1) return exact[0];
++   if (exact.length > 1) {
++     // Deterministic tie-breaker: shortest canonical id wins.
++     return exact.slice().sort((a, b) => String(a.id || '').length - String(b.id || '').length)[0];
++   // Fallback: unique prefix/suffix match (helps when IDs are wrapped/qualified).
++   const fuzzy = [];
++     const hit = queryAliases.some(q => {
++       if (!q || q.length < 3) return false;
++       for (const c of cand) {
++         if (c.startsWith(q) || c.endsWith(q)) return true;
++       return false;
++     });
++     });
++     });
++     });
++     });
++     });
++     });
++     });
++     });
++     if (hit) fuzzy.push(s);
++   if (fuzzy.length === 1) return fuzzy[0];
++   if (typeof idOrPoint === 'string' || typeof idOrPoint === 'number') {
++         break;
++   );
++   );
++   );
++   );
++ function normalizeVec(x, y, fallback = { x: 1, y: 0 }) {
++   const len = Math.sqrt(x * x + y * y);
++   if (len < 1e-8) return { x: fallback.x, y: fallback.y };
++   return { x: x / len, y: y / len };
++ function rgbToHsl(r, g, b) {
++   r /= 255;
++   g /= 255;
++   b /= 255;
++   const max = Math.max(r, g, b);
++   const min = Math.min(r, g, b);
++   let h = 0;
++   let s = 0;
++   const l = (max + min) / 2;
++   if (max !== min) {
++     const d = max - min;
++     s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
++     if (max === r) h = ((g - b) / d + (g < b ? 6 : 0)) / 6;
++     else if (max === g) h = ((b - r) / d + 2) / 6;
++     else h = ((r - g) / d + 4) / 6;
++   return { h: h * 360, s: s * 100, l: l * 100 };
++ function shapeBounds(polygon) {
++   let minX = Infinity;
++   let minX = Infinity;
++   let minY = Infinity;
++   let minY = Infinity;
++   let maxX = -Infinity;
++   let maxX = -Infinity;
++   let maxY = -Infinity;
++   let maxY = -Infinity;
++   for (const p of polygon) {
++     if (p.x < minX) minX = p.x;
++     if (p.x < minX) minX = p.x;
++     if (p.y < minY) minY = p.y;
++     if (p.y < minY) minY = p.y;
++     if (p.x > maxX) maxX = p.x;
++     if (p.x > maxX) maxX = p.x;
++     if (p.y > maxY) maxY = p.y;
++     if (p.y > maxY) maxY = p.y;
++   return { minX, minY, maxX, maxY };
++ function collectSurfaceShapes(nc, bounds, maxShapes = 64) {
++   if (!nc || !nc.strokes || nc.strokes.length === 0) return [];
++   if (!nc || !nc.strokes || nc.strokes.length === 0) return [];
++   let rawShapes = [];
++   if (nc.topology) {
++     rawShapes = detectClosedShapes(nc);
++   if (!rawShapes || rawShapes.length === 0) {
++     rawShapes = extractPlanarFaces(nc.strokes, bounds);
++   const normalized = [];
++   for (const shape of rawShapes) {
++     const polygon = (shape.polygon || []).map((p) => ({ x: p.x, y: p.y }));
++     if (polygon.length < 3) continue;
++     const bbox = shapeBounds(polygon);
++     const area = Math.max(0, Number(shape.area) || shoelaceArea(polygon));
++     if (!isFinite(area) || area < 16) continue;
++     const c =
++       shape.centroid && isFinite(shape.centroid.x) && isFinite(shape.centroid.y)
++         ? { x: shape.centroid.x, y: shape.centroid.y }
++         : centroid(polygon);
++     normalized.push({
++       polygon,
++       centroid: c,
++       area,
++       strokeIds: Array.isArray(shape.strokeIds) ? shape.strokeIds : [],
++       bbox,
++   normalized.sort((a, b) => b.area - a.area);
++   return normalized.slice(0, maxShapes);
++ function pointInShapeFast(shape, x, y) {
++   const bb = shape.bbox;
++   if (!bb || x < bb.minX || x > bb.maxX || y < bb.minY || y > bb.maxY) return false;
++   return pointInPolygon(x, y, shape.polygon);
++ function buildSurfaceField(strokes, bounds, shapes, resolution = 120) {
++   const sdf = buildSDF(strokes, bounds, resolution);
++   const probe = Math.max(
++     (bounds.maxX - bounds.minX) / resolution,
++     (bounds.maxY - bounds.minY) / resolution,
++     1,
++   function isInsideClosed(x, y) {
++     for (const shape of shapes) {
++       if (pointInShapeFast(shape, x, y)) return true;
++     return false;
++   function unsignedDistance(x, y) {
++     const d = Math.abs(sdf.query(x, y));
++     return Number.isFinite(d) ? d : Infinity;
++   function signedDistance(x, y) {
++     const d = unsignedDistance(x, y);
++     if (!isFinite(d)) return d;
++     return isInsideClosed(x, y) ? -d : d;
++   function normal(x, y) {
++     const g = sdf.gradient(x, y);
++     const n = normalizeVec(g.x, g.y, { x: 0, y: 0 });
++     if (Math.abs(n.x) + Math.abs(n.y) < 1e-8) return { x: 0, y: 0 };
++     // Orient toward increasing signed distance (outward from closed regions).
++     const fwd = signedDistance(x + n.x * probe, y + n.y * probe);
++     const bwd = signedDistance(x - n.x * probe, y - n.y * probe);
++     return fwd >= bwd ? n : { x: -n.x, y: -n.y };
++   function tangent(x, y) {
+
+### primitives/helpers.mjs  [code]
+-       size: clamp(brushSize, 3, 100),
++       size: clamp(brushSize, 1, 100),
+
+### primitives/index.mjs  [code]
+- export { extend, branch, connect, coil, morph, hatchGradient, stitch, bloom, gradient, parallel, echo, cascade, mirror, shadow, counterpoint, harmonize, fragment, outline, contour, physarum, attractorBranch, attractorFlow, interiorFill, vineGrowth, setNearbyCache, getNearbyCache } from './collaborator.mjs';
++ export { extend, branch, connect, coil, morph, hatchGradient, stitch, bloom, gradient, parallel, echo, cascade, mirror, shadow, counterpoint, harmonize, fragment, outline, contour, physarum, attractorBranch, surfaceTrees, attractorFlow, interiorFill, vineGrowth, setNearbyCache, getNearbyCache } from './collaborator.mjs';
+
+### primitives/organic/organic.mjs  [code]
+-     while (idx >= 0 && pts.length < 100) {
+-       pts.unshift({ x: nodes[idx].x, y: nodes[idx].y });
++ /**
++  */
++  * Interpolate points between two coordinates to create denser geometry.
++  * This prevents miter joint artifacts in space colonization strokes.
++  * @param {Object} from - Starting point {x, y}
++  * @param {Object} to - Ending point {x, y}
++  * @param {number} maxSegmentLength - Maximum distance between interpolated points (default: 5)
++  * @returns {Array} Interpolated points (includes from, excludes to)
++ function interpolatePoints(from, to, maxSegmentLength = 5) {
++   const dx = to.x - from.x;
++   const dy = to.y - from.y;
++   const distance = Math.hypot(dx, dy);
++   if (distance <= maxSegmentLength) {
++     return [from];
++   }
++   }
++   // Calculate number of segments needed
++   const numSegments = Math.ceil(distance / maxSegmentLength);
++   const result = [];
++   for (let i = 0; i < numSegments; i++) {
++     const t = i / numSegments;
++     result.push({
++       x: from.x + dx * t,
++       y: from.y + dy * t,
++     });
++   return result;
++ }
++       }
++     }
++     const nodePath = [];
++     while (idx >= 0) {
++       nodePath.unshift(idx);
++     // Interpolate points between algorithm nodes to prevent miter joint artifacts
++     // Use maxSegmentLength = 5 for smooth strokes with proper miter calculation
++     for (let n = 0; n < nodePath.length; n++) {
++       const node = nodes[nodePath[n]];
++       if (n === 0) {
++         pts.push({ x: node.x, y: node.y });
++         pts.push({ x: node.x, y: node.y });
++       } else {
++         const prevNode = nodes[nodePath[n - 1]];
++         const interpolated = interpolatePoints(prevNode, node, 5);
++         for (let p = 1; p < interpolated.length; p++) {
++           pts.push(interpolated[p]);
++         }
++       if (pts.length >= 100) break;
+
+### references/COLLABORATORS.md  [docs]
+- 24 transform behaviors that operate *on* existing canvas strokes. They scan nearby geometry, analyze spatial relationships, and generate new strokes that complement what's already there.
++ 25 transform behaviors that operate *on* existing canvas strokes. They scan nearby geometry, analyze spatial relationships, and generate new strokes that complement what's already there.
++ ---
++ **Parameters:**
++ | Parameter | Type | Default | Range | Description |
++ |-----------|------|---------|-------|-------------|
++ **Example:**
++ ```bash
++ ```
++ **Input:** `--nearX <n> --nearY <n>` (center of search area)
++ | `nearX` | number | `0` | -- | Center X |
++ | `nearY` | number | `0` | -- | Center Y |
++ | `radius` | number | `200` | 50-1000 | Search radius |
++ | `length` | number | `30` | 5-200 | Initial branch segment length |
++ | `generations` | number | `3` | 1-6 | Branching depth |
++ | `color` | string | `#ffffff` | -- | Branch color |
++ | `brushSize` | number | `4` | 1-15 | Initial brush size |
++ ### surfaceTrees
++ **Purpose:** Grow trees out of nearby surfaces using SDF normals — an alias for `attractorBranch` tuned for surface-anchored growth.
++ **When to use:** When you want tree-like or coral-like branching that sprouts perpendicular to existing stroke surfaces. Identical to `attractorBranch` under the hood but named for discoverability when the intent is "grow trees out of everything nearby."
++ **Spatial behavior:** Same as `attractorBranch` — uses `buildAttractors()` to find exterior endpoints, then grows recursive binary trees from each. Each branch forks at +/-30 degrees, shrinks to 70% length and 80% brush size per generation. Noise adds organic wobble. Opacity decreases with depth.
++ **Typical output:** Same as `attractorBranch`. `n` attractors * `(2^generations - 1)` branches. ~20-100 INQ.
++ clawdraw collaborate surfaceTrees --nearX 300 --nearY 300 --radius 250 --generations 4 --length 40
++ | `surfaceTrees` | Spatial | `--nearX/Y` | 20-100 | Surface-anchored trees |
+
+### scripts/auth.mjs  [code]
+-     body: JSON.stringify({ name }),
++   // Pass existing API key (if any) to bypass rate limits for linked admin accounts
++   const existingKey = readApiKey();
++   const payload = { name };
++   if (existingKey) payload.existingApiKey = existingKey;
++     body: JSON.stringify(payload),
+
+### scripts/clawdraw.mjs  [code]
+-  *   clawdraw scan [--cx N] [--cy N]     Scan nearby canvas for existing strokes
+-  *   clawdraw nearby [--x N] [--y N] [--radius N]  Analyze strokes near a point
+- // env: CLAWDRAW_API_KEY, CLAWDRAW_DISPLAY_NAME, CLAWDRAW_NO_HISTORY, CLAWDRAW_SWARM_ID
+- import { setNearbyCache } from '../primitives/collaborator.mjs';
+-   return `${cx},${cy}`;
+- function saveStrokeHistory(strokes) {
+-       })).filter(s => s.id),
+-     });
+-     });
+-     });
+-     });
+-     });
+-   if (strokes.length === 0) {
+-     const result = await drawAndTrack(ws, strokes, { zoom, name: 'Custom strokes', skipWaypoint: !!args['no-waypoint'] });
+-     if (result.strokesAcked > 0 && !args['no-history']) saveStrokeHistory(strokes);
+-     if (result.strokesAcked > 0 && !args['no-history']) saveStrokeHistory(strokes);
+-     if (result.strokesAcked > 0 && !args['no-history']) saveStrokeHistory(strokes);
+-     if (result.strokesAcked > 0 && !args['no-history']) saveStrokeHistory(strokes);
+-     if (result.strokesAcked > 0 && !args['no-history']) saveStrokeHistory(strokes);
+-     disconnect(ws);
+-     const result = await drawAndTrack(ws, strokes, { cx, cy, zoom, name: primitiveName, skipWaypoint: !!args['no-waypoint'] });
+-         try {
+-             }
+-           }
+-     const cx = origin.x !== 0 ? origin.x : undefined;
+-     const cy = origin.y !== 0 ? origin.y : undefined;
+-     const result = await drawAndTrack(ws, allStrokes, { cx, cy, zoom, name: 'Composition', skipWaypoint: !!args['no-waypoint'] });
+-     if (result.strokesAcked > 0 && !args['no-history']) saveStrokeHistory(allStrokes);
+-   for (const stroke of strokes) {
+-   for (const s of strokes) {
+-   const sizes = strokes.map(s => s.brush?.size || 5);
+-     strokeCount: strokes.length,
+-     description: `${strokes.length} strokes spanning ${Math.round(width)}x${Math.round(height)} units. Colors: ${colorDesc}. Region: (${Math.round(minX)},${Math.round(minY)}) to (${Math.round(maxX)},${Math.round(maxY)}). Avg brush size: ${avgSize.toFixed(1)}.`,
+-     const ws = await connect(token, {
+-       username: CLAWDRAW_DISPLAY_NAME,
+-       center: { x: cx, y: cy },
+-       zoom: 0.2,
+-     // Collect strokes from chunks.initial message
+-     const strokes = await new Promise((resolve, reject) => {
+-       const collected = [];
+-       const timeout = setTimeout(() => resolve(collected), 3000);
+-       ws.on('message', (data) => {
+-           const msg = JSON.parse(data);
+-           if (msg.type === 'chunks.initial' && msg.chunks) {
+-             for (const chunk of msg.chunks) {
+-               for (const stroke of chunk.strokes || []) {
+-                 collected.push(stroke);
+-               }
+-             // Got chunk data — wait a brief moment for any additional messages
+-             clearTimeout(timeout);
+-             setTimeout(() => resolve(collected), 500);
+-         } catch { /* ignore parse errors */ }
+-       });
+-       });
+-       ws.on('error', () => {
+-         clearTimeout(timeout);
+-         resolve(collected);
+-     // Filter to strokes within the requested radius
+-     const nearby = strokes.filter(s => {
+-       if (!s.points || s.points.length === 0) return false;
+-       const pt = s.points[0];
+-       const dx = pt.x - cx;
+-       const dy = pt.y - cy;
+-       return Math.sqrt(dx * dx + dy * dy) <= radius;
+-       totalInChunks: strokes.length,
+-       ...analyzeStrokes(nearby),
+-       console.log(`  Center: (${cx}, ${cy}), Radius: ${radius}`);
+-         console.log(`  Top colors: ${result.topColors.join(', ')}`);
+-       headers: { 'Authorization': `Bearer ${token}` },
+-       headers: { 'Authorization': `Bearer ${token}` },
+-     if (!res.ok) {
+-       const err = await res.json().catch(() => ({}));
+-       throw new Error(err.error || `HTTP ${res.status}`);
+-     const res = await fetch(`${RELAY_HTTP_URL}/api/nearby?x=${x}&y=${y}&radius=${radius}`, {
+-     const result = await res.json();
+-     console.log(`\n  Nearby (${x}, ${y}) radius=${radius}`);
+-     console.log(`  Strokes: ${result.summary.strokeCount}`);
+-     console.log(`  Density: ${result.summary.density.toFixed(2)} strokes/1000sq`);
+-     console.log(`  Palette: ${result.summary.palette.join(', ')}`);
+-     console.log(`  Flow: ${result.summary.dominantFlow}`);
+-     console.log(`  Avg brush: ${result.summary.avgBrushSize.toFixed(1)}`);
+-     console.log(`  Attach points: ${result.attachPoints.length}`);
+-     console.log(`  Gaps: ${result.gaps.length}`);
+-     if (result.strokes.length > 0) {
+-       console.log(`\n  Strokes (${result.strokes.length}):`);
+-       for (const s of result.strokes.slice(0, 10)) {
+-         console.log(`    ${s.id.slice(0,12)}.. ${s.shape} ${s.color} size=${s.brushSize}`);
+-       if (result.strokes.length > 10) {
+-         console.log(`    ... and ${result.strokes.length - 10} more`);
+-     const result = await drawAndTrack(ws, strokes, { cx, cy, zoom, name: name, skipWaypoint: !!args['no-waypoint'] });
+-   'contour', 'physarum', 'attractorBranch', 'attractorFlow', 'interiorFill', 'vineGrowth',
+-     const nearbyRes = await fetch(`${RELAY_HTTP_URL}/api/nearby?x=${x}&y=${y}&radius=${radius}`, {
+-     if (!nearbyRes.ok) {
+-       const err = await nearbyRes.json().catch(() => ({}));
+-       throw new Error(err.error || `HTTP ${nearbyRes.status}`);
+-     nearbyData = await nearbyRes.json();
+-   setNearbyCache(nearbyData);
+-   // Execute behavior as primitive
+-     strokes = executePrimitive(behaviorName, args);
+-     const result = await drawAndTrack(ws, strokes, { cx: x, cy: y, zoom, name: behaviorName, skipWaypoint: !!args['no-waypoint'] });
+-     strokes = traceImage(pixelData, { mode, density });
+-     console.log('    --no-history                   Skip stroke history write (use in scripts/workers)');
+-     console.log('  scan [--cx N] [--cy N]         Scan nearby canvas strokes');
+-     console.log('  nearby [--x N] [--y N] [--radius N]  Analyze strokes near a point');
+-     console.log('  attractorFlow, interiorFill, vineGrowth');
++  *   clawdraw scan [--cx N] [--cy N] [--detail summary|full|sdf]  Scan nearby canvas for existing strokes
++  *   clawdraw nearby [--x N] [--y N] [--radius N] [--detail summary|full|sdf]  Analyze strokes near a point
++ // env: CLAWDRAW_API_KEY, CLAWDRAW_DISPLAY_NAME, CLAWDRAW_NO_HISTORY, CLAWDRAW_SWARM_ID, CLAWDRAW_PAINT_CORNER
++ import * as collaborators from '../primitives/collaborator.mjs';
++   try {
++   } catch {
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++   return `${cx}_${cy}`;
++     try {
++         continue;
++         continue;
++       }
++       }
++       }
++     }
++     }
++     }
++     }
++     }
++  * @param {Array<string>} [ackedStrokeIds] - Optional subset of IDs confirmed by server ack
++ function saveStrokeHistory(strokes, ackedStrokeIds) {
++     const ackedSet = Array.isArray(ackedStrokeIds) && ackedStrokeIds.length > 0
++       ? new Set(ackedStrokeIds.map(id => String(id)))
++       : null;
++       })).filter(s => {
++         if (!s.id) return false;
++         if (!ackedSet) return true;
++         return ackedSet.has(String(s.id));
++       }),
++   });
++ function sleep(ms) {
++   return new Promise(resolve => setTimeout(resolve, ms));
++ function isRetriableStatus(status) {
++   return status === 429 || status === 500 || status === 502 || status === 503 || status === 504;
++ async function readErrorMessage(res) {
++     const data = await res.json();
++     return data.error || data.message || `HTTP ${res.status}`;
++     return `HTTP ${res.status}`;
++ async function fetchJsonWithRetry(url, fetchOptions, {
++   retries = 3,
++   baseDelayMs = 250,
++   tag = 'request',
++ } = {}) {
++   let lastError = null;
++   for (let attempt = 0; attempt <= retries; attempt++) {
++     let res = null;
++       res = await fetch(url, fetchOptions);
++       if (res.ok) return await res.json();
++       const errMsg = await readErrorMessage(res);
++       if (attempt < retries && isRetriableStatus(res.status)) {
++         const waitMs = baseDelayMs * Math.pow(2, attempt);
++         const waitMs = baseDelayMs * Math.pow(2, attempt);
++         console.warn(`[${tag}] retry ${attempt + 1}/${retries} after ${res.status} (${waitMs}ms)`);
++         await sleep(waitMs);
++         await sleep(waitMs);
++       throw new Error(errMsg);
++     } catch (err) {
++       lastError = err;
++       const retriable = !res || isRetriableStatus(res.status);
++       if (attempt < retries && retriable) {
++         console.warn(`[${tag}] retry ${attempt + 1}/${retries} after error (${waitMs}ms): ${err.message}`);
++       throw err;
++   throw lastError || new Error('Unknown fetch error');
++ async function fetchNearbyData(token, x, y, radius, detail = 'full', retries = 3) {
++   const q = `${RELAY_HTTP_URL}/api/nearby?x=${x}&y=${y}&radius=${radius}&detail=${encodeURIComponent(detail)}`;
++   return fetchJsonWithRetry(q, {
++     headers: { 'Authorization': `Bearer ${token}` },
++   }, {
++     retries,
++     baseDelayMs: 250,
++     tag: `nearby:${detail}`,
++ function isSourceParam(name) {
++   return name === 'source' || name === 'from' || name === 'to' || name === 'strokes';
++ function normalizeCollaboratorArg(name, value) {
++   if (!isSourceParam(name)) return value;
++   if (value === undefined || value === null) return value;
++   if (Array.isArray(value)) return value.map(v => String(v)).join(',');
++   return String(value).trim();
++ function normalizeNearbyStroke(stroke) {
++   const points = Array.isArray(stroke?.points) ? stroke.points : (Array.isArray(stroke?.path) ? stroke.path : []);
++   const color = stroke?.brush?.color || stroke?.color || '#ffffff';
++   const size = stroke?.brush?.size || stroke?.brushSize || 5;
++   return {
++     points,
++     brush: {
++       color,
++       size,
++       opacity: stroke?.brush?.opacity ?? stroke?.opacity ?? 1,
++     },
++   };
++     process.exit(1);
++     process.exit(1);
++     process.exit(1);
++     process.exit(1);
++     process.exit(1);
++     const cx = args.cx !== undefined ? Number(args.cx) : undefined;
++     const cy = args.cy !== undefined ? Number(args.cy) : undefined;
++     const result = await drawAndTrack(ws, strokes, { cx, cy, zoom, name: 'Custom strokes', skipWaypoint: !!args['no-waypoint'], swarm: !!CLAWDRAW_SWARM_ID });
++     if (result.strokesAcked > 0 && !args['no-history']) saveStrokeHistory(strokes, result.ackedStrokeIds);
++     if (result.strokesAcked > 0 && !args['no-history']) saveStrokeHistory(strokes, result.ackedStrokeIds);
++     if (result.strokesAcked > 0 && !args['no-history']) saveStrokeHistory(strokes, result.ackedStrokeIds);
++     if (result.strokesAcked > 0 && !args['no-history']) saveStrokeHistory(strokes, result.ackedStrokeIds);
++     if (result.strokesAcked > 0 && !args['no-history']) saveStrokeHistory(strokes, result.ackedStrokeIds);
++     const result = await drawAndTrack(ws, strokes, { cx, cy, zoom, name: primitiveName, skipWaypoint: !!args['no-waypoint'], swarm: !!CLAWDRAW_SWARM_ID });
++     const hasOrigin = data.origin != null;
++     const cx = hasOrigin ? origin.x : undefined;
++     const cy = hasOrigin ? origin.y : undefined;
++     const result = await drawAndTrack(ws, allStrokes, { cx, cy, zoom, name: 'Composition', skipWaypoint: !!args['no-waypoint'], absolute: hasOrigin, swarm: !!CLAWDRAW_SWARM_ID });
++     if (result.strokesAcked > 0 && !args['no-history']) saveStrokeHistory(allStrokes, result.ackedStrokeIds);
++   const normalized = (strokes || [])
++     .map(normalizeNearbyStroke)
++     .filter(s => Array.isArray(s.points) && s.points.length > 0);
++   if (normalized.length === 0) {
++   for (const stroke of normalized) {
++   for (const s of normalized) {
++   const sizes = normalized.map(s => s.brush?.size || 5);
++     strokeCount: normalized.length,
++     description: `${normalized.length} strokes spanning ${Math.round(width)}x${Math.round(height)} units. Colors: ${colorDesc}. Region: (${Math.round(minX)},${Math.round(minY)}) to (${Math.round(maxX)},${Math.round(maxY)}). Avg brush size: ${avgSize.toFixed(1)}.`,
++   const detail = String(args.detail || 'full');
++   const detail = String(args.detail || 'full');
++   if (!['summary', 'full', 'sdf'].includes(detail)) {
++   if (!['summary', 'full', 'sdf'].includes(detail)) {
++   if (!['summary', 'full', 'sdf'].includes(detail)) {
++     console.error('Error: --detail must be one of summary|full|sdf');
++     console.error('Error: --detail must be one of summary|full|sdf');
++     console.error('Error: --detail must be one of summary|full|sdf');
++     const nearby = await fetchNearbyData(token, cx, cy, radius, detail, 3);
++     const strokes = Array.isArray(nearby.strokes) ? nearby.strokes : [];
++     let analysis = analyzeStrokes(strokes);
++     if (analysis.strokeCount === 0 && nearby.summary?.strokeCount > 0) {
++       analysis = {
++         strokeCount: nearby.summary.strokeCount,
++         description: `${nearby.summary.strokeCount} strokes nearby (summary/detail-only response).`,
++       };
++       detail,
++       totalInNearby: strokes.length,
++       ...analysis,
++       ...(nearby.summary ? { summary: nearby.summary } : {}),
++       console.log(`  Center: (${cx}, ${cy}), Radius: ${radius}, Detail: ${detail}`);
++         if (result.topColors) console.log(`  Top colors: ${result.topColors.join(', ')}`);
++         if (nearby.summary?.palette?.length) console.log(`  Palette: ${nearby.summary.palette.join(', ')}`);
++     const result = await fetchNearbyData(token, x, y, radius, detail, 3);
++     const summary = result.summary || {};
++     const strokes = Array.isArray(result.strokes) ? result.strokes : [];
++     const attachPoints = Array.isArray(result.attachPoints) ? result.attachPoints : [];
++     const gaps = Array.isArray(result.gaps) ? result.gaps : [];
++     console.log(`\n  Nearby (${x}, ${y}) radius=${radius} detail=${detail}`);
++     console.log(`  Strokes: ${summary.strokeCount ?? strokes.length ?? 0}`);
++     if (typeof summary.density === 'number') {
++       console.log(`  Density: ${summary.density.toFixed(2)} strokes/1000sq`);
++     if (Array.isArray(summary.palette)) {
++       console.log(`  Palette: ${summary.palette.join(', ')}`);
++     if (summary.dominantFlow) {
++       console.log(`  Flow: ${summary.dominantFlow}`);
++     if (typeof summary.avgBrushSize === 'number') {
++       console.log(`  Avg brush: ${summary.avgBrushSize.toFixed(1)}`);
++     console.log(`  Attach points: ${attachPoints.length}`);
++     console.log(`  Gaps: ${gaps.length}`);
++     if (strokes.length > 0) {
++       console.log(`\n  Strokes (${strokes.length}):`);
++       for (const s of strokes.slice(0, 10)) {
++         const sid = s?.id !== undefined && s?.id !== null ? String(s.id) : 'unknown';
++         const shape = s?.shape || 'stroke';
++         const color = s?.color || s?.brush?.color || '#ffffff';
++         const size = s?.brushSize ?? s?.brush?.size ?? '?';
++         console.log(`    ${sid.slice(0, 12)}.. ${shape} ${color} size=${size}`);
++       if (strokes.length > 10) {
++         console.log(`    ... and ${strokes.length - 10} more`);
++     const result = await drawAndTrack(ws, strokes, { cx, cy, zoom, name: name, skipWaypoint: !!args['no-waypoint'], swarm: !!CLAWDRAW_SWARM_ID });
++   'contour', 'physarum', 'attractorBranch', 'surfaceTrees', 'attractorFlow', 'interiorFill', 'vineGrowth',
++   const fn = collaborators[behaviorName];
++   if (typeof fn !== 'function') {
++     console.error(`Unknown collaborator: ${behaviorName}`);
++   const entry = collaborators.METADATA.find(m => m.name === behaviorName);
++   if (!entry) {
++     console.error(`No metadata for collaborator: ${behaviorName}`);
++   const paramNames = Object.keys(entry.parameters || {});
++   const requiresSourceLookup = paramNames.some(isSourceParam);
++   const detail = String(args.detail || (requiresSourceLookup ? 'full' : 'sdf'));
++     nearbyData = await fetchNearbyData(token, x, y, radius, detail, 3);
++     // Some source-driven behaviors depend on stable stroke IDs; if a non-full
++     // payload omits them, refetch in full detail once.
++     if (requiresSourceLookup && detail !== 'full') {
++       const hasIds = Array.isArray(nearbyData.strokes)
++         && nearbyData.strokes.some(s => s && s.id !== undefined && s.id !== null);
++       if (!hasIds) {
++         nearbyData = await fetchNearbyData(token, x, y, radius, 'full', 2);
++   collaborators.setNearbyCache(nearbyData);
++   // Call collaborator function directly — bypass primitive registry to avoid
++   // name collisions with community primitives (e.g. vineGrowth).
++     const behaviorArgs = paramNames.map(p => normalizeCollaboratorArg(p, args[p]));
++     strokes = fn(...behaviorArgs);
++     const result = await drawAndTrack(ws, strokes, { cx: x, cy: y, zoom, name: behaviorName, skipWaypoint: !!args['no-waypoint'], swarm: !!CLAWDRAW_SWARM_ID });
++     strokes = traceImage(pixelData, { mode, density, paintCorner: process.env.CLAWDRAW_PAINT_CORNER });
++       swarm: !!CLAWDRAW_SWARM_ID,
++     console.log('    --no-history                   Skip stroke history write (workers use CLAWDRAW_SWARM_ID instead)');
++     console.log('  scan [--cx N] [--cy N] [--detail summary|full|sdf]  Scan nearby canvas strokes');
++     console.log('  nearby [--x N] [--y N] [--radius N] [--detail summary|full|sdf]  Analyze strokes near a point');
++     console.log('  surfaceTrees, attractorFlow, interiorFill, vineGrowth');
+
+### scripts/connection.mjs  [code]
+-   open(url).catch(() => {});  // silently fail in restricted environments
+-       });
+-   // If that would exceed MAX_DRAW_SECONDS, scale batch size up to fit.
+-   const result = { sent: 0, acked: 0, rejected: 0, errors: [], strokesSent: 0, strokesAcked: 0 };
+-       batches.push({ msg: { type: 'stroke.add', stroke }, count: 1 });
+-       batches.push({ msg: { type: 'strokes.add', strokes: batch }, count: batch.length });
+-     const { msg, count } = batches[bi];
+-  * @param {boolean} [opts.skipWaypoint=false] - Skip waypoint creation, chat post, and browser open
+- export async function drawAndTrack(ws, strokes, { cx, cy, zoom, name, description, skipWaypoint = false } = {}) {
+-   // 1. Auto-placement: find empty spot if no position specified
+-   if (cx === undefined || cy === undefined) {
+-     const spot = ws._authToken ? await autoFindSpace(ws._authToken) : null;
+-     if (spot) {
+-       // Add ±500 jitter to prevent concurrent bot collisions
+-       if (cx === undefined) cx = spot.x + Math.round((Math.random() - 0.5) * 1000);
+-       if (cy === undefined) cy = spot.y + Math.round((Math.random() - 0.5) * 1000);
+-       // Fallback: random position in a large range
+-       if (cx === undefined) cx = Math.round((Math.random() - 0.5) * 100_000);
+-       if (cy === undefined) cy = Math.round((Math.random() - 0.5) * 100_000);
+-   // Translate strokes to the chosen center
+-   const strokeCx = Math.round((bbox.minX + bbox.maxX) / 2);
+-   const strokeCy = Math.round((bbox.minY + bbox.maxY) / 2);
+-   const dx = cx - strokeCx;
+-   const dy = cy - strokeCy;
+-   if (dx !== 0 || dy !== 0) {
+-     for (const s of strokes) {
+-       for (const pt of s.points) {
+-         pt.x += dx;
+-         pt.y += dy;
+-   // 3. Create waypoint BEFORE drawing
+-   if (!skipWaypoint) {
+-       const wp = await addWaypoint(ws, {
+-         name: drawingName,
+-         x: cx, y: cy, zoom,
+-         description: description || `${strokes.length} strokes`,
+-     } catch (wpErr) {
+-       console.warn(`[waypoint] Failed: ${wpErr.message}`);
+-   // Wait for browser page to load before sending strokes
+-   const result = await sendStrokes(ws, strokes);
++ import { statSync, writeFileSync } from 'fs';
++ import { tmpdir } from 'os';
++ import { join } from 'path';
++ const TAB_COOLDOWN_FILE = join(tmpdir(), '.clawdraw-tab-opened');
++ const TAB_COOLDOWN_MS = 90_000;
++  * Enforces a cooldown to prevent multiple tabs opening in rapid succession
++  * (e.g. when agents forget --no-waypoint on sequential draws).
++   try {
++   try {
++     const stat = statSync(TAB_COOLDOWN_FILE);
++     if (Date.now() - stat.mtimeMs < TAB_COOLDOWN_MS) return;
++   } catch {}
++   try { writeFileSync(TAB_COOLDOWN_FILE, ''); } catch {}
++   open(url).catch(() => {});
++     });
++         }
++       }
++  * @property {string[]} ackedStrokeIds - IDs confirmed by stroke/strokes ack responses
++  * @param {boolean} [optsOrDelay.swarm=false] - Swarm mode: use ideal animation pacing with no time cap so each worker animates smoothly
++   const swarm = opts.swarm ?? false;
++   // Solo mode: if that would exceed MAX_DRAW_SECONDS, scale batch size up to fit.
++   // Swarm mode: always use ideal pacing (no time cap) so each worker draws
++   //   with its own smooth cursor animation — viewers see N independent painters.
++   } else if (swarm) {
++     // Swarm mode: ideal animation pacing, no time cap.
++     // Each worker animates independently at the smooth cursor rate.
++     batchSize = ANIM_BATCH_SIZE;
++     delayMs = ANIM_DELAY_MS;
++   } else {
++   const result = { sent: 0, acked: 0, rejected: 0, errors: [], strokesSent: 0, strokesAcked: 0, ackedStrokeIds: [] };
++       const id = stroke && stroke.id !== undefined && stroke.id !== null ? String(stroke.id) : null;
++       batches.push({ msg: { type: 'stroke.add', stroke }, count: 1, strokeIds: id ? [id] : [] });
++       const strokeIds = batch
++         .map(s => (s && s.id !== undefined && s.id !== null ? String(s.id) : null))
++         .filter(Boolean);
++       batches.push({ msg: { type: 'strokes.add', strokes: batch }, count: batch.length, strokeIds });
++     const { msg, count, strokeIds = [] } = batches[bi];
++         if (strokeIds.length > 0) result.ackedStrokeIds.push(...strokeIds);
++       } else {
++  * @param {boolean} [opts.skipWaypoint=false] - Skip persistent waypoint, chat post, and browser open (a temporary waypoint is still created for chunk subscription, then deleted)
++  * @param {boolean} [opts.absolute=false] - Strokes are at final absolute coordinates; skip auto-placement and re-centering
++  * @param {boolean} [opts.swarm=false] - Swarm mode: use ideal animation pacing with no time cap
++ export async function drawAndTrack(ws, strokes, { cx, cy, zoom, name, description, skipWaypoint = false, absolute = false, swarm = false } = {}) {
++   if (absolute) {
++     // Strokes are at final absolute coordinates — derive viewport from bbox
++     cx = Math.round((bbox.minX + bbox.maxX) / 2);
++     cy = Math.round((bbox.minY + bbox.maxY) / 2);
++     // No stroke translation — coordinates are already correct
++     // 1. Auto-placement: find empty spot if no position specified
++     if (cx === undefined || cy === undefined) {
++       const spot = ws._authToken ? await autoFindSpace(ws._authToken) : null;
++       if (spot) {
++         // Add ±500 jitter to prevent concurrent bot collisions
++         if (cx === undefined) cx = spot.x + Math.round((Math.random() - 0.5) * 1000);
++         if (cy === undefined) cy = spot.y + Math.round((Math.random() - 0.5) * 1000);
++         // Fallback: random position in a large range
++         if (cx === undefined) cx = Math.round((Math.random() - 0.5) * 100_000);
++         if (cy === undefined) cy = Math.round((Math.random() - 0.5) * 100_000);
++     // Translate strokes to the chosen center
++     const strokeCx = Math.round((bbox.minX + bbox.maxX) / 2);
++     const strokeCy = Math.round((bbox.minY + bbox.maxY) / 2);
++     const dx = cx - strokeCx;
++     const dy = cy - strokeCy;
++     if (dx !== 0 || dy !== 0) {
++       for (const s of strokes) {
++         for (const pt of s.points) {
++           pt.x += dx;
++           pt.y += dy;
++   // 3. Create waypoint BEFORE drawing — always needed to activate chunk
++   //    subscriptions at the drawing coordinates. viewport.update alone is
++   //    fire-and-forget and doesn't guarantee the server has subscribed
++   //    the client to those chunks.
++   let tempWaypointId = null;
++     const wp = await addWaypoint(ws, {
++       name: skipWaypoint ? `_tmp_${Date.now()}` : drawingName,
++       x: cx, y: cy, zoom,
++       description: description || `${strokes.length} strokes`,
++     if (skipWaypoint) {
++       tempWaypointId = wp.id;
++   } catch (wpErr) {
++     console.warn(`[waypoint] Failed: ${wpErr.message}`);
++     // Wait for browser page to load before sending strokes
++   const result = await sendStrokes(ws, strokes, { swarm });
++   // Clean up temporary waypoint used only for chunk subscription
++   if (tempWaypointId) {
++       await deleteWaypoint(ws, tempWaypointId);
++     } catch { /* best-effort cleanup */ }
+
+### scripts/roam.mjs  [code]
+- const GROWTH = ['physarum', 'attractorBranch', 'attractorFlow', 'coil'];
+-   const res = await fetch(`${RELAY_HTTP_URL}/api/nearby?x=${x}&y=${y}&radius=${radius}`, {
++ const GROWTH = ['physarum', 'attractorBranch', 'surfaceTrees', 'attractorFlow', 'coil'];
++   const res = await fetch(`${RELAY_HTTP_URL}/api/nearby?x=${x}&y=${y}&radius=${radius}&detail=sdf`, {

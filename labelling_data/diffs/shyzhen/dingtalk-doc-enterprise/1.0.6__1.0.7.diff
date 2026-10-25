@@ -1,0 +1,935 @@
+shyzhen/dingtalk-doc-enterprise  1.0.6 -> 1.0.7
+change_type: instructions+docs+code   changelog: - Major rewrite of skill instructions for clarity and strict boundaries. - Replaced “append-text”/“update” with stricter “insert”/“modify” terminology for content blocks. - Explicitly prohibits all document creation or impersonation of creation. - Updated user identity resolution priority and noted API-side permission checks. - Added clearer error handling and disambiguation steps for destructive actions. - Added automated test file; removed old skill-card documentation.
+
+### README.md  [docs]
+- # 钉钉文档企业版技能 (dingtalk-doc-enterprise)
+- 通过钉钉开放平台企业 API 管理钉钉文档，支持多用户场景，自动从钉钉连接器获取当前用户身份。
+- > 背景：我在使用openclaw和钉钉的官方连接器，但是他们不支持这些功能（最新版本0.8.13）。
+- >
+- >
+- >
+- >
+- > 这是我的issue： https://github.com/DingTalk-Real-AI/dingtalk-openclaw-connector/issues/456
+- > 网上找遍了资源，也加入了钉钉开发群，都说不支持、还说没有操作文档的API。
+- > 连接器的文档说["钉钉文档能力依赖 MCP（Model Context Protocol）提供底层 tool"](https://github.com/DingTalk-Real-AI/dingtalk-openclaw-connector?tab=readme-ov-file#%E9%92%89%E9%92%89%E6%96%87%E6%A1%A3docs%E4%B8%8E-mcpdocs) ，这种方案全是权限问题。
+- > [于是有了这个玩具。](https://clawhub.ai/shyzhen/dingtalk-doc-enterprise)
+- ---
+- ---
+- ---
+- ---
+- ---
+- ---
+- ---
+- ---
+- ---
+- ## 🚀 快速开始
+- ### 1. 配置钉钉凭证
+- **推荐方式：编辑 `~/.openclaw/.env` 文件**
+- OpenClaw 会在启动时自动加载此文件中的环境变量，无需手动设置。
+- # ~/.openclaw/.env
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- **获取凭证：**
+- 1. 登录 [钉钉开放平台](https://open.dingtalk.com/)
+- 2. 进入「应用开发」→「企业内部开发」
+- 3. 创建或选择已有应用
+- 4. 在「应用详情」页面获取 `AppKey` (ClientId) 和 `AppSecret` (ClientSecret)
+- **注意：** 修改 `.env` 文件后需要重启 OpenClaw Gateway 才能生效。
+- ### 2. 申请应用权限
+- 在钉钉开放平台「权限管理」中申请以下权限：
+- | 权限码 | 用途 | 必需 |
+- |--------|------|------|
+- | `qyapi_get_member` | 获取用户信息 | ✅ |
+- | `Storage.File.Read` | 读取文档内容 | ✅ |
+- | `Storage.File.Write` | 编辑/创建文档 | ✅ |
+- **申请步骤：**
+- 1. 进入应用管理页面
+- 2. 点击「权限管理」
+- 3. 搜索上述权限码并申请
+- 4. 等待管理员审批通过
+- ### 3. 验证配置
+- 重启 OpenClaw Gateway 后，可以通过以下方式验证配置是否生效：
+- # 检查环境变量是否加载
+- openclaw env | Select-String DINGTALK
+- # 或查看 Gateway 日志
+- openclaw logs --grep DINGTALK
+- ## ✨ 核心特性
+- - ✅ **自动身份识别** - 从钉钉连接器消息自动获取发送者身份
+- - ✅ **多用户支持** - 企业内所有用户均可使用
+- - ✅ **权限隔离** - 每个用户只能操作自己有权限的文档
+- - ✅ **文档读取与修改** - 支持读取概览、查询块结构、覆写整篇内容、追加文本、删除块元素
+- ## 📖 使用方式
+- ### 自动触发（推荐）
+- **发送钉钉文档链接即可自动读取：**
+- https://alidocs.dingtalk.com/i/nodes/xxx
+- **文档链接 + 操作指令：**
+- 帮我总结这篇文档：https://alidocs.dingtalk.com/i/nodes/xxx
+- 在这篇文档里添加一段测试数据：https://alidocs.dingtalk.com/i/nodes/xxx
+- ### 指令触发
+- | 操作 | 指令示例 |
+- |------|---------|
+- | 读取文档 | `读取钉钉文档 <链接>` |
+- | 总结文档 | `总结这篇文档：<链接>` |
+- | 更新文档 | `更新文档 <链接> 内容为...` |
+- | 追加内容 | `在文档指定段落后追加：<链接> 内容...` |
+- | 删除块元素 | `删除文档第 X 段：<链接>` |
+- | 查询结构 | `列出文档结构：<链接>` |
+- ## 🔧 工作原理
+- 用户发送消息
+-     ↓
+-     ↓
+-     ↓
+-     ↓
+-     ↓
+- 钉钉连接器接收
+- OpenClaw 提取 sender_id
+- 查询用户 unionId
+- 作为 operatorId 调用钉钉 API
+- 返回结果给用户
+- ## ⚠️ 注意事项
+- ### 权限说明
+- - 每个用户只能操作**自己有权限访问**的文档
+- - 企业公开文档对所有用户可见
+- - 私有文档需要单独授权
+- ### 限制
+- - 当前版本**不支持创建新文档**
+- - `read` 更适合快速概览；如果要总结文档或定位块，请先使用 `blocks`
+- - 追加和删除操作依赖 `blockId`，通常需要先查询结构
+- - 单次内容最大长度：50000 字符
+- - 频率限制：100 次/分钟/文档
+- - 块元素更新：目前仅支持段落类型
+- ## 🐛 常见问题
+- | 错误 | 原因 | 解决方案 |
+- |------|------|----------|
+- | `forbidden.accessDenied` | 无文档权限 | 确认用户对文档有访问权限 |
+- | `docNotExist` | 文档不存在 | 检查文档 ID 是否正确 |
+- | `operatorId invalid` | 用户身份无效 | 检查钉钉连接器配置 |
+- | `paramError` | 参数错误 | 检查文档链接格式 |
+- | 缺少 `DINGTALK_CLIENTID` / `DINGTALK_CLIENTSECRET` | 未配置应用凭证 | 在 `~/.openclaw/.env` 中补齐并重启 Gateway |
+- ## 📚 CLI 参考
+- 脚本文件为同目录下的 `doc-enterprise.js`，常用命令如下：
+- node doc-enterprise.js append-text <docKey|url> <blockId> "<text>"
+- - `read`：输出块列表和文本预览，适合快速查看
+- - `blocks`：输出完整块结构，适合总结文档或定位 `blockId`
+- - `update`：整篇覆写 Markdown 内容
+- - `append-text` / `delete`：需要已知 `blockId`
+- ## 📚 API 参考
+- 支持的钉钉文档 API 端点：
+- |------|------|------|
+- | 覆写文档 | `/v1.0/doc/suites/documents/{docKey}/overwriteContent` | POST |
+- | 查询块元素 | `/v1.0/doc/suites/documents/{dentryUuid}/blocks` | GET |
+- | 插入块元素 | `/v1.0/doc/suites/documents/{dentryUuid}/blocks` | POST |
+- | 更新块元素 | `/v1.0/doc/suites/documents/{dentryUuid}/blocks/{blockId}` | PUT |
+- | 删除块元素 | `/v1.0/doc/suites/documents/{dentryUuid}/blocks/{blockId}` | DELETE |
+- **最后更新：** 2026-04-10
+- **版本：** 1.0
+- **作者：** Ash · ShyZhen
++ # 钉钉文档企业版技能（dingtalk-doc-enterprise）
++ 通过钉钉开放平台企业 API 操作用户通过 URL 指定且有权限访问的已有钉钉文档。
++ ## 能力范围
++ - 根据钉钉文档 URL 读取文档内容和块结构
++ - 覆写已有文档内容
++ - 在已有文档中插入、修改、删除内容块
++ - 根据 OpenClaw 钉钉连接器提供的当前用户身份调用 API
++ - 不提供任何文档创建能力，包括创建空白文档
++ - 不删除文档实体；`delete` 只删除内容块
++ - 不列出或搜索用户文档
++ ## 配置
++ 在 OpenClaw 环境中配置：
++ 修改配置后重启 OpenClaw Gateway。
++ 在钉钉开放平台为企业内部应用申请：
++ | 权限码 | 用途 |
++ |---|---|
++ |---|---|
++ |---|---|
++ | `qyapi_get_member` | 将连接器提供的 sender_id 查询为 unionId |
++ | `Storage.File.Read` | 读取已有文档内容 |
++ | `Storage.File.Write` | 修改已有文档内容和内容块 |
++ `Storage.File.Write` 可能同时覆盖其他写入能力，但本 skill 的脚本和命令白名单均不实现创建文档接口。
++ ## 当前用户身份
++ 身份解析优先级：
++ 1. `OPENCLAW_SENDER_ID`
++ 2. `DINGTALK_SENDER_ID`
++ 3. `DINGTALK_OPERATOR_ID`，仅用于本地调试回退
++ 线上不要配置 `DINGTALK_OPERATOR_ID`。脚本会把当前 sender_id 查询为 unionId，并作为 `operatorId` 调用文档 API，因此最终权限由钉钉按照当前用户对目标文档的权限判定。
++ ## CLI
++ node doc-enterprise.js insert <docKey|url> <position> "<text>"
++ node doc-enterprise.js modify <docKey|url> <blockId> "<text>"
++ | 命令 | 含义 |
++ | `read` | 输出已有文档的内容块概览 |
++ | `blocks` | 输出完整块结构，用于总结或定位块 ID |
++ | `update` | 用 Markdown 覆写已有文档正文 |
++ | `insert` | 在已有文档中插入段落块，位置支持 `0` |
++ | `modify` | 替换已有段落块的文本 |
++ | `delete` | 删除已有文档中的指定内容块 |
++ 脚本没有 `create`、`create-doc`、`create-workspace`、`copy` 等命令。未知命令会直接拒绝。
++ ## 推荐操作流程
++ 块级修改或删除前先读取结构：
++ node doc-enterprise.js blocks "https://alidocs.dingtalk.com/i/nodes/xxx"
++ node doc-enterprise.js modify "https://alidocs.dingtalk.com/i/nodes/xxx" <blockId> "新文本"
++ node doc-enterprise.js delete "https://alidocs.dingtalk.com/i/nodes/xxx" <blockId>
++ 用户要求“追加一段”时，根据 `blocks` 返回的位置调用 `insert`。不再使用 `POST /paragraphs/{blockId}/text`：仓库中的 `dingtalk-doc` 已记录该接口在真实测试中返回 `InvalidAction.NotFound`。
++ ## API 范围
++ |---|---|---|
++ | 查询内容块 | `/v1.0/doc/suites/documents/{docKey}/blocks` | GET |
++ | 覆写已有文档 | `/v1.0/doc/suites/documents/{docKey}/overwriteContent` | POST |
++ | 插入内容块 | `/v1.0/doc/suites/documents/{docKey}/blocks` | POST |
++ | 修改内容块 | `/v1.0/doc/suites/documents/{docKey}/blocks/{blockId}` | PUT |
++ | 删除内容块 | `/v1.0/doc/suites/documents/{docKey}/blocks/{blockId}` | DELETE |
++ 不包含创建或删除文档实体的 API。
++ ## 常见错误
++ | 错误 | 处理 |
++ | 缺少 `DINGTALK_CLIENTID` / `DINGTALK_CLIENTSECRET` | 配置企业内部应用凭证并重启 Gateway |
++ | 缺少当前用户身份 | 检查连接器是否传入 `OPENCLAW_SENDER_ID` |
++ | `forbidden.accessDenied` | 检查当前用户的目标文档权限和应用权限 |
++ | `docNotExist` / `nodeNotExist` | 检查文档 URL 或 docKey |
++ | `blockNotExist` | 重新调用 `blocks` 获取当前块 ID |
++ | `paramError` | 检查 URL/docKey、blockId 和 position |
++ 最后更新：2026-08-18
+
+### SKILL.md  [instructions]
+- ---
+- description: 钉钉文档操作技能。仅在消息明确包含 `alidocs.dingtalk.com`、`钉钉文档`、`钉钉知识库`、`alidocs`，或当前上下文已明确对象是钉钉文档时使用。支持 read/blocks/update/append-text/delete 命令，不支持 create。
+- metadata:
+-   {
+-     "openclaw":
+-       {
+-         "emoji": "📄",
+-         "requires":
+-           {
+-             "bins": ["node"],
+-             "env": ["DINGTALK_CLIENTID", "DINGTALK_CLIENTSECRET"],
+-           },
+-       },
+-   }
+- 使用同目录脚本 `doc-enterprise.js` 调用钉钉文档企业 API。OpenClaw 不会因为目录里存在 `.js` 文件就自动执行它；当任务命中本 skill 时，应按下面规则主动调用脚本。
+- ## 何时使用
+- ### 🔑 触发关键词
+- 只有在**已经确认对象是钉钉文档**时，同时消息包含以下**任一关键词**时，优先使用本 skill：
+- | 类别 | 关键词 |
+- |------|--------|
+- | **平台名** | 钉钉文档、钉钉知识库、alidocs |
+- | **读取类** | 总结、读取、查看、浏览、列出结构 |
+- | **修改类** | 更新、修改、追加、删除、覆写 |
+- | **对象** | 文档、链接、这篇、这个文档 |
+- **组合示例：**
+- - "总结一下这篇钉钉文档"
+- - "读取这个 alidocs 链接"
+- - "更新文档内容"
+- - "删除第三段"
+- ### ✅ 触发场景（优先级从高到低）
+- | 场景 | 示例 | 动作 |
+- |------|------|------|
+- | **钉钉文档链接** | `alidocs.dingtalk.com/i/nodes/xxx` | 自动识别，调用 `read` 或 `blocks` |
+- | **钉钉上下文 + 链接** | "总结 https://alidocs.dingtalk.com/..." | 根据意图选择命令 |
+- | **明确命令** | "总结这篇文档"、"读取这个 alidocs 链接" | 根据意图选择命令 |
+- | **已知上下文是钉钉文档** | 前文已给出 alidocs 链接，后续说"更新文档"、"删除某段" | 调用对应命令 |
+- | **结构查询** | "列出结构"、"这个 alidocs 有哪些章节" | 调用 `blocks` |
+- ### ❌ 不触发的场景
+- - 创建新文档（脚本未实现 `create`）
+- - 没有文档链接、docKey、或明确钉钉文档上下文，却要求修改文档
+- - 用户只说“总结文档”“更新这个链接”等泛化请求，但上下文无法确认对象是钉钉文档
+- - 与钉钉无关的文档系统，例如本地 Markdown、飞书文档、语雀、Google Docs
+- ## 🔑 链接识别规则
+- 支持以下格式的钉钉文档链接：
+- https://alidocs.dingtalk.com/i/nodes/<docKey>?utm_scene=team_space
+- alidocs.dingtalk.com/i/nodes/<docKey>  （无 https）
+- 脚本会自动提取 `<docKey>` 部分。
+- ## 运行前提
+- 可选环境变量：
+- - `DINGTALK_OPERATOR_ID`：默认操作人 unionId
+- - `OPENCLAW_SENDER_ID`：由 OpenClaw/连接器注入，用于自动识别当前发送者
+- - `OPENCLAW_SENDER_NAME`
+- 脚本优先使用 `DINGTALK_OPERATOR_ID`。若未设置，则尝试使用 `OPENCLAW_SENDER_ID` 查询 unionId。
+- 脚本文件：`doc-enterprise.js`
+- 执行时使用绝对路径，形式如下：
+- 当本 skill 引用了相对路径文件时，将其相对于 `SKILL.md` 所在目录解析成绝对路径后再执行。
+- ### 1. 读取文档概览
+- 适用：
+- 适用：
+- 适用：
+- 适用：
+- 适用：
+- - 用户只说“读取这篇文档”
+- - 用户贴了一个文档链接，想先快速看内容概况
+- 执行：
+- 执行：
+- 执行：
+- 执行：
+- 执行：
+- 说明：
+- 说明：
+- 说明：
+- 说明：
+- 说明：
+- - `read` 只输出块列表和部分预览文本
+- - 适合快速探测，不适合直接拿来做高质量总结
+- ### 2. 获取完整结构或用于总结
+- - 用户要求“总结这篇文档”
+- - 用户要求“列出结构”
+- - 后续操作需要 `blockId`
+- - 优先用 `blocks` 获取更完整的块结构
+- - 做总结前，先读取 `blocks` 的结果，再基于结果总结
+- - 删除或追加前，如果用户没有给出 `blockId`，先运行 `blocks`
+- ### 3. 覆写整篇文档
+- - 用户明确要求“更新整篇文档”
+- - 用户给出了新的 Markdown 内容
+- - 这是整篇覆写，不是局部编辑
+- - 若用户只是想在末尾补一段，不要用 `update`
+- ### 4. 追加文本到段落块
+- - 用户要求在某个已知段落块后追加文本
+- - 已经拿到了目标 `blockId`
+- - 已经拿到了目标 `blockId`
+- node /absolute/path/to/doc-enterprise.js append-text <docKey-or-url> <blockId> <text>
+- - 如果没有 `blockId`，先运行 `blocks`
+- - 仅在目标块确实是段落块时使用
+- - “没有 `blockId`” 不代表不触发本 skill，而是先查结构再执行追加
+- ### 5. 删除块元素
+- - 用户明确要求删除某一段或某个块
+- - 删除前先确认目标块，避免误删
+- - 如果用户说“删除第 3 段”，先运行 `blocks` 找到对应 `blockId`
+- - “没有 `blockId`” 不代表不触发本 skill，而是先查结构再执行删除
+- 1. 从用户消息中提取文档链接或 docKey。
+- 2. 先确认对象确实是钉钉文档，再判断是读取、总结、列结构、覆写、追加，还是删除。
+- 3. 需要 `blockId` 时，先运行 `blocks`。
+- 4. 读取概览用 `read`；做总结或定位块时优先用 `blocks`。
+- 5. 执行脚本后，把结果用自然语言返回给用户。
+- 若脚本报以下错误，按对应方式处理：
+- - 缺少 `DINGTALK_CLIENTID` 或 `DINGTALK_CLIENTSECRET`：提示未配置钉钉应用凭证
+- - 缺少 `operatorId`：提示配置 `DINGTALK_OPERATOR_ID`，或确认连接器是否传入 `OPENCLAW_SENDER_ID`
+- - `forbidden.accessDenied`：提示当前用户对该文档无权限
+- - `docNotExist`：提示文档不存在，检查链接或 docKey
+- - `blockNotExist`：提示块不存在，先重新运行 `blocks` 核对
+- - `paramError`：提示参数格式错误，优先检查链接与文档 ID
+- ## 限制
+- - 当前脚本未实现创建文档，不要承诺或尝试 `create`
+- - `read` 只适合概览，不足以替代完整正文提取
+- - 追加和删除依赖 `blockId`
+- - 覆写会直接替换整篇文档内容
+- - 背景说明与人工阅读材料：`README.md`
+- - 实际执行脚本：`doc-enterprise.js`
++ description: 操作用户通过 URL 指定且有权限访问的已有钉钉文档。仅在消息明确包含 `alidocs.dingtalk.com`、`钉钉文档`、`钉钉知识库`、`alidocs`，或当前上下文已确认对象是钉钉文档时使用。支持读取、覆写，以及插入、修改、删除文档内容块；严禁创建文档，包括空白文档。
++ metadata: {"openclaw":{"emoji":"📄","requires":{"bins":["node"],"env":["DINGTALK_CLIENTID","DINGTALK_CLIENTSECRET"]}}}
++ 使用同目录的 `doc-enterprise.js` 操作用户通过 URL 指定的已有钉钉文档。
++ ## 能力边界
++ - 只操作已有文档；只接受钉钉文档 URL 或明确的 docKey。
++ - 允许读取、整篇覆写，以及插入、修改、删除内容块。
++ - `insert` 是向已有文档插入内容块，属于修改文档，不是创建文档。
++ - `delete` 是删除内容块，不删除文档实体。
++ - 不列出或搜索用户的文档。
++ - 严禁创建文档，包括空白文档；也不得创建知识库、文件夹或文档副本。
++ - 不得自行拼接、调用或建议任何未在“命令映射”中列出的创建接口。
++ - 用户要求创建或新建时，直接说明本 skill 不支持，不要用其他命令模拟创建。
++ ## 身份和权限
++ 线上身份按以下优先级解析：
++ 1. `OPENCLAW_SENDER_ID`
++ 2. `DINGTALK_SENDER_ID`
++ 3. `DINGTALK_OPERATOR_ID`，仅作为本地调试回退；线上不要配置
++ 将 sender_id 查询为 unionId，并将其作为 API 的 `operatorId`。钉钉 API 依据当前用户对目标文档的实际权限决定操作是否成功；不要把“可以读取”解释为“必然可以修改或删除”。
++ 将相对路径按 `SKILL.md` 所在目录解析，并使用脚本绝对路径：
++ ```bash
++ 支持以下链接形式：
++ ```text
++ alidocs.dingtalk.com/i/nodes/<docKey>
++ ### 读取概览
++ 只在用户要求快速查看时使用。需要总结、定位内容块或执行块级操作时使用 `blocks`。
++ ### 获取完整块结构
++ 用于总结正文、获取 `blockId`/`id` 和 `position`/`index`，以及在修改或删除前确认目标。
++ ### 覆写整篇内容
++ 仅在用户明确要求替换整篇内容，并且新内容完整明确时使用。此操作会替换已有正文。
++ ### 插入段落块
++ node /absolute/path/to/doc-enterprise.js insert <docKey-or-url> <position> <text>
++ - `position` 必须是大于或等于 0 的整数。
++ - 用户要求“追加一段”时，先运行 `blocks` 确认末尾位置，再插入新的段落块。
++ - 不要调用 `paragraphs/{blockId}/text` 的 append-text 接口。
++ ### 修改段落块
++ node /absolute/path/to/doc-enterprise.js modify <docKey-or-url> <blockId> <text>
++ 先运行 `blocks`，确认目标是段落块且 `blockId` 正确。该命令用新文本替换目标段落块。
++ ### 删除内容块
++ - 用户说“删除第 3 段”时，先运行 `blocks` 定位并确认第 3 段，再删除对应内容块。
++ - 用户要求清空内容时，先运行 `blocks`，逐个删除可删除的正文块；不要删除文档实体，也不要创建空白文档替换原文档。
++ - 目标存在歧义时，先向用户确认，不要猜测 blockId。
++ 1. 从当前消息或已确认的上下文提取钉钉文档 URL/docKey。
++ 2. 拒绝任何创建文档、空白文档、知识库、文件夹或副本的请求。
++ 3. 读取概览用 `read`；总结、定位、修改或删除前用 `blocks`。
++ 4. 根据意图只调用 `update`、`insert`、`modify` 或 `delete`。
++ 5. 对覆写和删除操作复述目标；目标不明确时先确认。
++ 6. 返回实际执行结果，不把 API 拒绝描述成操作成功。
++ - 缺少应用凭证：提示配置 `DINGTALK_CLIENTID` 和 `DINGTALK_CLIENTSECRET`。
++ - 缺少当前用户身份：检查连接器是否传入 `OPENCLAW_SENDER_ID`；仅本地调试时使用 `DINGTALK_OPERATOR_ID`。
++ - `forbidden.accessDenied`：说明当前用户没有执行该操作所需的文档权限，或应用缺少相应权限。
++ - `docNotExist` / `nodeNotExist`：检查 URL/docKey，说明文档不存在或标识不正确。
++ - `blockNotExist`：重新运行 `blocks` 并核对内容块 ID。
++ - `paramError`：优先检查 URL/docKey、blockId 和 position。
++ - 人工配置与能力说明：`README.md`
++ - 执行脚本：`doc-enterprise.js`
+
+### doc-enterprise.js  [code]
+- /**
+- /**
+- /**
+- /**
+-  *
+-  *
+-  * 支持操作：读取文档概览、查询块结构、插入块、覆写内容、删除块、追加段落文本
+-  * 环境变量：
+-  *   DINGTALK_CLIENTID - 企业内部应用 ClientId
+-  *   DINGTALK_CLIENTSECRET - 企业内部应用 ClientSecret
+-  *   DINGTALK_OPERATOR_ID - 操作人 unionId（可选，不设置则自动获取）
+-  */
+-  */
+-  */
+-  */
+- // ============ 配置 ============
+- const APP_KEY = process.env.DINGTALK_CLIENTID;
+- const APP_SECRET = process.env.DINGTALK_CLIENTSECRET;
+- const OPERATOR_ID = process.env.DINGTALK_OPERATOR_ID;
+- // 用户缓存（避免重复查询）
+- const CACHE_TTL = 5 * 60 * 1000; // 5 分钟
+- // ============ 工具函数 ============
+-  * 获取 Access Token
+-   if (!APP_KEY || !APP_SECRET) {
+-     body: JSON.stringify({ appKey: APP_KEY, appSecret: APP_SECRET })
+-   if (!response.ok) throw new Error(`获取 Token 失败：HTTP ${response.status}`);
+-   const data = await response.json();
+-   const data = await response.json();
+-   if (data.code && data.code !== 0) throw new Error(`获取 Token 失败：${data.message}`);
+-  * 通过 userId 获取 unionId（operatorId）
+-   // 检查缓存
+-   if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
+-     return cached.unionId;
+-   // 使用旧版 API（新版 topapi/v2 不存在）
+-   const response = await fetch(`https://oapi.dingtalk.com/user/get?access_token=${token}&userid=${userId}`, {
+-     method: 'GET'
+-   if (!response.ok) throw new Error(`获取用户信息失败：HTTP ${response.status}`);
+-   if (data.errcode !== 0) throw new Error(`获取用户信息失败：${data.errmsg}`);
+-   const unionId = data.unionid;
+-   userCache.set(userId, { unionId, timestamp: Date.now() });
+-   return unionId;
+-  * 获取当前用户的 operatorId
+-  * 优先级：
+-  * 1. 环境变量 DINGTALK_OPERATOR_ID
+-  * 2. 从 OpenClaw 环境变量获取 sender_id，然后查询 unionId
+- async function getCurrentOperatorId() {
+-   // 优先级 1：环境变量
+-   if (OPERATOR_ID) {
+-     console.log(`[用户识别] 使用环境变量：${OPERATOR_ID}`);
+-     return OPERATOR_ID;
+-   // 优先级 2：从 OpenClaw 环境变量获取 sender_id
+-     const token = await getAccessToken();
+-     const unionId = await getUnionId(senderId, token);
+-     console.log(`[用户识别] 从 sender_id 获取：${unionId}`);
+-   throw new Error('缺少 operatorId：请配置 DINGTALK_OPERATOR_ID 环境变量，或确保钉钉连接器传递了 sender_id');
+-  * 调用企业 API
+- async function callAPI(endpoint, method = 'GET', body = null, operatorId, token) {
+-   if (!operatorId) operatorId = await getCurrentOperatorId();
+-   if (!token) token = await getAccessToken();
+-   const url = `${endpoint}${separator}operatorId=${encodeURIComponent(operatorId)}`;
+-       'x-acs-dingtalk-access-token': token,
+-   if (body) options.body = JSON.stringify(body);
+-     const response = await fetch(`${API_BASE}${url}`, options);
+-     clearTimeout(timeoutId);
+-     if (!response.ok) {
+-       const errorData = await response.json().catch(() => ({}));
+-       throw new Error(`API 调用失败：HTTP ${response.status} - ${errorData.message || errorData.code || response.statusText}`);
+-     const result = await response.json();
+-     if (result.code && result.code !== 0) throw new Error(result.message || JSON.stringify(result));
+-  * 从 URL 提取文档 ID
+-   if (!input.includes('http') && !input.includes('/')) return input;
+-     /\/i\/nodes\/([a-zA-Z0-9]+)/,
+-     /\/nodes\/([a-zA-Z0-9]+)/,
+-     /docKey=([a-zA-Z0-9]+)/,
+-     /dentryKey=([a-zA-Z0-9]+)/,
+-     const match = input.match(pattern);
+-     if (match && match[1]) return match[1];
+-   return input;
+-   if (block?.paragraph?.text) return truncateText(block.paragraph.text, 80);
+-     if (text) return truncateText(text, 80);
+-   if (block?.heading?.text) return truncateText(block.heading.text, 80);
+- // ============ API 封装 ============
+- async function queryBlocks(dentryUuid, operatorId, token) {
+-   console.log(`[查询块元素] ${dentryUuid}`);
+-   return callAPI(`/v1.0/doc/suites/documents/${dentryUuid}/blocks`, 'GET', null, operatorId, token);
+- async function insertBlock(dentryUuid, element, position, operatorId, token) {
+-   console.log(`[插入块元素] ${dentryUuid}`);
+-   const body = { element };
+-   if (position) body.position = position;
+-   return callAPI(`/v1.0/doc/suites/documents/${dentryUuid}/blocks`, 'POST', body, operatorId, token);
+- async function modifyBlock(dentryUuid, blockId, element, operatorId, token) {
+-   console.log(`[更新块元素] ${dentryUuid}/${blockId}`);
+-   return callAPI(`/v1.0/doc/suites/documents/${dentryUuid}/blocks/${blockId}`, 'PUT', { element }, operatorId, token);
+- async function deleteBlock(dentryUuid, blockId, operatorId, token) {
+-   console.log(`[删除块元素] ${dentryUuid}/${blockId}`);
+-   return callAPI(`/v1.0/doc/suites/documents/${dentryUuid}/blocks/${blockId}`, 'DELETE', null, operatorId, token);
+- async function appendText(dentryUuid, blockId, text, operatorId, token) {
+-   console.log(`[追加文本] ${dentryUuid}/${blockId}`);
+-   return callAPI(`/v1.0/doc/suites/documents/${dentryUuid}/paragraphs/${blockId}/text`, 'POST', { text }, operatorId, token);
+- async function overwriteContent(docKey, markdown, operatorId, token) {
+-   console.log(`[覆写文档] ${docKey}`);
+-   return callAPI(`/v1.0/doc/suites/documents/${docKey}/overwriteContent`, 'POST', { dataType: 'markdown', content: markdown }, operatorId, token);
+- // ============ 命令处理 ============
+-   if (!docKey) { console.error('错误：请提供文档 ID 或链接'); process.exit(1); }
+-   const operatorId = await getCurrentOperatorId();
+-   const operatorId = await getCurrentOperatorId();
+-   const operatorId = await getCurrentOperatorId();
+-   const operatorId = await getCurrentOperatorId();
+-   const operatorId = await getCurrentOperatorId();
+-   const operatorId = await getCurrentOperatorId();
+-   if (result.blocks && result.blocks.length > 0) {
+-     result.blocks.forEach((block, index) => {
+-       console.log(`${index + 1}. [${block.blockType}] ${block.blockId}`);
+-       const preview = blockPreview(block);
+-       if (preview) console.log(`   预览：${preview}`);
+-     });
+-     console.log('\n提示：如果要做总结、定位 blockId 或查看完整结构，请使用 blocks 命令。');
+-   } else {
+-     console.log('(空文档)');
+-   const dentryUuid = extractDocId(args[0]);
+-   const dentryUuid = extractDocId(args[0]);
+-   const dentryUuid = extractDocId(args[0]);
+-   const dentryUuid = extractDocId(args[0]);
+-   if (!dentryUuid) { console.error('错误：请提供文档 ID 或链接'); process.exit(1); }
+-   const result = await queryBlocks(dentryUuid, operatorId, token);
+-   console.log('\n=== 块元素详情 ===\n');
+-   const position = args[1];
+-   const content = args.slice(2).join(' ');
+-   if (!dentryUuid || !content) { console.error('错误：请提供文档 ID、位置和內容'); process.exit(1); }
+-   const result = await insertBlock(dentryUuid, { blockType: 'paragraph', paragraph: { text: content } }, position, operatorId, token);
+-   console.log('✅ 插入成功');
+-   const blockId = args[1];
+-   const blockId = args[1];
+-   if (!dentryUuid || !blockId) { console.error('错误：请提供文档 ID 和块 ID'); process.exit(1); }
+-   const result = await deleteBlock(dentryUuid, blockId, operatorId, token);
+-   console.log('✅ 删除成功');
+- async function cmdAppendText(args) {
+-   if (!dentryUuid || !blockId || !text) { console.error('错误：请提供文档 ID、块 ID 和文本'); process.exit(1); }
+-   const result = await appendText(dentryUuid, blockId, text, operatorId, token);
+-   console.log('✅ 追加成功');
+-   if (!docKey || !markdown) { console.error('错误：请提供文档 ID 和内容'); process.exit(1); }
+-   console.log('✅ 更新成功');
+- // ============ 主函数 ============
+- async function main() {
+-   const args = process.argv.slice(2);
+-   if (!args.length || args.includes('--help')) {
+-     console.log(`
+-   read <docKey|url>           读取文档概览（块列表 + 预览）
+-   blocks <docKey|url>         查询完整块结构（适合总结和定位 blockId）
+-   insert <docKey|url> <pos> <content>  插入块元素
+-   delete <docKey|url> <blockId>       删除块元素
+-   append-text <docKey|url> <blockId> <text>  追加文本到段落
+-   update <docKey|url> <markdown>      覆写整篇文档内容
+- 说明:
+-   当前脚本未实现 create。
+-   如需总结文档或查找 blockId，请优先使用 blocks。
+- 示例:
+-   node doc-enterprise.js read https://alidocs.dingtalk.com/i/nodes/xxx
+-   node doc-enterprise.js update xxx "# 标题\\n\\n内容"
+-   DINGTALK_OPERATOR_ID       默认操作人 unionId（可选）
+-   OPENCLAW_SENDER_ID         钉钉连接器传递的 sender_id（自动注入）
+-     process.exit(0);
+-   const command = args[0];
+-   const commandArgs = args.slice(1);
+-     switch (command) {
+-       case 'read': await cmdRead(commandArgs); break;
+-       case 'blocks': await cmdBlocks(commandArgs); break;
+-       case 'insert': await cmdInsert(commandArgs); break;
+-       case 'delete': await cmdDelete(commandArgs); break;
+-       case 'append-text': await cmdAppendText(commandArgs); break;
+-       case 'update': await cmdUpdate(commandArgs); break;
+-       default: console.error(`未知命令：${command}`); process.exit(1);
+-     console.error('\n错误:', error.message);
+-     if (error.message.includes('operatorId')) {
+-       console.error('\n💡 提示：配置 DINGTALK_OPERATOR_ID 或确保钉钉连接器传递了 sender_id');
+-     } else if (error.message.includes('CLIENTID')) {
+-       console.error('\n💡 提示：配置 DINGTALK_CLIENTID 和 DINGTALK_CLIENTSECRET');
+-     } else if (error.message.includes('403')) {
+-       console.error('\n💡 提示：检查应用权限（Storage.File.Read/Write）');
+-     process.exit(1);
+- main();
++  * 只操作已有文档：读取内容、覆写内容，以及插入、修改、删除内容块。
++  * 本脚本不实现文档、知识库、文件夹或副本的创建接口。
++ const USER_CACHE_TTL_MS = 5 * 60 * 1000;
++ function getCredentials() {
++   const appKey = process.env.DINGTALK_CLIENTID;
++   const appSecret = process.env.DINGTALK_CLIENTSECRET;
++   if (!appKey || !appSecret) {
++   }
++   }
++   return { appKey, appSecret };
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ function maskValue(value, keep = 4) {
++   const text = String(value || '');
++   if (!text) return '';
++   if (text.length <= keep) return '*'.repeat(text.length);
++   return `${'*'.repeat(text.length - keep)}${text.slice(-keep)}`;
++ function debug(message) {
++   if (process.env.DINGTALK_DEBUG === 'true') console.error(`[调试] ${message}`);
++ async function readJsonResponse(response) {
++   const text = await response.text();
++   if (!text) return {};
++     return JSON.parse(text);
++     throw new Error(`解析 API 响应失败：${error.message}`);
++   const { appKey, appSecret } = getCredentials();
++     body: JSON.stringify({ appKey, appSecret })
++   });
++   const data = await readJsonResponse(response);
++   const data = await readJsonResponse(response);
++   if (!response.ok || (data.code && data.code !== 0)) {
++     throw new Error(`获取 Token 失败：${data.message || data.code || `HTTP ${response.status}`}`);
++   if (!data.accessToken) throw new Error('获取 Token 失败：响应中缺少 accessToken');
++   if (cached && Date.now() - cached.timestamp < USER_CACHE_TTL_MS) return cached.unionId;
++   const url = `https://oapi.dingtalk.com/user/get?access_token=${encodeURIComponent(token)}&userid=${encodeURIComponent(userId)}`;
++   const response = await fetch(url, { method: 'GET' });
++   if (!response.ok || data.errcode !== 0) {
++     throw new Error(`获取用户信息失败：${data.errmsg || `HTTP ${response.status}`}`);
++   if (!data.unionid) throw new Error('获取用户信息失败：响应中缺少 unionid');
++   userCache.set(userId, { unionId: data.unionid, timestamp: Date.now() });
++   return data.unionid;
++  * 线上优先使用当前消息发送者。DINGTALK_OPERATOR_ID 仅作为没有 sender_id 时的本地调试回退。
++ async function getCurrentOperatorId(token = null) {
++     const accessToken = token || await getAccessToken();
++     const unionId = await getUnionId(senderId, accessToken);
++     debug(`已从当前 sender_id 解析 operatorId（sender=${maskValue(senderId)}, operator=${maskValue(unionId)}）`);
++   const localOperatorId = process.env.DINGTALK_OPERATOR_ID;
++   if (localOperatorId) {
++     debug(`未收到 sender_id，使用本地调试 operatorId（operator=${maskValue(localOperatorId)}）`);
++     return localOperatorId;
++   throw new Error('缺少当前用户身份：请确认连接器传入 OPENCLAW_SENDER_ID；本地调试可设置 DINGTALK_OPERATOR_ID');
++ async function callAPI(endpoint, method = 'GET', body = null, operatorId = null, token = null) {
++   const accessToken = token || await getAccessToken();
++   const currentOperatorId = operatorId || await getCurrentOperatorId(accessToken);
++   const url = `${API_BASE}${endpoint}${separator}operatorId=${encodeURIComponent(currentOperatorId)}`;
++       'x-acs-dingtalk-access-token': accessToken,
++   if (body !== null) options.body = JSON.stringify(body);
++     const response = await fetch(url, options);
++     const result = await readJsonResponse(response);
++     const hasErrorCode = result.code !== undefined
++       && result.code !== null
++       && result.code !== 0
++       && result.code !== '0';
++     if (!response.ok || result.success === false || hasErrorCode) {
++       const error = new Error(`API 调用失败：${result.message || result.code || `HTTP ${response.status}`}`);
++       error.code = result.code;
++       error.requestId = result.requestId;
++       throw error;
++     return result;
++     if (error.name === 'AbortError') throw new Error(`API 调用超时（${TIMEOUT_MS}ms）`);
++   } finally {
++   const value = String(input).trim();
++   if (/^https?:\/\//i.test(value)) {
++     let parsedUrl;
++     try {
++       parsedUrl = new URL(value);
++     } catch {
++       throw new Error('无法识别钉钉文档链接或 docKey');
++     if (parsedUrl.hostname.toLowerCase() !== 'alidocs.dingtalk.com') {
++       throw new Error('只允许 alidocs.dingtalk.com 钉钉文档链接');
++   } else if (value.includes('/') && !/^alidocs\.dingtalk\.com\//i.test(value)) {
++     throw new Error('无法识别钉钉文档链接或 docKey');
++     /\/i\/nodes\/([a-zA-Z0-9_-]+)/,
++     /\/nodes\/([a-zA-Z0-9_-]+)/,
++     /[?&]docKey=([a-zA-Z0-9_-]+)/,
++     /[?&]dentryKey=([a-zA-Z0-9_-]+)/
++   ];
++     const match = value.match(pattern);
++     if (match) return match[1];
++   if (/^[a-zA-Z0-9_-]+$/.test(value)) return value;
++   throw new Error('无法识别钉钉文档链接或 docKey');
++ function validateBlockId(input) {
++   const blockId = String(input || '').trim();
++   if (!/^[a-zA-Z0-9_-]+$/.test(blockId)) throw new Error('无效的 blockId');
++   return blockId;
++ function encodePathId(input) {
++   return encodeURIComponent(extractDocId(input));
++ function extractBlocks(result) {
++   const candidates = [
++     result?.blocks,
++     result?.data,
++     result?.result?.data,
++     result?.result?.blocks,
++     result?.data?.blocks,
++     result?.data?.result?.data
++   return candidates.find(Array.isArray) || [];
++   if (block?.paragraph?.text) return truncateText(block.paragraph.text);
++     if (text) return truncateText(text);
++   if (block?.heading?.text) return truncateText(block.heading.text);
++   if (block?.text) return truncateText(block.text);
++ async function queryBlocks(docKeyOrUrl, operatorId, token) {
++   return callAPI(`/v1.0/doc/suites/documents/${encodePathId(docKeyOrUrl)}/blocks`, 'GET', null, operatorId, token);
++ async function insertBlock(docKeyOrUrl, text, position, operatorId, token) {
++   const parsedPosition = Number(position);
++   if (!Number.isInteger(parsedPosition) || parsedPosition < 0) throw new Error('position 必须是大于或等于 0 的整数');
++   const element = { blockType: 'paragraph', paragraph: { text } };
++   const element = { blockType: 'paragraph', paragraph: { text } };
++   return callAPI(
++   return callAPI(
++   return callAPI(
++   return callAPI(
++     `/v1.0/doc/suites/documents/${encodePathId(docKeyOrUrl)}/blocks`,
++     'POST',
++     'POST',
++     { element, position: parsedPosition },
++     operatorId,
++     operatorId,
++     operatorId,
++     operatorId,
++     token
++     token
++     token
++     token
++   );
++   );
++   );
++   );
++ async function modifyBlock(docKeyOrUrl, blockId, text, operatorId, token) {
++     `/v1.0/doc/suites/documents/${encodePathId(docKeyOrUrl)}/blocks/${encodeURIComponent(validateBlockId(blockId))}`,
++     `/v1.0/doc/suites/documents/${encodePathId(docKeyOrUrl)}/blocks/${encodeURIComponent(validateBlockId(blockId))}`,
++     'PUT',
++     { element },
++ async function deleteBlock(docKeyOrUrl, blockId, operatorId, token) {
++     'DELETE',
++     null,
++ async function overwriteContent(docKeyOrUrl, markdown, operatorId, token) {
++     `/v1.0/doc/suites/documents/${encodePathId(docKeyOrUrl)}/overwriteContent`,
++     { dataType: 'markdown', content: markdown },
++ function requireArgs(args, count, usage) {
++   if (args.length < count) throw new Error(`参数不足。用法：${usage}`);
++   requireArgs(args, 1, 'read <docKey|url>');
++   const docKey = extractDocId(args[0]);
++   const docKey = extractDocId(args[0]);
++   const docKey = extractDocId(args[0]);
++   const docKey = extractDocId(args[0]);
++   const operatorId = await getCurrentOperatorId(token);
++   const operatorId = await getCurrentOperatorId(token);
++   const operatorId = await getCurrentOperatorId(token);
++   const operatorId = await getCurrentOperatorId(token);
++   const operatorId = await getCurrentOperatorId(token);
++   const operatorId = await getCurrentOperatorId(token);
++   const result = await queryBlocks(docKey, operatorId, token);
++   const blocks = extractBlocks(result);
++   if (!blocks.length) {
++     console.log('(未返回内容块；如文档并非空文档，请使用 blocks 查看原始响应)');
++   blocks.forEach((block, index) => {
++     const blockType = block.blockType || block.type || 'unknown';
++     const blockId = block.blockId || block.id || '(无 ID)';
++     console.log(`${index + 1}. [${blockType}] ${blockId}`);
++     const preview = blockPreview(block);
++     if (preview) console.log(`   预览：${preview}`);
++   return result;
++   return result;
++   return result;
++   return result;
++   return result;
++   return result;
++   requireArgs(args, 1, 'blocks <docKey|url>');
++   requireArgs(args, 3, 'insert <docKey|url> <position> <text>');
++   const position = Number(args[1]);
++   if (!Number.isInteger(position) || position < 0) throw new Error('position 必须是大于或等于 0 的整数');
++   const text = args.slice(2).join(' ');
++   if (!text) throw new Error('插入文本不能为空');
++   const result = await insertBlock(docKey, text, position, operatorId, token);
++   console.log('✅ 内容块插入成功');
++ async function cmdModify(args) {
++   requireArgs(args, 3, 'modify <docKey|url> <blockId> <text>');
++   const blockId = validateBlockId(args[1]);
++   const blockId = validateBlockId(args[1]);
++   if (!text) throw new Error('修改文本不能为空；删除内容块请使用 delete');
++   const result = await modifyBlock(docKey, blockId, text, operatorId, token);
++   console.log('✅ 内容块修改成功');
++   requireArgs(args, 2, 'delete <docKey|url> <blockId>');
++   const result = await deleteBlock(docKey, blockId, operatorId, token);
++   console.log('✅ 内容块删除成功');
++   requireArgs(args, 2, 'update <docKey|url> <markdown>');
++   if (!markdown) throw new Error('覆写内容不能为空');
++   console.log('✅ 文档内容覆写成功');
++ const COMMAND_HANDLERS = Object.freeze({
++   read: cmdRead,
++   blocks: cmdBlocks,
++   insert: cmdInsert,
++   modify: cmdModify,
++   delete: cmdDelete,
++   update: cmdUpdate
++ });
++ function printHelp() {
++   console.log(`
++ 只操作已有文档，不提供任何文档创建能力。
++   read <docKey|url>                         读取文档概览
++   blocks <docKey|url>                       查询完整块结构
++   update <docKey|url> <markdown>            覆写已有文档内容
++   insert <docKey|url> <position> <text>      插入段落块（position 支持 0）
++   modify <docKey|url> <blockId> <text>       修改段落块
++   delete <docKey|url> <blockId>              删除内容块
++ 明确不支持:
++   创建文档、创建空白文档、创建知识库、创建文件夹、复制文档。
++   OPENCLAW_SENDER_ID         当前钉钉消息发送者 sender_id（线上优先）
++   DINGTALK_SENDER_ID         sender_id 兼容变量
++   DINGTALK_OPERATOR_ID       本地调试回退（线上不要配置）
++   DINGTALK_DEBUG=true        输出脱敏调试信息
++ async function runCommand(command, args = []) {
++   const handler = COMMAND_HANDLERS[command];
++   if (!handler) throw new Error(`未知或不允许的命令：${command}`);
++   return handler(args);
++ async function main(argv = process.argv.slice(2)) {
++   if (!argv.length || argv.includes('--help')) {
++     printHelp();
++     return;
++   await runCommand(argv[0], argv.slice(1));
++ module.exports = {
++   COMMAND_HANDLERS,
++   deleteBlock,
++   extractBlocks,
++   extractDocId,
++   getCurrentOperatorId,
++   insertBlock,
++   main,
++   modifyBlock,
++   overwriteContent,
++   queryBlocks,
++   runCommand
++ };
++ if (require.main === module) {
++   main().catch(error => {
++     console.error(`\n错误：${error.message}`);
++     if (error.code) console.error(`错误码：${error.code}`);
++     if (error.requestId) console.error(`请求 ID：${error.requestId}`);
++     process.exitCode = 1;
+
+### tests/doc-enterprise.test.js  [code]
++ 'use strict';
++ const test = require('node:test');
++ const assert = require('node:assert/strict');
++ const fs = require('node:fs');
++ const path = require('node:path');
++ const client = require('../doc-enterprise');
++ const originalFetch = global.fetch;
++ function mockResponse(data, options = {}) {
++   return {
++     ok: options.ok ?? true,
++     status: options.status ?? 200,
++     async text() {
++       return data === undefined ? '' : JSON.stringify(data);
++     }
++   };
++   };
++   };
++   };
++   };
++ }
++ test.afterEach(() => {
++   delete process.env.DINGTALK_CLIENTID;
++   delete process.env.DINGTALK_CLIENTSECRET;
++   delete process.env.OPENCLAW_SENDER_ID;
++   delete process.env.DINGTALK_SENDER_ID;
++   delete process.env.DINGTALK_OPERATOR_ID;
++   delete process.env.DINGTALK_DEBUG;
++   global.fetch = originalFetch;
++ });
++ });
++ });
++ });
++ });
++ });
++ });
++ });
++ });
++ test('command whitelist exposes existing-document operations only', () => {
++   assert.deepEqual(Object.keys(client.COMMAND_HANDLERS).sort(), [
++     'blocks', 'delete', 'insert', 'modify', 'read', 'update'
++   ]);
++   assert.equal(client.COMMAND_HANDLERS.create, undefined);
++   assert.equal(client.COMMAND_HANDLERS['create-doc'], undefined);
++   assert.equal(client.COMMAND_HANDLERS['append-text'], undefined);
++   assert.equal(client.callAPI, undefined);
++   assert.rejects(() => client.runCommand('create', []), /未知或不允许/);
++ test('OpenClaw frontmatter uses single-line metadata and valid core fields', () => {
++   const skillPath = path.join(__dirname, '..', 'SKILL.md');
++   const lines = fs.readFileSync(skillPath, 'utf8').split(/\r?\n/);
++   assert.equal(lines[0], '---');
++   assert.match(lines[1], /^name: [a-z0-9-]+$/);
++   assert.match(lines[2], /^description: .{1,1024}$/u);
++   assert.match(lines[3], /^metadata: \{.*\}$/);
++   assert.doesNotThrow(() => JSON.parse(lines[3].slice('metadata: '.length)));
++   assert.equal(lines[4], '---');
++ test('extractDocId accepts DingTalk URL and rejects unknown URL', () => {
++   assert.equal(
++     client.extractDocId('https://alidocs.dingtalk.com/i/nodes/Abc_123-x?utm_scene=person_space'),
++     'Abc_123-x'
++   );
++   assert.equal(client.extractDocId('alidocs.dingtalk.com/i/nodes/Abc123'), 'Abc123');
++   assert.throws(() => client.extractDocId('https://example.com/document/123'), /只允许/);
++   assert.throws(() => client.extractDocId('https://example.com/i/nodes/Abc123'), /只允许/);
++ test('all commands validate the document URL before credentials and identity', async () => {
++   let fetchCalls = 0;
++   global.fetch = async () => {
++     fetchCalls += 1;
++     throw new Error('network must not be called for an invalid URL');
++   const invalidUrl = 'https://example.com/i/nodes/abc';
++   const cases = [
++     ['read', [invalidUrl]],
++     ['blocks', [invalidUrl]],
++     ['insert', [invalidUrl, '0', 'text']],
++     ['modify', [invalidUrl, 'block1', 'text']],
++     ['delete', [invalidUrl, 'block1']],
++     ['update', [invalidUrl, '# content']]
++   ];
++   for (const [command, args] of cases) {
++     await assert.rejects(() => client.runCommand(command, args), /只允许 alidocs\.dingtalk\.com/);
++   }
++   assert.equal(fetchCalls, 0);
++ test('sender identity takes precedence over local operator fallback', async () => {
++   process.env.DINGTALK_CLIENTID = 'app-key';
++   process.env.DINGTALK_CLIENTSECRET = 'app-secret';
++   process.env.OPENCLAW_SENDER_ID = 'sender-123';
++   process.env.DINGTALK_OPERATOR_ID = 'local-operator';
++   const requests = [];
++   const requests = [];
++   global.fetch = async (url, options) => {
++   global.fetch = async (url, options) => {
++   global.fetch = async (url, options) => {
++     requests.push({ url, options });
++     requests.push({ url, options });
++     if (url.includes('/oauth2/accessToken')) return mockResponse({ accessToken: 'token-123' });
++     if (url.includes('oapi.dingtalk.com/user/get')) return mockResponse({ errcode: 0, unionid: 'sender-union-id' });
++     throw new Error(`unexpected URL: ${url}`);
++   assert.equal(await client.getCurrentOperatorId(), 'sender-union-id');
++   assert.equal(requests.length, 2);
++   assert.match(requests[1].url, /userid=sender-123/);
++ test('insert preserves position zero and never calls a document creation endpoint', async () => {
++   let request;
++     request = { url, options };
++     return mockResponse({ success: true });
++   await client.insertBlock('https://alidocs.dingtalk.com/i/nodes/doc123', 'first', 0, 'operator', 'token');
++   assert.match(request.url, /\/v1\.0\/doc\/suites\/documents\/doc123\/blocks\?operatorId=operator$/);
++   assert.deepEqual(JSON.parse(request.options.body), {
++     element: { blockType: 'paragraph', paragraph: { text: 'first' } },
++     position: 0
++   });
++   });
++   assert.doesNotMatch(request.url, /\/workspaces\/[^/]+\/docs(?:\?|$)/);
++ test('modify and delete target content blocks on an existing document', async () => {
++     return mockResponse(undefined);
++   await client.modifyBlock('doc123', 'block456', 'replacement', 'operator', 'token');
++   await client.deleteBlock('doc123', 'block456', 'operator', 'token');
++   assert.equal(requests[0].options.method, 'PUT');
++   assert.match(requests[0].url, /\/documents\/doc123\/blocks\/block456\?/);
++   assert.deepEqual(JSON.parse(requests[0].options.body), {
++     element: { blockType: 'paragraph', paragraph: { text: 'replacement' } }
++   assert.equal(requests[1].options.method, 'DELETE');
++   assert.match(requests[1].url, /\/documents\/doc123\/blocks\/block456\?/);
++ test('extractBlocks supports response shapes observed by both skills', () => {
++   assert.deepEqual(client.extractBlocks({ blocks: [{ blockId: 'a' }] }), [{ blockId: 'a' }]);
++   assert.deepEqual(client.extractBlocks({ result: { data: [{ id: 'b' }] } }), [{ id: 'b' }]);
++   assert.deepEqual(client.extractBlocks({ data: { result: { data: [{ id: 'c' }] } } }), [{ id: 'c' }]);

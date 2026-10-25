@@ -1,0 +1,152 @@
+j-levee/sweeping-monk  1.7.4 -> 1.7.5
+change_type: instructions+docs+code   changelog: v1.7.5：新增与藏经阁平台的进化提案联动（查看/应用/打回平台升级建议）；云端上传默认开启，安装即用。
+
+### SKILL.md  [instructions]
+- version: 1.7.4
++ version: 1.7.5
++ ## 九、查看与应用藏经阁进化提案（云端进化闭环收口）
++ 当藏经阁·易筋蒸馏出本技能的改进提案后，施主（创作者）可在对话中直接审阅并应用：
++ - **看看提案**：说「看看提案」/「查看进化提案」→ 老衲用随包脚本 `scripts/cjg-proposal-cli.py list` 拉取本人待审提案，按 `proposal_render.render_md` 格式展示（版本差、变更文件、理由、草稿）。
++ - **应用提案**：说「应用提案 <id>」/「批准提案 <id>」→ 老衲先调 `scripts/cjg-proposal-cli.py approve --id <id>` 在云端标记批准，再按提案 `changes` 逐条在本地应用：
++   - 应用前自动备份原文件到 `.backup/YYYY-MM-DDTHH-MMSS_<filename>`；
++   - `append` → 在文件末尾追加 `draft_text`；`rollback` → 从备份恢复；
++   - 应用后展示 diff，施主说「撤销」即从备份恢复。
++ - **打回提案**：说「打回提案 <id>」→ 调 `scripts/cjg-proposal-cli.py reject --id <id>`（附意见回传蒸馏，闭环）。
++ - 应用后版本 `patch+1`（如 1.7.4 → 1.7.5）；更新 SKILL.md `version`，提醒施主「如需发布到外部平台，说『发布』」。
++ > 前置：本技能包须内嵌创作者凭据 `.cloud_token` 且 `.cloud_config` 含 `proposal_url`（云端版包已含）。待接通的旧包说「看看提案」会提示先重发含凭据的包。
+
+### references/signals.md  [docs]
+- - **端点**：`cjg-signal-ingest` SCF（HTTP 触发，URL 由注册时返回）
+- 0. **接通守卫（前置，必查）**：检查技能包内是否存在创作者凭据 `.cloud_token`。
+-    - **不存在** → 云端上传**待命**：跳过后续所有上传步骤，**不发任何网络请求、不报错、不刷错误日志**。本地记录照常运行。首次对话按 SKILL.md §零「待接通」措辞告知（不承诺「已上传」）。待创作者接通（重发含 token 的包）后自动生效。
+-    - **存在** → 继续下列步骤。
+- 3. POST 到 `cjg-signal-ingest`（`Authorization: Bearer <.cloud_token>` 鉴权）
++ - **端点**：藏经阁·易筋 `cjg-signal-ingest` 函数 URL（路径 `/ingest`）；地址由 `.cloud_config` 的 `ingest_url` 提供（发布工具注入），兜底内置 `<https://1318491188-fpwsv5k3eh.ap-guangzhou.tencentscf.com>`。
++ 0. **接通守卫（前置，必查）**：检查技能包内是否存在创作者凭据 `.cloud_token` 与接入配置 `.cloud_config`。
++    - **`.cloud_token` 不存在** → 云端上传**待命**：跳过后续所有上传步骤，**不发任何网络请求、不报错、不刷错误日志**。本地记录照常运行。首次对话按 SKILL.md §零「待接通」措辞告知（不承诺「已上传」）。待创作者接通（重发含 token 的包）后自动生效。
++    - **`.cloud_token` 存在** → 读取 `.cloud_config` 的 `ingest_url` 作为上传端点（若无则回退内置兜底地址），继续下列步骤。
++ 3. POST 到 `.cloud_config` 的 `ingest_url`（`Authorization: Bearer <.cloud_token>` 鉴权）；若 `.cloud_config` 缺失则回退内置兜底端点
+
+### scripts/cjg-proposal-cli.py  [code]
++ #!/usr/bin/env python3
++ # -*- coding: utf-8 -*-
++ """藏经阁·易筋 进化提案 CLI（stdlib-only，随技能包分发）。
++ 读取技能包内 .cloud_token + .cloud_config，调用 cjg-proposal 函数 URL，
++ 让创作者本人在对话中「看看提案 / 应用提案」。
++ 用法:
++   python cjg-proposal-cli.py list [--slug SLUG] [--status pending|all]
++   python cjg-proposal-cli.py get  --id <proposal_id>
++   python cjg-proposal-cli.py approve --id <proposal_id> [--note "..."]
++   python cjg-proposal-cli.py reject  --id <proposal_id> [--note "..."]
++ 依赖: 仅 Python 标准库（urllib），无第三方包。
++ """
++ import argparse
++ import json
++ import os
++ import sys
++ import urllib.parse
++ import urllib.request
++ import urllib.error
++ HERE = os.path.dirname(os.path.abspath(__file__))
++ def _read(name):
++     p = os.path.join(HERE, name)
++     if not os.path.exists(p):
++         return None
++     return open(p, encoding="utf-8").read().strip()
++ def _cfg():
++     raw = _read(".cloud_config")
++     if not raw:
++         return {}
++         return {}
++     try:
++     try:
++         return json.loads(raw)
++     except Exception:
++ def _req(method, url, token, body=None):
++     data = json.dumps(body).encode("utf-8") if body is not None else None
++     req = urllib.request.Request(url, data=data, method=method)
++     req.add_header("Authorization", f"Bearer {token}")
++     req.add_header("Content-Type", "application/json")
++         with urllib.request.urlopen(req, timeout=25) as r:
++             return r.status, r.read().decode("utf-8")
++     except urllib.error.HTTPError as e:
++         return e.code, e.read().decode("utf-8", "replace")
++     except Exception as e:  # 网络/超时
++         return 0, str(e)
++ def _render(p):
++     lines = []
++     pid = p.get("proposal_id", "")
++     lines.append(f"# 提案 {pid[:8] if pid else ''} · {p.get('skill_slug','')} · {p.get('status','')}")
++     lines.append(f"  版本: {p.get('base_version')} → {p.get('proposed_version')}   置信度: {p.get('confidence')}")
++     if p.get("abandon_reason"):
++         lines.append(f"  流失归因: {p['abandon_reason']}")
++     if p.get("summary"):
++         lines.append(f"  摘要: {p['summary']}")
++     for c in (p.get("changes") or []):
++         lines.append(f"  - 文件 {c.get('file')} [{c.get('action')}]：{c.get('rationale','')}")
++         draft = c.get("draft_text", "")
++         if draft:
++             lines.append(f"      草稿: {draft[:240]}")
++     return "\n".join(lines)
++ def main():
++     ap = argparse.ArgumentParser(description="藏经阁·易筋 进化提案 CLI")
++     sub = ap.add_subparsers(dest="cmd", required=True)
++     pl = sub.add_parser("list"); pl.add_argument("--slug"); pl.add_argument("--status", default="pending")
++     pg = sub.add_parser("get"); pg.add_argument("--id", required=True)
++     pa = sub.add_parser("approve"); pa.add_argument("--id", required=True); pa.add_argument("--note")
++     pr = sub.add_parser("reject"); pr.add_argument("--id", required=True); pr.add_argument("--note")
++     args = ap.parse_args()
++     token = _read(".cloud_token")
++     if not token:
++         print("✗ 本技能包未内嵌创作者 token（.cloud_token 缺失）。云端提案待命——请创作者重发含 token 的包。")
++         sys.exit(1)
++         sys.exit(1)
++     cfg = _cfg()
++     base = cfg.get("proposal_url")
++     if not base:
++         print("✗ .cloud_config 缺少 proposal_url（旧包）。请创作者用含 proposal_url 的包重发。")
++     base = base.rstrip("/")
++     if args.cmd == "list":
++         qs = []
++         if args.slug:
++             qs.append("slug=" + urllib.parse.quote(args.slug))
++         qs.append("status=" + urllib.parse.quote(args.status))
++         url = base + "/?" + "&".join(qs)
++         st, body = _req("GET", url, token)
++         st, body = _req("GET", url, token)
++         if st != 200:
++         if st != 200:
++         if st != 200:
++             print(f"✗ HTTP {st}: {body[:300]}"); sys.exit(1)
++             print(f"✗ HTTP {st}: {body[:300]}"); sys.exit(1)
++             print(f"✗ HTTP {st}: {body[:300]}"); sys.exit(1)
++         data = json.loads(body)
++         data = json.loads(body)
++         data = json.loads(body)
++         ps = data.get("proposals", [])
++         ps = data.get("proposals", [])
++         if not ps:
++         if not ps:
++             print("（暂无可审核提案。蒸馏引擎定时运行，发现可改进点会生成提案出现在这里。）")
++             return
++         for p in ps:
++             print(_render(p)); print()
++     elif args.cmd == "get":
++         url = base + "/?id=" + urllib.parse.quote(args.id)
++             print("✗ 未找到该提案（或不属于你）"); sys.exit(1)
++         print(_render(ps[0]))
++     elif args.cmd in ("approve", "reject"):
++         url = base + "/approve"
++         st, body = _req("POST", url, token,
++                         {"proposal_id": args.id, "decision": args.cmd,
++                          "user_note": args.note})
++         print(f"{'✓ 已批准' if args.cmd=='approve' else '✓ 已打回'}提案（{data.get('skill_slug')}）→ 状态: {data.get('status')}")
++         content = data.get("content") or {}
++         if args.cmd == "approve" and content.get("changes"):
++             print("\n请按以下草稿在本地应用改进（应用前会自动备份原文件）：")
++             print(_render({"proposal_id": args.id, "skill_slug": data.get("skill_slug"),
++                            "status": data.get("status"), "changes": content.get("changes"),
++                            "base_version": content.get("base_version"),
++                            "proposed_version": content.get("proposed_version")}))
++ if __name__ == "__main__":
++     main()

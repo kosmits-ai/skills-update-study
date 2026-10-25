@@ -1,0 +1,125 @@
+cookfish1979/a-stock-report  1.8.4 -> 1.8.5
+change_type: instructions+code   changelog: 1.统一--date参数格式为YYYY-MM-DD; 2.更新IF期货基差数据源描述(新浪优先+AKShare兜底); 3.更新文档示例
+
+### SKILL.md  [instructions]
+- version: 1.8.4
+- source /workspace/.env && python3 /workspace/skills/A-stock-report/scripts/send_close_summary.py --date 20260413
+- | IF期货基差 | 东方财富 push2delay | `push2delay.eastmoney.com` |
+- A：收盘小结和晚报均支持 `--date YYYYMMDD`，如 `python3 send_close_summary.py --date 20260413`。晨报不支持指定历史日期。
++ version: 1.8.5
++ source /workspace/.env && python3 /workspace/skills/A-stock-report/scripts/send_close_summary.py --date 2026-04-13
++ | IF期货基差 | 新浪 nf_IF0 实时接口（今日优先）+ AKShare 兜底 | hq.sinajs.cn / akshare futures_main_sina |
++ A：收盘小结和晚报均支持 `--date YYYY-MM-DD`，如 `python3 send_close_summary.py --date 2026-04-13`。晨报不支持指定历史日期。
+
+### scripts/send_close_summary.py  [code]
+-     print("[LOCK] 已有实例，退出。"); sys.exit(0)
+-     payload = json.dumps({"msgtype": "text", "text": {"content": text}}, ensure_ascii=False)
+-             errcode = json.loads(r.stdout.decode()).get("errcode", -1)
+-     """IF期货基差：IF主连收盘价 vs 沪深300现货收盘价。
+-     期货：akshare futures_main_sina(symbol='IF0', start_date=YYYYMMDD, end_date=YYYYMMDD)
+-     现货：akshare stock_zh_index_daily(symbol='sh000300') 取最近N日"""
+-         # IF期货收盘价（新浪主连合约，取日期对应行）
+-         df_if = ak.futures_main_sina(symbol="IF0", start_date=trade_date, end_date=trade_date)
+-         if df_if is None or df_if.empty:
+-             print(f"  [IF期货] ⚠️ akshare futures_main_sina('IF0') {trade_date} 无数据")
+-         IF_price = float(df_if.iloc[-1]["收盘价"])
+-         # 沪深300现货收盘价（akshare日K，取最近有效收盘日）
+-             print(f"  [IF期货] ⚠️ akshare stock_zh_index_daily('sh000300') 无数据")
+-         basis = round(IF_price - spot, 2)
+-         print(f"  [IF期货] IF={IF_price:.2f} 现货={spot:.2f} 基差={basis:+.2f}点（{label}）")
++     try:
++     except Exception as e:
++             raw = r.read().decode("gbk", "replace")
++     mtime = os.path.getmtime(_LOCK)
++     lock_date = datetime.fromtimestamp(mtime, _TZ).date()
++     today = _date.today()
++     if lock_date < today:
++         print(f"[LOCK] 过期锁（{lock_date}，今日{today}），清理后继续。")
++         os.remove(_LOCK)
++     else:
++         print("[LOCK] 已有实例，退出。"); sys.exit(0)
++     payload = _json.dumps({"msgtype": "text", "text": {"content": text}}, ensure_ascii=False)
++             errcode = _json.loads(r.stdout.decode()).get("errcode", -1)
++ # ── IF期货实时价格（新浪 nf_IF0）────────────────────
++ def get_if_realtime():
++     """获取IF主连实时价格（新浪nf接口，字段[3]=当前价，字段[36]=日期）。
++     返回 (price: float, date_str: str) 或 (None, None)"""
++         url = "https://hq.sinajs.cn/list=nf_IF0"
++         req = _ur.Request(url, headers={
++             "User-Agent": "Mozilla/5.0",
++             "Referer": "https://finance.sina.com.cn",
++         })
++         with _ur.urlopen(req, timeout=5) as r:
++         line = raw.strip()
++         if "nf_IF0" not in line or "=" not in line:
++             print("  [IF期货] ⚠️ 新浪 nf_IF0 返回数据异常")
++             return None, None
++             return None, None
++         content = line.split('"')[1]
++         fields = content.split(",")
++         if len(fields) < 37:
++             print(f"  [IF期货] ⚠️ 新浪 nf_IF0 字段不足: {len(fields)}")
++         price = float(fields[3])
++         date_str = fields[36]   # YYYY-MM-DD
++         print(f"  [IF期货] 实时价格={price:.2f} ({date_str})")
++         return price, date_str
++         print(f"  [IF期货] ⚠️ 新浪 nf_IF0 请求失败: {e}")
++         return None, None
++     """IF期货基差：IF期货价格 vs 沪深300现货价格。
++     今日优先新浪nf_IF0实时价；失败则降级akshare（不区分日期，取最近收盘）。
++     现货：akshare stock_zh_index_daily(symbol='sh000300') 取最近有效收盘日"""
++         today_str = _date.today().strftime("%Y%m%d")
++         if trade_date == today_str:
++             if_price, _ = get_if_realtime()
++             if if_price is None:
++                 # 降级：akshare 不区分日期，取最近收盘价
++                 df_if = ak.futures_main_sina(symbol="IF0")
++                 if df_if is None or df_if.empty:
++                     print("  [IF期货] ⚠️ akshare IF 历史也无数据")
++                     return None
++                 if_price = float(df_if.iloc[-1]["收盘价"])
++                 print(f"  [IF期货] 降级akshare最近价={if_price:.2f}")
++         else:
++             # 非今日（历史日期）：akshare 不区分日期，取最近收盘
++             df_if = ak.futures_main_sina(symbol="IF0")
++             if df_if is None or df_if.empty:
++                 print(f"  [IF期货] ⚠️ akshare IF 无数据")
++                 return None
++             if_price = float(df_if.iloc[-1]["收盘价"])
++             print(f"  [IF期货] akshare最近价={if_price:.2f}")
++         if if_price is None:
++             print("  [IF期货] ⚠️ akshare stock_zh_index_daily('sh000300') 无数据")
++         basis = round(if_price - spot, 2)
++         print(f"  [IF期货] IF={if_price:.2f} 现货={spot:.2f} 基差={basis:+.2f}点（{label}）")
+
+### scripts/send_evening_report.py  [code]
+- 触发：python3 send_evening_report.py [--date YYYYMMDD] [--dry-run] [--ai-fill]
+-   --date YYYYMMDD  指定报告目标日期（如 --date 20260520）
+-         print(f"[LOCK] 已有实例在运行 ({_LOCK_FILE})，退出。")
+-         sys.exit(0)
++ 触发：python3 send_evening_report.py [--date YYYY-MM-DD] [--dry-run] [--ai-fill]
++   --date YYYY-MM-DD  指定报告目标日期（如 --date 2026-05-20）
++ from datetime import date as _date
++         else:
++         mtime = os.path.getmtime(_LOCK_FILE)
++         lock_date = datetime.fromtimestamp(mtime, NOW.tzinfo).date()
++         today = _date.today()
++         if lock_date < today:
++             print(f"[LOCK] 过期锁（{lock_date}，今日{today}），清理后继续。")
++             os.remove(_LOCK_FILE)
++             print(f"[LOCK] 已有实例在运行 ({_LOCK_FILE})，退出。")
++             sys.exit(0)
+
+### scripts/send_intraday_alert.py  [code]
+-         print(f"[LOCK] 已有实例在运行 ({_LOCK_FILE})，退出。")
+-         sys.exit(0)
++ from datetime import date as _date
++         else:
++         mtime = os.path.getmtime(_LOCK_FILE)
++         lock_date = datetime.fromtimestamp(mtime, timezone.utc + _TZ_OFFSET).date()
++         today = _date.today()
++         if lock_date < today:
++             print(f"[LOCK] 过期锁（{lock_date}，今日{today}），清理后继续。")
++             os.remove(_LOCK_FILE)
++             print(f"[LOCK] 已有实例在运行 ({_LOCK_FILE})，退出。")
++             sys.exit(0)

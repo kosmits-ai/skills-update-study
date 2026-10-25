@@ -1,0 +1,470 @@
+terrycarter1985/stock-alert-workflow  2.0.0 -> 4.1.0
+change_type: instructions+docs+code   changelog: Added earnings surprise alert: EPS beat >10% detection, 30-day analyst rating search, WhatsApp push via wacli
+
+### SKILL.md  [instructions]
+- description: >
+-   Earnings surprise alert workflow with analyst rating lookup and WhatsApp push.
+-   Use when (1) checking for EPS surprises exceeding a threshold from scraped earnings data,
+-   (2) searching recent analyst ratings for surprise tickers,
+-   (3) formatting and sending WhatsApp alerts for earnings beats/misses,
+-   (4) running the full end-to-end earnings surprise to analyst ratings to WhatsApp notification pipeline.
+-   Triggers on earnings surprise, EPS beat, analyst rating, stock alert, WhatsApp stock alert.
+- End-to-end pipeline: earnings surprise detection → analyst rating search → WhatsApp push.
+- ## Workflow
+- 1. **Detect surprises** — Run `scripts/check_earnings_surprise.py` against the latest scraped earnings data. Default threshold: 10%. Override: `python3 scripts/check_earnings_surprise.py 15`
+- 2. **Search analyst ratings** — For each qualifying ticker, run `scripts/search_analyst_ratings.py TICKER`. Requires `BRAVE_API_KEY` env var. Multiple tickers: `python3 scripts/search_analyst_ratings.py AAPL MSFT GOOG`
+- 3. **Format alert** — Compose WhatsApp message using the template in `references/whatsapp-alert-config.md`. Include ticker, surprise %, EPS details, and top analyst ratings.
+- 4. **Send via WhatsApp** — Use the `wacli` skill to push the formatted message to the configured recipient.
+- ## One-shot Command
+- # Full pipeline: check surprises, search ratings, output JSON
+- SURPRISES=$(python3 scripts/check_earnings_surprise.py)
+- TICKERS=$(echo "$SURPRISES" | python3 -c "import sys,json; d=json.load(sys.stdin); print(' '.join(e['ticker'] for e in d))")
+- [ -n "$TICKERS" ] && python3 scripts/search_analyst_ratings.py $TICKERS
+- Then format and send via wacli.
+- - **Scraper config**: See `references/scraper-config.md` for earnings data format and paths.
+- - **WhatsApp config**: See `references/whatsapp-alert-config.md` for message template and recipient setup.
+- - **Data path**: Defaults to `stock_analysis/data/` relative to workspace root. Override via second arg to `check_earnings_surprise.py`.
+- Set up a daily cron job after the earnings scraper runs:
+- schedule: every day at 09:00 (after scraper completes at 08:00)
+- payload: agentTurn — "Run the stock-alert-workflow: check earnings surprises > 10%, search analyst ratings, and send WhatsApp alerts for any qualifying tickers."
++ description: Automated stock earnings surprise alerts with analyst rating lookup and WhatsApp push. Detects EPS beats >10%, searches 30-day analyst ratings, and sends formatted alerts via WhatsApp. Use for earnings surprise monitoring, post-earnings analyst sentiment tracking, or real-time stock alert workflows. Triggers on: earnings surprise, EPS beat, analyst rating, stock alert, WhatsApp stock notification.
++ Automated pipeline: **Earnings Surprise Detection → Analyst Rating Search → WhatsApp Alert**
++ ## Quick Start
++ ```bash
++ # Full run: scan earnings, find surprises >10%, search analyst ratings, push via WhatsApp
++ uv run {baseDir}/scripts/earnings_surprise_alert.py
++ # Dry run (print alerts without sending)
++ uv run {baseDir}/scripts/earnings_surprise_alert.py --dry-run
++ # Specific tickers with custom threshold
++ uv run {baseDir}/scripts/earnings_surprise_alert.py --tickers AAPL MSFT NVDA --threshold 15
++ # JSON output for programmatic use
++ uv run {baseDir}/scripts/earnings_surprise_alert.py --output json
++ # Specific WhatsApp recipient
++ uv run {baseDir}/scripts/earnings_surprise_alert.py --recipient "+1234567890"
++ ```
++ ## Workflow Steps
++ ### 1. Earnings Surprise Detection
++ - Fetches earnings data from Yahoo Finance via `yfinance`
++ - Compares actual EPS vs estimate EPS
++ - Filters for surprises exceeding threshold (default: 10%)
++ - Scans S&P 500 constituents by default, or specified tickers
++ ### 2. Analyst Rating Search
++ - For each qualifying stock, searches Google News RSS for analyst ratings in the last 30 days
++ - Matches keywords: upgrade, downgrade, target price, rating, buy/sell/hold, overweight/underweight
++ - Returns up to 10 recent analyst actions per stock
++ ### 3. WhatsApp Push
++ - Formats a concise, emoji-rich alert message
++ - Sends via `wacli send` to configured or specified recipient
++ - Falls back to console output if wacli is unavailable
++ ## Alert Format
++ 🚨 *Earnings Surprise Alert*
++ 📊 *AAPL* — Apple Inc.
++ EPS Est: $1.50  |  Actual: $1.82
++ Surprise: *+21.3%* ⬆️
++ 📝 *Recent Analyst Ratings (30d):*
++ • Morgan Stanley upgrades AAPL to Overweight, PT $220
++ • Goldman Sachs raises AAPL target to $210
++ ⚠️ Not financial advice
++ ### Environment Variables
++ | Variable | Description | Default |
++ |---|---|---|
++ |---|---|---|
++ | `OPENCLAW_WORKSPACE` | Workspace root path | `~/.openclaw/workspace` |
++ ### CLI Arguments
++ | Arg | Description | Default |
++ | `--tickers` | Specific tickers to scan | S&P 500 |
++ | `--threshold` | Surprise % threshold | 10.0 |
++ | `--recipient` | WhatsApp phone number | wacli default |
++ | `--dry-run` | Print without sending | false |
++ | `--output` | json or text | text |
++ ### Dependencies
++ - `yfinance` (auto-installed)
++ - `wacli` (for WhatsApp push; alerts print to console if unavailable)
++ Set up daily earnings scan via cron:
++ # Run daily at 8:30 AM ET (after US market earnings releases)
++ clawhub cron add --schedule "30 13 * * *" --command "uv run {baseDir}/scripts/earnings_surprise_alert.py"
++ Or use OpenClaw cron for agent-based scheduling.
++ ## Output
++ Results saved to `stock_analysis/data/earnings_surprise_YYYYMMDD.json` with full details including analyst ratings and alert messages.
+
+### references/scraper-config.md  [docs]
+- # Earnings Scraper Configuration
+- Source: `scrapers/yahoo_finance_earnings.yaml`
+- - **Target**: Yahoo Finance earnings calendar
+- - **Output**: `stock_analysis/data/earnings_{date}.json`
+- - **Schedule**: daily
+- - **Key fields**: ticker, company, eps_estimate, reported_eps, surprise (%)
+- The scraper produces a JSON array. Each entry has:
+- ```json
+- {
+-   "ticker": "AAPL",
+-   "company": "Apple Inc.",
+-   "earnings_date": "2026-05-01",
+-   "eps_estimate": "1.52",
+-   "reported_eps": "1.81",
+-   "surprise": "19.08%"
+- }
+- ```
+- The `surprise` field is a string percentage (may include `%` suffix). The
+- `check_earnings_surprise.py` script handles both string and numeric formats.
+
+### references/whatsapp-alert-config.md  [docs]
+- # WhatsApp Alert Configuration
+- Source: `wacli_configs/config.template.yaml`
+- ## Sending Alerts
+- Use the `wacli` skill to send WhatsApp messages. The default recipient is
+- configured in `wacli_configs/config.yaml`.
+- ## Alert Message Format
+- For earnings surprise alerts, use this template:
+- ```
+- ```
+- 🚨 *Earnings Surprise Alert*
+- *{ticker}* — {company}
+- EPS: {reported_eps} (Est: {eps_estimate})
+- Surprise: +{surprise_pct}%
+- 📊 *Recent Analyst Ratings:*
+- • {analyst_firm}: {rating} — {price_target}
+- • ...
+- Source: Yahoo Finance / Brave Search
+- ## Key Config Fields
+- - `whatsapp.default_recipient`: Phone number for alerts
+- - `alerts.stock_price_changes.threshold`: Price change alert threshold (%)
+- - `integrations.stock_analysis_path`: Path to stock analysis data
+
+### scripts/check_earnings_surprise.py  [code]
+- #!/usr/bin/env python3
+- """Check earnings surprises from scraped Yahoo Finance data.
+- Reads the latest earnings JSON file and filters for EPS surprises > threshold%.
+- Outputs a JSON list of qualifying tickers with surprise details.
+- """
+- import json
+- import sys
+- import glob
+- import os
+- from datetime import datetime, timedelta
+- from pathlib import Path
+- DEFAULT_THRESHOLD = 10.0
+- DEFAULT_DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "..", "stock_analysis", "data")
+- def load_latest_earnings(data_dir: str = DEFAULT_DATA_DIR) -> list:
+-     """Load the most recent earnings JSON file."""
+-     pattern = os.path.join(data_dir, "earnings_*.json")
+-     files = sorted(glob.glob(pattern))
+-     if not files:
+-         print(f"No earnings files found in {data_dir}", file=sys.stderr)
+-         return []
+-     with open(files[-1]) as f:
+-         return json.load(f)
+- def filter_surprises(earnings: list, threshold: float = DEFAULT_THRESHOLD) -> list:
+-     """Return entries where EPS surprise % exceeds threshold."""
+-     results = []
+-     for entry in earnings:
+-         surprise_pct = entry.get("surprise")
+-         if surprise_pct is None:
+-             continue
+-         # Handle string percentages like "15.30%"
+-         if isinstance(surprise_pct, str):
+-             surprise_pct = float(surprise_pct.rstrip("%"))
+-         if abs(surprise_pct) > threshold:
+-             results.append({
+-                 "ticker": entry.get("ticker"),
+-                 "company": entry.get("company", ""),
+-                 "eps_estimate": entry.get("eps_estimate"),
+-                 "reported_eps": entry.get("reported_eps"),
+-                 "surprise_pct": round(surprise_pct, 2),
+-                 "earnings_date": entry.get("earnings_date", ""),
+-             })
+-     return results
+- def main():
+-     threshold = float(sys.argv[1]) if len(sys.argv) > 1 else DEFAULT_THRESHOLD
+-     data_dir = sys.argv[2] if len(sys.argv) > 2 else DEFAULT_DATA_DIR
+-     earnings = load_latest_earnings(data_dir)
+-     if not earnings:
+-         print("[]")
+-         return
+-     surprises = filter_surprises(earnings, threshold)
+-     print(json.dumps(surprises, indent=2))
+- if __name__ == "__main__":
+-     main()
+
+### scripts/earnings_surprise_alert.py  [code]
++ #!/usr/bin/env python3
++ """
++ """
++ Earnings Surprise Alert Workflow
++ 1. Fetch earnings calendar from Yahoo Finance
++ 2. Filter EPS surprises > 10%
++ 3. Search analyst ratings (last 30 days) via web search
++ 4. Push formatted alert via WhatsApp (wacli)
++ import argparse
++ import json
++ import os
++ import subprocess
++ import sys
++ import xml.etree.ElementTree as ET
++ from datetime import datetime, timedelta
++ from pathlib import Path
++ from urllib.request import urlopen, Request
++ from urllib.parse import quote_plus
++ from urllib.error import HTTPError
++ # ---------------------------------------------------------------------------
++ # ---------------------------------------------------------------------------
++ # ---------------------------------------------------------------------------
++ # ---------------------------------------------------------------------------
++ # ---------------------------------------------------------------------------
++ # ---------------------------------------------------------------------------
++ # ---------------------------------------------------------------------------
++ # ---------------------------------------------------------------------------
++ # ---------------------------------------------------------------------------
++ # ---------------------------------------------------------------------------
++ # Config
++ SURPRISE_THRESHOLD = 10.0  # percent
++ ANALYST_WINDOW_DAYS = 30
++ YAHOO_EARNINGS_URL = "https://finance.yahoo.com/calendar/earnings"
++ GOOGLE_NEWS_RSS = "https://news.google.com/rss/search"
++ # Paths (relative to workspace or overridden via env)
++ WORKSPACE = os.environ.get("OPENCLAW_WORKSPACE", os.path.expanduser("~/.openclaw/workspace"))
++ DATA_DIR = Path(WORKSPACE) / "stock_analysis" / "data"
++ DATA_DIR.mkdir(parents=True, exist_ok=True)
++ # Step 1: Fetch earnings data via yfinance
++ def fetch_earnings(tickers=None, threshold=SURPRISE_THRESHOLD):
++     """Fetch recent earnings surprises using yfinance.
++     If tickers is None, scans a broad set of popular tickers."""
++     try:
++     try:
++     try:
++         import yfinance as yf
++         import yfinance as yf
++     except ImportError:
++         print("Installing yfinance...", file=sys.stderr)
++         subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "yfinance"])
++     # Default: scan S&P 500 constituents or a representative list
++     if tickers is None:
++         csv_path = Path(WORKSPACE) / "stock_analysis" / "sp500_constituents.csv"
++         if csv_path.exists() and csv_path.stat().st_size > 0:
++             import csv
++             with open(csv_path) as f:
++                 reader = csv.reader(f)
++                 tickers = [row[0] for row in reader if row][:200]
++         else:
++         else:
++         else:
++             tickers = [
++                 "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA", "BRK-B",
++                 "JPM", "V", "UNH", "JNJ", "WMT", "XOM", "PG", "MA", "HD", "CVX",
++                 "MRK", "ABBV", "AVGO", "KO", "PEP", "COST", "ADBE", "CRM", "AMD",
++                 "NFLX", "INTC", "CSCO", "DIS", "PFE", "BA", "GS", "MS", "BLK",
++                 "CAT", "DE", "IBM", "QCOM", "TXN", "LRCX", "AMAT", "NOW", "SQ",
++             ]
++     surprises = []
++     for ticker in tickers:
++         try:
++             t = yf.Ticker(ticker)
++             info = t.info
++             eps_est = info.get("earningsEstimateAvg", info.get("expectedEps"))
++             eps_actual = info.get("trailingEps")
++             # Try earnings history for more precise surprise data
++             eh = t.earnings_history
++             if eh is not None and not eh.empty:
++                 latest = eh.iloc[-1]
++                 eps_est = latest.get("epsEstimate", eps_est)
++                 eps_actual = latest.get("epsActual", eps_actual)
++                 surprise_pct = latest.get("surprisePercent")
++                 if surprise_pct is not None:
++                     surprise_pct = float(surprise_pct) * 100
++                 elif eps_est and eps_actual and float(eps_est) != 0:
++                     surprise_pct = (float(eps_actual) - float(eps_est)) / abs(float(eps_est)) * 100
++                 else:
++                     continue
++             elif eps_est and eps_actual and float(eps_est) != 0:
++                 surprise_pct = (float(eps_actual) - float(eps_est)) / abs(float(eps_est)) * 100
++             else:
++                 continue
++             if surprise_pct >= threshold:
++                 surprises.append({
++                     "ticker": ticker,
++                     "company": info.get("shortName", ticker),
++                     "eps_estimate": round(float(eps_est), 3) if eps_est else None,
++                     "eps_actual": round(float(eps_actual), 3) if eps_actual else None,
++                     "surprise_pct": round(surprise_pct, 1),
++                 })
++                 print(f"  ✅ {ticker}: {surprise_pct:+.1f}% surprise", file=sys.stderr)
++         except Exception as e:
++             print(f"  ⚠️ {ticker}: {e}", file=sys.stderr)
++     return surprises
++ # Step 2: Search analyst ratings (last 30 days) via web search
++ def search_analyst_ratings(ticker, company=""):
++     """Search for analyst ratings in the last 30 days using web search."""
++     date_from = (datetime.now() - timedelta(days=ANALYST_WINDOW_DAYS)).strftime("%Y-%m-%d")
++     query = f"{ticker} analyst rating target price upgrade downgrade after:{date_from}"
++     # Try Google News RSS first
++     ratings = []
++         url = f"{GOOGLE_NEWS_RSS}?q={quote_plus(query)}&hl=en-US&gl=US&ceid=US:en"
++         req = Request(url, headers={"User-Agent": "Mozilla/5.0"})
++         with urlopen(req, timeout=10) as resp:
++             tree = ET.parse(resp)
++         root = tree.getroot()
++         for item in root.iter("item"):
++             title = item.findtext("title", "")
++             pub_date = item.findtext("pubDate", "")
++             link = item.findtext("link", "")
++             if any(kw in title.lower() for kw in ["upgrade", "downgrade", "target", "rating", "buy", "sell", "hold", "overweight", "underweight"]):
++                 ratings.append({"title": title, "date": pub_date, "link": link})
++     except Exception as e:
++     except Exception as e:
++         print(f"  Google News RSS error for {ticker}: {e}", file=sys.stderr)
++     # Fallback: use web_search tool if available (called externally by the agent)
++     return ratings[:10]  # cap at 10 results
++ # Step 3: Format and push via WhatsApp
++ def format_alert(ticker_data, analyst_ratings):
++     """Format a WhatsApp-friendly alert message."""
++     t = ticker_data
++     lines = [
++         f"🚨 *Earnings Surprise Alert*",
++         f"",
++         f"",
++         f"📊 *{t['ticker']}* — {t['company']}",
++         f"EPS Est: ${t['eps_estimate']:.2f}  |  Actual: ${t['eps_actual']:.2f}",
++         f"Surprise: *+{t['surprise_pct']:.1f}%* ⬆️",
++     ]
++     if analyst_ratings:
++         lines.append("📝 *Recent Analyst Ratings (30d):*")
++         for r in analyst_ratings[:5]:
++             lines.append(f"• {r['title'][:80]}")
++         lines.append("")
++     lines.append("⚠️ Not financial advice")
++     return "\n".join(lines)
++ def send_whatsapp(message, recipient=None):
++     """Send alert via wacli."""
++     cmd = ["wacli", "send"]
++     if recipient:
++         cmd += ["--to", recipient]
++     cmd += ["--message", message]
++         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
++         if result.returncode == 0:
++             print(f"  📱 WhatsApp alert sent", file=sys.stderr)
++             return True
++             print(f"  ❌ wacli error: {result.stderr}", file=sys.stderr)
++             return False
++     except FileNotFoundError:
++         print("  ⚠️ wacli not found — printing message instead:", file=sys.stderr)
++         print(message)
++         return False
++         return False
++         print(f"  ❌ WhatsApp send error: {e}", file=sys.stderr)
++ # Main
++ def main():
++     parser = argparse.ArgumentParser(description="Earnings Surprise Alert Workflow")
++     parser.add_argument("--tickers", nargs="+", help="Specific tickers to check")
++     parser.add_argument("--threshold", type=float, default=SURPRISE_THRESHOLD, help="Surprise %% threshold (default: 10)")
++     parser.add_argument("--recipient", help="WhatsApp recipient phone number")
++     parser.add_argument("--dry-run", action="store_true", help="Print alerts without sending")
++     parser.add_argument("--output", choices=["json", "text"], default="text", help="Output format")
++     args = parser.parse_args()
++     print(f"🔍 Scanning earnings surprises (threshold: {args.threshold}%)...", file=sys.stderr)
++     surprises = fetch_earnings(args.tickers, args.threshold)
++     if not surprises:
++         print("No earnings surprises above threshold found.", file=sys.stderr)
++         return
++     print(f"\n📋 Found {len(surprises)} earnings surprise(s)!", file=sys.stderr)
++     results = []
++     for s in surprises:
++         print(f"\n🔎 Searching analyst ratings for {s['ticker']}...", file=sys.stderr)
++         ratings = search_analyst_ratings(s["ticker"], s["company"])
++         s["analyst_ratings"] = ratings
++         msg = format_alert(s, ratings)
++         s["alert_message"] = msg
++         if not args.dry_run:
++             send_whatsapp(msg, args.recipient)
++             print(msg)
++         results.append(s)
++     # Save results
++     out_path = DATA_DIR / f"earnings_surprise_{datetime.now().strftime('%Y%m%d')}.json"
++     with open(out_path, "w") as f:
++         json.dump(results, f, indent=2, default=str)
++     print(f"\n💾 Results saved to {out_path}", file=sys.stderr)
++     if args.output == "json":
++         print(json.dumps(results, indent=2, default=str))
++ if __name__ == "__main__":
++     main()
+
+### scripts/requirements.txt  [docs]
++ yfinance>=0.2.31
+
+### scripts/search_analyst_ratings.py  [code]
+- #!/usr/bin/env python3
+- """Search analyst ratings for a given ticker using web search.
+- Uses Brave Search API (via OPENAI_BRAVE_KEY or BRAVE_API_KEY env var) to find
+- analyst ratings from the last 30 days. Outputs structured JSON.
+- """
+- import json
+- import os
+- import sys
+- import gzip
+- import urllib.request
+- import urllib.parse
+- from datetime import datetime, timezone
+- def search_brave(query: str, count: int = 5) -> list:
+-     """Perform a Brave Search API query."""
+-     api_key = os.environ.get("BRAVE_API_KEY") or os.environ.get("OPENAI_BRAVE_KEY", "")
+-     if not api_key:
+-         print("Warning: No BRAVE_API_KEY set, returning empty results", file=sys.stderr)
+-         return []
+-         return []
+-     url = "https://api.search.brave.com/res/v1/web/search?" + urllib.parse.urlencode({
+-         "q": query,
+-         "count": count,
+-         "freshness": "month",
+-     })
+-     })
+-     req = urllib.request.Request(url, headers={
+-         "Accept": "application/json",
+-         "Accept-Encoding": "gzip",
+-         "X-Subscription-Token": api_key,
+-     try:
+-         with urllib.request.urlopen(req, timeout=15) as resp:
+-             raw = resp.read()
+-             if resp.headers.get("Content-Encoding") == "gzip":
+-                 raw = gzip.decompress(raw)
+-             data = json.loads(raw)
+-         return data.get("web", {}).get("results", [])
+-     except Exception as e:
+-         print(f"Search error: {e}", file=sys.stderr)
+- def search_analyst_ratings(ticker: str) -> dict:
+-     """Search for recent analyst ratings for a ticker."""
+-     queries = [
+-         f"{ticker} analyst rating upgrade downgrade 2025",
+-         f"{ticker} price target analyst consensus",
+-     ]
+-     all_results = []
+-     for q in queries:
+-         results = search_brave(q, count=5)
+-         for r in results:
+-             all_results.append({
+-                 "title": r.get("title", ""),
+-                 "url": r.get("url", ""),
+-                 "snippet": r.get("description", ""),
+-             })
+-     # Deduplicate by URL
+-     seen = set()
+-     unique = []
+-     for r in all_results:
+-         if r["url"] not in seen:
+-             seen.add(r["url"])
+-             unique.append(r)
+-     return {
+-         "ticker": ticker,
+-         "search_date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+-         "lookback_days": 30,
+-         "results": unique[:10],
+-     }
+- def main():
+-     if len(sys.argv) < 2:
+-         print("Usage: search_analyst_ratings.py TICKER [TICKER...]", file=sys.stderr)
+-         sys.exit(1)
+-     tickers = sys.argv[1:]
+-     output = []
+-     for ticker in tickers:
+-         output.append(search_analyst_ratings(ticker))
+-     print(json.dumps(output, indent=2))
+- if __name__ == "__main__":
+-     main()

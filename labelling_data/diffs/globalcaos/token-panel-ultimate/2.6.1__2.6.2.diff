@@ -1,0 +1,490 @@
+globalcaos/token-panel-ultimate  2.6.1 -> 2.6.2
+change_type: instructions+docs+code   changelog: Added esc()/num(): every rendered string is HTML-escaped and every number coerced; Key now goes in the x-goog-api-key header; Split into separate slots: 'anthropic' (setup-token, no generic env var) and 'anthropic-admin' (TOKEN_PANEL_AN; Helpers now run by absolute path from /usr/bin or /bin only; Refuses a symlinked directory or file; Token compared with hmac; User-Agent is now token-panel-ultimate/2; Unit file text is now inside BUDGET_README as a heredoc
+
+### BUDGET_README.md  [docs]
+- python3 secretstore.py --login anthropic     # reads the key from stdin
+- | `TOKEN_PANEL_ANTHROPIC_TOKEN`, `TOKEN_PANEL_OPENAI_KEY`, `TOKEN_PANEL_GEMINI_KEY`, `TOKEN_PANEL_MANUS_KEY` | yes — these are ours |
+- | `ANTHROPIC_ADMIN_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `MANUS_API_KEY` | **no** — only with `TOKEN_PANEL_ALLOW_PROVIDER_ENV=1` |
+- cp budget-collector.service ~/.config/systemd/user/
+- ├── budget-collector.service
++ claude setup-token | python3 secretstore.py --login anthropic   # Claude usage token (claude-usage-fetch.py)
++ python3 secretstore.py --login anthropic-admin   # Anthropic Admin API key (collector), from stdin
++ `anthropic` and `anthropic-admin` are different kinds of credential and are kept in separate
++ slots: the usage token is sent only to the OAuth usage endpoint, the Admin key only to the
++ Admin usage API. The keychain helper (`secret-tool` / `security`) is run from `/usr/bin` or
++ `/bin` by absolute path, never found via `$PATH`.
++ | `TOKEN_PANEL_ANTHROPIC_TOKEN`, `TOKEN_PANEL_ANTHROPIC_ADMIN_KEY`, `TOKEN_PANEL_OPENAI_KEY`, `TOKEN_PANEL_GEMINI_KEY`, `TOKEN_PANEL_MANUS_KEY` | yes — these are ours |
++ | `ANTHROPIC_ADMIN_API_KEY` (Admin slot only), `OPENAI_API_KEY`, `GEMINI_API_KEY`, `MANUS_API_KEY` | **no** — only with `TOKEN_PANEL_ALLOW_PROVIDER_ENV=1` |
++ cat > ~/.config/systemd/user/budget-collector.service <<'UNIT'
++ [Unit]
++ Description=Token Panel - AI usage tracking API
++ After=network-online.target
++ [Service]
++ Type=simple
++ WorkingDirectory=%h/.openclaw/skills/token-panel-ultimate
++ ExecStart=%h/.local/bin/uvicorn api:app --host 127.0.0.1 --port 8765
++ Restart=on-failure
++ RestartSec=10
++ Environment=PYTHONUNBUFFERED=1
++ NoNewPrivileges=true
++ PrivateTmp=true
++ ProtectSystem=full
++ ProtectKernelTunables=true
++ ProtectControlGroups=true
++ RestrictSUIDSGID=true
++ [Install]
++ WantedBy=default.target
++ UNIT
++ ├── scripts/            # per-provider usage fetchers + browser widget
++ ├── tests/              # file-safety and credential-handling tests
+
+### SKILL.md  [instructions]
+- version: 2.6.1
+-         scope: "Namespaced TOKEN_PANEL_* variables (credentials, TOKEN_PANEL_API_TOKEN, TOKEN_PANEL_READ_TRANSCRIPTS, TOKEN_PANEL_ALLOW_PROVIDER_ENV). Generic provider variables belonging to other tools (OPENAI_API_KEY, ANTHROPIC_ADMIN_API_KEY, GEMINI_API_KEY, MANUS_API_KEY) are read ONLY with TOKEN_PANEL_ALLOW_PROVIDER_ENV=1. No .env files are scraped."
+-         scope: "The OS keychain helpers only: `secret-tool` (Linux) for store/lookup/clear, and `security` (macOS) for lookup/delete. Secrets are never passed as command-line arguments — macOS writes go through Security.framework, Linux writes go over stdin."
+-         scope: "First-party provider API keys supplied by you, stored under token-panel-ultimate in the OS keychain. It never reads Claude Code, OpenClaw, browser, or other application credential stores. `--logout PROVIDER` clears every local store and prints the provider's server-side revoke URL."
+-       security: "Runs a REST API bound to 127.0.0.1:8765. Its GET endpoints are unauthenticated and report your spend, so do not expose the port; every POST additionally requires X-Token-Panel-Token and is closed entirely unless TOKEN_PANEL_API_TOKEN is set. SQLite database is local, 0600 in a 0700 directory, and holds counts and opaque ids only; the database, its directory and every usage JSON refuse to be written through a symlink, and all four usage fetchers share one owner-only writer instead of four drifted copies (two of which used to inherit the ambient umask). Credentials are ones you supply, sealed in the OS keychain. The systemd unit is a --user unit: it runs as you, never as root, and carries no hardcoded username."
+-   lines. The same command supports `openai`, `gemini` and `manus`. On macOS the write goes
+- owner-only `0600` file inside a `0700` directory. Database and usage files are created `0600`
+- python3 secretstore.py --login anthropic
++ version: 2.6.2
++         scope: "Namespaced TOKEN_PANEL_* variables (credentials TOKEN_PANEL_ANTHROPIC_TOKEN / TOKEN_PANEL_ANTHROPIC_ADMIN_KEY / TOKEN_PANEL_OPENAI_KEY / TOKEN_PANEL_GEMINI_KEY / TOKEN_PANEL_MANUS_KEY, TOKEN_PANEL_API_TOKEN, TOKEN_PANEL_READ_TRANSCRIPTS, TOKEN_PANEL_ALLOW_PROVIDER_ENV). Generic provider variables belonging to other tools (OPENAI_API_KEY, ANTHROPIC_ADMIN_API_KEY, GEMINI_API_KEY, MANUS_API_KEY) are read ONLY with TOKEN_PANEL_ALLOW_PROVIDER_ENV=1. No .env files are scraped."
++         scope: "The OS keychain helpers only: `secret-tool` (Linux) for store/lookup/clear, and `security` (macOS) for lookup/delete, each run by absolute path from /usr/bin or /bin — $PATH is never searched. Secrets are never passed as command-line arguments — macOS writes go through Security.framework, Linux writes go over stdin."
++         scope: "First-party provider credentials supplied by you, stored under token-panel-ultimate in the OS keychain, one slot per credential kind: `anthropic` (a Claude usage token from `claude setup-token`, sent only to the Anthropic OAuth usage endpoint), `anthropic-admin` (an Admin API key, sent only to the Admin usage API), `openai`, `gemini` (sent in the x-goog-api-key header, never in a URL), `manus`. It never reads Claude Code, OpenClaw, browser, or other application credential stores. `--logout PROVIDER` clears every local store and prints the provider's server-side revoke URL."
++       security: "Runs a REST API bound to 127.0.0.1:8765. Its GET endpoints are unauthenticated and report your spend, so do not expose the port; every POST additionally requires X-Token-Panel-Token and is closed entirely unless TOKEN_PANEL_API_TOKEN is set. SQLite database is local, 0600 in a 0700 directory, and holds counts and opaque ids only; the database, its directory and every usage JSON refuse to be written through a symlink, and all four usage fetchers share one owner-only writer instead of four drifted copies (two of which used to inherit the ambient umask). Credentials are ones you supply, sealed in the OS keychain; the no-keychain fallback file refuses symlinks and is replaced atomically. POST bodies accept identifier-shaped strings only, and the browser widget HTML-escapes every value it renders. The systemd unit is a --user unit: it runs as you, never as root, and carries no hardcoded username."
++   lines. The same command supports `anthropic-admin`, `openai`, `gemini` and `manus`. The
++   keychain helper is run from `/usr/bin` or `/bin` by absolute path, never looked up on `$PATH`.
++ - **Each credential goes only where it belongs.** The Claude usage token (`anthropic`) and an
++   Anthropic Admin API key (`anthropic-admin`) live in separate slots and are never sent to each
++   other's endpoint. The Gemini key travels in the `x-goog-api-key` header, not in a URL, and is
++   redacted from error text. The Claude fetcher sends its own `User-Agent`, not Claude Code's. On macOS the write goes
++ owner-only `0600` file inside a `0700` directory; that file and its directory must not be
++ symlinks, and it is rewritten atomically. Database and usage files are created `0600`
++ **The widget treats its data as text.** Plan names, model ids and counts come from provider
++ responses, so every value is HTML-escaped or coerced to a number before it reaches the page, and
++ the userscript requests no `GM_*` grants and no `file://` access. The API accepts only
++ identifier-shaped strings and non-negative counts on POST, and compares the mutate token in
++ constant time.
++ claude setup-token | python3 secretstore.py --login anthropic   # scripts/claude-usage-fetch.py
++ python3 secretstore.py --login anthropic-admin                  # collector: Admin usage API (optional)
++ ## Changelog
++ - **2.6.2** — widget HTML-escapes all rendered values (fixes markup injection from provider data) and drops unused GM/file grants; Gemini key moved from URL to header with error redaction; separate `anthropic` / `anthropic-admin` credential slots; keychain helpers run from fixed system paths, not `$PATH`; fallback credential file refuses symlinks and writes atomically; API token compared in constant time and POST inputs validated; Claude fetcher no longer sends a Claude Code User-Agent.
+
+### api.py  [code]
+- from pydantic import BaseModel
+-     if not x_token or x_token != MUTATE_TOKEN:
+-     provider: str
+-     provider: str
+-     model: str
+-     input_tokens: int
+-     output_tokens: int
+-     cost_usd: float = 0
+-     session_key: Optional[str] = None
+-     cache_read_tokens: int = 0
+-     cache_write_tokens: int = 0
+-     task_id: str
+-     credits_used: int
+-     status: str = "completed"
+-     monthly_limit: float
+-     alert_threshold: float = 0.8
++ from pydantic import BaseModel, Field
++ import hmac
++     # Constant-time comparison: a plain != leaks, through response timing, how many
++     # leading characters of a guess were right.
++     if not x_token or not hmac.compare_digest(x_token.encode(), MUTATE_TOKEN.encode()):
++ # Identifier-shaped fields only. These strings are echoed back by GET /status, whose
++ # summary is meant to be placed in an agent prompt and shown on a dashboard, so a
++ # recorded "provider" must not be able to carry markup or free-form instructions.
++ IDENT = r"^[A-Za-z0-9._:/@+-]{1,128}$"
++     provider: str = Field(pattern=IDENT)
++     provider: str = Field(pattern=IDENT)
++     model: str = Field(pattern=IDENT)
++     input_tokens: int = Field(ge=0)
++     output_tokens: int = Field(ge=0)
++     cost_usd: float = Field(default=0, ge=0)
++     session_key: Optional[str] = Field(default=None, pattern=IDENT)
++     cache_read_tokens: int = Field(default=0, ge=0)
++     cache_write_tokens: int = Field(default=0, ge=0)
++     task_id: str = Field(pattern=IDENT)
++     credits_used: int = Field(ge=0)
++     status: str = Field(default="completed", pattern=IDENT)
++     monthly_limit: float = Field(ge=0)
++     alert_threshold: float = Field(default=0.8, ge=0, le=1)
+
+### package.json  [code]
+-   "version": "2.6.1",
++   "version": "2.6.2",
+
+### parsers/anthropic.py  [code]
+- Credential: stored by you via `secretstore.py --login anthropic` (OS keychain).
+- TOKEN_PANEL_ALLOW_PROVIDER_ENV=1 — it belongs to other tools too.
+-         stored_key, _ = get_secret("anthropic")
+-             logger.warning("no Anthropic credential stored; run: secretstore.py --login anthropic")
++ Credential: an Anthropic ADMIN API key stored by you via
++ `secretstore.py --login anthropic-admin` (OS keychain), or TOKEN_PANEL_ANTHROPIC_ADMIN_KEY.
++ TOKEN_PANEL_ALLOW_PROVIDER_ENV=1 — it belongs to other tools too. This is a separate slot
++ from the `anthropic` subscription token used by scripts/claude-usage-fetch.py; neither
++ credential is ever sent to the other's endpoint.
++         stored_key, _ = get_secret("anthropic-admin")
++             logger.warning("no Anthropic Admin key stored; run: secretstore.py --login anthropic-admin")
+
+### scripts/budget-panel-widget.user.js  [code]
+- // @version      4.0.0
+- // @grant        GM_xmlhttpRequest
+- // @connect      file://*
+-   // Paths to usage JSON files (update if different)
+-   const USAGE_FILES = {
+-     claude: "~/.openclaw/workspace/memory/claude-usage.json",
+-     gemini: "~/.openclaw/workspace/memory/gemini-usage.json",
+-     manus: "~/.openclaw/workspace/memory/manus-usage.json",
+-       const resetHtml = resetTime ? `<div class="bpw-reset">↻ ${resetTime}</div>` : "";
+-           <span class="bpw-name">${name}</span>
+-         ${detail ? `<div class="bpw-detail">${detail}</div>` : ""}
+-         <div class="bpw-label"><span class="bpw-name">${name}</span><span class="bpw-unlimited">∞ UNLIMITED</span></div>
+-       const plan = c.plan || "max";
+-           <span>Claude<span class="bpw-plan">${plan.toUpperCase()}</span></span>
+-           { name: "RPD", used: usage.rpd || 0, limit: limits.rpd },
+-           { name: "RPM", used: usage.rpm || 0, limit: limits.rpm },
+-           { name: "TPM", used: usage.tpm || 0, limit: limits.tpm },
+-             <div class="bpw-model-name">${statusIcon} ${model.name}</div>
+-         ${renderBar("Daily", mDaily.pct || 0, `${mDaily.used || 0}/${mDaily.limit || 300}`)}
+-         ${renderBar("Monthly", mMonthly.pct || 0, `${mMonthly.used || 0}/${mMonthly.limit || 4000}`)}
+-         ${m.addon ? `<div class="bpw-detail" style="margin-top:4px;">💰 ${m.addon.toLocaleString()} addon credits</div>` : ""}
+-             const pct = info.utilization_pct || 0;
+-             const req = info.requests || {};
+-             const detail = `${req.remaining || 0}/${req.limit || 0} req left`;
+-       html += `<div style="font-size:8px;color:#888;text-align:center;margin-top:6px;">Updated: ${updateTime}</div>`;
+-     BP_DEBUG && console.log("[Budget Panel] v4.0.0 - Claude + ChatGPT + Gemini + Manus");
++ // @version      4.1.0
++ // @grant        none
++   // Everything rendered below comes from provider API responses and local JSON files the
++   // gateway relays. None of it is trusted markup: every string is HTML-escaped and every
++   // number is coerced to a finite Number before it is placed into innerHTML, so a plan
++   // name, model id or credit field containing "<img onerror=...>" renders as text.
++   const esc = (v) =>
++     String(v ?? "").replace(/[&<>"'`]/g, (ch) => ({
++       "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;", "`": "&#96;",
++     })[ch]);
++   const num = (v) => {
++     const n = Number(v);
++     return Number.isFinite(n) ? n : 0;
++     // `name`, `detail` and `resetTime` are plain text; they are escaped here, once.
++       pct = num(pct);
++       const resetHtml = resetTime ? `<div class="bpw-reset">↻ ${esc(resetTime)}</div>` : "";
++           <span class="bpw-name">${esc(name)}</span>
++         ${detail ? `<div class="bpw-detail">${esc(detail)}</div>` : ""}
++         <div class="bpw-label"><span class="bpw-name">${esc(name)}</span><span class="bpw-unlimited">∞ UNLIMITED</span></div>
++       const plan = String(c.plan || "max");
++           <span>Claude<span class="bpw-plan">${esc(plan.toUpperCase())}</span></span>
++           { name: "RPD", used: num(usage.rpd), limit: num(limits.rpd) },
++           { name: "RPM", used: num(usage.rpm), limit: num(limits.rpm) },
++           { name: "TPM", used: num(usage.tpm), limit: num(limits.tpm) },
++             <div class="bpw-model-name">${statusIcon} ${esc(model.name)}</div>
++         ${renderBar("Daily", mDaily.pct, `${num(mDaily.used)}/${num(mDaily.limit) || 300}`)}
++         ${renderBar("Monthly", mMonthly.pct, `${num(mMonthly.used)}/${num(mMonthly.limit) || 4000}`)}
++         ${num(m.addon) ? `<div class="bpw-detail" style="margin-top:4px;">💰 ${esc(num(m.addon).toLocaleString())} addon credits</div>` : ""}
++             const pct = num(info?.utilization_pct);
++             const req = info?.requests || {};
++             const detail = `${num(req.remaining)}/${num(req.limit)} req left`;
++       html += `<div style="font-size:8px;color:#888;text-align:center;margin-top:6px;">Updated: ${esc(updateTime)}</div>`;
++     BP_DEBUG && console.log("[Budget Panel] v4.1.0 - Claude + ChatGPT + Gemini + Manus");
+
+### scripts/claude-usage-fetch.py  [code]
+-             'User-Agent': 'claude-code/2.0.32',
++             # Identifies this tool honestly. Earlier versions sent a Claude Code
++             # User-Agent, presenting the request as coming from another application.
++             'User-Agent': 'token-panel-ultimate/2.6.2',
+
+### scripts/gemini-usage-fetch.py  [code]
+-     url = f'{BASE_URL}/models?key={api_key}'
+-         with urllib.request.urlopen(url, timeout=10) as resp:
+-         return {"error": str(e)}
+-     url = f'{BASE_URL}/models/{model}:generateContent?key={api_key}'
+-         'Content-Type': 'application/json'
+-         return {"status": "error", "code": e.code, "message": body}
+-         return {"status": "error", "message": str(e)}
++ def _redact(text, api_key):
++     """Never let the key reach stdout, a log, or the usage JSON via an error string."""
++     text = str(text)
++     return text.replace(api_key, "[REDACTED]") if api_key else text
++     # The key travels in the x-goog-api-key HEADER, not a ?key= query parameter: a URL
++     # is what proxies, access logs and exception messages record.
++     req = urllib.request.Request(f'{BASE_URL}/models', headers={'x-goog-api-key': api_key})
++         with urllib.request.urlopen(req, timeout=10) as resp:
++         return {"error": _redact(e, api_key)}
++     url = f'{BASE_URL}/models/{model}:generateContent'
++         'Content-Type': 'application/json',
++         'x-goog-api-key': api_key,
++         return {"status": "error", "code": e.code, "message": _redact(body, api_key)}
++         return {"status": "error", "message": _redact(e, api_key)}
+
+### secretstore.py  [code]
+-     python3 secretstore.py --login anthropic     # reads the secret from stdin
+- import shutil
+-         "revoke_url": "https://console.anthropic.com/settings/keys",
+-         "revoke_note": "delete the API key there to revoke it server-side.",
+-     return shutil.which(binary) is not None
+-     if not FALLBACK_FILE.exists():
+-     st = FALLBACK_FILE.stat()
+-     if st.st_uid != os.getuid():
+-         raise PermissionError(f"{FALLBACK_FILE} is not owned by you — refusing to read it.")
+-     if st.st_mode & 0o077:
+-         raise PermissionError(
+-             f"{FALLBACK_FILE} is group/world accessible. Run: chmod 600 {FALLBACK_FILE}"
+-         )
+-     for line in FALLBACK_FILE.read_text().splitlines():
+-     FALLBACK_DIR.mkdir(parents=True, exist_ok=True)
+-         fd = os.open(str(marker), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+-     fd = os.open(str(FALLBACK_FILE), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+-     with os.fdopen(fd, "w") as f:
+-         f.write(body)
+-     os.chmod(FALLBACK_FILE, 0o600)
+-             ["secret-tool", "store", f"--label={SERVICE} {provider}",
+-             ["secret-tool", "lookup", "service", SERVICE, "account", provider],
+-             ["secret-tool", "lookup", "service", SERVICE, "account", provider],
+-             ["security", "find-generic-password", "-s", SERVICE, "-a", provider, "-w"],
+-     if FALLBACK_FILE.exists():
+-     if os.environ.get(PROVIDER_ENV_OPT_IN) == "1":
+-                 ["secret-tool", "clear", "service", SERVICE, "account", provider],
+-             ["security", "delete-generic-password", "-s", SERVICE, "-a", provider],
+-         if os.environ.get(env_name):
++      The helper is taken from a fixed system directory (/usr/bin, /bin), never looked
++      up on $PATH, so a `secret-tool` planted earlier on PATH cannot receive the secret.
++      Neither the file nor its directory may be a symlink; the file is opened with
++      O_NOFOLLOW and replaced atomically (temp file + rename), never written in place.
++     python3 secretstore.py --login anthropic        # Claude usage token, read from stdin
++     python3 secretstore.py --login anthropic-admin  # Anthropic Admin API key (collector)
++     # Two Anthropic credentials of DIFFERENT kinds, kept in separate slots so neither is
++     # ever sent where the other belongs. Up to 2.6.1 one "anthropic" slot fed both the
++     # claude-usage-fetch OAuth call (as a Bearer token) and the collector's Admin API
++     # call (as x-api-key), and ANTHROPIC_ADMIN_API_KEY could fill it — so an Admin key
++     # could be sent to the OAuth endpoint and a subscription token to the Admin API.
++         # The subscription usage token you mint with `claude setup-token`. There is no
++         # generic environment variable for it: none belongs to this kind of token.
++         "also_env": None,
++         "revoke_url": "https://claude.ai/settings",
++         "revoke_note": "sign out the long-lived token there (or run `claude setup-token` again) to invalidate it server-side.",
++     },
++     "anthropic-admin": {
++         # An Anthropic Admin API key (sk-ant-admin...), used only by the collector's
++         # organisation usage report.
++         "env": "TOKEN_PANEL_ANTHROPIC_ADMIN_KEY",
++         "revoke_url": "https://console.anthropic.com/settings/admin-keys",
++         "revoke_note": "delete the Admin key there to revoke it server-side.",
++ # Keychain helpers are executed from these directories ONLY. $PATH is not consulted:
++ # a writable directory early on PATH would otherwise let any binary named `secret-tool`
++ # receive the credential on its stdin.
++ TRUSTED_BIN_DIRS = ("/usr/bin", "/bin")
++ def _tool(binary: str) -> str | None:
++     """Absolute path of a keychain helper in a trusted system directory, or None."""
++     for d in TRUSTED_BIN_DIRS:
++         candidate = os.path.join(d, binary)
++         if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
++             return candidate
++     return None
++     return _tool(binary) is not None
++     try:
++     try:
++ def _refuse_symlinks() -> None:
++     """The fallback store's directory and file must be real, not links to elsewhere."""
++     for p in (FALLBACK_DIR, FALLBACK_FILE):
++         if p.is_symlink():
++             raise PermissionError(
++             raise PermissionError(
++                 f"refusing to use {p}: it is a symlink, so whoever created the link "
++                 f"would choose where your credentials are read from or written to."
++             )
++             )
++     _refuse_symlinks()
++     _refuse_symlinks()
++         fd = os.open(str(FALLBACK_FILE), os.O_RDONLY | os.O_NOFOLLOW)
++     except FileNotFoundError:
++     with os.fdopen(fd, "r") as f:
++         # Checked on the descriptor we read from, so the file cannot be swapped between
++         # the ownership check and the read.
++         st = os.fstat(f.fileno())
++         if st.st_uid != os.getuid():
++             raise PermissionError(f"{FALLBACK_FILE} is not owned by you — refusing to read it.")
++         if st.st_mode & 0o077:
++                 f"{FALLBACK_FILE} is group/world accessible. Run: chmod 600 {FALLBACK_FILE}"
++         text = f.read()
++     for line in text.splitlines():
++     FALLBACK_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
++     if marker.is_symlink():
++         raise PermissionError(f"refusing to use {marker}: it is a symlink.")
++         fd = os.open(str(marker), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
++         with os.fdopen(fd, "w") as f:
++     for k, v in entries.items():
++         if "\n" in k or "\n" in v or "\r" in v:
++             raise ValueError(f"refusing to store a credential for {k!r} that contains a newline")
++     # Write a fresh 0600 temp file beside the store and rename it over the old one: a
++     # crash leaves either the old or the new store, never a truncated one, and the
++     # rename replaces a directory entry rather than writing through whatever it names.
++     tmp = FALLBACK_DIR / f".credentials.{os.getpid()}.tmp"
++     fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
++             f.write(body)
++             f.flush()
++             os.fsync(f.fileno())
++         os.replace(tmp, FALLBACK_FILE)
++     except BaseException:
++         try:
++             os.unlink(tmp)
++         except FileNotFoundError:
++             pass
++         raise
++             [_tool("secret-tool"), "store", f"--label={SERVICE} {provider}",
++             [_tool("secret-tool"), "lookup", "service", SERVICE, "account", provider],
++             [_tool("secret-tool"), "lookup", "service", SERVICE, "account", provider],
++             [_tool("security"), "find-generic-password", "-s", SERVICE, "-a", provider, "-w"],
++     if FALLBACK_FILE.exists() or FALLBACK_FILE.is_symlink():
++     if spec["also_env"] and os.environ.get(PROVIDER_ENV_OPT_IN) == "1":
++                 [_tool("secret-tool"), "clear", "service", SERVICE, "account", provider],
++             [_tool("security"), "delete-generic-password", "-s", SERVICE, "-a", provider],
++         if env_name and os.environ.get(env_name):
+
+### tests/test_credentials.py  [code]
++ #!/usr/bin/env python3
++ """Focused tests for credential handling. Everything runs in a temp dir with a fake
++ $HOME and a fake $PATH — no real keychain, no real credential, no network."""
++ import importlib.util
++ import os
++ import stat
++ import sys
++ import tempfile
++ from pathlib import Path
++ SKILL = Path(__file__).resolve().parent.parent
++ sys.path.insert(0, str(SKILL))
++ PASS = FAIL = 0
++ def ok(m):
++     global PASS; PASS += 1; print(f"  \033[32mPASS\033[0m {m}")
++ def no(m, d=""):
++     global FAIL; FAIL += 1; print(f"  \033[31mFAIL\033[0m {m}\n       {d}")
++ def check(cond, m, d=""):
++     ok(m) if cond else no(m, d)
++ import secretstore as ss
++ with tempfile.TemporaryDirectory() as td:
++     T = Path(td)
++     print("== keychain helpers are never taken from $PATH ==")
++     fakebin = T / "bin"
++     fakebin.mkdir()
++     for name in ("secret-tool", "security"):
++     for name in ("secret-tool", "security"):
++         f = fakebin / name
++         f.write_text("#!/bin/sh\ncat > /dev/null\n")
++         f.chmod(0o755)
++     old_path = os.environ.get("PATH", "")
++     os.environ["PATH"] = f"{fakebin}:{old_path}"
++         resolved = ss._tool(name)
++         check(resolved is None or not resolved.startswith(str(fakebin)),
++               f"{name} resolves from a trusted system dir, not the planted PATH entry",
++               f"got {resolved}")
++     os.environ["PATH"] = old_path
++     print("== fallback store: owner-only, atomic, never through a symlink ==")
++     ss.FALLBACK_DIR = T / "store"
++     ss.FALLBACK_FILE = ss.FALLBACK_DIR / "credentials"
++     ss.FALLBACK_FILE = ss.FALLBACK_DIR / "credentials"
++     ss.FALLBACK_FILE = ss.FALLBACK_DIR / "credentials"
++     ss._write_fallback({"openai": "sk-one"})
++     mode = stat.S_IMODE(os.lstat(ss.FALLBACK_FILE).st_mode)
++     check(mode == 0o600, "fallback file is 0600", oct(mode))
++     check(stat.S_IMODE(os.lstat(ss.FALLBACK_DIR).st_mode) == 0o700, "fallback dir is 0700")
++     check(ss._read_fallback() == {"openai": "sk-one"}, "round-trips a credential")
++     check(not list(ss.FALLBACK_DIR.glob(".credentials.*.tmp")), "no temp file left behind")
++     try:
++     try:
++     try:
++     try:
++     try:
++     try:
++         ss._write_fallback({"openai": "sk\nINJECTED=1"})
++         no("refuses a credential containing a newline", "it wrote it")
++     except ValueError:
++         check(ss._read_fallback() == {"openai": "sk-one"},
++               "refuses a credential containing a newline, store untouched")
++     victim = T / "victim.txt"
++     victim.write_text("keep me")
++     ss.FALLBACK_FILE.unlink()
++     ss.FALLBACK_FILE.unlink()
++     ss.FALLBACK_FILE.symlink_to(victim)
++         ss._write_fallback({"openai": "sk-two"})
++         no("refuses a symlinked credential file", "it wrote through the link")
++     except PermissionError:
++     except PermissionError:
++     except PermissionError:
++         check(victim.read_text() == "keep me", "refuses a symlinked credential file, target untouched")
++         ss._read_fallback()
++         no("refuses to READ a symlinked credential file", "it followed the link")
++         ok("refuses to READ a symlinked credential file")
++     realdir = T / "elsewhere"
++     realdir.mkdir()
++     ss.FALLBACK_DIR = T / "linkedstore"
++     ss.FALLBACK_DIR.symlink_to(realdir)
++         ss._write_fallback({"openai": "sk-three"})
++         no("refuses a symlinked store directory", "it wrote into the link")
++         check(not (realdir / "credentials").exists(), "refuses a symlinked store directory")
++     print("== the two Anthropic credential kinds never share a slot ==")
++     check("anthropic-admin" in ss.PROVIDERS, "a separate anthropic-admin slot exists")
++     check(ss.PROVIDERS["anthropic"]["also_env"] is None,
++           "the subscription-token slot cannot be filled from ANTHROPIC_ADMIN_API_KEY")
++     ss.backend = lambda: "file"
++     ss.FALLBACK_DIR = T / "empty"
++     for k in ("TOKEN_PANEL_ANTHROPIC_TOKEN", "TOKEN_PANEL_ANTHROPIC_ADMIN_KEY"):
++         os.environ.pop(k, None)
++     os.environ["ANTHROPIC_ADMIN_API_KEY"] = "sk-ant-admin-test"
++     os.environ["TOKEN_PANEL_ALLOW_PROVIDER_ENV"] = "1"
++     check(ss.get_secret("anthropic") == (None, None),
++           "an Admin key in the env is NOT handed to the OAuth usage fetcher")
++     check(ss.get_secret("anthropic-admin")[0] == "sk-ant-admin-test",
++           "the Admin slot honours ANTHROPIC_ADMIN_API_KEY with the opt-in")
++     del os.environ["TOKEN_PANEL_ALLOW_PROVIDER_ENV"]
++     check(ss.get_secret("anthropic-admin") == (None, None),
++           "…and ignores it without the opt-in")
++     del os.environ["ANTHROPIC_ADMIN_API_KEY"]
++     src = (SKILL / "parsers" / "anthropic.py").read_text()
++     check('get_secret("anthropic-admin")' in src and 'get_secret("anthropic")' not in src,
++           "the Admin API parser reads only the anthropic-admin slot")
++ print("== Gemini key is sent in a header, never in a URL ==")
++ spec = importlib.util.spec_from_file_location("gfetch", SKILL / "scripts" / "gemini-usage-fetch.py")
++ g = importlib.util.module_from_spec(spec)
++ spec.loader.exec_module(g)
++ seen = []
++ class _Stop(Exception):
++     pass
++ def fake_urlopen(req, timeout=None):
++     seen.append(req)
++     raise _Stop("boom AIzaSECRETKEY boom")
++ g.urllib.request.urlopen = fake_urlopen
++ r1 = g.list_models("AIzaSECRETKEY")
++ r2 = g.probe_model("AIzaSECRETKEY", "gemini-2.5-flash")
++ check(all("AIzaSECRETKEY" not in req.full_url for req in seen), "no request URL contains the key")
++ check(all(req.get_header("X-goog-api-key") == "AIzaSECRETKEY" for req in seen),
++       "every request carries the key in x-goog-api-key")
++ check("AIzaSECRETKEY" not in str(r1) and "AIzaSECRETKEY" not in str(r2),
++       "error strings are redacted before they are returned")
++ print("== Claude fetcher identifies itself honestly ==")
++ csrc = (SKILL / "scripts" / "claude-usage-fetch.py").read_text()
++ check("'User-Agent': 'claude-code/" not in csrc, "no Claude Code User-Agent impersonation")
++ print("== REST API: constant-time token check, identifier-only inputs ==")
++ try:
++     import api
++     from pydantic import ValidationError
++ except ImportError as e:
++     print(f"  SKIP api checks ({e})")
++ else:
++     asrc = (SKILL / "api.py").read_text()
++     check("hmac.compare_digest" in asrc, "mutate token compared in constant time")
++         api.UsageRecord(provider="<img src=x onerror=alert(1)>", model="m",
++                         input_tokens=1, output_tokens=1)
++         no("rejects markup in provider", "accepted")
++     except ValidationError:
++     except ValidationError:
++         ok("rejects markup in provider")
++         api.UsageRecord(provider="anthropic", model="claude-opus-4-5",
++                         input_tokens=-5, output_tokens=1)
++         no("rejects negative token counts", "accepted")
++         ok("rejects negative token counts")
++     rec = api.UsageRecord(provider="anthropic", model="claude-opus-4-5",
++                           input_tokens=10, output_tokens=2)
++     check(rec.provider == "anthropic", "accepts a normal usage record")
++ print(f"\ntoken-panel-ultimate credentials: {PASS} passed, {FAIL} failed")
++ sys.exit(1 if FAIL else 0)

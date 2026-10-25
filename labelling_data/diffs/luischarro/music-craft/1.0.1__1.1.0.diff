@@ -1,0 +1,1551 @@
+luischarro/music-craft  1.0.1 -> 1.1.0
+change_type: instructions+docs   changelog: v1.1.0: add vocal-confirm and target-length gates, clarify exact-duration routing, and tighten source-audio intake guidance
+
+### README.md  [docs]
+- - Verifies the output and iterates on failure
+- For those, see [`music-craft-minimax`](../music-craft-minimax/) (requires MiniMax Token Plan).
+- 1. Read the request and auto-detect defaults
+- 2. Use the deterministic first-response path for standard songs, user lyrics, instrumentals, vague style references, and image or URL enrichment
+- 3. Ask only the ambiguous parts (1–3 questions)
+- 4. Build a production-sheet prompt
+- 5. Structure the lyrics with section tags
+- 6. Call `music_generate`
+- 7. Verify the output
+- 8. Iterate on failure with a targeted prompt adjustment, never retry the same payload
++ ## Data and consent
++ Depending on the chosen backend, prompts, lyrics, reference URLs, or generated/derived music instructions may be sent to a cloud provider. Local backends may download models and write temporary/generated audio files on the user's machine. Ask before installing/downloading large dependencies, uploading user-owned media, or overwriting existing outputs.
++ - Verifies duration, loudness, structure, and audible quality before delivery
++ - Documents prompt-length, lyrics-transcription, and post-generation finalization safeguards
++ - audio download from YouTube, JioSaavn, or other URL for analysis
++ For those, see [`music-craft-minimax`](../music-craft-minimax/) (requires MiniMax Token Plan). Audio source fallback order (YouTube → JioSaavn → mx3.ch → local file) is documented in the MiniMax skill.
++ 1. Clarify the goal and source material
++ 2. Analyze source audio if available, or accept user-provided analysis
++ 3. Build a production-sheet prompt
++ 4. Select the backend based on vocals, lyrics, length, local/cloud preference, speed, and hardware
++ 5. Validate prompt length, structure, conflicts, and expected duration
++ 6. Generate
++ 7. Verify duration, loudness/peak, file size, audible quality, lyrics alignment, and structure
++ 8. Deliver with a short analysis summary, or iterate with a targeted prompt adjustment
+
+### SKILL.md  [instructions]
+- ---
+- version: 1.0.1
+- The normal loop is:
+- 1. Read the user's request and auto-detect defaults (language, genre, mood, duration).
+- 2. Ask only the ambiguous parts (lyrics source, vocal style, length).
+- 3. Translate the request into a production-sheet prompt with anti-sparse guards.
+- 4. Structure lyrics with section tags when the user provides them or asks for generated ones.
+- 5. Call the available music backend (native tool or CLI) with prompt plus lyrics.
+- 6. Verify the output (no sparse drops, no clipped vocals, structure intact).
+- 7. If quality fails, adjust the prompt and retry. Do not retry the same payload twice.
+- - **needing a specific song length (e.g. 3:30)** — this skill's ACE-Step backend takes `audio_duration` as a parameter, so you can ask for exactly 30s/60s/180s/210s/600s. The `music-craft-minimax` skill (mmx backend) has no native duration control — see that skill's "Song length" section.
+- |---|---|---|
+- |---|---|---|
+- |---|---|---|
+- |---|---|---|
+- |---|---|---|
+- |---|---|---|
+- |---|---|---|
+- | `web_fetch` | Fetch readable content from any URL | Lyrics pages, YouTube watch pages, Wikipedia, artist bios, music blogs |
+- ### Worked examples (inline)
+- **"Make a song like 'Bohemian Rhapsody'":**
+- 1. The LLM has training data knowledge of this song.
+- 2. For richer context, `web_search` "Bohemian Rhapsody structure analysis" → pick a music theory blog.
+- 3. `web_fetch` the blog → extract: multi-section, operatic, dramatic dynamics, ~6 min.
+- 4. Build the prompt.
+- **"Make a song like this YouTube video: [URL]":**
+- 1. `web_fetch` the YouTube watch page.
+- 2. Extract: title, channel, description, view count, related videos.
+- 3. LLM infers style from the channel/description.
+- 4. Optionally `web_search` for "[channel] genre style" to confirm.
+- 5. Build the prompt.
+- **User attaches album art: "Make something with this vibe":**
+- 1. `MiniMax__understand_image` on the image.
+- 2. Extract: color palette, mood (dark/bright), era, genre hints (e.g., neon = synthwave).
+- 3. Map to a style category (see [`references/style-categories.md`](references/style-categories.md)).
+- 4. Build the prompt from visual cues.
+- **"I want a song in the style of 80s Italo disco":**
+- 1. `web_search` "Italo disco characteristics".
+- 2. `web_fetch` Wikipedia or a music blog.
+- 3. Extract: typical BPM (110–130), instruments (analog synths, drum machine, gated reverb), era.
+- 4. Build a rich, specific prompt.
+- ### Privacy and ethics
+- - Do not blindly trust web content. Use it as context; the LLM's knowledge and judgment are the primary source.
+- - Do not fetch content from sites the user did not intend (do not follow random links from fetched pages).
+- - Do not surface copyrighted lyrics verbatim in the final song unless the user provided them. Use fetched lyrics as inspiration for style and structure, not as the song's body.
+- - For YouTube metadata: extracting title, channel, and description is fair use. Downloading the audio is a different matter (see `music-craft-minimax` for the audio path).
+- ### What this section does NOT cover
+- - Audio file analysis (BPM, key, energy) — needs librosa, lives in `music-craft-minimax`
+- - YouTube audio download — needs yt-dlp + ffmpeg, lives in `music-craft-minimax`
+- - Cover workflow (melody preservation) — MiniMax-specific
+- - Mashup workflow (two songs combined) — MiniMax-specific
+- For the deep dive on each free tool, parameters, and edge cases, see [`references/free-tool-inputs.md`](references/free-tool-inputs.md).
+- Before starting the workflow loop, verify the runtime can do the work. This skill has **zero external dependencies** — the only requirement is a music generation backend (native tool or CLI). See the Required check in the Pre-Flight section.
+- ### Dependency Consent Protocol
+- Some setups (local models, audio analysis) need installs, large downloads, or — on
+- corporate machines — changes to the certificate trust store. Apply this protocol every time:
+- - Label every dependency as **REQUIRED** (the chosen path will not work without it) or
+-   **OPTIONAL** (it works without, quality improves with it). Say which when you ask.
+- - **Stop and ask before any install or multi-GB download.** Show the exact command and its
+-   rough size/impact. Never auto-install; never silently fall back to a degraded path.
+- - If the user declines a REQUIRED item, stop and say plainly that the chosen path cannot
+-   proceed, then offer an alternative (for example cloud vs local).
+- - **Ask once, up front, where to save output** (`OUTPUT_DIR`) and use a per-song subfolder.
+-   Do not invent an output path silently.
+- - For local models on Windows, follow [`references/windows-wsl-setup.md`](references/windows-wsl-setup.md),
+-   which encodes these gates for the WSL2 + corporate-proxy path.
+- ### Platform Detection (run first)
+- Identify the host OS so the install commands later use the right package manager.
+- ```bash
+- ```bash
+- ```bash
+- ```bash
+- ```bash
+- ```bash
+- ```bash
+- ```bash
+- ```bash
+- ```bash
+- ```bash
+- ```bash
+- ```bash
+- ```bash
+- # POSIX (Linux, macOS, WSL, Git Bash)
+- uname -s    # "Linux" or "Darwin"
+- # Windows PowerShell
+- # Windows PowerShell
+- # Windows PowerShell
+- $env:OS     # "Windows_NT"
+- # Windows cmd
+- ver
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- Then identify the available package manager (in priority order):
+- | OS | Package managers (in priority order) |
+- |---|---|
+- |---|---|
+- |---|---|
+- |---|---|
+- | Ubuntu / Debian / Mint | `apt` |
+- | Fedora / RHEL / Rocky | `dnf` (legacy: `yum`) |
+- | Arch / Manjaro | `pacman` |
+- | Alpine | `apk` |
+- | macOS | `brew` (install from [brew.sh](https://brew.sh) if missing) |
+- | Windows | `winget` (built into Windows 10 2004+), then `choco` (Chocolatey), then `scoop` |
+- A useful one-liner to detect the active manager:
+- # POSIX
+- # POSIX
+- command -v apt dnf pacman apk brew 2>/dev/null | head -1
+- Get-Command winget, choco, scoop -ErrorAction SilentlyContinue | Select-Object -First 1
+- If the agent is running inside WSL, treat it as Linux (use `apt`). If it is running inside a non-standard environment (container, Codespace, dev container), ask the user which base image they are on before proposing install commands.
+- ### User & Hardware Setup (ask once per session)
+- Before installing any backend, gather the user's preferences and confirm hardware. The skill works on **any** modern machine — not just Apple Silicon MacBooks. Auto-detect first, then confirm critical values with the user.
+- #### Hardware Probe (run first)
+- Run this on the user's machine to detect platform, RAM, disk, and existing installs:
+- echo "=== Platform ==="
+- uname -srm
+- echo ""
+- echo ""
+- echo ""
+- echo ""
+- echo ""
+- echo ""
+- echo "=== RAM ==="
+- case "$(uname -s)" in
+- case "$(uname -s)" in
+- case "$(uname -s)" in
+-   Darwin) sysctl -n hw.memsize | awk '{printf "%.0f GB\n", $1/1024/1024/1024}' ;;
+-   Linux)  awk '/MemTotal/{printf "%.0f GB\n", $2/1024/1024}' /proc/meminfo ;;
+-   *)      echo "unknown (Windows: run systeminfo | findstr Memory)" ;;
+- esac
+- esac
+- esac
+- echo "=== CPU chip ==="
+-   Darwin) sysctl -n machdep.cpu.brand_string 2>/dev/null ;;
+-   Linux)  grep -m1 'model name' /proc/cpuinfo | cut -d: -f2 | xargs ;;
+-   *)      echo "unknown" ;;
+- echo "=== GPU ==="
+- if [ "$(uname -m)" = "arm64" ] && [ "$(uname -s)" = "Darwin" ]; then
+- if [ "$(uname -m)" = "arm64" ] && [ "$(uname -s)" = "Darwin" ]; then
+-   echo "Apple Silicon (MPS available for MLX)"
+- elif command -v nvidia-smi >/dev/null 2>&1; then
+- elif command -v nvidia-smi >/dev/null 2>&1; then
+-   nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null
+- else
+- else
+- else
+-   echo "No GPU detected (CPU only)"
+- fi
+- fi
+- fi
+- echo "=== Disk free in \$HOME ==="
+- df -h "$HOME" | tail -1
+- echo "=== Python managers ==="
+- command -v uv    >/dev/null 2>&1 && echo "uv:     $(which uv)" || echo "uv:     not found"
+- command -v conda >/dev/null 2>&1 && echo "conda:  $(which conda)" || echo "conda:  not found"
+- command -v python3 >/dev/null 2>&1 && echo "python3: $(python3 --version 2>&1)" || echo "python3: not found"
+- echo "=== Existing ACE-Step install? ==="
+- ls ~/ACE-Step-1.5 2>/dev/null >/dev/null && echo "✓ Found at ~/ACE-Step-1.5" || echo "✗ Not found in ~/ACE-Step-1.5"
+- **Windows note:** the probe above is bash (POSIX) and cannot run on native Windows
+- before WSL exists. Run this PowerShell probe first (full walkthrough in
+- [`references/windows-wsl-setup.md`](references/windows-wsl-setup.md)):
+- ```powershell
+- (Get-CimInstance Win32_OperatingSystem).Caption
+- [math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory/1GB,1)  # RAM GB
+- (Get-CimInstance Win32_Processor).Name
+- (Get-CimInstance Win32_VideoController).Name                                      # GPUs
+- if (Get-Command nvidia-smi -ErrorAction SilentlyContinue) { 'nvidia-smi present' }
+- wsl --list --verbose; wsl --version                                              # WSL state
+- Get-PSDrive C | Select-Object @{n='FreeGB';e={[math]::Round($_.Free/1GB,1)}}
+- Once inside a WSL distro, the bash probe applies (WSL is treated as Linux).
+- #### Ask the user (4 questions, in order)
+- After running the probe, present the detected values to the user and ask 4 questions. These answers stay in the session context and are reused for every backend install in this session.
+- **Question 1 — Platform confirmation:**
+- > I see: `{platform}, {ram} GB RAM, {cpu}, {gpu}`. Is that right?
+- > - ✅ Yes, continue
+- > - ❌ No, let me correct it (RAM/GPU/etc.)
+- If the user says no, ask which value is wrong and re-detect with corrections.
+- **Question 2 — Clone location for ACE-Step (and any other large model repo):**
+- > Where should I clone ACE-Step? Common choices:
+- > - `~/ACE-Step-1.5` (default, simple, no path collision)
+- > - `~/projects/ace-step` (if you keep projects in a subfolder)
+- > - `~/ml/ace-step` (if you have a dedicated ML directory)
+- > - A custom path: ___________
+- > - A custom path: ___________
+- >
+- >
+- >
+- >
+- >
+- >
+- >
+- >
+- >
+- >
+- >
+- >
+- >
+- >
+- >
+- > If ACE-Step is already cloned somewhere, I detected it at: `{detected_path}`. Use that? Or pick a different path?
+- Use the user's answer as `ACE_STEP_PATH` for the rest of the session. Never hardcode `/Users/luis/Repos/...`.
+- **Question 3 — Output directory for generated songs:**
+- > Where should I save generated songs and project files?
+- > - `~/Music mix/` (default)
+- > I'll create the directory if it doesn't exist.
+- Use the user's answer as `OUTPUT_DIR` for the rest of the session.
+- **Question 4 — Cloud backends (optional, for backup or speed):**
+- > Do you have any of these set up? (Just for backup if ACE-Step fails)
+- > - MiniMax API key (set `MINIMAX_API_KEY` in your shell)
+- > - Stability AI API key (set `STABILITY_API_KEY`)
+- > - No, just use local backends
+- > You can always set these later.
+- #### Hardware-specific notes (referenced later)
+- After the user answers Question 1, the skill knows the hardware. Save these flags for the rest of the session:
+- - `IS_APPLE_SILICON` = true if `uname -m` = `arm64` AND `uname -s` = `Darwin`
+- - `IS_INTEL_MAC` = true if `uname -m` = `x86_64` AND `uname -s` = `Darwin`
+- - `IS_LINUX_NVIDIA` = true if `nvidia-smi` works
+- - `IS_LINUX_AMD` = true if `rocm-smi` works (not yet handled)
+- - `IS_CPU_ONLY` = true if no GPU
+- - `RAM_GB` = total system RAM (24, 16, 32, 64, etc.)
+- - `MEMORY_ARCH` = "unified" (Apple Silicon, integrated graphics, AMD APU) OR "dedicated" (NVIDIA/AMD discrete GPU)
+- - `ML_BUDGET_GB` = how much memory is actually available for ML models (= free RAM minus 2 GB safety margin, or the smaller of free system + free VRAM for dedicated GPUs)
+- - `GPU_VRAM_GB` = total VRAM if dedicated GPU detected
+- - `GPU_FREE_GB` = free VRAM right now if dedicated GPU detected
+- These flags affect:
+- - **Backend selection** — Apple Silicon gets ACE-Step (MLX). Intel Mac / NVIDIA Linux get ACE-Step (CUDA, slower on consumer GPUs). CPU-only gets ACE-Step (CPU, very slow) or cloud backends.
+- - **Tier availability** — see the "RAM-to-tier" table in the **ACE-Step Quality Tiers** section.
+- - **Install commands** — see the per-OS install blocks below.
+- **Apple Silicon note:** M1/M2/M3/M4 all work with ACE-Step MLX backend. M3 Pro/Max/Ultra and M4 are faster but otherwise identical. No code changes needed across chips. **Memory architecture: unified** — your 24 GB is shared between the OS, your apps, and the ML model. A 24 GB MacBook with 4 GB of open apps has ~20 GB ML budget, not 24 GB. This is why xl-mixed (which needs ~25-30 GB peak) hits swap-thrashing on 24 GB Macs. On a 32 GB Mac Mini or 64 GB Mac Studio, the same model fits comfortably.
+- **Intel Mac note:** ACE-Step MLX backend requires Apple Silicon. On Intel Macs, ACE-Step runs on CPU only (very slow, ~10x slower than MLX) or PyTorch with MPS (which is also limited on Intel). Recommend **cloud backends** (MiniMax, Stable Audio) for Intel Mac users who want reasonable speed. MusicGen still works fine on Intel Mac. **Memory architecture: unified** (Intel iGPU shares system RAM, same caveat as Apple Silicon).
+- **Linux + NVIDIA note:** ACE-Step on Linux uses CUDA. Needs NVIDIA driver + CUDA toolkit. Generation is faster than Apple Silicon MLX for high-end GPUs (RTX 4090, A100), slower for low-end (RTX 3050, GTX 1660). **Memory architecture: dedicated** — VRAM is separate from system RAM, so a 12 GB GPU + 16 GB system can still run a 10 GB model (VRAM is the bottleneck, not system RAM). The probe script detects this and uses the smaller pool as the ML budget.
+- **Windows note:** Run local ACE-Step via **WSL2** (treated as Linux, with CUDA passthrough to your NVIDIA GPU), not native Windows. On corporate machines behind a TLS-inspecting proxy, you must install the corporate root CA into the distro or model downloads fail with certificate errors — see [`references/windows-wsl-setup.md`](references/windows-wsl-setup.md). Cloud backends are the no-WSL alternative (but may be firewall-blocked).
+- ### Required
+- Before starting, detect **any** available music backend. Check in this priority order — use the first one that succeeds:
+- | Priority | Backend | Detection command | What it needs |
+- |---|---|---|---|
+- |---|---|---|---|
+- |---|---|---|---|
+- |---|---|---|---|
+- | 1 | Native tool | Inspect runtime's tool list for `music_generate` or similar | None — built into runtime |
+- | 2 | ACE-Step local (free, best quality) | `curl -s http://127.0.0.1:8001/health 2>/dev/null` returns `{"status":"ok"}` | `git clone` + `uv sync` + `uv run acestep-api` (REST API on port 8001) |
+- | 3 | MusicGen local (free, instrumental only) | `python3 -c "import audiocraft" 2>/dev/null && echo OK` | Conda or pip env with audiocraft + torch + xformers |
+- | 4 | mmx CLI (MiniMax) | `which mmx 2>/dev/null` | MiniMax API key in environment |
+- | 5 | Stable Audio REST | `[ -n "$STABILITY_API_KEY" ] && echo OK` | `STABILITY_API_KEY` env var |
+- | 6 | Any other CLI | `which mmx 2>/dev/null`, etc. | Provider-specific setup |
+- Run all detection checks. You only need **one** working backend. The skill adapts to whatever it finds.
+- If **no** backend is found after checking all paths, **branch on detected hardware** and present the right install path. Use the `ACE_STEP_PATH` and `OUTPUT_DIR` from the User & Hardware Setup answers.
+- #### Apple Silicon (`IS_APPLE_SILICON = true`)
+- > No music generation backend detected. The quickest free path is ACE-Step local — it supports vocals, lyrics, and up to 10-minute songs with no API key and no quota limits.
+- > **Install ACE-Step (Apple Silicon, MLX native):**
+- > ```bash
+- > ```bash
+- > ```bash
+- > ```bash
+- > ```bash
+- > ```bash
++ ﻿---
++ version: 1.1.0
++ The required generation loop is:
++ 1. Clarify goal and source material.
++ 2. Analyze source audio if available, or accept user-provided analysis.
++ 3. Build a production-sheet prompt with genre, mood, BPM, key, instruments, structure, vocals/lyrics, and constraints.
++ 4. Select backend based on need: vocals/lyrics -> ACE-Step or cloud; instrumental/local -> Stable Audio 3 or MusicGen; fast cloud cover -> `music-craft-minimax` / mmx.
++ 5. Validate prompt length, structure, backend-specific conflicts, and expected duration.
++ 6. Generate with the selected backend.
++ 7. Verify duration, loudness/peak, file size, audible completeness, lyrics alignment, and structure.
++ 8. Deliver files with a short analysis summary and caveats. If quality fails, adjust the prompt and retry; do not retry the same payload twice.
++ ## Data, Consent, and Local Side Effects
++ This skill may use local or cloud music backends depending on what the user asks for and what is installed. Keep the workflow user-visible:
++ - **Cloud backends:** prompts, lyrics, reference URLs, and generated/derived music instructions may be sent to the selected provider.
++ - **Local backends:** model downloads, local analysis, temporary files, and generated audio may be written on the user's machine.
++ - **Reference material:** fetched webpages, lyrics pages, YouTube metadata, and images are used only to enrich the music prompt unless the user explicitly chooses an audio/cover workflow.
++ - **Output files:** ask where to save generated files and avoid overwriting user-visible outputs without explicit confirmation.
++ Before uploading user-owned or third-party media to a cloud backend, state what will be sent and why, then wait for confirmation if the user has not already clearly requested that cloud workflow.
++ - **needing a specific song length (e.g. 3:30)** — this skill's ACE-Step backend takes `audio_duration` as a parameter, so you can ask for exactly 30s/60s/180s/210s/600s. The `music-craft-minimax` skill's mmx backend has `--length`, but it is a duration hint rather than a guarantee.
++ **Routing:**
++ - Prefer this skill when exact duration matters more than generation speed.
++ - Prefer this skill when the user wants a full-length local vocal track.
++ - Redirect to `music-craft-minimax` only for MiniMax-native workflows or when the user explicitly wants the MiniMax path.
++ | `web_fetch` | Fetch readable content from any URL | Lyrics pages, YouTube watch pages, JioSaavn track pages, Wikipedia, artist bios, music blogs |
++ Do not surface copyrighted lyrics verbatim in the final song unless the user provided them. Use fetched lyrics as inspiration for style and structure, not as the song's body.
++ Worked examples, privacy rules, and scope: [`references/free-tool-inputs.md`](references/free-tool-inputs.md).
++ Before starting the workflow loop, verify the runtime can do the work. This
++ skill has **zero external dependencies** — the only requirement is a music
++ generation backend (native tool or CLI). Before the first generation in a
++ session, run the full pre-flight protocol (including the Required check) in
++ [`references/setup-and-preflight.md`](references/setup-and-preflight.md).
++ Non-negotiable rules that always apply:
++ - Never install anything without explicit user consent (Dependency Consent
++   Protocol). Show the exact command and its rough size/impact before asking.
++ - Detect the platform first (POSIX vs PowerShell vs cmd) and use matching
++   command syntax for everything that follows.
++ - Ask hardware/setup questions once per session, then remember the answers.
++ - When a required dependency is missing, ask the user — do not silently
++   degrade or skip.
++ - audio download from YouTube, JioSaavn, or other URL for analysis
++ **Audio source fallback order** (documented in `music-craft-minimax`): YouTube → JioSaavn → mx3.ch → local file/alternate URL. JioSaavn is the preferred source for Bollywood and Indian regional music not available on YouTube.
++ Select the backend from the need, then load only that backend's reference:
++ | Need | Backend | Reference |
++ | Vocals + lyrics, local, best local quality | ACE-Step 1.5 | [`references/acestep-generation.md`](references/acestep-generation.md) |
++ | Instrumental, local, no API key | MusicGen | [`references/other-backends.md`](references/other-backends.md) |
++ | Simple cloud generation (API key, no local model) | mmx CLI | [`references/other-backends.md`](references/other-backends.md) |
++ | Cover, style transfer, mashup, fine flag control | `music-craft-minimax` skill | switch skills — see **When to redirect to music-craft-minimax** above |
++ | Instrumental via REST API | Stable Audio | [`references/other-backends.md`](references/other-backends.md) |
++ | Anything else the runtime exposes | Generic CLI | [`references/other-backends.md`](references/other-backends.md) |
++ Rules that always apply regardless of backend:
++ - Validate the prompt against the backend's format before generating
++   (MusicGen wants 1–2 natural-language sentences; ACE-Step wants a detailed
++   multi-dimensional caption; see the backend reference).
++ - Never retry an identical failing payload; change prompt, parameters, or
++   backend between attempts.
++ - Verify the output file (duration, loudness, completeness) before delivery.
++ Before asking anything, infer language, genre, mood, duration, and theme from the user's message. Default duration is about 3 minutes; only ask if the user is explicit about length.
++ Full auto-detect cheat sheet and edge cases: [`references/user-preference-flow.md`](references/user-preference-flow.md) and [`references/input-workflows.md`](references/input-workflows.md).
++ ### 2. Analyze source material when available
++ If the user provides source audio or an analysis file, extract the reusable facts before writing the prompt. If there is no source material, continue with the request text and inferred defaults.
++ Full analysis options, tool choices, and the decision tree: [`references/input-workflows.md`](references/input-workflows.md).
++ #### Vocal confirmation gate
++ If source analysis returns `language=unknown`, suggests instrumental, or does not clearly confirm vocals, ask one targeted question before prompt construction:
++ > Is this instrumental, or does it have vocals? If vocals, what language, and should I use provided lyrics or extract them?
++ #### Target-length confirmation gate
++ If source audio exists and the user did not explicitly set the output length, confirm one of: same as source, standard 3:00, standard 3:30, or a specific length.
++ ### 3. Ask only the ambiguous parts
++ After auto-detect, ask 1–3 questions max. Do not ask about language, genre, mood, or duration if the request already makes them obvious.
++ Question patterns and worked examples: [`references/user-preference-flow.md`](references/user-preference-flow.md).
++ ### 4. Translate to a production-sheet prompt
++ The prompt you pass to `music_generate` is not a restatement of the user's words. It is a structured brief with ten required slots: genre/subgenre, mood, voice, instruments, anti-sparse instruction, BPM/key, structure, dynamics, production quality, and avoid list.
++ Full formula, slot-by-slot guide, and worked examples: [`references/prompt-formula.md`](references/prompt-formula.md).
++ ### 5. Validate the prompt
++ Before generating, validate prompt length, structure, duration, and backend-specific conflicts. If `music-craft-minimax` is installed, its `scripts/lint_music_request.py` is the canonical guard for mmx prompt size, missing fields, and conflicts.
++ Per-backend byte limits, length-reduction techniques, and lint rules: [`references/prompt-formula.md`](references/prompt-formula.md).
++ ### 6. Structure the lyrics
++ If the user provides lyrics, add section tags (`[Verse]`, `[Chorus]`, and so on) without altering the words. If the skill writes the lyrics, structure them from the start. ASR-extracted lyrics are unverified — cross-check before building the prompt.
++ Full tag reference, Whisper verification rules, and emotion-specific lyrics patterns: [`references/structure-tags.md`](references/structure-tags.md).
++ ### 7. Generate and verify raw output
++ Call the detected backend with the production-sheet prompt and structured lyrics. Use the backend-specific generation command from the backend's reference file (routed via the **Backend Generation** table). Adapt the prompt format to the backend (e.g., MusicGen needs prompt + lyrics combined into one text block; mmx accepts them separately). After the tool returns, verify that audio is non-empty, has no sparse or a cappella drops, lyrics alignment is plausible, and structure matches the plan.
++ Backend commands and output verification details: backend reference files via the **Backend Generation** table above; quality checks: [`references/quality-and-revision.md`](references/quality-and-revision.md).
++ ### 8. Finalize delivery copy
++ Normalize loudness with `ffmpeg loudnorm` (target -16 LUFS, -1 dBTP true peak), then verify duration, loudness, file size, and absence of silence drops or artifacts.
++ Loudnorm command, verify checklist, and request-fit checks: [`references/quality-and-revision.md`](references/quality-and-revision.md).
++ ### 9. Iterate, do not retry the same payload
++ Identify the failure mode, adjust the prompt or lyrics to target it, and try once with a different seed if available. After 2 failed retries, ask the user to clarify or accept the best attempt. Never retry the same prompt plus lyrics combination twice in a row.
++ Iteration loop, adjustment recipes, and retry patterns: [`references/error-handling.md`](references/error-handling.md).
++ Collect the required fields before generating: language, genre/subgenre, mood,
++ theme, vocal mode, lyric source, duration, structure, references, output location.
++ Ask the output location once, then reuse it for the whole session.
++ Build a confidence map for what was auto-detected vs assumed, and confirm
++ only the low-confidence slots with the user.
++ Full checklists, confidence-map examples, language-consistency checks,
++ ambiguous-phrase routing, and the per-song output layout and slug rules:
++ [`references/request-intake.md`](references/request-intake.md).
++ Respect backend rate limits; on a limit error, wait at least 60 seconds and reduce request rate rather than hammering. Details and per-backend behavior: [`references/quality-and-revision.md`](references/quality-and-revision.md).
++ Verification has two levels. **Technical generation success** means the file exists, is non-empty, and has audible content. **User-fit confirmed** means the output actually fits the user's intent (genre, language, length, structure, lyrics alignment). Always check both.
++ For the request-fit checklist and revision patterns, see [`references/quality-and-revision.md`](references/quality-and-revision.md).
++ When the output is close but not right, do not regenerate from scratch. Keep 80% of the original prompt. Add a single `REVISION:` block at the end that targets the specific failure.
++ Worked examples and the full retry recipe library: [`references/quality-and-revision.md`](references/quality-and-revision.md).
++ When `music_generate` is called **without explicit lyrics** and the request implies a vocal track (not instrumental), the runtime may auto-generate lyrics from the prompt.
++ Per-provider behavior, the web lyrics lookup option, and handling user surprise at AI-written lyrics: [`references/quality-and-revision.md`](references/quality-and-revision.md).
++ ## Output File Layout
++ One subfolder per song under the user's chosen output root; analysis JSON,
++ prompt file, and versioned audio files (`A_`, `B_`, `C_`, `M1_`/`M2_`,
++ `N1_`/`N2_`, `v2_`/`v3_` prefixes) live together in that subfolder. Slug and version rules: [`references/request-intake.md`](references/request-intake.md).
++ - [`references/setup-and-preflight.md`](references/setup-and-preflight.md) — pre-flight protocol: dependency consent, platform detection, user and hardware setup, required/optional dependencies, install details
++ - [`references/windows-wsl-setup.md`](references/windows-wsl-setup.md) — Windows/WSL setup: corporate proxy and CA handling, WSL distro setup for local generation
++ - [`references/acestep-generation.md`](references/acestep-generation.md) — complete ACE-Step 1.5 guide: API workflow, full-song generation, quality tiers and memory-safe selection, audio-conditioned generation (cover, repaint, reference audio)
++ - [`references/other-backends.md`](references/other-backends.md) — MusicGen, mmx CLI, Stable Audio, and generic CLI backend guides
++ - [`references/request-intake.md`](references/request-intake.md) — full intake protocol and per-song output layout (slugs, version prefixes)
++ - [`references/input-workflows.md`](references/input-workflows.md) — 10 input types (description, user-lyrics, audio file, YouTube audio, song name, lyrics URL, YouTube metadata, JioSaavn metadata, image, genre/cultural), plus the signal-extraction rubric and confidence levels
++ - [`references/quality-and-revision.md`](references/quality-and-revision.md) — rate limits, request-fit checklist, revision prompts, delivery copy, lyrics-optimizer behavior
+
+### references/acestep-generation.md  [docs]
++ # ACE-Step Generation
++ Complete ACE-Step 1.5 operating guide: API workflow (submit, poll, copy),
++ full-song generation, quality tiers with memory-safe selection, and
++ audio-conditioned generation (cover, repaint, reference audio). Load this
++ when the selected backend is ACE-Step.
++ ## ACE-Step 1.5 (local — free, vocals + lyrics, best local quality)
++ **Best for:** local generation with real vocals, separate lyrics, song structure, up to 10 minutes (600s). No API key, no quota. Runs natively on Apple Silicon via MLX.
++ **Prerequisites:** REST API must be running on `http://127.0.0.1:8001`. Install with:
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ git clone https://github.com/ace-step/ACE-Step-1.5.git "${ACE_STEP_PATH}"
++ cd "${ACE_STEP_PATH}" && uv sync
++ uv run acestep-api --port 8001   # or: ./start_api_server_macos.sh
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ (See [`setup-and-preflight.md`](setup-and-preflight.md) for how `ACE_STEP_PATH` is determined.)
++ **Generation (3-step async):**
++ # 1. Submit task
++ TASK_ID=$(curl -s -X POST http://127.0.0.1:8001/release_task \
++ TASK_ID=$(curl -s -X POST http://127.0.0.1:8001/release_task \
++   -H "Content-Type: application/json" \
++   -H "Content-Type: application/json" \
++   -H "Content-Type: application/json" \
++   -H "Content-Type: application/json" \
++   -H "Content-Type: application/json" \
++   -d '{
++   -d '{
++     "prompt": "<detailed caption, e.g.: dreamy 80s synthwave, warm analog synths, gated-reverb drums, arpeggiated bass, neon night-drive mood>",
++     "lyrics": "[Verse]\n<lyrics here>\n\n[Chorus]\n<lyrics here>",
++     "audio_duration": 210,
++     "audio_duration": 210,
++     "bpm": 96,
++     "bpm": 96,
++     "key_scale": "D major",
++     "key_scale": "D major",
++     "time_signature": "4/4",
++     "time_signature": "4/4",
++     "vocal_language": "en",
++     "vocal_language": "en",
++     "thinking": true,
++     "thinking": true,
++     "inference_steps": 8,
++     "inference_steps": 8,
++     "guidance_scale": 7.0
++     "guidance_scale": 7.0
++   }' | python3 -c "import json,sys; print(json.load(sys.stdin).get('data',{}).get('task_id',''))")
++   }' | python3 -c "import json,sys; print(json.load(sys.stdin).get('data',{}).get('task_id',''))")
++ # 2. Poll for completion (status: 0=pending, 1=processing, 2=done)
++ # Wait, then check:
++ curl -s -X POST http://127.0.0.1:8001/query_result \
++   -d "{\"task_ids\": [\"$TASK_ID\"]}"
++ # 3. Copy audio from cache dir when done
++ # Files saved to: ${ACE_STEP_PATH}/.cache/acestep/tmp/api_audio/
++ **Polling caveat:** The `/query_result` endpoint may return `{"data": [], "code": 200}` even while the task is actively running. This is a known server-side quirk. Don't treat empty data as "task failed" — instead, check for new MP3 files in the cache directory, or look at the server log (`/tmp/acestep-api.log`) for actual progress markers (e.g. `MLX DiT diffusion: 24/50`).
++ **Prompt format:** Prefer a **detailed, multi-dimensional caption** — ACE-Step's own docs call the caption "the most important factor affecting generated music", and the project's example prompts are rich 1–3 sentence descriptions, not bare tags. Cover, in order: **genre, key instruments, vocal character, mood, and production/texture** words. A short 2–6 word tag still works (and the LM expands it when `thinking=true`), but specificity measurably improves results. The earlier "keep it to short tags" advice was wrong for ACE-Step 1.5.
++ Two rules that matter:
++ - **Resolve style conflicts temporally, don't stack them.** The model handles "starts soft strings, builds to driving synth-rock, ends ambient" far better than "classical + hardcore metal" jammed into one static caption.
++ - **Keep the caption consistent with the lyrics' section tags** (a "solo violin, classical" caption fighting a `[Guitar Solo - distorted]` tag degrades output).
++ ## Full-song generation workflow (3:30 default)
++ The default `audio_duration` is **210s (3:30)** — the typical user expectation for a "song". Use 210s as the reference default only when the user has not specified a target length and no source-duration expectation needs to be matched. If source audio exists, confirm the target output length before submission rather than assuming the 210s default.
++ **Inputs to prepare (set up once, reuse for every song):**
++ 1. **Lyrics** — write or obtain the full song lyrics with `[Verse 1]`, `[Pre-Chorus]`, `[Chorus]`, `[Verse 2]`, `[Bridge]`, `[Outro]` tags. ~150-200 words fits a 3:30 song comfortably.
++ 2. **Detailed caption** — see "Prompt format" above. ~500-1000 chars covering genre, instruments, vocal character, mood, production, emotional arc, and avoid list.
++ 3. **The 6 metas** — fill in `bpm`, `key_scale`, `time_signature`, `vocal_language`, `audio_duration: 210`, plus the prompt and lyrics.
++ **Request body template for a full song (copy/paste and fill in):**
++     "prompt": "<your detailed multi-dimensional caption here>",
++     "lyrics": "[Verse 1]\n<line>\n<line>\n\n[Pre-Chorus]\n<line>\n<line>\n\n[Chorus]\n<line>\n<line>\n\n[Verse 2]\n<line>\n<line>\n\n[Bridge]\n<line>\n<line>\n\n[Outro]\n<line>\n<line>\n",
++ **Expected wall-clock on M3 24GB (standard tier, 2B turbo, 8 steps):**
++ - LM thinking: ~6s (1.7B model, ~50 tok/s)
++ - DiT diffusion: ~4-6 min (scales linearly with audio length)
++ - VAE decode: ~40s
++ - VAE decode: ~40s
++ - **Total: ~5-7 min per 3:30 song**
++ Save each reference output in a per-song folder such as `~/Music mix/<project>/<song-slug>/M1_<style>_ACE_210s.mp3`. A good reference run uses `audio_duration: 210`, the detailed prompt format, and the standard tier. If your output sounds comparable (or better), the workflow is working.
++ **If you only have a 60-second subset of lyrics** (e.g. a hook for a jingle, or a single chorus to test the prompt), set `audio_duration: 60` — that's perfectly fine, just not a full song. Use the full-lyrics version for the final generation.
++ # Good (detailed, multi-dimensional — matches ACE-Step's own examples)
++ "A groovy funk track with slap bass, tight horn stabs, rhythmic guitar scratching, a charismatic male lead with call-and-response backing vocals, and an irresistible pocket groove"
++ "Dreamy 80s synthwave: warm analog synths, gated-reverb drums, arpeggiated bassline, shimmering pads, nostalgic neon night-drive mood"
++ # Also fine (short tag; LM expands it with thinking=true)
++ "dreamy synthwave, 80s retro, atmospheric pads"
++ # Avoid: contradictory styles stacked in one static caption (express as evolution instead)
++ "classical chamber strings AND crushing hardcore metal AND lo-fi hip-hop, all at once"
++ **Parameters:**
++ | Parameter | Type | Default | Notes |
++ |---|---|---|---|
++ |---|---|---|---|
++ | `prompt` | string | required | **Detailed caption preferred** (genre + instruments + vocal character + mood + production), per ACE-Step's docs and example prompts. A short tag also works and is expanded by the LM when `thinking=true`. Resolve style conflicts temporally rather than stacking them. |
++ | `lyrics` | string | optional | `[Verse]`/`[Chorus]` tagged lyrics |
++ | `audio_duration` | int | **210** | **10–600s.** **Default: 210s (3:30)** for full songs — this is the typical user expectation and matches the reference workflow using `~/Music mix/<project>/<song-slug>/M1_<style>_ACE_210s.mp3`. Set to fit ALL lyrics (see Duration Guide below). Use shorter values (30–60s) only for jingles, hooks, or test drafts. |
++ | `thinking` | bool | false | LM rewrites tags → richer caption. **Always use `true`** for best results |
++ | `use_format` | bool | false | When true, the LM also enhances your caption/lyrics (similar to `thinking` but for prompt enrichment). Try `true` if the LM seems to be missing context from your prompt. |
++ | `inference_steps` | int | 8 | Diffusion steps. For **`acestep-v15-turbo` (standard)**: 8 is the documented setting, do not exceed 20. For **`acestep-v15-xl-sft` (xl-mixed)**: 32-64 recommended, default 50. Using 8 with xl-sft produces "soup" output (all elements at same level, no dynamics). |
++ | `guidance_scale` | float | 7.0 | Higher = stricter prompt adherence. **Only effective for base/sft models**, not turbo. For `xl-sft`, try 4.0-7.0 range. |
++ | `shift` | float | 3.0 | Timestep shift factor (1.0-5.0). **Officially documented as "only effective for base models, not turbo models"** — but xl-sft is an SFT model, not turbo. Experiment with 1.0 or 5.0 if the default sounds off. |
++ | `infer_method` | string | "ode" | Diffusion inference method. `"ode"` (Euler, faster) or `"sde"` (stochastic, sometimes more stable for SFT models). |
++ | `seed` | int | -1 | -1 = random. Set for reproducibility |
++ | `vocal_language` | string | "en" | BCP-47 language code for vocals. Important for non-English songs — the model picks the right phoneme set. |
++ | `bpm` | int | none | Optional. When `thinking=true` and missing, the LM infers it. Set explicitly for tighter control. |
++ | `key_scale` | string | "" | Optional. E.g. "D major", "A minor". Same as `bpm`. |
++ | `time_signature` | string | "" | Optional. E.g. "4/4", "3/4". Same as `bpm`. |
++ | `cfg_interval_start` | float | 0.0 | CFG application start ratio (0.0-1.0). Default applies CFG throughout the diffusion. |
++ | `cfg_interval_end` | float | 1.0 | CFG application end ratio (0.0-1.0). |
++ | `use_adg` | bool | false | Adaptive Dual Guidance. **Base model only.** Not applicable to `xl-sft`. |
++ **Environment variables** (set when starting the server, not in the request body):
++ | Env var | Default | Notes |
++ |---|---|---|
++ |---|---|---|
++ |---|---|---|
++ | `ACESTEP_CONFIG_PATH` | `acestep-v15-turbo` | DiT model path. Set to `acestep-v15-xl-sft` for xl-mixed. |
++ | `ACESTEP_LM_MODEL_PATH` | `acestep-5Hz-lm-0.6B` | LM model path. Use `acestep-5Hz-lm-1.7B` for higher quality. |
++ | `ACESTEP_LM_BACKEND` | `vllm` | Backend for the LM. **On Apple Silicon (macOS), set to `mlx`** for native acceleration. vLLM is meant for Linux+CUDA. |
++ | `ACESTEP_GENERATION_TIMEOUT` | 600 | Per-generation timeout in seconds. **Set to `3600` (1 hour) when using xl-mixed on 24GB M3** — default 600s fires mid-generation. |
++ | `ACESTEP_OFFLOAD_TO_CPU` | false | Set to `true` for low-VRAM environments to support longer audio generation. |
++ | `PYTORCH_MPS_HIGH_WATERMARK_RATIO` | ~0.4 | **On macOS, set to `0.0`** to allow XL model to load (MPS otherwise enforces a tight memory cap that fails to load the 4B DiT). |
++ | `ACESTEP_CONFIG_PATH2`, `ACESTEP_CONFIG_PATH3` | empty | Optional secondary DiT models selectable via the `model` parameter in requests. |
++ **Duration Guide (audio_duration):**
++ The `audio_duration` parameter controls how much audio ACE-Step generates. If it's too short, lyrics get cut off. Estimate based on lyrics word count:
++ | Lyrics length | Words | Recommended `audio_duration` | Real-world length |
++ | Short (jingle, hook) | <50 | 30–60 | 0:30–1:00 |
++ | Single verse + chorus | 50–100 | 60–120 | 1:00–2:00 |
++ | Full song (2 verses, chorus, bridge) | 100–200 | 180–240 | 3:00–4:00 |
++ | Extended (3+ verses, long outro) | 200–350 | 240–360 | 4:00–6:00 |
++ | Epic (ballad, progressive) | 350+ | 360–600 | 6:00–10:00 |
++ **Rule of thumb:** Count lyrics words × 0.8–1.2 seconds per word, then add 20% for instrumental breaks between sections. Always round UP — ACE-Step will fade out naturally if lyrics end before duration.
++ **Lyrics format:** Use `[Verse 1]`, `[Chorus]`, `[Bridge]`, `[Outro]` tags. ACE-Step follows these to create song structure. Add `[Intro]` and `[Instrumental Break]` tags for non-vocal sections.
++ **M3 performance (tested, real-world verified June 2026):**
++ For 60s audio (standard tier, 2B turbo, 1.7B LM, 8 steps):
++ - LM thinking: ~12s (1.7B MLX model, ~50 tok/s)
++ - DiT diffusion: ~50s (8 steps × ~6s)
++ - VAE decode: ~28s
++ - **Total: ~3.5 min per track**
++ For 210s audio (3:30 song, same tier):
++ - DiT diffusion: ~4-5 min (scales linearly with audio length, ~3x more diffusion work)
++ - **Total: ~5-7 min per track**
++ First run adds ~90s for model loading. Subsequent runs are faster because the model stays in MPS memory.
++ **Key advantages over MusicGen:**
++ - Real vocals with accurate lyrics
++ - Song structure follows `[Verse]`/`[Chorus]` tags
++ - Up to 10 minutes (600s) — long enough for full songs
++ - MLX native on Apple Silicon (no conda needed)
++ - 48kHz stereo output
++ ## ACE-Step Quality Tiers (memory-safe selection)
++ **TL;DR:** `fast` = quick drafts; `standard` = daily driver (default, ~10 min/210s); `xl-mixed` = best quality but slow on 24GB M3 (~3–4 h/210s, requires extended timeout). Never auto-download; check ML budget first.
++ ACE-Step supports multiple model sizes with different quality/speed/RAM trade-offs. The skill must check available RAM before offering any tier and NEVER auto-download models.
++ **Tier table:**
++ | Tier | DiT Model | LM Model | Peak RAM | Disk cost | Speed (210s) | Quality | When to use |
++ |---|---|---|---|---|---|---|---|
++ |---|---|---|---|---|---|---|---|
++ | **fast** | `v15-turbo` (2B) | `5Hz-lm-0.6B` (0.6B) | ~8 GB | Included in base ~10 GB | ~5 min | Good | Quick drafts, low-RAM machines |
++ | **standard** (default) | `v15-turbo` (2B) | `5Hz-lm-1.7B` (1.7B) | ~11 GB | Included in base ~10 GB | ~10 min | Very Good | Daily driver, most users |
++ | **xl-mixed** (24GB M3: viable with extended timeout) | `v15-xl-sft` (4B) | `5Hz-lm-1.7B` (1.7B) | ~25-30 GB | +~20 GB XL DiT download | **~52 min for 60s audio (verified); ~3-4 hours for 210s** | Very High+ | Final production on any RAM tier — just slow on 24GB |
++ > **Real-world hardware limits (verified June 2026 on M3 24GB unified memory):**
++ > - The `best` tier (4B XL + 4B LM, ~22 GB peak) requires ≥32 GB RAM. NOT offered on 24 GB systems.
++ > - The `xl-mixed` tier (4B DiT + 1.7B LM) **IS viable on 24 GB M3** if you extend the server timeout:
++ >   - Model loads successfully (~10 GB DiT, but MPS pool pressure ~20 GB with cached state)
++ >   - 50-step diffusion runs at ~50-100s/step (varies with audio length and memory pressure)
++ >   - **The default 600s server timeout fires mid-generation.** Set `ACESTEP_GENERATION_TIMEOUT=3600` to allow up to 1 hour per generation.
++ >   - Free RAM goes to 0 GB during generation, but it works
++ >   - **Verified June 2026: 60s audio at 50 steps = ~52 min wall-clock on 24GB M3**
++ > - **Recommendation for 24 GB M3 (unified memory):**
++ >   - For fast iterations: use `standard` tier (10 min for 210s, fast feedback)
++ >   - For final production: use `xl-mixed` tier with extended timeout (52 min for 60s, or ~3-4 hours for 210s)
++ > - **Recommendation for 32 GB+ M3/M4 (unified memory, more headroom):** `xl-mixed` runs in ~15 min as documented. `best` tier becomes viable.
++ > - **For dedicated GPU (NVIDIA/AMD, system RAM separate from VRAM):** A 12 GB GPU + 16 GB system can run xl-mixed in ~15 min. The probe script auto-detects this and uses the smaller pool.
++ **Memory safety check (run BEFORE any generation):**
++ The memory probe must distinguish **unified memory** (Apple Silicon, integrated graphics) from **dedicated memory** (discrete NVIDIA/AMD GPU). On unified memory, the OS, your apps, and the ML model all share the same pool — so 24 GB total might mean only ~18 GB is actually available for ML after macOS and your open apps. On dedicated GPUs, the VRAM is separate from system RAM, so a 12 GB GPU can run a 10 GB model even on a 16 GB system.
++ # 1. Total system RAM and current free
++ case "$(uname -s)" in
++   Darwin)
++     TOTAL_RAM_GB=$(sysctl -n hw.memsize | awk '{printf "%.0f", $1/1024/1024/1024}')
++     FREE_RAM_KB=$(vm_stat | awk '/free page count/{print $3 * 4}')
++     FREE_RAM_GB=$(awk "BEGIN {printf \"%.1f\", $FREE_RAM_KB/1024/1024}")
++     ;;
++     ;;
++   Linux)
++     TOTAL_RAM_GB=$(awk '/MemTotal/{printf "%.0f", $2/1024/1024}' /proc/meminfo)
++     FREE_RAM_GB=$(awk '/MemAvailable/{printf "%.1f", $2/1024/1024}' /proc/meminfo)
++   *) echo "unknown" ;;
++ esac
++ echo "Total RAM: ${TOTAL_RAM_GB} GB"
++ echo "Free RAM now: ${FREE_RAM_GB} GB"
++ # 2. Memory architecture detection
++ if [ "$(uname -m)" = "arm64" ] && [ "$(uname -s)" = "Darwin" ]; then
++   MEM_ARCH="unified"
++   MEM_ARCH="unified"
++   echo "Architecture: unified (Apple Silicon — GPU shares with system)"
++ elif command -v nvidia-smi >/dev/null 2>&1; then
++   GPU_VRAM_GB=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits | head -1 | awk '{printf "%.0f", $1/1024}')
++   GPU_FREE_GB=$(nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits | head -1 | awk '{printf "%.0f", $1/1024}')
++   echo "GPU: NVIDIA (${GPU_VRAM_GB} GB total VRAM, ${GPU_FREE_GB} GB free)"
++   echo "Architecture: dedicated (system RAM and VRAM are separate pools)"
++   MEM_ARCH="dedicated"
++   MEM_ARCH="dedicated"
++ elif command -v rocm-smi >/dev/null 2>&1; then
++   echo "Architecture: dedicated (AMD ROCm)"
++ else
++ else
++   echo "Architecture: integrated/CPU-only (system RAM used for everything)"
++ fi
++ fi
++ # 3. ML budget calculation
++ # Unified: free RAM minus safety margin (OS can reclaim 1-2 GB more on demand)
++ # Dedicated: use the SMALLER of free RAM or free VRAM (the bottleneck)
++ # Reserve 2 GB safety margin for OS/other apps
++ if [ "$MEM_ARCH" = "unified" ]; then
++   ML_BUDGET_GB=$(awk "BEGIN {printf \"%.0f\", $FREE_RAM_GB - 2}")
++   echo "ML budget: ~${ML_BUDGET_GB} GB (free RAM minus OS safety margin)"
++   # Dedicated GPU: bottleneck is the smaller pool
++   BOTTLENECK_GB=$FREE_RAM_GB
++   if [ -n "$GPU_FREE_GB" ] && [ "$GPU_FREE_GB" -lt "$BOTTLENECK_GB" ]; then
++     BOTTLENECK_GB=$GPU_FREE_GB
++   fi
++   ML_BUDGET_GB=$(awk "BEGIN {printf \"%.0f\", $BOTTLENECK_GB - 2}")
++   echo "ML budget: ~${ML_BUDGET_GB} GB (smaller of free system RAM or free VRAM, minus safety margin)"
++ Based on ML budget (NOT total RAM):
++ | ML budget | Available tiers | Use case |
++ | < 8 GB | fast only (warn user about tight fit, expect OOM) | Quick drafts |
++ | 8–11 GB | fast + standard | Daily driver |
++ | 12–20 GB | fast + standard + xl-mixed (with extended timeout) | Final production |
++ | ≥ 25 GB | ALL tiers including best (4B LM) | No constraints |
++ **Why this differs from "total RAM" tables:**
++ A 24 GB Apple Silicon Mac with macOS and 4 GB of open apps has only ~18 GB ML budget. The probe should report 18 GB, and the table should classify it as "fast + standard" — NOT "xl-mixed eligible" (which the old table would say based on 24 GB total).
++ Conversely, a Windows desktop with 16 GB system RAM and a 24 GB NVIDIA RTX 4090 has 22 GB ML budget (the VRAM is the bottleneck, not the system RAM). That system CAN run xl-mixed in ~15 min as documented.
++ The probe and the table together handle both cases correctly. The previous version of this skill used total RAM as the gating value, which was wrong for unified memory — leading to the "24GB Mac but xl-mixed sounds bad" surprise we hit in June 2026. The fix is to use ML budget (free memory minus OS safety margin, with unified-vs-dedicated awareness).
++ **Model download consent flow (NEVER auto-download):**
++ When ACE-Step is running but no models are loaded (fresh install), OR when the user requests a higher tier whose models aren't downloaded yet:
++ You: "ACE-Step is ready but needs audio models before generating. This will
++        download ~10 GB to your disk — I will NOT do this without your explicit
++        approval.
++        Your options:
++        ① Download standard (~10 GB) → good quality, ~10 min/track, fits your {N}GB RAM ✓
++        ② Download xl-mixed (+20 GB extra = ~30 GB total) → best quality your machine can run,
++           ~15 min/track, needs you to close heavy apps during generation
++        ③ Skip local → use a cloud backend instead
++           - MiniMax (if API key set) — fast, paid
++           - Stable Audio (if STABILITY_API_KEY set) — paid
++           - MusicGen (local fallback) — free, instrumental only
++        You currently have {X} GB free disk space.
++        Which option?"
++ **Wait for the user to choose before doing anything.** Do not download. Do not auto-load. Do not start generating.
++ Rules:
++ - Always show: model size, free disk space, free RAM, expected speed, what the user gets
++ - If disk space < model size: offer to free space first, or skip to cloud
++ - If RAM < tier requirement: warn clearly, suggest lower tier or cloud
++ - User can change tier later without re-downloading (just switch via `/v1/init`)
++ - Once models are downloaded, they persist — no need to ask again unless user wants to upgrade tier
++ **Switching tiers mid-session:**
++ # Switch to xl-mixed (requires XL model already downloaded)
++ curl -s -X POST http://127.0.0.1:8001/v1/init \
++ curl -s -X POST http://127.0.0.1:8001/v1/init \
++   -d '{"dit_model": "acestep-v15-xl-sft", "lm_model": "acestep-5Hz-lm-1.7B"}'
++ # Switch back to standard
++   -d '{"dit_model": "acestep-v15-turbo", "lm_model": "acestep-5Hz-lm-1.7B"}'
++ **M3 performance by tier (real-world verified, June 2026):**
++ | Tier | LM time | DiT time (8 steps) | DiT time (50 steps) | VAE decode | First run | Subsequent | Status on 24GB M3 |
++ | fast (2B+0.6B) | ~6s | ~45s | n/a (model is turbo) | ~28s | ~3 min | ~5 min | ✅ Works great |
++ | standard (2B+1.7B) | ~12s | ~50s | n/a (model is turbo) | ~28s | ~3 min | ~10 min | ✅ Works great (default) |
++ | xl-mixed (4B+1.7B) | ~12s | ~720s (90s/step × 8) | **~1500s for 60s audio (~50s/step × 30+ steps in 30 min) — verified ~52 min wall-clock** | ~65s | ~5 min | **~52 min for 60s; estimated 3-4 hours for 210s** | ✅ Works with `ACESTEP_GENERATION_TIMEOUT=3600` (1 hour). 8-step version produces "soup" output — use 50 steps. |
++ | best (4B+4B) | n/a | n/a | n/a | n/a | n/a | n/a | ❌ Excluded — needs 32GB+ |
++ **Critical findings from real-world testing (June 2026):**
++ 1. **xl-mixed CAN RUN on 24 GB M3** (verified 60s audio at 50 steps completes in ~52 min) with the right env vars:
++    ```bash
++    ACESTEP_CONFIG_PATH=acestep-v15-xl-sft \
++    ACESTEP_LM_MODEL_PATH=acestep-5Hz-lm-1.7B \
++    ACESTEP_GENERATION_TIMEOUT=3600 \
++    PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.0 \
++    uv run acestep-api --port 8001
++    ```
++    - Without `ACESTEP_GENERATION_TIMEOUT=3600`, the default 600s (10 min) timeout fires mid-generation
++    - Without `PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.0`, the model fails to load (MPS OOM)
++    - **⚠️ Generation completes but audio quality is poor** — high-frequency noise, unclear vocals, "no sense samples". Use standard tier for now; xl-mixed needs further tuning (see the "XL 50-step fixes to try" section below).
++ 2. **XL + 8 steps produces "soup" output** — all elements at the same level, no dynamics. Always use 50 steps for XL.
++    - Verified: LRA of XL+8 steps = 1.8-4.8 LU (very compressed)
++    - Verified: LRA of XL+50 steps = 4.0+ LU (more dynamic)
++    - 60s XL+50 step audio on 24GB M3 = ~52 min wall-clock
++ 3. **Audio length affects time per step:**
++    - 60s audio: ~50-100s/step
++    - 210s audio: ~90-130s/step (more diffusion work per step)
++    - For 210s at 50 steps: 90s × 50 = 75 min minimum, up to 3-4 hours with swap pressure
++ 4. **Memory pressure is the bottleneck, not model loading.** Models load fine; generation just runs slow due to swap-thrashing.
++ **XL 50-step fixes to try** (in order of likelihood, each test takes ~52 min for 60s audio):
++ If you want to experiment with xl-mixed anyway, the most likely fixes are:
++ 1. **Detailed prompt with all 6 metas** (BPM, key, time signature, vocal language, duration, genre filled explicitly in the request body) — the LM benefits from explicit anchors rather than just genre tags
++ 2. **Add `use_format: true`** — lets the LM enhance your prompt
++ 3. **Try `shift: 1.0` or `shift: 5.0`** (default is 3.0, officially documented for "base models, not turbo" — xl-sft is SFT, not turbo, so worth experimenting)
++ 4. **Try `guidance_scale: 4.0`** (default 7.0 may be too aggressive for sft CFG)
++ 5. **Try `infer_method: "sde"`** (stochastic, sometimes more stable than Euler for SFT models)
++ 6. **Try `thinking: false`** (DiT-only mode, skips LM) — if this works, the LM is the problem; if it still sounds bad, the DiT is the problem
+
+### references/error-handling.md  [docs]
++ ## Iteration Loop
++ When the output fails verification, follow this loop before escalating to the user:
++ 1. Identify the failure mode (sparse, clipped, wrong genre, no vocals, and so on).
++ 2. Adjust the prompt or lyrics to target the failure.
++ 3. Try once with a different seed or model if available.
++ 4. After 2 failed retries, ask the user to clarify or accept the best attempt.
++ Never retry the same prompt plus lyrics combination twice in a row.
+
+### references/free-tool-inputs.md  [docs]
++ ## Worked examples
++ **"Make a song like 'Bohemian Rhapsody'":**
++ 1. The LLM has training data knowledge of this song.
++ 2. For richer context, `web_search` "Bohemian Rhapsody structure analysis" → pick a music theory blog.
++ 3. `web_fetch` the blog → extract: multi-section, operatic, dramatic dynamics, ~6 min.
++ 4. Build the prompt.
++ **"Make a song like this YouTube video: [URL]":**
++ 1. `web_fetch` the YouTube watch page.
++ 2. Extract: title, channel, description, view count, related videos.
++ 3. LLM infers style from the channel/description.
++ 4. Optionally `web_search` for "[channel] genre style" to confirm.
++ 5. Build the prompt.
++ **User attaches album art: "Make something with this vibe":**
++ 1. `MiniMax__understand_image` on the image.
++ 2. Extract: color palette, mood (dark/bright), era, genre hints (e.g., neon = synthwave).
++ 3. Map to a style category (see [`references/style-categories.md`](style-categories.md)).
++ 4. Build the prompt from visual cues.
++ **"I want a song in the style of 80s Italo disco":**
++ 1. `web_search` "Italo disco characteristics".
++ 2. `web_fetch` Wikipedia or a music blog.
++ 3. Extract: typical BPM (110–130), instruments (analog synths, drum machine, gated reverb), era.
++ 4. Build a rich, specific prompt.
++ - **JioSaavn audio download** — needs yt-dlp, lives in `music-craft-minimax` (primary source for Bollywood and Indian regional music)
++ **Audio source fallback order:** YouTube → JioSaavn → mx3.ch → local file/alternate URL. JioSaavn is the preferred source for Bollywood and Indian regional music not available on YouTube.
++ ### Content and copyright
++ - Do not blindly trust web content. Use it as context; the LLM's knowledge and judgment are the primary source.
++ - Do not fetch content from sites the user did not intend (do not follow random links from fetched pages).
++ - Do not surface copyrighted lyrics verbatim in the final song unless the user provided them. Use fetched lyrics as inspiration for style and structure, not as the song's body.
++ - For YouTube metadata: extracting title, channel, and description is fair use. Downloading the audio is a different matter (see `music-craft-minimax` for the audio path).
+
+### references/input-workflows.md  [docs]
+- The skill can accept music generation requests in nine different shapes. The Pre-Flight Check applies regardless, but the workflow loop changes slightly per input. Inputs 1–5 are self-contained; inputs 6–9 use free runtime tools to enrich the context.
+- │   └── → Input Type 3 or 4: Audio source (redirect to Skill 2)
+- ⚠️ This input requires `music-craft-minimax`. Skill 1 does not support cover workflow or audio analysis.
+- **Within Skill 2**, use the `analysis_orchestrator.py` script to handle all the analysis in one step:
+- **Within Skill 2**, the workflow is:
+- **Skill 1 alternative:** If the user just wants metadata (title, description, channel) without the audio, use Input Type 7.
+- **When to redirect to Skill 2:** If the user wants the actual audio of the YouTube video (for cover, sample, or detailed analysis), use Input Type 4 instead, which redirects to Skill 2.
+- If the user also wants the actual audio of the YouTube video, redirect to Skill 2 (Input Type 4).
+- This is Input Type 3. Redirect to Skill 2 — covers are the only way to use a specific melody.
++ The skill can accept music generation requests in ten distinct shapes (Input Types 1–9 plus the 7b JioSaavn variant). The Pre-Flight Check applies regardless, but the workflow loop changes slightly per input. Types 1–5 are self-contained; types 6–9 (and 7b) use free runtime tools to enrich the context.
++ ## Analyzing Source Material
++ If the user provides source audio or an analysis file, extract the reusable facts before writing the prompt:
++ - Use user-provided analysis when available.
++ - If `music-craft-minimax` is installed, its analysis scripts can extract tempo, key, sections, instrumentation, vocal traits, and energy curve.
++ - If ACE-Step is already running, its audio-understanding mode can provide basic BPM, key, time signature, and caption without installing a separate analysis stack.
++ - If there is no source material, continue with the request text and inferred defaults.
++ Do not block a standard text-only song request just because no audio analysis exists.
++ ### Mandatory confirmations after source analysis
++ - If vocals are unclear, confirm vocal vs instrumental before prompt writing.
++ - If source duration exists but user intent does not, confirm target length before generation.
++ - Do not treat analyzer uncertainty as permission to choose instrumental mode.
++ │   └── → Input Type 3 or 4: Audio source (redirect to music-craft-minimax)
++ **Workflow:**
++ ⚠️ This input requires `music-craft-minimax`. The base skill does not support cover workflow or audio analysis.
++ **Within music-craft-minimax**, use the `analysis_orchestrator.py` script to handle all the analysis in one step:
++ **Within music-craft-minimax**, the workflow is:
++ **Base skill alternative:** If the user just wants metadata (title, description, channel) without the audio, use Input Type 7.
++ 2. Extract from the HTML / OG tags:
++ 4. LLM infers style, era, mood from the metadata.
++ 6. Build the prompt and generate.
++ **No audio is downloaded** in this workflow. The metadata is enough to inform the prompt.
++ **When to redirect to music-craft-minimax:** If the user wants the actual audio of the YouTube video (for cover, sample, or detailed analysis), use Input Type 4 instead, which redirects to music-craft-minimax.
++ ## Input Type 7b: JioSaavn URL (metadata only)
++ **Example:** "Make a song like this one: https://www.jiosaavn.com/song/..."
++ 1. `web_fetch` to the JioSaavn URL.
++    - **Title** (track name)
++    - **Artist** (album artist or primary performer)
++    - **Album** (if available)
++    - **Language** (often inferable from the artist or album)
++    - **Description** (if available)
++ 3. For Bollywood and Indian regional music, JioSaavn has deeper catalog coverage than YouTube. Use this when the user names an Indian song that is not easily found on YouTube.
++ 5. Ask the user: "Based on the track '[title]' by [artist], I'll make [inferred style]. Sound right?"
++ **When to redirect to music-craft-minimax:** If the user wants the actual audio of the JioSaavn track (for cover, sample, or detailed analysis), redirect to music-craft-minimax (Input Type 4 in that skill, which handles JioSaavn downloads via `yt-dlp`).
++ If the user also wants the actual audio of the YouTube video, redirect to music-craft-minimax (Input Type 4).
++ This is Input Type 3. Redirect to music-craft-minimax — covers are the only way to use a specific melody.
+
+### references/other-backends.md  [docs]
++ # Other Backends
++ Backend guides for everything that is not ACE-Step: MusicGen (local, free),
++ the mmx CLI (MiniMax), Stable Audio (Stability AI REST API), and generic
++ CLI backends. Load this when the selected backend is one of these.
++ ## MusicGen (local — free, no API key, no quota)
++ **Best for:** fully offline generation, no API dependency, unlimited use. **Trade-off:** quality is lower than MiniMax/ACE-Step, especially for vocals. Use as a fallback or for instrumentals.
++ MusicGen takes a single text description. It does NOT have a separate lyrics parameter — the text description IS the entire input. MusicGen was trained on short natural-language descriptions, NOT structured production sheets like MiniMax. The skill must reformat the prompt before passing it.
++ **Device selection (MPS / CUDA / CPU):**
++ ```python
++ ```python
++ import torch
++ import torch
++ import torch
++ if torch.backends.mps.is_available():      # Apple Silicon (M1/M2/M3)
++     device = "mps"
++     device = "mps"
++ elif torch.cuda.is_available():            # NVIDIA GPU
++     device = "cuda"
++     device = "cuda"
++ else:
++ else:
++     device = "cpu"
++     device = "cpu"
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ Use `model.to(device)` after loading. MPS gives 2-5x speedup over CPU on Apple Silicon.
++ **Generation command (run via bash heredoc):**
++ ```bash
++ ```bash
++ ```bash
++ python3 << 'MUSICGEN_EOF'
++ from audiocraft.models import MusicGen
++ from audiocraft.models import MusicGen
++ from audiocraft.data.audio import audio_write
++ # Device selection
++ if torch.backends.mps.is_available():
++ elif torch.cuda.is_available():
++ model = MusicGen.get_pretrained("<model_name>")
++ model.to(device)
++ # Generation parameters tuned for quality
++ model.set_generation_params(
++     duration=30,          # MusicGen's effective max per call
++     top_k=250,            # Token sampling diversity
++     top_p=0.0,            # Nucleus sampling (0 = disabled)
++     temperature=1.0,      # Creativity (0.5 = conservative, 1.0 = default, 1.5 = wild)
++     cfg_coef=3.0,         # How strictly to follow the prompt (higher = more faithful)
++ )
++ # MUSICGEN-SPECIFIC PROMPT FORMAT (see below)
++ desc = """<short genre/mood/instrument description, 1-2 sentences>
++ <short lyric snippet, if any>"""
++ wav = model.generate([desc])
++ audio_write("<output_path_no_ext>", wav[0].cpu(), model.sample_rate, strategy="loudness", loudness_compressor=True)
++ print(f"Done: <output_path_no_ext>.wav")
++ MUSICGEN_EOF
++ **Model selection:**
++ | Model | Parameters | Vocal quality | Lyrics following | Best for |
++ |---|---|---|---|---|
++ |---|---|---|---|---|
++ | `small` | 300M | ❌ Instrumental only | ❌ Ignores lyrics | Quick tests, instrumentals |
++ | `medium` | 1.5B | ⚠️ Vague vocal-like sounds | ⚠️ Occasionally | Best CPU-vs-quality trade-off |
++ | `large` | 3.3B | ✅ Best vocals MusicGen offers | ✅ Better | When you have GPU or patience |
++ | `melody` | 1.5B | ✅ Melody-conditioned | ⚠️ Humming, not lyrics | Vocal-melody tracks |
++ **Selection logic:**
++ - Apple Silicon without GPU + need quick result → `medium`
++ - Apple Silicon with MPS + can wait → `large`
++ - NVIDIA GPU available → `large` (10-20x faster than CPU)
++ - Want vocal melody emphasis → `melody`
++ **MusicGen-specific prompt format:**
++ MusicGen was trained on short descriptions like `"upbeat indie rock with jangly guitars and energetic drums"`. Long structured production sheets like MiniMax prompts are NOT what it expects and produce worse results.
++ **Translation rule:** when adapting a MiniMax-style production-sheet prompt for MusicGen:
++ | MiniMax prompt element | MusicGen equivalent |
++ |---|---|
++ | 13-line production sheet with anti-sparse guards | **Condense to 1-2 sentences** with the core genre + mood + 2-3 key instruments |
++ | `[Verse]`, `[Chorus]` section tags in lyrics | **Replace with a short lyric snippet** (4-8 lines) |
++ | BPM/key/structure flags | **Fold into natural language** ("slow 80 BPM", "minor key") |
++ | Anti-sparse instructions ("always playing") | **Drop entirely** — MusicGen doesn't have that failure mode |
++ | `AVOID` lists | **Drop entirely** — MusicGen doesn't interpret them well |
++ **Example translation:**
++ ```text
++ # MiniMax-style (13 lines, structured)
++ sludge doom metal, Melvins meets Eyehategod, crushingly heavy slow-motion,
++ oppressive dark cathartic, weight of a system collapsing,
++ male lead vocal, deep guttural growls, raw throat-shredding delivery,
++ FULL ARRANGEMENT: massively downtuned sludge guitar, sub-bass shakes floor,
++ tempo 82 BPM in E minor, doom reimagining, "the system will stand" becomes mantra,
++ extreme dynamic range whispered verses to screaming chaos,
++ sludge metal production thick muddy analog saturation,
++ vocal character: whispered verses, growling pre-chorus, full scream,
++ emotional arc: oppressive whisper opening, gradual crushing weight buildup,
++ dramatic pauses at 12s 55s 95s 130s, repeated "oh my god" lines,
++ avoid fast upbeat avoid clean singing avoid polished production
++ # MusicGen-style (2-3 sentences, natural language)
++ Slow crushing sludge doom metal at 82 BPM in E minor.
++ Downtuned detuned guitars, sub-bass, slow half-time drums,
++ oppressive dark mood. Melodic humming: "I don't know why,
++ I don't know why, what I know is how to get along."
++ The MusicGen version is shorter, uses natural phrasing, and inlines a short lyric fragment at the end.
++ **MusicGen limitations (documented):**
++ - Default max ~30 seconds per call. Generate in chunks for longer tracks, or accept the limit.
++ - No separate lyrics parameter — lyrics are only useful as a short prompt hint, not a full song.
++ - No BPM/key flags — fold into natural-language text.
++ - CPU is very slow; MPS (Apple Silicon GPU) gives 2-5x speedup, CUDA gives 10-20x.
++ - Vocal quality is fundamentally lower than MiniMax/ACE-Step — this is a model design difference, not a configuration issue.
++ - Output is WAV by default. Convert with `ffmpeg -i in.wav -codec:a libmp3lame -qscale:a 2 out.mp3` if ffmpeg is available.
++ **Generation parameters (tuning guide):**
++ | Parameter | Default | Range | Effect |
++ |---|---|---|---|
++ | `top_k` | 250 | 50-500 | Lower = more focused, higher = more diverse |
++ | `top_p` | 0.0 | 0.0-1.0 | 0 = disabled. 0.9 = nucleus sampling, often better quality |
++ | `temperature` | 1.0 | 0.5-1.5 | Lower = more predictable, higher = more creative |
++ | `cfg_coef` | 3.0 | 1.0-10.0 | Higher = follows prompt more strictly but can sound artificial |
++ **Recommended starting values per intent:**
++ | Intent | top_k | top_p | temperature | cfg_coef |
++ | Faithful to prompt (style match) | 150 | 0.0 | 0.8 | 5.0 |
++ | Creative/experimental | 350 | 0.9 | 1.2 | 2.0 |
++ | Best vocals (singing attempt) | 200 | 0.0 | 1.0 | 4.0 |
++ | Instrumental only | 250 | 0.0 | 1.0 | 3.0 |
++ **Chunked generation for longer tracks:**
++ # Generate 30s segments and concatenate
++ model = MusicGen.get_pretrained("large")
++ model.to("mps")  # or "cuda" / "cpu"
++ all_audio = []
++ for i in range(total_segments):
++     segment = model.generate([desc], progress=True)
++     all_audio.append(segment)
++ # Concatenate and save
++ combined = torch.cat(all_audio, dim=-1)
++ audio_write("output_long", combined[0].cpu(), model.sample_rate, strategy="loudness", loudness_compressor=True)
++ Each segment takes 2-5 min on MPS, so a 3-minute song = 6-15 min total. Acceptable trade-off for free + local.
++ **Quality expectation (honest):**
++ | Output aspect | MusicGen best case | MiniMax baseline |
++ |---|---|---|
++ | Instrumental fidelity | ✅ Good | ✅ Excellent |
++ | Vocal presence | ⚠️ Vague humming | ✅ Clear singing |
++ | Lyrics accuracy | ❌ Ignores most | ✅ Word-level match |
++ | Song structure (verse/chorus) | ❌ Single texture | ✅ Follows tags |
++ | Audio polish | ⚠️ Lo-fi by default | ✅ Production-quality |
++ | Speed (CPU, 30s) | ~7 min | ~30s (cloud) |
++ Use MusicGen for instrumentals, sketches, or when cloud is unavailable. Use MiniMax/ACE-Step when you need actual sung lyrics.
++ Install details: see **MusicGen Installation Details** in [`setup-and-preflight.md`](setup-and-preflight.md).
++ ## mmx CLI (MiniMax)
++ **Best for:** highest quality with per-flag control, cloud-based.
++ mmx music generate \
++   --prompt "<production-sheet prompt>" \
++   --lyrics-file <lyrics.txt> \
++   --out <output.mp3> \
++   --model music-2.6-free
++ Supports separate lyrics file, explicit model selection, and per-flag control (`--bpm`, `--key`, `--avoid`, `--structure`). Subject to MiniMax API quota.
++ For cover, style transfer, mashup, the lyrics API, and fine flag control (BPM, key, structure, avoid list), use the `music-craft-minimax` skill instead of calling mmx from here.
++ ## Stable Audio (Stability AI REST API)
++ **Best for:** short instrumentals, sound design, text-to-audio.
++ curl -s -X POST https://api.stability.ai/v2alpha/audio/generate \
++   -H "Authorization: Bearer $STABILITY_API_KEY" \
++   -F "prompt=<prompt>" \
++   -F "duration=180" \
++   -F "output_format=mp3" \
++   -o <output.mp3>
++ Stable Audio may not support separate lyrics input. For vocal tracks, combine lyrics into the prompt text. Check current Stability AI docs for the latest endpoint and parameters.
++ ## Generic CLI (any other)
++ If a music generation CLI is detected that is not listed above, use it with the production-sheet prompt as the text input and the lyrics file if the CLI supports it. Adapt the command to the CLI's expected arguments.
+
+### references/prompt-formula.md  [docs]
++ ## Backend-Specific Prompt Length Limits
++ Keep prompts short enough for the selected backend:
++ - **MiniMax/mmx:** safest around 1000-1550 UTF-8 bytes; warn above 1800 bytes; shorten before 2000 bytes. Use `music-craft-minimax/scripts/lint_music_request.py` when that skill is available.
++ - **ACE-Step:** keep `prompt` as music tags and put lyrics in the separate `lyrics` field. If using `/format_input`, review the optimized result too because the LM can expand the text.
++ - **Stable Audio 3:** keep prompts concise and instrumental-focused; test exact limits when using local SA3.
++ - **MusicGen:** short natural-language descriptions work better than long production sheets.
++ When a prompt is too long, shorten by removing duplicate adjectives, moving lyrics to a lyrics field/file when supported, and keeping numeric facts in backend parameters (`bpm`, `key_scale`, `audio_duration`, `--bpm`, `--key`, `--structure`) instead of repeating them in prose.
++ If `music-craft-minimax` is installed, its `scripts/lint_music_request.py` helper is the canonical guard for mmx prompt size, missing fields, and prompt/flag conflicts.
+
+### references/quality-and-revision.md  [docs]
++ # Quality, Rate Limits, and Revision
++ Rate-limit handling, the request-fit checklist, revision-prompt patterns
++ with worked examples, and lyrics-optimizer behavior. Load this after a
++ generation that needs verification against the request, or when iterating.
++ ## Rate Limits
++ Different providers have different limits. The exact values depend on the active OpenClaw runtime configuration, but the common ranges are:
++ | Tier | Typical RPM | Notes |
++ |---|---|---|
++ |---|---|---|
++ | Free / trial | 5–20 | Lower concurrency, watermarking may apply |
++ | Standard paid | 60–120 | Generous for personal use |
++ | Heavy / batch | 1000+ | Dedicated plans |
++ Defaults to assume (for the most common providers):
++ - **RPM (requests per minute):** 120
++ - **Concurrent connections:** 20
++ - **Output URL expiry:** 24 hours (download the audio promptly)
++ Before submitting a batch, check the active provider's plan. Generating 10 variations in quick succession on a free tier will rate-limit the 3rd or 4th call.
++ If a call fails with 429 (rate limit):
++ 1. Wait at least 60 seconds before retrying.
++ 2. Reduce concurrency if running a batch.
++ 3. Try once with the same payload before adjusting the prompt — the issue is the limit, not the content.
++ See also [error-handling.md](error-handling.md) for the 429 entry in the Generation Errors table and the Retry with same payload recovery pattern.
++ ## Request-fit checklist
++ The eight items in the Quality Verification Checklist in SKILL.md cover audio quality. In addition, confirm that the output matches the user's original request on these specific points. If any item fails, the prompt needs adjustment before delivery.
++ | Check | What to confirm | Failure action |
++ | Language | Vocals are in the requested language | Restate language in prompt; ensure lyric body is in the same language |
++ | Vocal / instrumental mode | Instrumental request has no vocals; vocal request has vocals | Add or remove `Instrumental only, no vocals`; check `instrumental` flag |
++ | Section structure | Number and order of sections match the plan | Add or correct `[Verse]`, `[Chorus]`, `[Bridge]`, `[Outro]` tags in the lyrics |
++ | Lyrics source | If user provided lyrics, the words appear recognizably | Stop and tell the user the generator paraphrased their text; revert to a tighter prompt |
++ | Duration | Output length is in the requested range | Add or trim sections in the lyrics body; long output rarely comes from more length, only from more tagged sections |
++ | Stylistic references | Named artists or eras come through in genre / instruments / vocals | Translate the reference into concrete descriptors; add them to the prompt |
++ If 3+ request-fit items fail, regenerate with a revised prompt. If 1–2 fail, warn the user and offer a targeted fix. For the specific fix patterns, see [error-handling.md](error-handling.md).
++ ## Revision Prompts
++ When the output is close but not right, do not regenerate from scratch. Build a **revision prompt** that only changes the failing element and keeps everything else intact.
++ ### Pattern
++ Keep 80% of the original prompt. Add a single `REVISION:` block at the end that targets the specific failure.
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ [Original prompt, unchanged]
++ REVISION:
++ REVISION:
++ REVISION:
++ REVISION:
++ REVISION:
++ - [Specific change 1]
++ - [Specific change 2]
++ - Keep: [elements that already work and should NOT change]
++ Always pass the same lyrics body for revision requests unless the lyrics themselves are the failure.
++ ### Examples
++ **Output is too sparse:**
++ [Original prompt]
++ [Original prompt]
++ [Original prompt]
++ [Original prompt]
++ - Strengthen the anti-sparse guard: "ALL instruments ALWAYS playing, NEVER a cappella"
++ - Re-list every instrument: accordion, upright bass, strings, piano, light percussion
++ - Quiet sections: reduce to accordion and bass only, still fully played
++ - Keep: language, vocal type, structure
++ **Output is in the wrong language:**
++ - Vocals in [target language] only, no English
++ - Lyric body is already in [target language] — keep as is
++ - Keep: genre, mood, instruments
++ **Chorus is weak:**
++ - Chorus: melody-driven, hook-forward, with sustained vowels
++ - Add a [Pre Chorus] section before each [Chorus] for build
++ - Keep: verse style, language, instruments
++ **Vocal mode is wrong (vocals in instrumental, or silent in vocal request):**
++ - [Add or remove] "Instrumental only, no vocals" line
++ - If vocals were missing: add "lead vocal in [language], [register], [delivery]"
++ - Keep: genre, mood, structure
++ For the full retry recipe library (wrong language, weak chorus, sparse arrangement, vocals in instrumental, missing genre identity, too generic output), see [error-handling.md](error-handling.md).
++ ## Delivery Copy
++ For delivery copies, normalize loudness after generation:
++ ```bash
++ ffmpeg -i input.mp3 -af loudnorm=I=-16:TP=-1:LRA=11 -ar 48k output.mp3
++ Then verify:
++ - duration is within the user's tolerance
++ - integrated loudness is near -16 LUFS for the delivery copy
++ - true peak is around -1 dBTP
++ - file size is reasonable
++ - there are no obvious silence drops, clipping, or artifacts
++ ## Lyrics Optimizer Behavior
++ When `music_generate` is called **without explicit lyrics** and the request implies a vocal track (not instrumental), the runtime may auto-generate lyrics from the prompt. The exact behavior depends on the provider:
++ | Provider | Behavior when no lyrics |
++ |---|---|
++ | MiniMax | Calls `lyrics_optimizer: true` automatically; generates structured lyrics matching the prompt's theme and language |
++ | ACE-Step | Uses 5Hz LM (when `thinking=true`) to rewrite tags and generate audio codes; can fill in missing metadata |
++ | ElevenLabs | Requires explicit lyrics; without them, returns instrumental or errors |
++ | Other | Varies — check provider docs |
++ This means: if the user did not provide lyrics and did not say "instrumental", the output will have AI-written lyrics in the language and theme implied by the prompt. If the user wants specific words, they must provide them. If they want no vocals, set `instrumental: true`.
++ ### Power-User Option: Web Lyrics Lookup
++ The `openclaw-music-workflow-minimax` skill extends this with an **optional** `fetch_lyrics_web.py` script that looks up lyrics from LRCLib for known mainstream songs. This is a quality boost for popular tracks but is not a general solution — LRCLib has poor coverage for instrumentals, obscure bands, and friend-produced music. When the lookup returns nothing, the workflow silently falls back to Whisper transcription (or the lyrics optimizer). For most use cases you can ignore this; the user just needs better lyrics for a well-known song.
++ If the user is surprised by the AI-written lyrics, that is a workflow issue (the Pre-Flight should have asked), not a generation issue. Adjust by asking the user next time whether they want auto-lyrics or want to provide their own.
+
+### references/request-intake.md  [docs]
++ # Request Intake and Output Layout
++ Full intake protocol (required fields, output location, confidence maps,
++ language consistency, ambiguous-phrase routing) and the per-song output
++ file layout (slug rules, version prefixes, reference layout). Load this
++ when taking a new request or setting up output folders.
++ ## Request Intake
++ Before asking any question or writing any prompt, run a two-pass intake on the user's request: extract the required fields, then label each one's confidence.
++ ### Required fields checklist
++ Every request, after auto-detect, should land on this list. Mark each field as one of: **clear**, **inferred**, **missing**, **conflicting**.
++ | # | Field | What to look for |
++ |---|---|---|
++ |---|---|---|
++ | 1 | Language | The language of the lyrics and the vocals |
++ | 2 | Genre / subgenre | Pop, rock, lofi, reggaeton, synthwave, etc. — be specific |
++ | 3 | Mood | Emotional tone (sad, joyful, dark, hopeful, ...) |
++ | 4 | Theme | Topic or story (love, summer, road trip, heartbreak) |
++ | 5 | Vocal mode | Solo vocal, choir, instrumental, spoken word |
++ | 6 | Lyric source | User-provided, auto-generated, or instrumental-only |
++ | 7 | Duration | Seconds or minutes; jingle (~30s), standard (~3min), epic (~6min) |
++ | 8 | Structure | Number and order of sections (intro/verse/chorus/bridge/outro) |
++ | 9 | References | Named artists, songs, eras, or visual references |
++ | 10 | **Output location** | Where the audio file (and analysis files) should be saved |
++ ### Output location — ask once, use forever
++ The output path is part of the intake, not an afterthought. Confirm it before calling `music_generate` and let the user pick a **per-song subfolder** so the project does not end up as a flat folder of 30 MP3s called `final_v3_take2.mp3`.
++ Default question (ask only if the request is missing it):
++ > Where should I save this and any analysis files? Two common shapes:
++ >
++ >
++ > - **Per-song subfolders** (recommended when you are producing multiple versions or songs): `~/Music mix/<project>/<song-slug>/`
++ >   - Inside the subfolder: the MP3, the analysis JSON (if you used `music-craft-minimax`), the prompt `.txt`, the lyrics `.txt`
++ >   - Each version of the same song lives in its own subfolder, or stacked under one subfolder with a version suffix on the MP3
++ > - **Single folder, single file**: a flat path like `~/Music mix/<project>/<song-slug>.mp3`
++ > If you do not have a strong preference, the default is `~/Music mix/<project>/<song-slug>/<song-slug>.mp3` (per-song subfolder).
++ Conventions the LLM should follow when picking paths itself:
++ - Slug = lowercase, dash-separated, ASCII-only, ≤ 60 chars (e.g. `two-paths`, `family-acoustic`, `when-you-bleed`)
++ - Never use a slug starting with `openclaw-` (protected namespace on ClawHub)
++ - When generating multiple versions of the same song (cover, mashup, style transfer, v2 polished), prefer **stacked** subfolders with versioned MP3s over a single shared folder. Example: `~/Music mix/dbc/two-paths/M1_synthwave.mp3` and `M2_indiefolk.mp3`
++ - When the user gives no project name, fall back to the song slug as the project root
++ If any field is `missing`, that is a question to ask. If any field is `conflicting`, pause and resolve before prompting. If everything is `clear` or `inferred`, the request is ready to translate.
++ ### Confidence map examples
++ **Request:** *"Canción francesa melancólica, 80 BPM, con voz masculina teatral."*
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ clear:     language=fr, genre=chanson, mood=melancholic, vocal_mode=solo_male, bpm=80
++ inferred:  theme=romantic, duration=~3min, structure=standard
++ missing:   lyrics_source
++ **Request:** *"Make a sad Spanish pop song but with upbeat energy."*
++ conflicting: mood (sad vs upbeat)
++             → pause, ask: "Sad lyrics with an upbeat tempo, or sad throughout?"
++ **Request:** *"Use these lyrics" (followed by user text)*
++ clear:     lyrics_source=user_provided
++ inferred:  language (from text), structure (from text length)
++ missing:   genre, mood, vocal_mode, duration
++ ### Language consistency check
++ The four "languages" of a music request must not contradict each other:
++ 1. **Requested language** — what the user asked for in their message
++ 2. **Lyric language** — the language of the lyrics body
++ 3. **Chorus language** — the language of the chorus (if different from verses, must be intentional)
++ 4. **Tag language** — the section tags like `[Verse]`, `[Chorus]` (always English by convention)
++ Conflict examples that mean a regeneration is needed:
++ - User says "Spanish song" but the prompt and lyrics are in English
++ - Verses are in English and the chorus is in Spanish with no bilingual intent
++ - The prompt describes French but the lyrics body is Portuguese
++ Quick check before `music_generate`:
++ - [ ] Prompt voice line says the same language as the lyric body
++ - [ ] Chorus language matches verse language unless the song is intentionally bilingual
++ - [ ] Tags are in English (`[Verse]`, not `[Verso]`)
++ - [ ] If the user wrote the request in Spanish, the prompt can be in English but the lyrics must be in Spanish
++ ### Routing for ambiguous phrases
++ Some common phrases hide the real intent. Match the phrase to a route before asking follow-ups.
++ | User says... | Route | First question to ask (if any) |
++ | "Make a song like X" | Text-only style reference | "Anything from X you want me to lean on — vocals, instruments, era, all of it?" |
++ | "Use these lyrics" | User-provided lyrics | "What style and voice should it have?" |
++ | "Instrumental only" / "no vocals" / "background music" | Instrumental / jingle | "What duration and use case?" |
++ | "Turn this image into music" / "vibe like this" | URL/image enrichment | (analyze the image first, ask only if mood/genre still unclear) |
++ | "Cover this song" / "in the style of this track" with audio | Audio cover — redirect | "That needs cover / style transfer from audio. Switching to `music-craft-minimax`." |
++ | "Make a song" / "something for my project" with no other info | Vague request | "Genre, mood, language, or theme you have in mind? Or want me to surprise you?" |
++ Always enrich before asking when the input is an image or URL. Fetch the page or analyze the image, then route based on what was extracted.
++ For the full nine input shapes (description, user-lyrics, audio file, YouTube audio, song name, lyrics URL, YouTube metadata, image, genre/cultural) and their routing rules, see [`input-workflows.md`](input-workflows.md).
++ ## Output File Layout (Per-Song Subfolders)
++ A generation should never land as a stray MP3 at the project root. Always save inside a per-song subfolder so the analysis, the prompt, the lyrics, and every version stay grouped and reviewable.
++ ### Recommended layout (per project, per song)
++ <project-root>/                          e.g. ~/Music mix/dbc/
++ └── <song-slug>/                        e.g. two-paths/
++     ├── <version-prefix>_<style>.mp3    e.g. M1_synthwave.mp3, M2_indiefolk.mp3
++     ├── <song-slug>_analysis.json      (only when using music-craft-minimax)
++     ├── <song-slug>_lyrics.txt
++     ├── <song-slug>_synthwave.txt       (the prompt that generated M1)
++     └── <song-slug>_indiefolk.txt       (the prompt that generated M2)
++ ### Slug rules
++ - lowercase, dash-separated, ASCII-only
++ - ≤ 60 chars
++ - derived from the song title or filename, not from the analysis run
++ - never starts with `openclaw-` (ClawHub protected namespace)
++ ### Version prefix convention
++ When generating multiple versions of the same song (cover, mashup, style transfer, prompt revision), prefix the MP3 with a short label so the user can scan the folder:
++ | Prefix | When to use |
++ |---|---|
++ | `A_` | First attempt, base skill only |
++ | `B_` | First revision with a different style |
++ | `C_` | Cover version of an existing track |
++ | `M1_`, `M2_` | Mashup / mixed source (Song A + Song B) |
++ | `N1_`, `N2_` | Style transfer to a target style |
++ | `v2_`, `v3_` | Polish / second take of a previous version |
++ ### Reference project layout (real example)
++ ~/Music mix/dbc/
++ ├── when_you_bleed/   (7 versions: A, B1, C, M1, M2, N1, N2)
++ ├── family_acoustic/  (2 versions: cinematic + base_skill)
++ ├── two_paths/        (2 versions: M1_synthwave, M2_indiefolk)
++ └── give_us_a_reason/ (2 versions: M3_industrial, M4_postpunk)
++ This is the structure the LLM should aim for by default. Ask the user before deviating.
+
+### references/setup-and-preflight.md  [docs]
++ # Setup and Pre-Flight
++ Full pre-flight protocol for music-craft: dependency consent, platform
++ detection, user and hardware setup, required and optional dependencies,
++ and install details. Load this before the first generation in a session,
++ or when any dependency or hardware question comes up.
++ ## Dependency Consent Protocol
++ Some setups (local models, audio analysis) need installs, large downloads, or — on
++ corporate machines — changes to the certificate trust store. Apply this protocol every time:
++ - Label every dependency as **REQUIRED** (the chosen path will not work without it) or
++   **OPTIONAL** (it works without, quality improves with it). Say which when you ask.
++ - **Stop and ask before any install or multi-GB download.** Show the exact command and its
++   rough size/impact. Never auto-install; never silently fall back to a degraded path.
++ - If the user declines a REQUIRED item, stop and say plainly that the chosen path cannot
++   proceed, then offer an alternative (for example cloud vs local).
++ - **Ask once, up front, where to save output** (`OUTPUT_DIR`) and use a per-song subfolder.
++   Do not invent an output path silently.
++ - For local models on Windows, follow [`windows-wsl-setup.md`](windows-wsl-setup.md),
++   which encodes these gates for the WSL2 + corporate-proxy path.
++ ## Platform Detection (run first)
++ Identify the host OS so the install commands later use the right package manager.
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ # POSIX (Linux, macOS, WSL, Git Bash)
++ uname -s    # "Linux" or "Darwin"
++ # Windows PowerShell
++ # Windows PowerShell
++ # Windows PowerShell
++ $env:OS     # "Windows_NT"
++ # Windows cmd
++ ver
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ Then identify the available package manager (in priority order):
++ | OS | Package managers (in priority order) |
++ |---|---|
++ | Ubuntu / Debian / Mint | `apt` |
++ | Fedora / RHEL / Rocky | `dnf` (legacy: `yum`) |
++ | Arch / Manjaro | `pacman` |
++ | Alpine | `apk` |
++ | macOS | `brew` (install from [brew.sh](https://brew.sh) if missing) |
++ | Windows | `winget` (built into Windows 10 2004+), then `choco` (Chocolatey), then `scoop` |
++ A useful one-liner to detect the active manager:
++ # POSIX
++ # POSIX
++ command -v apt dnf pacman apk brew 2>/dev/null | head -1
++ Get-Command winget, choco, scoop -ErrorAction SilentlyContinue | Select-Object -First 1
++ If the agent is running inside WSL, treat it as Linux (use `apt`). If it is running inside a non-standard environment (container, Codespace, dev container), ask the user which base image they are on before proposing install commands.
++ ## User & Hardware Setup (ask once per session)
++ Before installing any backend, gather the user's preferences and confirm hardware. The skill works on **any** modern machine — not just Apple Silicon MacBooks. Auto-detect first, then confirm critical values with the user.
++ ### Hardware Probe (run first)
++ Run this on the user's machine to detect platform, RAM, disk, and existing installs:
++ echo "=== Platform ==="
++ uname -srm
++ echo ""
++ echo ""
++ echo ""
++ echo ""
++ echo ""
++ echo ""
++ echo "=== RAM ==="
++ case "$(uname -s)" in
++ case "$(uname -s)" in
++   Darwin) sysctl -n hw.memsize | awk '{printf "%.0f GB\n", $1/1024/1024/1024}' ;;
++   Linux)  awk '/MemTotal/{printf "%.0f GB\n", $2/1024/1024}' /proc/meminfo ;;
++   *)      echo "unknown (Windows: run systeminfo | findstr Memory)" ;;
++ esac
++ esac
++ echo "=== CPU chip ==="
++   Darwin) sysctl -n machdep.cpu.brand_string 2>/dev/null ;;
++   Linux)  grep -m1 'model name' /proc/cpuinfo | cut -d: -f2 | xargs ;;
++   *)      echo "unknown" ;;
++ echo "=== GPU ==="
++ if [ "$(uname -m)" = "arm64" ] && [ "$(uname -s)" = "Darwin" ]; then
++   echo "Apple Silicon (MPS available for MLX)"
++ elif command -v nvidia-smi >/dev/null 2>&1; then
++   nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null
++ else
++   echo "No GPU detected (CPU only)"
++ fi
++ echo "=== Disk free in \$HOME ==="
++ df -h "$HOME" | tail -1
++ echo "=== Python managers ==="
++ command -v uv    >/dev/null 2>&1 && echo "uv:     $(which uv)" || echo "uv:     not found"
++ command -v conda >/dev/null 2>&1 && echo "conda:  $(which conda)" || echo "conda:  not found"
++ command -v python3 >/dev/null 2>&1 && echo "python3: $(python3 --version 2>&1)" || echo "python3: not found"
++ echo "=== Existing ACE-Step install? ==="
++ ls ~/ACE-Step-1.5 2>/dev/null >/dev/null && echo "✓ Found at ~/ACE-Step-1.5" || echo "✗ Not found in ~/ACE-Step-1.5"
++ **Windows note:** the probe above is bash (POSIX) and cannot run on native Windows
++ before WSL exists. Run this PowerShell probe first (full walkthrough in
++ [`windows-wsl-setup.md`](windows-wsl-setup.md)):
++ ```powershell
++ (Get-CimInstance Win32_OperatingSystem).Caption
++ [math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory/1GB,1)  # RAM GB
++ (Get-CimInstance Win32_Processor).Name
++ (Get-CimInstance Win32_VideoController).Name                                      # GPUs
++ if (Get-Command nvidia-smi -ErrorAction SilentlyContinue) { 'nvidia-smi present' }
++ wsl --list --verbose; wsl --version                                              # WSL state
++ Get-PSDrive C | Select-Object @{n='FreeGB';e={[math]::Round($_.Free/1GB,1)}}
++ Once inside a WSL distro, the bash probe applies (WSL is treated as Linux).
++ ### Ask the user (4 questions, in order)
++ After running the probe, present the detected values to the user and ask 4 questions. These answers stay in the session context and are reused for every backend install in this session.
++ **Question 1 — Platform confirmation:**
++ > I see: `{platform}, {ram} GB RAM, {cpu}, {gpu}`. Is that right?
++ > - ✅ Yes, continue
++ > - ❌ No, let me correct it (RAM/GPU/etc.)
++ If the user says no, ask which value is wrong and re-detect with corrections.
++ **Question 2 — Clone location for ACE-Step (and any other large model repo):**
++ > Where should I clone ACE-Step? Common choices:
++ > - `~/ACE-Step-1.5` (default, simple, no path collision)
++ > - `~/projects/ace-step` (if you keep projects in a subfolder)
++ > - `~/ml/ace-step` (if you have a dedicated ML directory)
++ > - A custom path: ___________
++ > - A custom path: ___________
++ >
++ >
++ >
++ >
++ >
++ >
++ >
++ >
++ >
++ >
++ >
++ >
++ >
++ > If ACE-Step is already cloned somewhere, I detected it at: `{detected_path}`. Use that? Or pick a different path?
++ Use the user's answer as `ACE_STEP_PATH` for the rest of the session. Never hardcode absolute user-specific paths.
++ **Question 3 — Output directory for generated songs:**
++ > Where should I save generated songs and project files?
++ > - `~/Music mix/` (default)
++ > I'll create the directory if it doesn't exist.
++ Use the user's answer as `OUTPUT_DIR` for the rest of the session.
++ **Question 4 — Cloud backends (optional, for backup or speed):**
++ > Do you have any of these set up? (Just for backup if ACE-Step fails)
++ > - MiniMax API key (set `MINIMAX_API_KEY` in your shell)
++ > - Stability AI API key (set `STABILITY_API_KEY`)
++ > - No, just use local backends
++ > You can always set these later.
++ ### Hardware-specific notes (referenced later)
++ After the user answers Question 1, the skill knows the hardware. Save these flags for the rest of the session:
++ - `IS_APPLE_SILICON` = true if `uname -m` = `arm64` AND `uname -s` = `Darwin`
++ - `IS_INTEL_MAC` = true if `uname -m` = `x86_64` AND `uname -s` = `Darwin`
++ - `IS_LINUX_NVIDIA` = true if `nvidia-smi` works
++ - `IS_LINUX_AMD` = true if `rocm-smi` works (not yet handled)
++ - `IS_CPU_ONLY` = true if no GPU
++ - `RAM_GB` = total system RAM (24, 16, 32, 64, etc.)
++ - `MEMORY_ARCH` = "unified" (Apple Silicon, integrated graphics, AMD APU) OR "dedicated" (NVIDIA/AMD discrete GPU)
++ - `ML_BUDGET_GB` = how much memory is actually available for ML models (= free RAM minus 2 GB safety margin, or the smaller of free system + free VRAM for dedicated GPUs)
++ - `GPU_VRAM_GB` = total VRAM if dedicated GPU detected
++ - `GPU_FREE_GB` = free VRAM right now if dedicated GPU detected
++ These flags affect:
++ - **Backend selection** — Apple Silicon gets ACE-Step (MLX). Intel Mac / NVIDIA Linux get ACE-Step (CUDA, slower on consumer GPUs). CPU-only gets ACE-Step (CPU, very slow) or cloud backends.
++ - **Tier availability** — see the ML-budget tier table in the **ACE-Step Quality Tiers** section of [`acestep-generation.md`](acestep-generation.md).
++ - **Install commands** — see the per-OS install blocks in **Required** below.
++ **Apple Silicon note:** M1/M2/M3/M4 all work with ACE-Step MLX backend. M3 Pro/Max/Ultra and M4 are faster but otherwise identical. No code changes needed across chips. **Memory architecture: unified** — your 24 GB is shared between the OS, your apps, and the ML model. A 24 GB MacBook with 4 GB of open apps has ~20 GB ML budget, not 24 GB. This is why xl-mixed (which needs ~25-30 GB peak) hits swap-thrashing on 24 GB Macs. On a 32 GB Mac Mini or 64 GB Mac Studio, the same model fits comfortably.
++ **Intel Mac note:** ACE-Step MLX backend requires Apple Silicon. On Intel Macs, ACE-Step runs on CPU only (very slow, ~10x slower than MLX) or PyTorch with MPS (which is also limited on Intel). Recommend **cloud backends** (MiniMax, Stable Audio) for Intel Mac users who want reasonable speed. MusicGen still works fine on Intel Mac. **Memory architecture: unified** (Intel iGPU shares system RAM, same caveat as Apple Silicon).
++ **Linux + NVIDIA note:** ACE-Step on Linux uses CUDA. Needs NVIDIA driver + CUDA toolkit. Generation is faster than Apple Silicon MLX for high-end GPUs (RTX 4090, A100), slower for low-end (RTX 3050, GTX 1660). **Memory architecture: dedicated** — VRAM is separate from system RAM, so a 12 GB GPU + 16 GB system can still run a 10 GB model (VRAM is the bottleneck, not system RAM). The probe script detects this and uses the smaller pool as the ML budget.
++ **Windows note:** Run local ACE-Step via **WSL2** (treated as Linux, with CUDA passthrough to your NVIDIA GPU), not native Windows. On corporate machines behind a TLS-inspecting proxy, you must install the corporate root CA into the distro or model downloads fail with certificate errors — see [`windows-wsl-setup.md`](windows-wsl-setup.md). Cloud backends are the no-WSL alternative (but may be firewall-blocked).
++ ## Required
++ Before starting, detect **any** available music backend. Check in this priority order — use the first one that succeeds:
++ | Priority | Backend | Detection command | What it needs |
++ |---|---|---|---|
++ | 1 | Native tool | Inspect runtime's tool list for `music_generate` or similar | None — built into runtime |
++ | 2 | ACE-Step local (free, best quality) | `curl -s http://127.0.0.1:8001/health 2>/dev/null` returns `{"status":"ok"}` | `git clone` + `uv sync` + `uv run acestep-api` (REST API on port 8001) |
++ | 3 | MusicGen local (free, instrumental only) | `python3 -c "import audiocraft" 2>/dev/null && echo OK` | Conda or pip env with audiocraft + torch + xformers |
++ | 4 | mmx CLI (MiniMax) | `which mmx 2>/dev/null` | MiniMax API key in environment |
++ | 5 | Stable Audio REST | `[ -n "$STABILITY_API_KEY" ] && echo OK` | `STABILITY_API_KEY` env var |
++ | 6 | Any other CLI | `which mmx 2>/dev/null`, etc. | Provider-specific setup |
++ Run all detection checks. You only need **one** working backend. The skill adapts to whatever it finds.
++ If **no** backend is found after checking all paths, **branch on detected hardware** and present the right install path. Use the `ACE_STEP_PATH` and `OUTPUT_DIR` from the User & Hardware Setup answers.
++ ### Apple Silicon (`IS_APPLE_SILICON = true`)
++ > No music generation backend detected. The quickest free path is ACE-Step local — it supports vocals, lyrics, and up to 10-minute songs with no API key and no quota limits.
++ > **Install ACE-Step (Apple Silicon, MLX native):**
++ > ```bash
++ > ```bash
++ > ```bash
++ > ```bash
++ > ```bash
++ > ```bash
++ > git clone https://github.com/ace-step/ACE-Step-1.5.git "${ACE_STEP_PATH}"
++ > git clone https://github.com/ace-step/ACE-Step-1.5.git "${ACE_STEP_PATH}"
++ > git clone https://github.com/ace-step/ACE-Step-1.5.git "${ACE_STEP_PATH}"
++ > cd "${ACE_STEP_PATH}" && uv sync
++ > cd "${ACE_STEP_PATH}" && uv sync
++ > cd "${ACE_STEP_PATH}" && uv sync
++ > uv run acestep-api --port 8001
++ > uv run acestep-api --port 8001
++ > uv run acestep-api --port 8001
++ > ```
++ > ```
++ > ```
++ > ```
++ > ```
++ > ```
++ > ```
++ > ```
++ > On first launch, the API server starts in "no models loaded" state. The skill will ask before downloading any models (see the **Model download consent flow** in the ACE-Step Quality Tiers section of [`acestep-generation.md`](acestep-generation.md)). REST API runs on `http://127.0.0.1:8001`.
++ > **Alternative — MusicGen (instrumental only):**
++ > **Alternative — MusicGen (instrumental only):**
++ > brew install miniforge
++ > conda create -n musicgen -c conda-forge python=3.11 audiocraft torch torchaudio xformers
++ > conda create -n musicgen -c conda-forge python=3.11 audiocraft torch torchaudio xformers
++ > conda create -n musicgen -c conda-forge python=3.11 audiocraft torch torchaudio xformers
++ > conda create -n musicgen -c conda-forge python=3.11 audiocraft torch torchaudio xformers
++ > conda activate musicgen
++ > conda activate musicgen
++ > conda activate musicgen
++ > conda activate musicgen
++ ### Intel Mac (`IS_INTEL_MAC = true`)
++ > No music generation backend detected. ACE-Step MLX is **not supported** on Intel Macs. Your options:
++ > **Option A — Cloud backends (recommended for speed):**
++ > - MiniMax: set `MINIMAX_API_KEY` in your shell, install `mmx` CLI
++ > - Stable Audio: set `STABILITY_API_KEY` in your shell
++ > **Option B — ACE-Step on CPU (slow, ~10x slower than MLX):**
++ > # No MLX backend on Intel — generation will use CPU, expect ~60 min/track
++ > **Option C — MusicGen (instrumental only, fine on Intel):**
++ > brew install miniconda
++ ### Linux + NVIDIA GPU (`IS_LINUX_NVIDIA = true`)
++ > No music generation backend detected. The quickest free path is ACE-Step with CUDA.
++ > **Install ACE-Step (CUDA):**
++ > Requires NVIDIA driver + CUDA toolkit. Generation speed depends on GPU tier (see Linux + NVIDIA note above).
++ > # Conda (preferred):
++ > # Or venv + pip (CUDA required):
++ > python3 -m venv ~/musicgen-env
++ > source ~/musicgen-env/bin/activate
++ > pip install audiocraft torch torchaudio --index-url https://download.pytorch.org/whl/cu121
++ ### Linux (CPU only or AMD GPU)
++ > No NVIDIA GPU detected. ACE-Step will run on CPU (very slow, expect ~60-90 min/track). For better performance, consider:
++ > - **Cloud backends** (MiniMax, Stable Audio) — fast, paid
++ > - **MusicGen** — CPU-capable for shorter instrumentals
++ > - **Buy a GPU** 😄 (or borrow a cloud instance with NVIDIA)
++ ### Windows
++ > Local ACE-Step on **native** Windows is not recommended (bash setup scripts; the
++ > LM backend path is built for Linux). The supported local path is **WSL2**, which
++ > gives a real Linux with CUDA passthrough to your NVIDIA GPU. The full, verified
++ > walkthrough — including corporate machines behind a TLS-inspecting proxy,
++ > where the model download fails until the corporate root CA is installed
++ > in the distro — is in [`windows-wsl-setup.md`](windows-wsl-setup.md).
++ > **Option A — WSL2 (recommended for local generation):**
++ > 1. Probe with PowerShell (see the Windows note under Hardware Probe) and read `wsl --list --verbose`.
++ > 2. Create a **dedicated, isolated** distro. Never reuse or modify an existing
++ >    (especially corporate) distro, and never edit the global `%USERPROFILE%\.wslconfig`:
++ > ```powershell
++ > ```powershell
++ > wsl --install Ubuntu-24.04 --name acestep --no-launch
++ > 3. Verify GPU passthrough: `wsl -d acestep -u root -- nvidia-smi`. Then follow the
++ >    Linux + NVIDIA install steps inside the distro.
++ > 4. On a corporate/proxied machine, do the CA-install and proxy-bypass steps in
++ >    `windows-wsl-setup.md` **before** downloading models.
++ > **Option B — Cloud backends (fast, paid; may be blocked by a corporate firewall):**
++ > - MiniMax: set `MINIMAX_API_KEY` and install `mmx`
++ > - Stable Audio: set `STABILITY_API_KEY`
++ > **Option C — MusicGen (instrumental only):**
++ > winget install Anaconda.Miniconda3
++ After any install method, verify: `python3 -c "import audiocraft; print('MusicGen ready')"` (for MusicGen) or `curl -s http://127.0.0.1:8001/health` (for ACE-Step).
++ Other options: install `mmx` CLI, or set `STABILITY_API_KEY` for Stable Audio API.
++ Do not start the workflow loop without a backend.
++ ## MusicGen Installation Details
++ MusicGen's dependency chain has a known blocker: **`xformers` cannot build from source on macOS without conda** (it requires CUDA build tools that don't exist outside Linux/nvidia). This is why conda/miniforge is the recommended path on macOS.
++ **Why not plain `pip install audiocraft torch`?**
++ audiocraft → requires xformers
++ xformers   → requires CUDA build tools
++ macOS      → no CUDA → build fails
++ conda      → ships pre-built xformers wheels for all platforms ✓
++ **If conda is NOT available and the user refuses to install it**, fall back to any cloud backend (mmx, Stable Audio). Do not attempt a broken pip install chain.
++ **Verification (run after any install method):**
++ python3 -c "
++ import audiocraft
++ import torch
++ print(f'MusicGen {audiocraft.__version__} OK')
++ print(f'torch {torch.__version__}, CUDA: {torch.cuda.is_available()}')
++ print(f'GPU: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else \"CPU only\"}')
++ "
++ If this prints without error, MusicGen is ready. The agent should cache the activation command (e.g., `conda activate musicgen`) and use it for every MusicGen generation call in the session.
++ ## Optional improvements
++ This skill does not require any optional tool, but the user may benefit from any of these. Ask once at the start of the workflow, before generating anything. Propose the install command for the **detected platform** using the table below.
++ | Tool | What it unlocks | Linux (apt/dnf/pacman/apk) | macOS (brew) | Windows (winget / choco) | Pip fallback (any OS) |
++ |---|---|---|---|---|---|
++ | `ffmpeg` | Audio format conversion, trimming, re-encoding | `apt install ffmpeg` (Debian/Ubuntu) · `dnf install ffmpeg` (Fedora) · `pacman -S ffmpeg` (Arch) · `apk add ffmpeg` (Alpine) | `brew install ffmpeg` | `winget install Gyan.FFmpeg` (or `choco install ffmpeg`) | — |
++ | `yt-dlp` | YouTube download for cover or mashup inputs | `apt install yt-dlp` (or pip) | `brew install yt-dlp` (or pip) | `winget install yt-dlp` (or `choco install yt-dlp` or pip) | `pip install -U yt-dlp` |
++ | `audiocraft` | **MusicGen local generation (free, no API key, no quota)** | conda (preferred) or pip | **conda (preferred):** `brew install miniforge` then `conda create -n musicgen -c conda-forge python=3.11 audiocraft torch torchaudio xformers` | Same as Linux | — | `pip install audiocraft torch` (may fail on macOS without conda — xformers build issue) |
++ | `librosa` | Audio analysis (BPM, key, energy, structure) | pip | pip | pip | `pip install librosa numpy scipy` |
++ | `parselmouth` | Better pitch tracking (optional, Praat under the hood) | pip | pip | pip | `pip install praat-parselmouth` |
++ | `mmx` CLI | Per-flag control (`--avoid`, `--bpm`, `--key`, `--structure`) with MiniMax | follow the MiniMax install guide for Linux | follow the MiniMax install guide for macOS | follow the MiniMax install guide for Windows (PowerShell) | — |
++ | `python3` | Required for `audiocraft`, `librosa`, and `parselmouth` | `apt install python3 python3-pip` · `dnf install python3 python3-pip` · `pacman -S python python-pip` · `apk add python3 py3-pip` | `brew install python` (ships pip) | `winget install Python.Python.3.12` | — |
++ ### Python interpreter quirk
++ On Linux and macOS, the interpreter is usually `python3`. On Windows, it is usually `python` (no `3`). When verifying, check both names so Windows users are not falsely reported as missing Python:
++ command -v python3 || command -v python
++ Get-Command python, python3 -ErrorAction SilentlyContinue | Select-Object -First 1
++ ## The "ask the user" pattern
+
+### references/structure-tags.md  [docs]
++ ## Lyrics from ASR (Whisper)
++ If lyrics are extracted from audio with Whisper or another ASR system, treat the transcript as **unverified** until it passes sanity checks:
++ - Prefer Whisper `medium` for lyrics extraction. Use `small` only for quick drafts.
++ - Use `large-v2` for complex singing, noisy audio, or multilingual vocals.
++ - Cross-check with web lyrics or user-provided lyrics when possible.
++ - Flag language mismatches, very short looping transcripts, and transcript themes that conflict with the known song/user context.
++ - Do not build final prompts around suspicious lyrics without asking the user or rerunning extraction with a stronger model.
+
+### references/user-preference-flow.md  [docs]
++ ## Source-Audio Vocal and Length Checks
++ These are covered by the mandatory confirmations in [`input-workflows.md`](input-workflows.md):
++ - Vocal check: "Is this instrumental, or does it have vocals? If vocals, what language?"
++ - Length check: "Source is about <x>. Do you want same as source, 3:00, 3:30, or a specific length?"
++ They are targeted checks, not a new questionnaire.

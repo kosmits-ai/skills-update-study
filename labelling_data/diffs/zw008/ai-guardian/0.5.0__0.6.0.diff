@@ -1,0 +1,93 @@
+zw008/ai-guardian  0.5.0 -> 0.6.0
+change_type: instructions+docs   changelog: ## AI Guardian 0.6.0  - Improved governance harness: risk-tier labels and budget guards are now more descriptive. - Clarified tooling docs and usage examples for all 20 tools; removed outdated references. - Updated risk-tier write tool logic for improved audit granularity. - Refined compatibility and safety notes for single-endpoint/local LLM usage. - Minor documentation cleanups; removed obsolete skill-card.md file.
+
+### SKILL.md  [instructions]
+-   State-changing operations: remove_model (high, dry-run + double confirm at the CLI, undo re-pull, approver-gated); pull/unload/allowlist/denylist/pin/guarded writes are medium. All write tools pass through the @governed_tool decorator (pre-check + budget guard + audit + risk-tier gate).
+- local unified audit log under `~/.ai-guardian/`, policy engine, token/runaway
+- budget guard, undo-token recording, and graduated-autonomy risk tiers. It is the
+- > **Secure by default (v0.2.0+)**: with no `~/.ai-guardian/rules.yaml`, high/critical operations are denied unless `AI_GUARDIAN_AUDIT_APPROVED_BY` names an approver (set `AI_GUARDIAN_AUDIT_RATIONALE` too). `ai-guardian init` seeds a starter rules.yaml; an operator-authored rules file is honoured as-is.
+- - Every tool call is audited to `~/.ai-guardian/audit.db` (relocatable via `AI_GUARDIAN_AIOPS_HOME`); observed local-LLM usage lives in a **separate** `~/.ai-guardian/usage.db`.
+- - High-risk `remove_model` can require a named approver: set `AI_GUARDIAN_AUDIT_APPROVED_BY` and `AI_GUARDIAN_AUDIT_RATIONALE`.
+- - **Secure by default (v0.2.0+)**: with no `~/.ai-guardian/rules.yaml`, high/critical operations are denied unless `AI_GUARDIAN_AUDIT_APPROVED_BY` names an approver (set `AI_GUARDIAN_AUDIT_RATIONALE` too). `ai-guardian init` seeds a starter rules.yaml; an operator-authored rules file is honoured as-is.
++   State-changing operations: remove_model (high, dry-run + double confirm at the CLI, undo re-pull); pull/unload/allowlist/denylist/pin/guarded writes are medium. All write tools pass through the @governed_tool decorator (pre-check + budget guard + audit + risk-tier label).
++ local unified audit log under `~/.ai-guardian/`, token/runaway budget guard,
++ undo-token recording, and descriptive risk tiers. It is the
++ The skill delivers reads and writes and records them; it does **not** decide
++ whether a write is permitted. That is your agent's judgement, or the permission
++ of the host and account you run it under (point it at a runtime the account
++ cannot administer, or hand the agent only the scan/observe tools). There is no
++ read-only switch, deny-rules file, or approval gate — content governance (the
++ model allow/deny policy and the `guarded_generate` block threshold) is a
++ separate, product-level control that stays.
++ - **Audit is the guarantee, and it is not bypassable.** Every operation — MCP and CLI alike — is logged to `~/.ai-guardian/audit.db` (relocatable via `AI_GUARDIAN_AIOPS_HOME`): params, result, status, duration, and the risk tier. Observed local-LLM usage lives in a **separate** `~/.ai-guardian/usage.db`.
++ - `AI_GUARDIAN_AUDIT_APPROVED_BY` / `AI_GUARDIAN_AUDIT_RATIONALE` are optional annotations recorded on the audit row (who/why); they are never required and never block.
++ - **Runaway guard** — a safety backstop, not authorization: the same call looped in a tight window trips a circuit breaker. Disable with `AI_GUARDIAN_RUNAWAY_MAX=0`.
+
+### references/agent-guardrails.md  [docs]
+- ## What the tool now enforces — do not waste prompt budget on these
+- | "Only observe, never change the model estate" | Set `AI_GUARDIAN_READ_ONLY=1`. Write tools are then **not registered at all** — they never appear in the tool list, so the model cannot call one even if it tries. That includes `pull_model`, `remove_model`, `unload_model`, **and the policy writes** (`set_model_allowlist`, `set_model_denylist`, `pin_model_digest`) — an agent cannot widen its own allowlist while read-only mode is on. `guarded_generate` / `observe_chat` go too, since they call the runtime and append to the usage log. Pure `scan_prompt` stays: it calls nothing and records nothing. |
+- | "Confirm before anything destructive" | `remove_model` is high-risk, requires a `--dry-run`-able preview + double confirmation at the CLI, captures the model manifest for an undo (re-pull), and needs a named approver (`AI_GUARDIAN_AUDIT_APPROVED_BY`). |
+- | "Log what you did" | Every call is audited to `~/.ai-guardian/audit.db` regardless of what the model says it did. |
+- # Observe only — no pulls, no removals, no policy edits, no route-through.
+- export AI_GUARDIAN_READ_ONLY=1
+- Then, when you are ready to allow writes, unset it and set an approver so the
+- high-risk tier has an accountable name on it:
+- unset AI_GUARDIAN_READ_ONLY
+- Note that read-only mode disables the route-through path (`guarded_generate`,
+- `observe_chat`) as well, since it calls the runtime and appends to the usage log.
+- If you want content governance active, run without read-only mode and rely on the
+- policy layer — that is what the block threshold and the allow/deny lists are for.
++ The distinction matters. A guardrail in a prompt is a request. A guardrail in the
++ harness is a guarantee. Anything below that we could move into the harness, we did.
++ ## Authorization is not this tool's job — decide it where it belongs
++ Whether a write should happen is your decision, or the account's. The tool does
++ not gate it — there is no read-only switch and no approval prompt to configure.
++ The two right places to control read vs write:
++ - **The host and account you run under.** Point the tool at a runtime the account
++   cannot administer — an Ollama daemon whose model store the user can't modify —
++   so a `remove_model` or `pull_model` fails at the runtime, the only place the
++   permission actually lives. A revoked permission cannot be argued around by a
++   model; a skill-side flag can.
++ - **Your agent's system prompt.** If you want an observe-only session, tell the
++   model not to call the write tools (they are clearly tagged `[WRITE]`), or hand
++   it only the scan/observe tools.
++ Content governance is different, and it stays: `guarded_generate` still scans and
++ gates each prompt against the allow/deny model policy and the block threshold
++ before the model runs. That is a product control over *what a model is asked to
++ do*, not an authorization gate over *which tools an agent may call*.
++ What the tool *does* guarantee is that you can always see what happened:
++ ## What the tool enforces — do not waste prompt budget on these
++ | "Log everything you do, over both MCP and the CLI" | Every call is audited to `~/.ai-guardian/audit.db` regardless of what the model says it did — and the CLI writes the same row the MCP path does, so there is no unaudited entry point. Reversible writes also record an undo token capturing the *prior* state. Observed local-LLM usage lives in a separate `~/.ai-guardian/usage.db`. |
++ | "Confirm before anything destructive" | `remove_model` is high-risk, requires a `--dry-run`-able preview + double confirmation at the CLI, and captures the model manifest for an undo (re-pull). |
++ | "Don't get stuck retrying" | The runaway guard trips a circuit breaker if the same call is hammered in a tight loop — a stuck agent is stopped rather than left to burn calls and time. |
++ Start with a connection that *cannot* write, verify, and widen the account's
++ permission only when you trust the setup — `remove_model` deletes local model
++ weights, and re-pulling them is a large download rather than a quick undo:
++ # e.g. point ai-guardian at a runtime/account that can't administer the model
++ # store, or hand the agent only the scan/observe tools. Then:
++ Optionally annotate the audit trail with who is operating and why — recorded on
++ every row, never required:
++ Content governance is independent of all this: `guarded_generate` / `observe_chat`
++ scan each prompt, gate it against the allow/deny model policy and the block
++ threshold, record it to the usage log, and only then call the model. That is what
++ keeps secrets and jailbreaks out of a local model regardless of how read vs write
++ is controlled.
+
+### references/capabilities.md  [docs]
+- | `remove_model` | **high** | `DELETE /api/delete` | captures the model manifest; records an undo (`pull_model` re-pull); CLI `--dry-run` + double confirm; requires an approver (`AI_GUARDIAN_AUDIT_APPROVED_BY`) |
++ | `remove_model` | **high** | `DELETE /api/delete` | captures the model manifest; records an undo (`pull_model` re-pull); CLI `--dry-run` + double confirm |
+
+### references/cli-reference.md  [docs]
+- - `model remove` requires two confirmations; set `AI_GUARDIAN_AUDIT_APPROVED_BY` (+ `AI_GUARDIAN_AUDIT_RATIONALE`) for the high-risk approver gate
++ - `model remove` requires two confirmations; set `AI_GUARDIAN_AUDIT_APPROVED_BY` (+ `AI_GUARDIAN_AUDIT_RATIONALE`) to record who/why on the audit row (optional)
+
+### references/setup-guide.md  [docs]
+- ## 5. Approver gate for high-risk writes
+- `remove_model` is high-risk. To satisfy the approver gate:
+-   risk tier, approver, rationale.
++ ## 5. Audit-annotation env vars (optional)
++ The skill does not decide whether a write is permitted — that is the agent's
++ judgement or the permission of the host/account you run it under. If you want the
++ audit trail to record *who* ran a destructive op and *why*, set these; they are
++ recorded on the row, never required, and gate nothing:
++   risk tier and any approver/rationale.

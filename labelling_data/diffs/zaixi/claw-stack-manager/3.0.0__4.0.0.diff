@@ -1,0 +1,151 @@
+zaixi/claw-stack-manager  3.0.0 -> 4.0.0
+change_type: instructions+code   changelog: v4: one-shot redeployer container instead of persistent helper. 0 resource consumption, creates temp alpine container on-demand for stop→start cycle, exits immediately after.
+
+### SKILL.md  [instructions]
+- description: "Manage the OpenClaw claw Docker stack via Portainer API + Webhook. All operations from inside container are safe (webhook returns before container restarts). Trigger on: stack update, image upgrade, container restart, redeploy."
+- Manage the `claw` Docker stack via Portainer API and webhook.
+- ## Architecture
+- ```
+- ```
+- pull image → webhook → Portainer redeploys (safe, request returns first)
+- or
+- docker restart via Portainer API (no image change)
+- ## Modes
+- | Mode | Use case | Mechanism |
+- |------|----------|-----------|
+- | `update` | New image available | Pull → webhook→ Portainer redeploy |
+- | `restart` | Reload config/plugins | `POST /containers/{id}/restart` |
+- | `pull-only` | Pre-load image | Portainer API pull (600s timeout) |
+- # Update: pull + redeploy
+- # Restart Gateway
+- ## CRITICAL RULES
+- 1. **Never PUT stack update from inside container** — API call will be interrupted
+- 2. **Always verify image is pulled** before triggering redeploy
+- 3. **Use webhook for all stack operations** — it returns HTTP 200 before container restarts
+- ## Requirements
+- Environment variables:
+- - `PORTAINER_API_KEY`
+- - `CLAW_WEBHOOK_TOKEN` (default: `7047ce…0b7e`)
++ description: "Manage the OpenClaw claw Docker stack via Portainer API and one-shot redeployer containers. All operations safe from inside the container. Trigger on: stack update, image upgrade, container restart, redeploy."
++ Manage the `claw` Docker stack via Portainer API.
++ ## How it works
++ | Mode | What it does | Resource impact |
++ |------|-------------|-----------------|
++ | `update` | Pull image → create one-shot redeployer container → redeployer stops/starts stack | 0 (container exits after) |
++ | `restart` | Restart Gateway via Portainer container API | 0 (process restart) |
++ | `pull-only` | Pull latest image | 0 (API call) |
++ The key insight: a one-shot container (created via Portainer API from inside the claw container) runs independently to stop/start the stack. The API call creating it completes before the stack is affected.
++ # Pull new image + redeploy
++ # Restart Gateway (no image change)
++ ## Environment variables
++ - `PORTAINER_API_KEY` — required
++ - `PORTAINER_ENDPOINT` (default: `2`)
++ - `CLAW_IMAGE` (default: `liyujiang/openclaw:latest`)
+
+### scripts/manage.py  [code]
+- Claw Stack Manager v3 — all operations via Portainer API + webhook.
+- NEVER update compose via PUT from inside this container.
+- import json, os, urllib.request, sys, subprocess
+- WEBHOOK_TOKEN = os.environ.get("CLAW_WEBHOOK_TOKEN", "7047ce47-4d9d-41ed-b08b-53092cc60b7e")
+- ENDPOINT = int(os.environ.get("PORTAINER_ENDPOINT", "2"))
+-     """Pull via Portainer API. Blocks until complete (max 600s)."""
+-     req = urllib.request.Request(
+-         f"{HOST}/api/endpoints/{ENDPOINT}/docker/images/create?fromImage={IMAGE}",
+-         method="POST"
+-     req.add_header("X-API-Key", KEY)
+-     req.add_header("Content-Type", "application/json")
+-     req.data = b""
+-     try:
+-     try:
+-         resp = urllib.request.urlopen(req, timeout=600)
+-         digest = ""
+-         for line in resp:
+-             try:
+-                 d = json.loads(line)
+-                 s = d.get("status", "")
+-                 if "Digest" in s: digest = s
+-             except: pass
+-         log(f"✅ Pulled: {digest[:80]}")
+-     except Exception as e:
+-     except Exception as e:
+-         log(f"❌ Pull failed: {e}")
+- def webhook_redeploy():
+-     """Call webhook → Portainer redeploys stack. SAFE: HTTP 200 before restart."""
+-     log("Calling webhook...")
+-         req = urllib.request.Request(f"{HOST}/api/webhooks/{WEBHOOK_TOKEN}", method="POST")
+-         resp = urllib.request.urlopen(req, timeout=30)
+-         log(f"✅ Webhook OK (HTTP {resp.getcode()}) — stack redeploying")
+-         log(f"❌ Webhook failed: {e}")
+-     """Restart container via Portainer Docker proxy. No compose change."""
+-     _, containers = _api("GET", f"/endpoints/{ENDPOINT}/docker/containers/json?filters=%7B%22name%22:%5B%22openclaw-gateway%22%5D%7D")
+-     log(f"Restarting {cid[:15]}...")
+-     status, _ = _api("POST", f"/endpoints/{ENDPOINT}/docker/containers/{cid}/restart")
+-     if status in (200, 204):
+-         log("✅ Container restarted (~10s)")
+-     log(f"❌ HTTP {status}")
+- def _api(method, path, data=None, timeout=30):
+-     if data: req.data = json.dumps(data).encode()
+-     print(f"  Claw Stack Manager v3 — mode: {args.mode}")
+-     print(f"  RULE: Never PUT compose from inside container")
+-             webhook_redeploy()
++ Claw Stack Manager v4 — safe operations via one-shot redeployer containers.
++ import json, os, urllib.request, sys
++ EP = int(os.environ.get("PORTAINER_ENDPOINT", "2"))
++ STACK_ID = int(os.environ.get("CLAW_STACK_ID", "89"))
++ def api(method, path, data=None, timeout=30, raw=False):
++     if data is not None: req.data = json.dumps(data).encode()
++         if raw: return resp.status, resp.read()
++     status, body = api("POST", f"/endpoints/{EP}/docker/images/create?fromImage={IMAGE}", timeout=600, raw=True)
++     if status in (200, 201):
++         log("✅ Image pulled")
++     log(f"❌ Pull failed (HTTP {status})")
++     return False
++ def create_redeployer():
++     """Create a one-shot container that stops → waits → starts the claw stack."""
++     script = (
++         'apk add -q curl\n'
++         f'echo "R: Stopping stack {STACK_ID}..."\n'
++         f'curl -sS -X POST -H "X-API-Key: {KEY}" '
++         f'curl -sS -X POST -H "X-API-Key: {KEY}" '
++         f'{HOST}/api/stacks/{STACK_ID}/stop?endpointId={EP}\n'
++         f'echo ""\n'
++         f'echo ""\n'
++         f'echo "R: Waiting 10s..."\n'
++         f'sleep 10\n'
++         f'echo "R: Starting stack {STACK_ID}..."\n'
++         f'{HOST}/api/stacks/{STACK_ID}/start?endpointId={EP}\n'
++         f'echo "R: Done!"\n'
++     config = {
++         "Image": "alpine:latest",
++         "Cmd": ["/bin/sh", "-c", script.strip()],
++         "HostConfig": {"NetworkMode": "host"},
++         "Labels": {"io.portainer.stack.name": "claw-redeployer"}
++     }
++     log("Creating one-shot redeployer container...")
++     status, result = api("POST",
++         f"/endpoints/{EP}/docker/containers/create?name=claw-redeployer",
++         data=config, timeout=30)
++     if status not in (200, 201, 204):
++         log(f"❌ Create failed: {result.get('error', str(result)[:200])}")
++         return False
++     cid = result.get("Id", "")
++     if not cid:
++         log("❌ No container ID returned")
++     log(f"Redeployer container: {cid[:20]}...")
++     log("Starting redeployer...")
++     s, _ = api("POST", f"/endpoints/{EP}/docker/containers/{cid}/start", timeout=10)
++     if s in (200, 204):
++     if s in (200, 204):
++         log("✅ Redeployer running (stack will restart shortly)")
++         log("   Container exits after completion, no resource leak")
++     else:
++         log(f"❌ Start failed: HTTP {s}")
++     s, containers = api("GET",
++         f"/endpoints/{EP}/docker/containers/json?filters=%7B%22name%22:%5B%22openclaw-gateway%22%5D%7D")
++     log(f"Restarting {cid[:20]}...")
++     s, _ = api("POST", f"/endpoints/{EP}/docker/containers/{cid}/restart", timeout=30)
++         log("✅ Restarted (~10s)")
++     log(f"❌ HTTP {s}")
++     print(f"  Claw Stack Manager v4 — mode: {args.mode}")
++     print(f"  One-shot redeployer, no persistent resources")
++             create_redeployer()

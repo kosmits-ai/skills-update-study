@@ -1,0 +1,104 @@
+mattmartinez/resilient-claude-agent  1.0.16 -> 1.0.17
+change_type: code   changelog: - Fix false-positive task abandonment: pane classifier was matching broad patterns (continue?, (y/n)) anywhere in the last 30 lines of output, killing healthy tasks whose output happened to contain those phrases.   Now matches only actual prompt shapes at end-of-line within the last 5 lines, and requires persistence across 2 consecutive polls before abandoning.   - Fix manifest data loss under concurrent writes: wrapper and monitor both update the manifest; previously they wrote to the same .tmp
+
+### scripts/lib.sh  [code]
+-   local tmp="$file.tmp"
+-   local exclude=""
++ # Uses mkdir-based advisory locking (portable, no flock dependency) to
++ # serialize concurrent read-modify-write cycles from wrapper and monitor.
++ # Uses mktemp for per-call tmp paths so two concurrent writers cannot
++ # clobber each other's tmp file.
++   [ $# -ge 2 ] || return 0  # no pairs: no-op (prevents grep -Ev "" wipe)
++   local lockdir="${file}.lock"
++   local tmp exclude="" tries=0
++   # Acquire lock via atomic mkdir. 5s max wait before proceeding
++   # unlocked (best-effort for observability writes).
++   while ! mkdir "$lockdir" 2>/dev/null; do
++     tries=$(( tries + 1 ))
++     if [ "$tries" -gt 50 ]; then
++       break
++     fi
++     sleep 0.1
++   done
++   tmp=$(mktemp "${file}.XXXXXX" 2>/dev/null) || tmp="${file}.tmp.$$"
++   rmdir "$lockdir" 2>/dev/null || true
+
+### scripts/monitor.sh  [code]
+-   # but trust-on-first-use or edge-case dialogs can still appear.
+-   if printf '%s' "$pane" | grep -qiE 'do you trust|\(y/n\)|continue\?|press .* to continue'; then
+-   # Max retry check
+-   if [ "$RETRY_COUNT" -gt "$MONITOR_MAX_RETRIES" ]; then
+-         retry_count "$RETRY_COUNT" \
+-   echo "$reason Resuming (retry #$RETRY_COUNT)"
+-       retry_count "$RETRY_COUNT" \
+-   # Dispatch wrapper (resolves mode from resume file)
+-   tmux send-keys -t "$SESSION" "bash $WRAPPER_PATH" Enter
+-   # State variables
+-       # With --dangerously-skip-permissions, interactive prompts should
+-       # not appear. If one does, nothing is going to answer it -- the
+-       # task is permanently stuck. Abandon immediately with a specific
+-       # reason so the Brain can react.
+-       echo "Task stuck waiting for user input -- abandoning"
+-       if [ -f "$TASK_TMPDIR/manifest" ]; then
+-         manifest_set "$TASK_TMPDIR/manifest" \
+-           status abandoned \
+-           abandon_reason waiting_for_input \
+-           abandoned_at "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+-       exit 1  # EXIT trap fires for cleanup
++   fi
++   # Prompts live at the bottom of a pane, not scattered throughout scrollback.
++   # Matching the whole capture causes false positives when normal output
++   # contains phrases like "continue?" in code, docs, or tool output.
++   local tail
++   tail=$(printf '%s\n' "$pane" | tail -n 5)
++   # but trust-on-first-use or edge-case dialogs can still appear. Patterns
++   # target actual prompt shapes (trailing (y/N), Claude's specific trust
++   # dialog text) rather than loose keyword matching.
++   if printf '%s' "$tail" | grep -qE '\([YyNn]/[YyNn]\)[[:space:]]*$|\[[YyNn]/[YyNn]\][[:space:]]*$'; then
++     echo waiting_for_input
++     return
++   if printf '%s' "$tail" | grep -qiE 'do you trust the files|trust the authors'; then
++   TOTAL_RETRY_COUNT=$(( TOTAL_RETRY_COUNT + 1 ))
++   # Max retry check uses TOTAL_RETRY_COUNT, which never resets. RETRY_COUNT
++   # is reset by fresh-output detection for backoff purposes, but the retry
++   # cap must be cumulative so a flapping task cannot escape the budget.
++   if [ "$TOTAL_RETRY_COUNT" -gt "$MONITOR_MAX_RETRIES" ]; then
++         retry_count "$TOTAL_RETRY_COUNT" \
++   echo "$reason Resuming (retry #$TOTAL_RETRY_COUNT)"
++       retry_count "$TOTAL_RETRY_COUNT" \
++   # Dispatch wrapper (resolves mode from resume file). Use printf %q to
++   # shell-quote WRAPPER_PATH so paths containing spaces or shell metacharacters
++   # (common on macOS under paths like "My Skills/") do not word-split when
++   # the pane shell parses the send-keys input.
++   local quoted_path
++   quoted_path=$(printf '%q' "$WRAPPER_PATH")
++   tmux send-keys -t "$SESSION" "bash $quoted_path" Enter
++   # State variables.
++   # RETRY_COUNT resets on fresh output (used for backoff interval).
++   # TOTAL_RETRY_COUNT never resets (used for the max-retries cap, so a
++   # flapping task cannot escape the retry budget by producing output
++   # between stalls).
++   # WAITING_COUNT is the hysteresis counter for pane_state=waiting_for_input:
++   # we only abandon after the classifier reports the same state across
++   # consecutive polls, avoiding single-poll false positives.
++   TOTAL_RETRY_COUNT=0
++   WAITING_COUNT=0
++       # Hysteresis: require two consecutive detections before acting.
++       # The classifier can false-match on transient tail content (e.g.,
++       # Claude writing a code snippet that contains a prompt-shaped line).
++       # A single hit is not enough to abandon; persistence across polls
++       # is the real signal.
++       WAITING_COUNT=$(( WAITING_COUNT + 1 ))
++       if [ "$WAITING_COUNT" -ge 2 ]; then
++         echo "Task stuck waiting for user input -- abandoning (detected on $WAITING_COUNT consecutive polls)"
++         if [ -f "$TASK_TMPDIR/manifest" ]; then
++           manifest_set "$TASK_TMPDIR/manifest" \
++             status abandoned \
++             abandon_reason waiting_for_input \
++             abandoned_at "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
++         fi
++         exit 1  # EXIT trap fires for cleanup
++       else
++         echo "Pane shows waiting_for_input -- watching for persistence before abandoning"
++     else
++       WAITING_COUNT=0

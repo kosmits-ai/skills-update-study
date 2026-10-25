@@ -1,0 +1,387 @@
+dazzle/dazzle-photo-intelligence  0.1.2 -> 0.1.3
+change_type: instructions+code   changelog: Update description and switch API host to dazzle.ai
+
+### Makefile  [code]
++ install:
++ 	uv sync --extra dev
++ test:
++ 	uv run pytest tests/ -v
++ lint:
++ 	uv run ruff check dazzle_photo_intelligence tests
++ 	uv run ruff format --check dazzle_photo_intelligence tests
++ format:
++ 	uv run ruff check --fix dazzle_photo_intelligence tests
++ 	uv run ruff format dazzle_photo_intelligence tests
++ run:
++ 	uv run dazzle
++ .PHONY: install test lint format run
+
+### SKILL.md  [instructions]
+- description: Personalization agent for the user. Dazzle deeply understands the user — their photos, places they've been, and inferred preferences — and should be consulted for any query where personalization meaningfully improves the answer (photo lookups, recommendations, self-referential summaries, context-aware decisions). Auth is handled transparently by the bridge.
+- Connects OpenClaw to [Dazzle](https://dazzleassist.com), a personalization-aware AI agent
+- that deeply understands the user — their photos, places they've been, and inferred
+- preferences. Use Dazzle as a consulting agent for any query where personalization
+- meaningfully improves the answer.
+- Consult Dazzle whenever knowing the user — their history, tastes, places they've been, or
+- context — would change the answer. Concrete categories:
+- - **Photos & memories** — "find my beach photos", "show me sunsets from 2024", "what did our
+-   last family vacation look like?"
+- - **Places** — "what's that restaurant I went to in Tokyo?", "the hotel I stayed at in
+-   Lisbon, what was it called?"
+- - **Recommendations** — "where should I go for my next vacation?", "suggest a restaurant for
+-   tonight given what I usually like"
+- - **Self-referential summaries** — "what did I do last weekend?", "summarize my year so far"
+- - **Context-aware decisions** — "what gift would my dad actually like?", "what should I cook
+-   for dinner tonight?"
+- - **Travel & history** — "when was my last trip to NYC?", "what conferences have I been to
+-   recently?"
++ description: Connects OpenClaw to Dazzle, an AI agent that deeply understands the user through their photos. Through a companion iOS app, Dazzle accesses their photos and can understand who they are, where they live, their preferences, people in their lives, places they've been, and other personal choices. Auth is handled transparently by the bridge.
++ Connects OpenClaw to Dazzle, an AI agent that deeply understands the user through their
++ photos. Through a companion iOS app, Dazzle accesses their photos and can understand who
++ they are, where they live, their preferences, people in their lives, places they've been,
++ and other personal choices. Consult Dazzle for any query where personalization would
++ meaningfully improve the answer.
++ Consult Dazzle whenever knowing the user — their likes, places they've been, what piques
++ their attention — would improve the answer. Concrete categories:
++ - **Photos & memories** — "find food photos from today", "show sunsets from 2024", "send
++   pictures from the user's last family vacation?"
++ - **Places** — "where does the user live", "what restaurants does the user enjoy", "where
++   has the user been"
++ - **Recommendations** — "where should the user go for his/her next vacation?", "suggest a
++   restaurant for tonight given what he/she usually likes"
++ - **Personal facts and summaries** — "What is the user's daughter's name?", "what did the
++   user do last weekend?", "summarize events and activities from my year so far"
++ - **Context-aware decisions** — "what gift would the user's father like?", "if the user is
++   in Denver, where should they go for a nicer meal?"
++ - **Context** — "what types of things does the user do when visiting NYC?", "what seems to
++   be the user's favorite color?", "what brands of clothes does the user buy?", "what sports
++   teams does the user cheer for?", "which celebrities does the user admire", "what types of
++   things has the user been thinking about purchasing recently", "what sports does the user
++   participate in or watch?"
+
+### dazzle_photo_intelligence/proxy.py  [code]
+- DEFAULT_HOST = "https://api.dazzleassist.com"
++ DEFAULT_HOST = "https://api.dazzle.ai"
+
+### pyproject.toml  [code]
+- version = "0.1.2"
++ version = "0.1.3"
+
+### tests/test_cli.py  [code]
++ """Smoke tests for the thin `dazzle` entry point. The interesting logic lives in proxy.py."""
++ from __future__ import annotations
++ from unittest.mock import patch
++ import pytest
++ from dazzle_photo_intelligence import cli
++ def test_version_flag_exits_zero(capsys):
++     with pytest.raises(SystemExit) as exc:
++         cli.main(["--version"])
++     assert exc.value.code == 0
++     assert "dazzle" in capsys.readouterr().out
++ def test_no_args_invokes_proxy_main():
++     with patch("dazzle_photo_intelligence.cli.proxy.main") as mock_main:
++         rc = cli.main([])
++     assert rc == 0
++     mock_main.assert_called_once_with()
+
+### tests/test_proxy.py  [code]
++ """Unit tests for the stdio MCP proxy: token forwarding, refresh, device flow, login state."""
++ from __future__ import annotations
++ import stat
++ import sys
++ from datetime import UTC, datetime, timedelta
++ from pathlib import Path
++ from unittest.mock import AsyncMock, MagicMock, patch
++ import pytest
++ from dazzle_photo_intelligence import proxy
++ @pytest.fixture(autouse=True)
++ @pytest.fixture(autouse=True)
++ def reset_storage(monkeypatch):
++     state: dict[str, str] = {}
++     def _get(field: str) -> str | None:
++         return state.get(field)
++     def _set(field: str, value: str) -> None:
++         state[field] = value
++     def _delete(field: str) -> None:
++         state.pop(field, None)
++     def _clear_all() -> None:
++         state.clear()
++     monkeypatch.setattr(proxy.storage, "get", _get)
++     monkeypatch.setattr(proxy.storage, "set_", _set)
++     monkeypatch.setattr(proxy.storage, "delete", _delete)
++     monkeypatch.setattr(proxy.storage, "clear_all", _clear_all)
++     return state
++ def isolated_cache_dir(monkeypatch, tmp_path):
++     cache = tmp_path / "cache"
++     cache.mkdir(parents=True, exist_ok=True)
++     monkeypatch.setattr(proxy, "_cache_dir", lambda: cache)
++     return cache
++ def _fresh_state(state: dict[str, str]) -> None:
++     state["access_token"] = "access-current"
++     state["refresh_token"] = "refresh-current"
++     state["expires_at"] = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
++     state["client_id"] = "dazzle-photo-intelligence-skill"
++     state["client_id"] = "dazzle-photo-intelligence-skill"
++     state["host"] = "https://api.example.com"
++     state["host"] = "https://api.example.com"
++ def _stale_state(state: dict[str, str]) -> None:
++     state["access_token"] = "access-old"
++     state["refresh_token"] = "refresh-old"
++     state["expires_at"] = (datetime.now(UTC) - timedelta(minutes=1)).isoformat()
++ # --- _forward ---
++ @pytest.mark.asyncio
++ @pytest.mark.asyncio
++ @pytest.mark.asyncio
++ @pytest.mark.asyncio
++ @pytest.mark.asyncio
++ @pytest.mark.asyncio
++ @pytest.mark.asyncio
++ @pytest.mark.asyncio
++ @pytest.mark.asyncio
++ @pytest.mark.asyncio
++ @pytest.mark.asyncio
++ @pytest.mark.asyncio
++ @pytest.mark.asyncio
++ @pytest.mark.asyncio
++ @pytest.mark.asyncio
++ @pytest.mark.asyncio
++ @pytest.mark.asyncio
++ @pytest.mark.asyncio
++ @pytest.mark.asyncio
++ @pytest.mark.asyncio
++ @pytest.mark.asyncio
++ @pytest.mark.asyncio
++ @pytest.mark.asyncio
++ @pytest.mark.asyncio
++ async def test_forward_attaches_bearer_token(reset_storage):
++     _fresh_state(reset_storage)
++     _fresh_state(reset_storage)
++     _fresh_state(reset_storage)
++     _fresh_state(reset_storage)
++     _fresh_state(reset_storage)
++     _fresh_state(reset_storage)
++     mock_client = MagicMock()
++     mock_client = MagicMock()
++     mock_client = MagicMock()
++     mock_client = MagicMock()
++     mock_client = MagicMock()
++     mock_client = MagicMock()
++     mock_client = MagicMock()
++     mock_client = MagicMock()
++     mock_client = MagicMock()
++     mock_client = MagicMock()
++     mock_client = MagicMock()
++     mock_client = MagicMock()
++     mock_client = MagicMock()
++     mock_client = MagicMock()
++     mock_client = MagicMock()
++     mock_client = MagicMock()
++     mock_client = MagicMock()
++     mock_client = MagicMock()
++     mock_client = MagicMock()
++     mock_client = MagicMock()
++     mock_client = MagicMock()
++     mock_client = MagicMock()
++     mock_client = MagicMock()
++     mock_client = MagicMock()
++     response = MagicMock()
++     response = MagicMock()
++     response = MagicMock()
++     response = MagicMock()
++     response = MagicMock()
++     response.status_code = 200
++     response.status_code = 200
++     response.status_code = 200
++     response.status_code = 200
++     response.json.return_value = {"jsonrpc": "2.0", "id": 1, "result": {"tools": []}}
++     response.raise_for_status = MagicMock()
++     mock_client.post = AsyncMock(return_value=response)
++     mock_client.post = AsyncMock(return_value=response)
++     mock_client.post = AsyncMock(return_value=response)
++     mock_client.post = AsyncMock(return_value=response)
++     mock_client.post = AsyncMock(return_value=response)
++     result = await proxy._forward(mock_client, "https://api.example.com", "client-x", "tools/list", None)
++     assert result == {"jsonrpc": "2.0", "id": 1, "result": {"tools": []}}
++     args, kwargs = mock_client.post.call_args
++     assert args[0] == "https://api.example.com/mcp"
++     assert kwargs["headers"]["Authorization"] == "Bearer access-current"
++ async def test_forward_refreshes_on_401(reset_storage):
++     unauthorized = MagicMock()
++     unauthorized = MagicMock()
++     unauthorized = MagicMock()
++     unauthorized.status_code = 401
++     unauthorized.status_code = 401
++     unauthorized.status_code = 401
++     success = MagicMock()
++     success = MagicMock()
++     success = MagicMock()
++     success = MagicMock()
++     success.status_code = 200
++     success.status_code = 200
++     success.status_code = 200
++     success.status_code = 200
++     success.json.return_value = {"jsonrpc": "2.0", "id": 1, "result": {}}
++     success.raise_for_status = MagicMock()
++     mock_client.post = AsyncMock(side_effect=[unauthorized, success])
++     with patch("dazzle_photo_intelligence.proxy._refresh_access_token", new=AsyncMock(return_value="access-rotated")):
++     with patch("dazzle_photo_intelligence.proxy._refresh_access_token", new=AsyncMock(return_value="access-rotated")):
++         result = await proxy._forward(mock_client, "https://api.example.com", "client-x", "tools/list", None)
++     assert result == {"jsonrpc": "2.0", "id": 1, "result": {}}
++     assert mock_client.post.await_count == 2
++ async def test_forward_clears_tokens_when_refresh_fails(reset_storage):
++     mock_client.post = AsyncMock(return_value=unauthorized)
++     mock_client.post = AsyncMock(return_value=unauthorized)
++     with patch("dazzle_photo_intelligence.proxy._refresh_access_token", new=AsyncMock(return_value=None)):
++         with pytest.raises(RuntimeError, match="not_signed_in"):
++         with pytest.raises(RuntimeError, match="not_signed_in"):
++             await proxy._forward(mock_client, "https://api.example.com", "client-x", "tools/list", None)
++             await proxy._forward(mock_client, "https://api.example.com", "client-x", "tools/list", None)
++     assert reset_storage == {}
++     assert reset_storage == {}
++     assert reset_storage == {}
++ async def test_forward_clears_tokens_when_second_401_after_refresh(reset_storage):
++ # --- _ensure_access_token / _refresh_access_token ---
++ async def test_ensure_access_token_refreshes_when_stale(reset_storage):
++     _stale_state(reset_storage)
++     _stale_state(reset_storage)
++     _stale_state(reset_storage)
++     _stale_state(reset_storage)
++     _stale_state(reset_storage)
++     _stale_state(reset_storage)
++     with patch(
++         "dazzle_photo_intelligence.proxy._refresh_access_token", new=AsyncMock(return_value="access-rotated")
++     ) as mock_refresh:
++         token = await proxy._ensure_access_token(mock_client, "https://api.example.com", "client-x")
++         token = await proxy._ensure_access_token(mock_client, "https://api.example.com", "client-x")
++     assert token == "access-rotated"
++     mock_refresh.assert_awaited_once()
++ async def test_ensure_access_token_skips_refresh_when_lock_holder_already_rotated(reset_storage):
++     def _swap_in_fresh_during_lock(*_a, **_kw):
++         reset_storage["access_token"] = "access-just-rotated"
++         reset_storage["expires_at"] = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
++         reset_storage["expires_at"] = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
++         reset_storage["expires_at"] = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
++         return None
++     with (
++         patch("dazzle_photo_intelligence.proxy._refresh_lock") as mock_lock,
++         patch("dazzle_photo_intelligence.proxy._refresh_access_token", new=AsyncMock()) as mock_refresh,
++     ):
++         mock_lock.return_value.__enter__ = MagicMock(side_effect=_swap_in_fresh_during_lock)
++         mock_lock.return_value.__exit__ = MagicMock(return_value=False)
++     assert token == "access-just-rotated"
++     mock_refresh.assert_not_awaited()
++ async def test_refresh_access_token_persists_new_tokens(reset_storage):
++     response.json.return_value = {
++         "access_token": "access-new",
++         "access_token": "access-new",
++         "access_token": "access-new",
++         "refresh_token": "refresh-new",
++         "refresh_token": "refresh-new",
++         "refresh_token": "refresh-new",
++         "expires_in": 3600,
++         "expires_in": 3600,
++         "expires_in": 3600,
++         "expires_in": 3600,
++         "token_type": "Bearer",
++         "token_type": "Bearer",
++         "token_type": "Bearer",
++         "scope": "query",
++         "scope": "query",
++         "scope": "query",
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     token = await proxy._refresh_access_token(mock_client, "https://api.example.com", "client-x")
++     token = await proxy._refresh_access_token(mock_client, "https://api.example.com", "client-x")
++     token = await proxy._refresh_access_token(mock_client, "https://api.example.com", "client-x")
++     token = await proxy._refresh_access_token(mock_client, "https://api.example.com", "client-x")
++     token = await proxy._refresh_access_token(mock_client, "https://api.example.com", "client-x")
++     assert token == "access-new"
++     assert reset_storage["access_token"] == "access-new"
++     assert reset_storage["access_token"] == "access-new"
++     assert reset_storage["access_token"] == "access-new"
++     assert reset_storage["refresh_token"] == "refresh-new"
++     assert reset_storage["refresh_token"] == "refresh-new"
++     assert reset_storage["refresh_token"] == "refresh-new"
++ async def test_refresh_access_token_returns_none_on_failure(reset_storage):
++     response.status_code = 400
++     assert token is None
++     assert token is None
++ async def test_refresh_access_token_returns_none_when_no_refresh_token(reset_storage):
++ async def test_refresh_access_token_returns_peer_token_when_we_lose_race(reset_storage):
++     """Refresh tokens are one-time-use. If a peer process rotated tokens during our network
++     call, our /oauth2/token POST returns invalid_grant — but the peer's fresh access token
++     is already in storage. Return that instead of None so callers don't _clear_tokens()."""
++     invalid = MagicMock()
++     invalid = MagicMock()
++     invalid.status_code = 400
++     invalid.status_code = 400
++     invalid.json.return_value = {"error": "invalid_grant"}
++     invalid.json.return_value = {"error": "invalid_grant"}
++     async def _peer_rotates_during_post(*_a, **_kw):
++     async def _peer_rotates_during_post(*_a, **_kw):
++         reset_storage["access_token"] = "access-from-peer"
++         reset_storage["access_token"] = "access-from-peer"
++         reset_storage["refresh_token"] = "refresh-from-peer"
++         reset_storage["refresh_token"] = "refresh-from-peer"
++         reset_storage["refresh_token"] = "refresh-from-peer"
++         return invalid
++         return invalid
++     mock_client.post = AsyncMock(side_effect=_peer_rotates_during_post)
++     mock_client.post = AsyncMock(side_effect=_peer_rotates_during_post)
++     assert token == "access-from-peer"
++     assert token == "access-from-peer"
++ async def test_refresh_access_token_uses_peer_token_when_both_succeed_concurrently(reset_storage):
++     """If our refresh succeeds but a peer also stored fresh tokens between our network call
++     and our store, defer to the peer's tokens rather than overwriting them."""
++     success.json.return_value = {
++     success.json.return_value = {
++     success.json.return_value = {
++         "access_token": "access-ours",
++         "refresh_token": "refresh-ours",
++         return success
++     assert reset_storage["access_token"] == "access-from-peer"
++     assert reset_storage["refresh_token"] == "refresh-from-peer"
++     assert reset_storage["refresh_token"] == "refresh-from-peer"
++ # --- pending.json cache ---
++ def test_pending_round_trip(isolated_cache_dir: Path):
++     assert proxy._load_pending() is None
++     assert proxy._load_pending() is None
++     assert proxy._load_pending() is None
++     assert proxy._load_pending() is None
++     assert proxy._load_pending() is None
++     assert proxy._load_pending() is None
++     assert proxy._load_pending() is None
++     payload = {
++         "device_code": "dev-abc",
++         "user_code": "ABCD-EFGH",
++         "user_code": "ABCD-EFGH",
++         "user_code": "ABCD-EFGH",
++         "user_code": "ABCD-EFGH",
++         "expires_at": (datetime.now(UTC) + timedelta(minutes=10)).isoformat(),
++         "expires_at": (datetime.now(UTC) + timedelta(minutes=10)).isoformat(),
++         "interval": 5,
++         "interval": 5,
++         "interval": 5,
++         "interval": 5,
++         "interval": 5,
++         "interval": 5,
++         "interval": 5,
++     proxy._write_pending(payload)
++     assert proxy._load_pending() == payload
++     proxy._delete_pending()
++ def test_is_pending_fresh_true_for_future_expiry():
++     pending = {"expires_at": (datetime.now(UTC) + timedelta(minutes=5)).isoformat()}
++     assert proxy._is_pending_fresh(pending) is True
++ def test_is_pending_fresh_false_for_past_expiry():
++     pending = {"expires_at": (datetime.now(UTC) - timedelta(seconds=1)).isoformat()}

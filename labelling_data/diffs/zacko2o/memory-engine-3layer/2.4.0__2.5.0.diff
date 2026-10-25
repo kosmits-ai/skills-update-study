@@ -1,0 +1,127 @@
+zacko2o/memory-engine-3layer  2.4.0 -> 2.5.0
+change_type: instructions+code   changelog: Fix flush prompt + memory-boot.js + postIndexSync + cron stale detection
+
+### SKILL.md  [instructions]
+-           "softThresholdTokens": 4000
+-         "reserveTokensFloor": 20000
+- 1. Read MEMORY.md (curated long-term memory, small file)
+- 2. Run: node skills/memory-engine/scripts/memory-write.js --status
+- 3. Run: node skills/memory-engine/scripts/memory-index.js
+- 4. Use memory-search.js for specific recall (NOT full file reads)
++           "softThresholdTokens": 4000,
++           "prompt": "Pre-compaction memory flush. Store durable memories in memory/YYYY-MM-DD.md (create memory/ if needed). APPEND only, do not overwrite. Include: key decisions, task outcomes, user preferences, project status changes. Format each entry as: - HH:MM [tag] description. If nothing worth storing, reply with NO_REPLY."
++         "reserveTokensFloor": 20000,
++         "postIndexSync": "async"
++ > **⚠️ Important**: Do NOT instruct memory-flush to write MEMORY.md or run exec commands.
++ > During flush, OpenClaw restricts writes to `memory/YYYY-MM-DD.md` only — MEMORY.md, SOUL.md, AGENTS.md are read-only.
++ > Exec/shell commands may also be restricted. The cron job handles index rebuilding independently.
++ 1. Run: node skills/memory-engine/scripts/memory-boot.js
++    (single command: health check + index update + MEMORY.md content)
++ 2. Use memory-search.js for specific recall (NOT full file reads)
+
+### scripts/memory-boot.js  [code]
++ #!/usr/bin/env node
++ /**
++  * memory-boot.js — Single-command session startup (replaces 3 separate calls)
++  * Usage: node memory-boot.js [--workspace /path]
++  *
++  *
++  * Does in one call:
++  * 1. Health check
++  * 2. Incremental index update (+ orphan cleanup)
++  * 3. Output MEMORY.md summary (first 2000 chars)
++  * Saves 2 tool calls per session startup.
++  */
++ const fs = require('fs'), path = require('path');
++ const DEFAULT_WORKSPACE = process.env.OPENCLAW_WORKSPACE || path.join(process.env.HOME, '.openclaw/workspace');
++ const args = process.argv.slice(2);
++ let workspace = DEFAULT_WORKSPACE;
++ for (let i = 0; i < args.length; i++) {
++   if (args[i] === '--workspace' && args[i + 1]) workspace = args[++i];
++ }
++ }
++ }
++ }
++ }
++ }
++ const MEMORY_DIR = path.join(workspace, 'memory');
++ const MEMORY_MD = path.join(workspace, 'MEMORY.md');
++ function getToday() {
++   const tz = process.env.TZ || process.env.OPENCLAW_TZ || 'UTC';
++   try { return new Date().toLocaleDateString('en-CA', { timeZone: tz }); }
++   catch { return new Date().toISOString().slice(0, 10); }
++ // 1. Health check (inline, no separate script call)
++ function healthCheck() {
++   if (!fs.existsSync(MEMORY_DIR)) fs.mkdirSync(MEMORY_DIR, { recursive: true });
++   const today = getToday();
++   const files = fs.readdirSync(MEMORY_DIR).filter(f => f.match(/^\d{4}-\d{2}-\d{2}\.md$/)).sort();
++   const hasCore = fs.existsSync(MEMORY_MD);
++   const hasTodayLog = files.includes(`${today}.md`);
++   const earliest = files.length > 0 ? files[0].replace('.md', '') : today;
++   let gaps = 0;
++   for (let i = 1; i < 14; i++) {
++     const d = new Date(today + 'T00:00:00'); d.setDate(d.getDate() - i);
++     const ds = d.toISOString().slice(0, 10);
++     if (ds < earliest) break;
++     if (!files.includes(`${ds}.md`)) gaps++;
++   }
++   }
++   const score = Math.max(0, 100 - gaps * 7 - (hasCore ? 0 : 20) - (hasTodayLog ? 0 : 15));
++   return { today, hasTodayLog, hasCore, dailyFiles: files.length, gaps, score };
++ // 2. Index update
++ function updateIndex() {
++   const indexScript = path.join(__dirname, 'memory-index.js');
++   if (!fs.existsSync(indexScript)) return { indexed: 0, error: 'index script not found' };
++   try {
++     const result = require('child_process').execSync(
++       `node "${indexScript}" --workspace "${workspace}"`,
++       { encoding: 'utf8', stdio: 'pipe' }
++     );
++     return JSON.parse(result.trim());
++   } catch (e) {
++     return { indexed: 0, error: e.message };
++ // 3. MEMORY.md content (truncated)
++ function readCore(maxChars = 2000) {
++   if (!fs.existsSync(MEMORY_MD)) return null;
++   const content = fs.readFileSync(MEMORY_MD, 'utf8');
++   if (content.length <= maxChars) return content;
++   const cut = content.slice(0, maxChars);
++   const nl = cut.lastIndexOf('\n');
++   return (nl > maxChars * 0.5 ? cut.slice(0, nl) : cut) + '\n…(truncated)';
++ // Run all
++ const health = healthCheck();
++ const index = updateIndex();
++ const core = readCore();
++ // Compact output
++ const warnings = [];
++ if (!health.hasCore) warnings.push('⚠️ MEMORY.md missing');
++ if (!health.hasTodayLog) warnings.push(`⚠️ No log for ${health.today}`);
++ if (health.gaps > 3) warnings.push(`⚠️ ${health.gaps} gaps in 14 days`);
++ if (index.cleaned > 0) warnings.push(`🧹 Cleaned ${index.cleaned} orphan(s)`);
++ console.log(`[boot] Health: ${health.score}/100 | Files: ${health.dailyFiles} | Index: ${index.totalChunks || '?'} chunks${index.indexed > 0 ? ` (${index.indexed} updated)` : ''}${warnings.length ? ' | ' + warnings.join(' | ') : ''}`);
++ if (core) {
++   console.log('---');
++   console.log(core);
+
+### scripts/memory-cron.sh  [code]
++ fi
++ # 5. Verify index is in sync (catches memory-flush writes that didn't trigger reindex)
++ SYNC_CHECK=$(node -e "
++ const fs=require('fs'),p=require('path'),c=require('crypto');
++ const ws='$WORKSPACE',mdir=p.join(ws,'memory'),db_path=p.join(ws,'.memory','index.sqlite');
++ if(!fs.existsSync(db_path)){console.log('no_index');process.exit(0);}
++ const GM=require('child_process').execSync('npm root -g',{encoding:'utf8'}).trim();
++ const D=require(p.join(GM,'better-sqlite3'));
++ const db=new D(db_path,{readonly:true});
++ const dbFiles=db.prepare('SELECT path,hash FROM files').all();
++ const dbMap=new Map(dbFiles.map(f=>[f.path,f.hash]));
++ let stale=0;
++ const hash=c=>require('crypto').createHash('sha256').update(c).digest('hex').slice(0,16);
++ if(fs.existsSync(p.join(ws,'MEMORY.md'))){const h=hash(fs.readFileSync(p.join(ws,'MEMORY.md'),'utf8'));if(dbMap.get('MEMORY.md')!==h)stale++;}
++ if(fs.existsSync(mdir))fs.readdirSync(mdir).filter(f=>f.endsWith('.md')).forEach(f=>{const h=hash(fs.readFileSync(p.join(mdir,f),'utf8'));if(dbMap.get('memory/'+f)!==h)stale++;});
++ console.log(stale?'stale:'+stale:'ok');
++ db.close();
++ " 2>&1)
++ if echo "$SYNC_CHECK" | grep -q "stale"; then
++     echo "[$(date '+%Y-%m-%d %H:%M:%S')] index stale ($SYNC_CHECK), forcing reindex" >> "$LOG"
++     node "$SCRIPT_DIR/memory-index.js" --workspace "$WORKSPACE" --force >> "$LOG" 2>&1

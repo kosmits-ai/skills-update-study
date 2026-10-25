@@ -1,0 +1,1591 @@
+paynodelabs/paynode-402  2.4.0 -> 2.5.1
+change_type: instructions+code   changelog: - Migrated skill to a standalone CLI tool; all scripts and the SDK are now external dependencies. - All internal source files and helper scripts removed—use `bunx @paynodelabs/paynode-402-cli` for all operations. - Updated skill documentation and command references for the CLI-based workflow. - Improved agent safety and best practices, including required discovery commands and explicit usage notes. - All environment variables and binary requirements clarified for stateless, up-to-date usage.
+
+### SKILL.md  [instructions]
+- ---
+- ---
+- ---
+- ---
+- description: Access protected APIs via x402-v2 protocol on Base L2. Requires CLIENT_PRIVATE_KEY and Bun (v1.0+). Supports on-chain & EIP-3009. Automated micro-payments for agentic workflows.
+- source_url: https://github.com/PayNodeLabs/paynode-ai-skills
+- compatibility: Requires Bun (v1.0+).
+- optional_env_vars:
+-   - PAYNODE_MARKET_URL
+-   - PAYNODE_RPC_URL
+-   - PAYNODE_RPC_TIMEOUT
+-   - PAYNODE_TASK_DIR
+-   - PAYNODE_MAX_AGE
+-   - CUSTOM_ROUTER_ADDRESS
+-   - CUSTOM_USDC_ADDRESS
+- primary_credential: CLIENT_PRIVATE_KEY
+- install: bun install
+- # 💳 PayNode 402 Protocol Skill (x402-v2, Base & Bun)
+- Use this skill to automate **Resource-based Billing**. The agent interacts with protected APIs that return `402 Payment Required`. This skill (v2.4.0) implements the **PayNode Protocol v2.2.3** (x402-v2), featuring JSON-based discovery and dual payment flows (on-chain & EIP-3009 off-chain signatures).
+- It also supports a lightweight paid-API marketplace flow:
+- - discover payable APIs from a marketplace catalog
+- - inspect API details before purchase
+- - invoke one marketplace API while reusing the existing x402 payment path
+- ### 💡 Becoming a PayNode Merchant (Monetize Your API)
+- Do you have an API or software service you want to monetize for autonomous AI Agents? You can join the PayNode network in minutes:
+- 1.  **Deploy a Gateway**: Set up a simple webhook that verifies PayNode HMAC signatures.
+- 2.  **Register on Market**: Visit the [PayNode Merchant Hub](https://mk.paynode.dev/merchant) to list your API and get your unique Shared Secret.
+- 3.  **Earn USDC**: Every time an AI Agent (like me!) invokes your API via this skill, you receive instant, on-chain USDC payouts.
+- 👉 **Get Started Now**: [https://mk.paynode.dev/merchant](https://mk.paynode.dev/merchant)
+- ## 🚀 Pre-execution Readiness
+- Before any request, verify the environment and balances. This skill strictly uses **System Environment Variables** (or CLI flags) to avoid plaintext private keys on disk and ensure configuration persists through skill updates.
+- 1.  **Initialize Dependencies**: Run `bun install` once within this directory.
+- 2.  **Set Environment Variables**: Ensure `CLIENT_PRIVATE_KEY` is set in your operating system.
+- | Operating System | Setup & Refresh Command (Recommended) |
+- | :--- | :--- |
+- | **Linux / macOS** | `echo 'export CLIENT_PRIVATE_KEY=0x...' >> ~/.bashrc && source ~/.bashrc` |
+- | **Windows (PS)** | `[System.Environment]::SetEnvironmentVariable('CLIENT_PRIVATE_KEY','0x...','User')` (And reboot PS) |
+- | **Windows (CMD)** | `setx CLIENT_PRIVATE_KEY "0x..."` (And restart CMD) |
+- | **Current Session** | `export CLIENT_PRIVATE_KEY=0x...` (Unix) OR `$env:CLIENT_PRIVATE_KEY='0x...'` (PS) OR `set CLIENT_PRIVATE_KEY=0x...` (CMD) |
+- > [!TIP]
+- > [!TIP]
+- > **🤖 Agent All-in-One Init (Immediate + Persistent)**:
+- > If you are an AI agent or an automated script, use this one-liner to set the key for the **current window** and **future sessions** simultaneously:
+- > - **Linux/macOS**: `export CLIENT_PRIVATE_KEY='0x...' && echo 'export CLIENT_PRIVATE_KEY="0x..."' >> ~/.bashrc`
+- > - **Windows (PS)**: `$pk='0x...'; [System.Environment]::SetEnvironmentVariable('CLIENT_PRIVATE_KEY',$pk,'User'); $env:CLIENT_PRIVATE_KEY=$pk`
+- > - **Windows (CMD)**: `set CLIENT_PRIVATE_KEY=0x... && setx CLIENT_PRIVATE_KEY "0x..."`
+- 3.  **Check Balances**: Run `bun run paynode-402 check --json --network <NETWORK>`.
+- 4.  **Fund Wallet (Testnet)**:
+-     - **Gas (ETH)**: [console.optimism.io/faucet](https://console.optimism.io/faucet) — 0.01 ETH daily.
+-     - **USDC**: Run `bun run paynode-402 mint --network testnet`.
+- 5.  **Validate Readiness**: Ensure `checks.can_pay` is `true`.
+- > [!CAUTION]
+- > [!CAUTION]
+- > **PRIVATE KEY SAFETY**: This skill requires a private key and will sign and broadcast blockchain transactions. Only use a dedicated **burner wallet** with minimal funds (recommend < 50 USDC for mainnet). Never supply keys for your primary or mainnet vault wallets.
+- > [!IMPORTANT]
+- > [!IMPORTANT]
+- > [!IMPORTANT]
+- > **RUNTIME & PROVENANCE**: Requires [Bun v1.0+](https://bun.sh/). This skill uses the audited `@paynodelabs/sdk-js` (Source: [npmjs.com/package/@paynodelabs/sdk-js](https://www.npmjs.com/package/@paynodelabs/sdk-js)). Verifiable provenance: [PayNode Labs Github](https://github.com/PayNodeLabs).
+- ### Expected `check` Output:
+- ```json
+- ```json
+- {
+- {
+-   "version": "2.4.0",
+-   "skill_version": "2.4.0",
+-   "sdk_version": "2.2.3",
+-   "status": "success",
+-   "address": "0x...",
+-   "eth": 0.01,
+-   "usdc": 100.0,
+-   "network": "Base Sepolia (84532)",
+-   "chainId": 84532,
+-   "is_sandbox": true,
+-   "checks": {
+-     "gas_ready": true,
+-     "tokens_ready": true,
+-     "can_pay": true
+-   }
+- }
+- }
+- ```
+- ```
+- ```
+- ## 🛠️ x402-v2 Execution Workflow
+- Follow this sequence to unlock protected resources.
+- ### Step 1: Identify Resource
+- Determine the URL of the protected API you need to access.
+- If a marketplace is configured, prefer discovering APIs from the catalog first:
+- - `bun run paynode-402 list-paid-apis --json`
+- - `bun run paynode-402 get-api-detail <API_ID> --json`
+- ### Step 2: Request & Handle Challenge
+- Run `bun run paynode-402 request "<URL>" --json --network <NETWORK>`.
+- - **Reason**: This script detects the x402-v2 challenge (`X-402-Required` header), parses the JSON discovery payload, performs the cryptographic handshake, signs the authorization (on-chain or EIP-3009), and retries with `X-402-Payload`.
+- ### Step 3: Capture Resource
+- Upon success, capture the JSON response. The `txHash` will be included in the logs if a payment occurred.
+- ### CLI Commands
+- | Command                                                   | Description                            |
+- | :-------------------------------------------------------- | :------------------------------------- |
+- | `bun run paynode-402 check --network <NETWORK>`           | Check wallet balance (ETH + USDC)      |
+- | `bun run paynode-402 mint [--amount N] --network testnet` | Mint Test USDC on Base Sepolia         |
+- | `bun run paynode-402 request "<URL>" --network <NETWORK>` | Access protected API with auto-payment |
+- | `bun run paynode-402 list-paid-apis --network <NETWORK>`  | Discover paid APIs from marketplace    |
+- | `bun run paynode-402 get-api-detail <API_ID> --network <NETWORK>` | Inspect one paid API                   |
+- | `bun run paynode-402 invoke-paid-api <API_ID> --network <NETWORK>` | Invoke paid API via marketplace flow   |
+- ### Network & Safety Flags
+- | Flag                  | Description                                          |
+- | :-------------------- | :--------------------------------------------------- |
+- | `--network mainnet`   | Use Base Mainnet (Chain 8453)                        |
+- | `--network testnet`   | Use Base Sepolia (Chain 84532)                       |
+- | `--rpc <URL>`         | Custom RPC endpoint                                  |
+- | `--market-url <URL>`  | Marketplace base URL                                 |
+- | `--json`              | JSON output (for agent consumption)                  |
+- | `--confirm-mainnet`   | **Required** for mainnet operations (real USDC)      |
+- | `--background`        | Execute request in background, return immediately    |
+- | `--output <path>`     | Result file path (used with `--background`)          |
+- | `--max-age <seconds>` | Auto-delete old task files (default: 3600)           |
+- | `--task-dir <path>`   | Task directory (default: system temp /paynode-tasks) |
+- > Mainnet operations require `--confirm-mainnet`. Without this flag, any mainnet command will exit with code `MAINNET_REJECTED`. This prevents accidental real-fund spending in automated contexts.
+- ## ⚡ Async Background Mode (AI-Friendly)
+- The x402 flow can take several seconds (HTTP handshake → signing → broadcast → confirmation). Instead of blocking, use `--background` to fire-and-forget:
+- ```bash
+- # 1. Launch in background — returns immediately with task_id
+- bun run paynode-402 request "https://api.example.com/data" \
+-     -H "X-Project-Id: test" -H "Accept: application/json" \
+-     --network testnet --background --json
+- # Immediate output:
+- # {
+- # {
+- #   "version": "2.4.0",
+- #   "version": "2.4.0",
+- #   "skill_version": "2.4.0",
+- #   "skill_version": "2.4.0",
+- #   "sdk_version": "2.2.3",
+- #   "sdk_version": "2.2.3",
+- #   "status": "pending",
+- #   "task_id": "m2k8x-a1b2",
+- #   "task_id": "m2k8x-a1b2",
+- #   "output": "<TMPDIR>/paynode-tasks/m2k8x-a1b2.json",
+- #   "max_age_seconds": 3600
+- # }
+- # }
+- # 2. Agent does other work...
+- # 3. Check result (poll the file)
+- cat <TMPDIR>/paynode-tasks/m2k8x-a1b2.json
+- # Completed result:
+- #   "status": "completed",
+- #   "data": { ... },
+- #   "completed_at": "2026-03-27T00:20:00Z"
+- ### How It Works
+- 1.  **Parent process**: Generates task ID, spawns detached child, returns `pending` JSON, exits immediately
+- 2.  **Child process**: Executes full x402 flow, writes result JSON to `--output` path
+- 3.  **Agent**: Polls the output file until `status` changes from `pending` to `completed`/`failed`
+- 4.  **Auto-cleanup**: Files older than `--max-age` (default 1h) are deleted on each new background run
+- ### Media / Binary Responses
+- If the API returns binary data (images, audio, video, PDF, etc.), the response is handled differently:
+-   "status": "completed",
+-   "body_type": "binary",
+-   "content_type": "image/png",
+-   "data": "[binary: image/png, 245760 bytes → /tmp/paynode-tasks/m2k8x-a1b2.bin]",
+-   "data_binary": "/tmp/paynode-tasks/m2k8x-a1b2.bin",
+-   "data_size": 245760
+- | `body_type` | Behavior                                                                       |
+- | :---------- | :----------------------------------------------------------------------------- |
+- | `json`      | Response parsed as JSON, inlined in `data` field                               |
+- | `text`      | Response as text, inlined in `data` field                                      |
+- | `binary`    | Response saved to `.bin` file, `data` shows metadata, `data_binary` shows path |
+- ### 🔄 Background Life-cycle & Ephemeral Trace (`always:false`)
+- When using `--background`, this skill detaches a child process to handle the x402 payment flow asynchronously.
+- - **Trace Persistence**: Task output (including transaction responses) and stderr logs are written to the local disk (default: `/tmp/paynode-tasks/`). These files are **ephemeral** and will be auto-deleted on next execution if they exceed `--max-age` (default: 1h).
+- - **Process Isolation**: The background child process operates with a **strict environmental whitelist** (filtering non-essential environment variables) to minimize exposure. However, it **does** inherit the `CLIENT_PRIVATE_KEY` to perform on-chain signing.
+- - **Independence**: The child process runs independently of the main agent session. If the agent session is terminated, the payment worker continues until completion or failure.
+- ## 🛡️ Security Rules & Agent Safety
+- > **ADHERE TO THESE RULES TO PROTECT FUNDS.**
+- ### 💸 Burner Wallet Policy (Minimal Exposure)
+- > **STRICT BURNER WALLET ONLY**: The `CLIENT_PRIVATE_KEY` **MUST** belong to a dedicated "burner" wallet acting as petty cash. Because the key is often stored in **plaintext environment variables**, it is vulnerable to any process or user with read access to the process memory or environment.
+- **NEVER** hold excessive funds. Maintain balances strictly sufficient for immediate tasks (e.g., < 10 USDC). If a balance exceeding operational needs is detected, you **MUST** alert the human operator immediately to sweep the funds to cold storage.
+- ### 🤖 Autonomous Usage & Human Consent
+- If you are operating autonomously, be aware that this skill can **sign and broadcast blockchain transactions** without manual confirmation.
+- - **Threshold Limit**: For any single transaction exceeding **2.0 USDC**, you **MUST** request explicit human approval before execution.
+- - **Verification**: Always check the merchant reputation. This skill uses `@paynodelabs/sdk-js` (Verifiable Source: npmjs.com/package/@paynodelabs/sdk-js).
+- - **Isolation**: It is recommended to run this skill in a sandboxed/isolated environment.
+- ### 🕵️ Zero-Trust Pre-Flight Validation (Resource Consistency)
+- Prevent "Confused Deputy" attacks. Before calling `request`, you **MUST logically verify** that the target URL matches your specific objective.
+- - Ask: _Is this resource exactly what I need? Is the cost reasonable for this resource?_
+- - If the endpoint is unrelated to your goal or the required payment is anomalously high, **ABORT** and report to the human.
+- - **Sandbox-First**: Whenever testnet is available, prioritize testing against sandbox endpoints (Sepolia/Base-Sepolia) before using real funds.
+- ### 🔐 Mainnet Safety Gate
+- All mainnet operations require the `--confirm-mainnet` flag. Without this flag, mainnet commands will exit with `EXIT_CODES.MAINNET_REJECTED`.
+- > **Thresholds**: If you need stronger controls, configure your agent logic to require manual human confirmation for any transaction exceeding a specific amount (e.g., > 2.0 USDC).
+- ## 🛠️ Security & Safety Audit Note
+- If you perform a static analysis scan on this skill, it may flag two behaviors:
+- 1.  **Shell command execution (`spawn`)**: This is an **intentional design** for the `--background` mode. The script detaches a copy of itself using `process.execPath` to handle the payment flow once the main agent process exits.
+- 2.  **Private key environment access (`process.env.CLIENT_PRIVATE_KEY`)**: This is **required** to sign and broadcast blockchain payments.
+- Both are safe as long as you follow the **Burner Wallet Policy** and NEVER use your primary vault wallet.
+- ## ⚠️ Gotchas & Troubleshooting
+- - **"Unexpected end of JSON input" (HTTP 500)**: Some merchants expect a JSON body for `POST` requests. If you put parameters in the URL query instead of as separate arguments, the script will now automatically try to "promote" those query params to the request body to improve compatibility.
+- - **"SyntaxError: JSON Parse error" (Settlement)**: This can occur if a merchant returns a malformed or non-base64 `PAYMENT-RESPONSE` header. This is a non-fatal warning in the SDK—if the HTTP status is `200`, the transaction was likely successful even if parsing the settlement header failed.
+- - **Exit Codes**:
+-   - `0`: Success.
+-   - `1`: Generic error.
+-   - `2`: Invalid arguments.
+-   - `3`: Auth Failure (Check `CLIENT_PRIVATE_KEY` presence/format).
+-   - `4`: Network/RPC Failure.
+-   - `5`: Mainnet rejected (missing `--confirm-mainnet`).
+-   - `6`: Payment failed (Transaction reverted).
+-   - `7`: Insufficient funds (Need ETH or USDC).
+-   - `8`: Dust limit (Amount too low).
+-   - `9`: RPC Timeout (Node congestion).
+-   - `10`: Duplicate transaction (Already submitted).
+-   - `11`: Wrong contract (Merchant error).
+-   - `12`: Order mismatch (Invalid merchant payload).
+-   - `13`: Missing receipt (Blockchain indexing delay).
+-   - `14`: Internal Error (Unexpected SDK failure).
+- - **RPC Timeouts**: Auto-retry is enabled (3 attempts, exponential backoff). If all retries fail, check network connectivity.
+- ## 🧪 Sandbox & Marketplace Testing
+- Prefer marketplace-discovered APIs over hardcoded test endpoints.
+- - **Gas (Test ETH)**:
+-   - [Optimism Superchain Faucet](https://console.optimism.io/faucet) (**Recommended**, 0.01 ETH daily)
+-   - _Note: If the faucet is down, use a search engine for "Base Sepolia Faucet" or bridge independently._
+- - **Mock USDC (Payment)**: `bun run paynode-402 mint --network testnet --json`
+- - **Discovery Rule**: When marketplace commands are available, discover payable APIs from the marketplace catalog instead of relying on a separate testing guide.
+- - **Network Rule**: Use marketplace catalog filters or metadata to choose `testnet` APIs first, and only use `mainnet` APIs with `--confirm-mainnet`.
+- - **Fallback**: If the marketplace is not yet available, `request "<URL>"` remains the raw x402 fallback for direct endpoint access.
+- Example marketplace flow:
+- bun run paynode-402 list-paid-apis --network testnet --json
+- bun run paynode-402 get-api-detail doodle-wall-demo --network testnet --json
+- bun run paynode-402 invoke-paid-api doodle-wall-demo \
+-   --network testnet \
+-   -d '{"agent_name":"PayNodeAgent"}' \
+-   --json
+- ## 🔗 References
+- - **Official Docs**: [PayNode Documentation](https://docs.paynode.dev)
+- - **SDKs**: [Node.js SDK](https://www.npmjs.com/package/@paynodelabs/sdk-js)
+- - **Hub**: [PayNode Hub](https://github.com/PayNodeLabs/paynode-web)
+- - **Marketplace Plan**: [Marketplace Evolution](MARKETPLACE_EVOLUTION.md)
++ description: Access protected APIs via x402-v2 protocol. This skill has been upgraded to a standalone CLI tool. Use `bunx @paynodelabs/paynode-402-cli` for all interactions.
++ source_url: https://github.com/PayNodeLabs/paynode-402-cli
++ # 💳 PayNode 402 CLI Skill (v2.5.1)
++ This skill provides autonomous payment capabilities for HTTP 402 (Payment Required) challenges on Base L2.
++ **IMPORTANT**: AI Agents should now execute commands using `bunx @paynodelabs/paynode-402-cli` to ensure stateless interactions and use the latest protocol logic.
++ ## 🏁 Mandatory Discovery Step (Cold Start)
++ To ensure you always navigate live APIs from the PayNode Marketplace, you **MUST** execute the following discovery command immediately after loading this skill for the first time. This guarantees that any featured APIs shown to the user are currently active and valid.
++ # Discovery Command (Run this first!)
++ bunx @paynodelabs/paynode-402-cli list-paid-apis --network testnet --json --limit 5
++ ## 🚀 Command Reference
++ | Command | Usage Example | Purpose |
++ | :--- | :--- | :--- |
++ | `check` | `check --network testnet --json` | Verify wallet readiness (ETH/USDC) |
++ | `mint` | `mint --amount 100 --json` | Mint test USDC on Base Sepolia |
++ | `request` | `request <URL> -X POST -d '{}' --json` | Access protected API with auto-payment |
++ | `list-paid-apis` | `list-paid-apis --tag storage --json` | Discover APIs in the marketplace |
++ | `get-api-detail` | `get-api-detail <API_ID> --json` | Inspect API pricing and input schema |
++ | `invoke-paid-api`| `invoke-paid-api <API_ID> -d '{}' --json`| Full purchase & execution flow |
++ | `tasks` | `tasks list` / `tasks clean` | Manage background x402 tasks |
++ ### 🛠️ Global Flags
++ - `--network <mainnet|testnet>`: Target network (default: testnet).
++ - `--json`: Force JSON output for automated parsing.
++ - `--confirm-mainnet`: Guard flag for real value transactions.
++ - `--background`: Execute request asynchronously and return `task_id`.
++ - `--rpc <URL>`: Override default RPC endpoint.
++ - `--dry-run`: Prepare transaction but do not sign/send.
++ ## 💡 Best Practices for Agents
++ 1. **Always Check First**: Run `check --json` before any payment to avoid gas failures.
++ 2. **Handle 202 Pending**: When using `--background`, check `tasks list` until `status: "completed"`.
++ 3. **Payload Sniffing**: If you omit `Content-Type`, the CLI will auto-detect JSON from your `-d` string.
++ 4. **Binary Processing**: If the CLI returns a `data_binary` path, use it to read images/files from the disk.
++ ## 🔗 Resources
++ - **NPM/Registry**: [@paynodelabs/paynode-402-cli](https://www.npmjs.com/package/@paynodelabs/paynode-402-cli)
++ - **GitHub**: [PayNodeLabs/paynode-402-cli](https://github.com/PayNodeLabs/paynode-402-cli)
++ - **Protocol**: [PayNode Specification](https://docs.paynode.dev)
+
+### package.json  [code]
+- {
+-   "name": "@paynode/skill-payment",
+-   "version": "2.4.0",
+-   "description": "PayNode x402 'Payment Required' AI Skill for automated micro-payments on Base L2. Requires Bun (v1.0+) and CLIENT_PRIVATE_KEY.",
+-   "type": "module",
+-   "scripts": {
+-     "paynode-402": "bun run scripts/paynode-402.ts"
+-   },
+-   },
+-   },
+-   },
+-   "keywords": [
+-     "paynode",
+-     "x402",
+-     "payment-required",
+-     "web3",
+-     "bun",
+-     "base",
+-     "usdc"
+-   ],
+-   ],
+-   ],
+-   ],
+-   "author": "PayNode Labs",
+-   "license": "MIT",
+-   "homepage": "https://github.com/PayNodeLabs/paynode-ai-skills",
+-   "repository": {
+-     "type": "git",
+-     "url": "https://github.com/PayNodeLabs/paynode-ai-skills.git"
+-   "dependencies": {
+-     "@paynodelabs/sdk-js": "^2.2.3",
+-     "cac": "7.0.0"
+-   "devDependencies": {
+-     "bun-types": "^1.0.0"
+-   "required_env_vars": [
+-     "CLIENT_PRIVATE_KEY"
+-   "optional_env_vars": [
+-     "PAYNODE_MARKET_URL",
+-     "PAYNODE_RPC_URL",
+-     "PAYNODE_RPC_TIMEOUT",
+-     "PAYNODE_TASK_DIR",
+-     "PAYNODE_MAX_AGE",
+-     "CUSTOM_ROUTER_ADDRESS",
+-     "CUSTOM_USDC_ADDRESS"
+-   "required_binaries": [
+-     "bun"
+-   "primary_credential": "CLIENT_PRIVATE_KEY"
+- }
+
+### scripts/commands/check.ts  [code]
+- import { ethers } from '@paynodelabs/sdk-js';
+- import {
+-     getPrivateKey,
+-     resolveNetwork,
+-     requireMainnetConfirmation,
+-     reportError,
+-     jsonEnvelope,
+-     withRetry,
+-     EXIT_CODES,
+-     BaseCliOptions
+- } from '../utils.ts';
+- interface CheckOptions extends BaseCliOptions {
+- }
+- }
+- // Minimum gas threshold: 0.001 ETH (in wei)
+- const MIN_GAS_WEI = ethers.parseEther('0.001');
+- export async function checkAction(options: CheckOptions) {
+-     const isJson = !!options.json;
+-     const pk = getPrivateKey(isJson);
+-     try {
+-         const { provider, usdcAddress, chainId, networkName, isSandbox } = await resolveNetwork(
+-             options.rpc,
+-             options.network,
+-             options.rpcTimeout
+-         );
+-         );
+-         // Mainnet safety gate
+-         requireMainnetConfirmation(isSandbox, !!options.confirmMainnet, isJson);
+-         const wallet = new ethers.Wallet(pk, provider);
+-         const address = wallet.address;
+-         // Fetch balances with retry
+-         const [ethBalance, usdcBalance] = await withRetry(
+-             () => Promise.all([
+-                 provider.getBalance(address),
+-                 new ethers.Contract(
+-                     usdcAddress,
+-                     ['function balanceOf(address) view returns (uint256)'],
+-                     provider
+-                 ).balanceOf(address)
+-             ]),
+-             'balanceCheck'
+-         // BigInt comparisons are used for logic (no precision loss).
+-         // parseFloat is only for human-readable display and non-critical JSON values.
+-         const ethValue = parseFloat(ethers.formatEther(ethBalance));
+-         const usdcValue = parseFloat(ethers.formatUnits(usdcBalance, 6));
+-         const isGasReady = ethBalance >= MIN_GAS_WEI;
+-         const isTokensReady = usdcBalance > 0n;
+-         if (isJson) {
+-             console.log(
+-                 jsonEnvelope({
+-                     status: 'success',
+-                     address,
+-                     eth: ethValue,
+-                     usdc: usdcValue,
+-                     network: networkName,
+-                     chainId,
+-                     is_sandbox: isSandbox,
+-                     checks: {
+-                         gas_ready: isGasReady,
+-                         tokens_ready: isTokensReady,
+-                         can_pay: isGasReady && isTokensReady
+-                     }
+-                 })
+-             );
+-         } else {
+-             console.log(`\n💎 **PayNode Wallet Status**`);
+-             console.log(`──────────────────────────────────────────────────`);
+-             console.log(`──────────────────────────────────────────────────`);
+-             console.log(`──────────────────────────────────────────────────`);
+-             console.log(`👤 **Address**:   \`${address}\``);
+-             console.log(`🌐 **Network**:   ${networkName}`);
+-             console.log(`⛽ **ETH (Gas)**:  ${ethValue.toFixed(6)} ETH  ${isGasReady ? '✅ Ready' : '⚠️ Low balance'}`);
+-             console.log(`💵 **USDC**:       ${usdcValue.toFixed(2)} USDC  ${isTokensReady ? '✅ Ready' : '❌ Empty'}`);
+-             if (isGasReady && isTokensReady) {
+-                 console.log(`🚀 **Status**: Ready to handle x402 autonomous payments.`);
+-             } else {
+-                 console.log(`❌ **Status**: Action required. See tips below.`);
+-             }
+-             }
+-             }
+-             }
+-             // Safety Warning for Burner Wallets (Mainnet Only)
+-             if (!isSandbox && usdcValue > 10) {
+-                 console.warn(
+-                     `\n> [!CAUTION]\n> High balance detected ($${usdcValue.toFixed(2)} USDC). This is a burner wallet. \n> Consider sweeping excess funds to cold storage to minimize risk.`
+-                 );
+-             if (!isGasReady) {
+-                 if (isSandbox) {
+-                 if (isSandbox) {
+-                     console.warn(
+-                     console.warn(
+-                     console.warn(
+-                     console.warn(
+-                     console.warn(
+-                         `\n> [!WARNING]\n> Gas balance is critically low (< 0.001 ETH). Please deposit ETH to \`${address}\` on ${networkName}.`
+-                         `\n> [!WARNING]\n> Gas balance is critically low (< 0.001 ETH). Please deposit ETH to \`${address}\` on ${networkName}.`
+-                     );
+-                     );
+-                     );
+-                     );
+-                     );
+-                         `> **Faucet**: [console.optimism.io/faucet](https://console.optimism.io/faucet) (Recommended)`
+-                 } else {
+-                 } else {
+-                 }
+-                 }
+-             if (!isTokensReady) {
+-                         `\n> [!TIP]\n> You're on Testnet! Run \`bun run paynode-402 mint --network testnet\` to get 1,000 free Test USDC.`
+-                         `\n> [!NOTE]\n> Mainnet USDC balance is 0. This wallet is currently restricted to free trials.`
+-             console.log(``);
+-         }
+-     } catch (error: any) {
+-         reportError(error, isJson, EXIT_CODES.NETWORK_ERROR);
+-     }
+
+### scripts/commands/get-api-detail.ts  [code]
+- import { MarketplaceClient } from '../marketplace/client.ts';
+- import { jsonEnvelope, reportError, EXIT_CODES, BaseCliOptions } from '../utils.ts';
+- interface GetApiDetailOptions extends BaseCliOptions {
+- }
+- }
+- export async function getApiDetailAction(apiId: string, options: GetApiDetailOptions) {
+-   const isJson = !!options.json;
+-   try {
+-     const client = new MarketplaceClient({
+-       baseUrl: options.marketUrl,
+-       json: isJson
+-     });
+-     const detail = await client.getApiDetail(apiId, options.network);
+-     if (isJson) {
+-       console.log(jsonEnvelope({
+-         status: 'success',
+-         api: detail
+-       }));
+-       return;
+-     }
+-     console.log(JSON.stringify(detail, null, 2));
+-   } catch (error: any) {
+-     reportError(error, isJson, EXIT_CODES.NETWORK_ERROR);
+-   }
+
+### scripts/commands/invoke-paid-api.ts  [code]
+- import { requestAction } from './request.ts';
+- import { MarketplaceClient } from '../marketplace/client.ts';
+- import { reportError, EXIT_CODES, BaseCliOptions } from '../utils.ts';
+- interface InvokePaidApiOptions extends BaseCliOptions {
+-   method?: string;
+-   data?: string;
+-   header?: string | string[];
+-   background?: boolean;
+-   output?: string;
+-   maxAge?: number;
+-   taskDir?: string;
+-   taskId?: string;
+- }
+- }
+- }
+- }
+- function mergeHeaders(
+-   marketplaceHeaders: Record<string, string> | undefined,
+-   cliHeader: string | string[] | undefined
+- ): string[] {
+-   const merged: string[] = [];
+-   for (const [key, value] of Object.entries(marketplaceHeaders || {})) {
+-     merged.push(`${key}: ${value}`);
+-   }
+-   }
+-   }
+-   }
+-   if (Array.isArray(cliHeader)) {
+-     merged.push(...cliHeader);
+-   } else if (cliHeader) {
+-     merged.push(cliHeader);
+-   return merged;
+- function parsePayload(data?: string): any {
+-   if (!data) return undefined;
+-   try {
+-   try {
+-     return JSON.parse(data);
+-   } catch (err: any) {
+-     const isJsonLike = data.trim().startsWith('{') || data.trim().startsWith('[');
+-     if (isJsonLike) {
+-       console.warn(`⚠️ [Warning] Invocation data looks like JSON but failed to parse: ${err.message}`);
+-       console.warn(`Sending as raw string instead. Please verify your JSON syntax.`);
+-     } else {
+-       console.warn(`⚠️ [Warning] Invocation data is not valid JSON. Sending as raw string.`);
+-     }
+-     return data;
+- export async function invokePaidApiAction(apiId: string, options: InvokePaidApiOptions) {
+-     const isJson = !!options.json;
+-     const client = new MarketplaceClient({
+-       baseUrl: options.marketUrl,
+-       json: isJson
+-     });
+-     });
+-     });
+-     const invoke = await client.prepareInvoke(apiId, {
+-       network: options.network,
+-       payload: parsePayload(options.data)
+-     const requestHeaders = mergeHeaders(invoke.headers, options.header);
+-     const hasPreparedBody = !!(invoke.body && typeof invoke.body === 'object' && Object.keys(invoke.body).length > 0);
+-     const requestBody = hasPreparedBody
+-       ? JSON.stringify(invoke.body)
+-       : (options.data || undefined); // Use undefined if no data to trigger smart promotion if needed
+-     await requestAction(invoke.invoke_url, [], {
+-       json: options.json,
+-       network: options.network || invoke.network, // Delegate fallback to resolveNetwork
+-       rpc: options.rpc,
+-       rpcTimeout: options.rpcTimeout,
+-       confirmMainnet: options.confirmMainnet,
+-       method: options.method || invoke.method || 'POST',
+-       data: requestBody,
+-       header: requestHeaders,
+-       background: options.background,
+-       dryRun: options.dryRun,
+-       output: options.output,
+-       maxAge: options.maxAge,
+-       taskDir: options.taskDir,
+-       taskId: options.taskId
+-   } catch (error: any) {
+-     reportError(error, isJson, EXIT_CODES.NETWORK_ERROR);
+
+### scripts/commands/list-paid-apis.ts  [code]
+- import { MarketplaceClient } from '../marketplace/client.ts';
+- import { jsonEnvelope, reportError, EXIT_CODES, BaseCliOptions } from '../utils.ts';
+- interface ListPaidApisOptions extends BaseCliOptions {
+-   limit?: string | number;
+-   tag?: string | string[];
+-   seller?: string;
+- }
+- }
+- export async function listPaidApisAction(options: ListPaidApisOptions) {
+-   const isJson = !!options.json;
+-   try {
+-     const client = new MarketplaceClient({
+-       baseUrl: options.marketUrl,
+-       json: isJson
+-     });
+-     });
+-     const tags = Array.isArray(options.tag)
+-       ? options.tag
+-       : options.tag
+-         ? [options.tag]
+-         : [];
+-     const result = await client.listCatalog({
+-       network: options.network,
+-       limit: options.limit ? Number(options.limit) : undefined,
+-       tag: tags,
+-       seller: options.seller
+-     if (isJson) {
+-       console.log(jsonEnvelope({
+-         status: 'success',
+-         total: result.total || result.items.length,
+-         items: result.items
+-       }));
+-       return;
+-       return;
+-     }
+-     }
+-     }
+-     if (result.items.length === 0) {
+-       console.log('No paid APIs found.');
+-     for (const item of result.items) {
+-       const price = item.price_per_call ? `${item.price_per_call} ${item.currency || 'USDC'}` : 'unpriced';
+-       const network = item.network || 'unspecified';
+-       const tagsLine = item.tags && item.tags.length > 0 ? ` [${item.tags.join(', ')}]` : '';
+-       console.log(`- ${item.id}: ${item.name} | ${price} | ${network}${tagsLine}`);
+-       if (item.description) {
+-         console.log(`  ${item.description}`);
+-       }
+-   } catch (error: any) {
+-     reportError(error, isJson, EXIT_CODES.NETWORK_ERROR);
+-   }
+
+### scripts/commands/mint.ts  [code]
+- import { ethers } from '@paynodelabs/sdk-js';
+- import {
+-     getPrivateKey,
+-     resolveNetwork,
+-     reportError,
+-     jsonEnvelope,
+-     withRetry,
+-     EXIT_CODES,
+-     BaseCliOptions
+- } from '../utils.ts';
+- interface MintOptions extends BaseCliOptions {
+-     amount?: string;
+- }
+- }
+- export async function mintAction(options: MintOptions) {
+-     const isJson = !!options.json;
+-     const pk = getPrivateKey(isJson);
+-     try {
+-         const { provider, usdcAddress, chainId, networkName, isSandbox } = await resolveNetwork(
+-             options.rpc,
+-             options.network || 'testnet',
+-             options.rpcTimeout
+-         );
+-         );
+-         );
+-         if (!isSandbox) {
+-             throw new Error(`Minting is only supported on Sepolia. Current ChainID: ${chainId}`);
+-         }
+-         }
+-         }
+-         }
+-         }
+-         const wallet = new ethers.Wallet(pk, provider);
+-         const mintAmountStr = options.amount || '1000';
+-         // Gas check
+-         const balance = await provider.getBalance(wallet.address);
+-         if (balance === 0n) {
+-             reportError(
+-                 `Gas balance is 0 ETH on ${networkName}. Please fund \`${wallet.address}\` to continue.\n` +
+-                 `💡 **Faucet**: [console.optimism.io/faucet](https://console.optimism.io/faucet) — 0.01 ETH daily (Recommended)`,
+-                 isJson,
+-                 EXIT_CODES.INSUFFICIENT_FUNDS
+-             );
+-             );
+-         // Progress messages are sent to stderr to avoid polluting stdout
+-         // when valid JSON output is expected by the caller (e.g. via --json)
+-         if (!isJson) {
+-             console.error(`💰 Connecting to ${networkName}...`);
+-             console.error(`🔗 Minting ${mintAmountStr} USDC for address: ${wallet.address}`);
+-         const abi = ['function mint(address to, uint256 amount) external'];
+-         const usdc = new ethers.Contract(usdcAddress, abi, wallet);
+-         const amount = ethers.parseUnits(mintAmountStr, 6);
+-         if (!isJson) console.error('⏳ Sending mint transaction...');
+-         const tx = await withRetry(
+-             () => usdc.mint(wallet.address, amount),
+-             'mint'
+-         if (!isJson) console.error('⏳ Waiting for confirmation...');
+-         const receipt: any = await withRetry(
+-             () => tx.wait(),
+-             'mintConfirm'
+-         if (!receipt || receipt.status !== 1) {
+-             throw new Error('Transaction reverted or failed.');
+-         if (isJson) {
+-             console.log(
+-                 jsonEnvelope({
+-                     status: 'success',
+-                     txHash: tx.hash,
+-                     address: wallet.address,
+-                     amount: mintAmountStr,
+-                     token: 'MockUSDC',
+-                     network: networkName
+-                 })
+-         } else {
+-             console.log(`\n✅ **Success!**`);
+-             console.log(`──────────────────────────────────────────────────`);
+-             console.log(`──────────────────────────────────────────────────`);
+-             console.log(`💰 **Minted**:      ${mintAmountStr} Test USDC`);
+-             console.log(`🌐 **Network**:     ${networkName}`);
+-             console.log(`🔗 **Tx Hash**:     \`${tx.hash}\``);
+-             console.log(`🚀 **Your wallet (\`${wallet.address}\`) is now funded and ready for testing.**`);
+-             console.log(``);
+-     } catch (error: any) {
+-         reportError(error, isJson, EXIT_CODES.NETWORK_ERROR);
+-     }
+
+### scripts/commands/request.ts  [code]
+- import { PayNodeAgentClient, RequestOptions, ethers } from '@paynodelabs/sdk-js';
+- import { join, parse } from 'path';
+- import { tmpdir } from 'os';
+- import fs from 'fs';
+- import { spawn } from 'child_process';
+- import {
+-     getPrivateKey,
+-     resolveNetwork,
+-     requireMainnetConfirmation,
+-     reportError,
+-     jsonEnvelope,
+-     withRetry,
+-     generateTaskId,
+-     isInlineContent,
+-     cleanupOldTasks,
+-     DEFAULT_TASK_DIR,
+-     DEFAULT_MAX_AGE_SECONDS,
+-     EXIT_CODES,
+-     SKILL_VERSION,
+-     GLOBAL_CONFIG,
+-     BaseCliOptions,
+-     maskAddress
+- } from '../utils.ts';
+- interface UnifiedRequestOptions extends BaseCliOptions {
+-     method?: string;
+-     data?: string;
+-     header?: string | string[];
+-     background?: boolean;
+-     output?: string;
+-     maxAge?: number;
+-     taskDir?: string;
+-     taskId?: string;
+- }
+- }
+- }
+- }
+- }
+- }
+- interface CoreResult {
+-     result: {
+-         url: string;
+-         method: string;
+-         http_status: number;
+-         content_type: string;
+-         body_type: 'json' | 'text' | 'binary';
+-         network: string;
+-         data: any;
+-         duration_ms: number;
+-         dry_run?: boolean;
+-         wallet?: string;
+-         message?: string;
+-         data_binary?: string;
+-         data_size?: number;
+-     };
+-     };
+-     };
+-     binaryBuffer?: Uint8Array;
+-     contentType: string;
+- // --- Background Launcher ---
+- function spawnBackground(url: string, args: string[], options: UnifiedRequestOptions) {
+-     const taskId = options.taskId || generateTaskId(); // Use existing if re-spawning (though unlikely)
+-     const taskDir = options.taskDir || DEFAULT_TASK_DIR;
+-     const taskDir = options.taskDir || DEFAULT_TASK_DIR;
+-     const maxAge = options.maxAge || DEFAULT_MAX_AGE_SECONDS;
+-     const outputPath = options.output || join(taskDir, `${taskId}.json`);
+-     const outputPath = options.output || join(taskDir, `${taskId}.json`);
+-     const logPath = join(taskDir, `${taskId}.log`);
+-     fs.mkdirSync(taskDir, { recursive: true });
+-     fs.mkdirSync(taskDir, { recursive: true });
+-     cleanupOldTasks(taskDir, maxAge);
+-     const originalArgs = process.argv.slice(2);
+-     const flagsToRemove = ['--background', '--json', '--task-id', '--output', '--dry-run', '--max-age', '--task-dir'];
+-     const childArgs: string[] = [];
+-     for (let i = 0; i < originalArgs.length; i++) {
+-         const arg = originalArgs[i];
+-         if (flagsToRemove.includes(arg)) {
+-             // If flag takes an argument, skip both flag and value
+-             if (['--output', '--task-id', '--max-age', '--task-dir'].includes(arg) && i + 1 < originalArgs.length) {
+-                 i++;
+-             }
+-             }
+-             }
+-             }
+-             }
+-             continue;
+-         }
+-         }
+-         }
+-         }
+-         }
+-         }
+-         }
+-         }
+-         }
+-         childArgs.push(arg);
+-     }
+-     }
+-     }
+-     }
+-     }
+-     }
+-     }
+-     }
+-     }
+-     }
+-     }
+-     }
+-     }
+-     }
+-     childArgs.push('--task-id', taskId, '--output', outputPath);
+-     // [SECURITY & LOGIC]
+-     // This is a self-re-execution for background processing.
+-     // 1. We spawn the same script (process.argv[1]) with filtered arguments.
+-     // 2. We add '--task-id' which signals the next execution to use 'executeAndWrite' path.
+-     // 3. This avoids infinite recursion because the sub-process will NOT have '--background' in its args.
+-     // 4. Stderr is piped to a .log file to allow debugging of background failures.
+-     const logFd = fs.openSync(logPath, 'a');
+-     // The child command is pinned to 'process.execPath' (the current runtime) and 'process.argv[1]' (the current script).
+-     // Arguments are filtered to prevent recursive loops.
+-     // [SECURITY] Filter environment variables passed to background child process.
+-     // Minimizes exposure of non-essential credentials.
+-     const whitelist = [
+-         'CLIENT_PRIVATE_KEY',
+-         'CUSTOM_ROUTER_ADDRESS',
+-         'CUSTOM_USDC_ADDRESS',
+-         'RPC_URL',
+-         'ALCHEMY_API_KEY',
+-         'INFURA_API_KEY',
+-         'ETHERSCAN_API_KEY',
+-         'HTTP_PROXY',
+-         'HTTPS_PROXY',
+-         'NODE_PATH',
+-         'NVM_DIR',
+-         'BUN_INSTALL'
+-     ];
+-     // Essential OS-level vars
+-     const baseEnv = Object.fromEntries(
+-         Object.entries({
+-             PATH: process.env.PATH,
+-             HOME: process.env.HOME,
+-             TMPDIR: process.env.TMPDIR,
+-             USER: process.env.USER,
+-             SHELL: process.env.SHELL
+-         }).filter(([, v]) => v !== undefined)
+-     ) as Record<string, string>;
+-     const childEnv: Record<string, string | undefined> = { ...baseEnv };
+-     for (const key of whitelist) {
+-         if (process.env[key]) childEnv[key] = process.env[key];
+-     const child = spawn(process.execPath, [process.argv[1], ...childArgs], {
+-         detached: true,
+-         stdio: ['ignore', 'ignore', logFd],
+-         env: childEnv
+-     });
+-     child.unref();
+-     // After unref. the parent no longer needs logFd. The child has its own copy.
+-     fs.closeSync(logFd);
+-     const pendingInfo = {
+-         status: 'pending',
+-         task_id: taskId,
+-         output_file: outputPath,
+-         task_dir: taskDir,
+-         max_age_seconds: maxAge,
+-         command: `cat ${outputPath}`,
+-         message: '🕒 x402 background request started. The wallet will automatically handle payments.'
+-     if (options.json) {
+-         console.log(jsonEnvelope(pendingInfo));
+-     } else {
+-     } else {
+-     } else {
+-         console.log(`\n🚀 **Background Task Started**`);
+-         console.log(`- **Task ID**: \`${taskId}\``);
+-         console.log(`- **Output**: \`${outputPath}\``);
+-         console.log(`- **Log**:    \`${logPath}\``);
+-         console.log(`\nUse \`cat ${outputPath}\` to check progress or \`tail -f ${logPath}\` for logs.`);
+-     process.exit(0);
+- // --- Core x402 Execution ---
+- async function executeCore(url: string, args: string[], options: UnifiedRequestOptions): Promise<CoreResult> {
+-     const isJson = !!options.json || !!options.taskId;
+-     const startTs = Date.now();
+-     const { rpcUrls, networkName, isSandbox } = await resolveNetwork(options.rpc, options.network, options.rpcTimeout);
+-     requireMainnetConfirmation(isSandbox, !!options.confirmMainnet, isJson);
+-     // Handle params (k=v)
+-     const kvParams: Record<string, string> = {};
+-     for (const p of args) {
+-         if (!p.includes('=')) continue;
+-         const [k, ...v] = p.split('=');
+-         kvParams[k.trim()] = v.join('=').trim();
+-     const method = options.method?.toUpperCase() || (options.data || Object.keys(kvParams).length > 0 ? 'POST' : 'GET');
+-     // Headers parsing
+-     const headers: Record<string, string> = {};
+-     if (options.header) {
+-         const headerArray = Array.isArray(options.header) ? options.header : [options.header];
+-         for (const h of headerArray) {
+-             if (!h || !h.includes(':')) continue;
+-             const [k, ...v] = h.split(':');
+-             headers[k.trim()] = v.join(':').trim();
+-     // [P1] Inject network header for Proxy validation
+-     const paynodeNetwork = isSandbox ? 'testnet' : 'mainnet';
+-     if (!headers['X-PayNode-Network']) {
+-         headers['X-PayNode-Network'] = paynodeNetwork;
+-     // Auto-sniff JSON body for manual data
+-     if (options.data && !headers['Content-Type'] && !headers['content-type']) {
+-         try {
+-         try {
+-             JSON.parse(options.data);
+-             headers['Content-Type'] = 'application/json';
+-         } catch { /* ignore */ }
+-     const requestOptions: RequestOptions = { method, headers };
+-     let targetUrl = url;
+-     if (method === 'GET') {
+-         const urlObj = new URL(url);
+-         for (const [k, v] of Object.entries(kvParams)) {
+-             urlObj.searchParams.set(k, v);
+-         targetUrl = urlObj.toString();
+-         if (options.data) {
+-             requestOptions.body = options.data;
+-         } else {
+-         } else {
+-         } else {
+-             // [Smart Promotion] For POST/PUT, if no explicit body data is given but
+-             // query parameters exist (either in URL or as args), put them into JSON body.
+-             const urlObj = new URL(url);
+-             const combinedParams = { ...kvParams };
+-             // If the user only passed the URL with query params (no extra args)
+-             if (Object.keys(combinedParams).length === 0 && urlObj.searchParams.size > 0) {
+-                 for (const [k, v] of urlObj.searchParams.entries()) {
+-                     combinedParams[k] = v;
+-                 }
+-                 }
+-             if (Object.keys(combinedParams).length > 0) {
+-                 requestOptions.json = combinedParams;
+-     // Dry-run
+-     if (options.dryRun) {
+-         const pkForAddress = GLOBAL_CONFIG.PRIVATE_KEY;
+-         let walletAddr: string | undefined;
+-             if (pkForAddress && isJson) {
+-                 walletAddr = maskAddress((new ethers.Wallet(pkForAddress)).address);
+-         } catch { /* skip if PK invalid */ }
+-         return {
+-             result: {
+-                 url: targetUrl,
+-                 method,
+-                 http_status: 0,
+-                 content_type: 'application/json',
+-                 body_type: 'json',
+-                 network: networkName,
+-                 data: null,
+-                 duration_ms: 0,
+-                 dry_run: true,
+-                 wallet: walletAddr,
+-                 message: 'Dry-run: request prepared but not sent.'
+-             },
+-             contentType: 'application/json'
+-         };
+-         };
+-         };
+-     const pk = getPrivateKey(isJson);
+-     const client = new PayNodeAgentClient(pk, rpcUrls);
+-     const response = await withRetry(
+-         () => client.requestGate(targetUrl, requestOptions),
+-         'x402:requestGate'
+-     );
+-     const contentType = response.headers.get('content-type') || 'application/octet-stream';
+-     const httpStatus = response.status;
+-     let resultBody: any;
+-     let bodyType: 'json' | 'text' | 'binary' = 'text';
+-     let binaryBuffer: Uint8Array | undefined;
+-     if (isInlineContent(contentType)) {
+-         if (contentType.toLowerCase().includes('application/json')) {
+-             resultBody = await response.json();
+-             bodyType = 'json';
+-             resultBody = await response.text();
+-             bodyType = 'text';
+-         const arrayBuf = await response.arrayBuffer();
+-         binaryBuffer = new Uint8Array(arrayBuf);
+-         bodyType = 'binary';
+-         resultBody = null;
+-     return {
+-         result: {
+-             url: targetUrl,
+-             method,
+-             http_status: httpStatus,
+-             content_type: contentType,
+-             body_type: bodyType,
+-             network: networkName,
+-             data: resultBody,
+-             duration_ms: Date.now() - startTs
+-         },
+-         binaryBuffer,
+-         contentType
+- // --- Persistence ---
+- async function executeAndWrite(url: string, args: string[], options: UnifiedRequestOptions) {
+-     const taskId = options.taskId || generateTaskId();
+-     try {
+-     try {
+-         const { result, binaryBuffer, contentType } = await executeCore(url, args, options);
+-         const { result, binaryBuffer, contentType } = await executeCore(url, args, options);
+-         if (binaryBuffer) {
+-         if (binaryBuffer) {
+-             const { dir, name } = parse(outputPath);
+
+### scripts/marketplace/client.ts  [code]
+- import { jsonEnvelope, reportError, withRetry, EXIT_CODES, GLOBAL_CONFIG } from '../utils.ts';
+- import type { CatalogApiItem, CatalogListResponse, InvokePreparation } from './types.ts';
+- export interface MarketplaceClientOptions {
+-   baseUrl?: string;
+-   json?: boolean;
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- export class MarketplaceError extends Error {
+-   constructor(
+-     message: string,
+-     public readonly status: number,
+-     public readonly code: string = 'unknown_error'
+-   ) {
+-     super(message);
+-     this.name = 'MarketplaceError';
+-   }
+-   }
+-   }
+-   }
+-   }
+-   }
+- export interface ListCatalogOptions {
+-   network?: string;
+-   network?: string;
+-   network?: string;
+-   limit?: number;
+-   tag?: string[];
+-   seller?: string;
+- export interface PrepareInvokeOptions {
+-   payload?: any;
+- function joinUrl(baseUrl: string, path: string): string {
+-   const normalizedBase = baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl;
+-   const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+-   return `${normalizedBase}${normalizedPath}`;
+- export interface RawCatalogApiItem {
+-   id?: string;
+-   api_id?: string;
+-   name?: string;
+-   title?: string;
+-   api_name?: string;
+-   description?: string;
+-   tags?: string[];
+-   price_per_call?: string | number;
+-   price?: string | number;
+-   amount?: string | number;
+-   currency?: string;
+-   seller?: any;
+-   seller_name?: string;
+-   wallet_address?: string;
+-   method?: string;
+-   http_method?: string;
+-   payable_url?: string;
+-   payment_url?: string;
+-   invoke_url?: string;
+-   input_schema?: any;
+-   sample_response?: any;
+-   headers_template?: any;
+- function normalizeCatalogItem(raw: RawCatalogApiItem): CatalogApiItem {
+-   return {
+-     id: raw.id || raw.api_id || '',
+-     name: raw.name || raw.title || raw.api_name || raw.api_id || 'unnamed',
+-     description: raw.description,
+-     tags: Array.isArray(raw.tags) ? raw.tags : [],
+-     price_per_call: String(raw.price_per_call || raw.price || raw.amount || '0'),
+-     currency: raw.currency || 'USDC',
+-     network: raw.network,
+-     seller: (raw.seller && typeof raw.seller === 'object' && Object.keys(raw.seller).length > 0) ? {
+-       name: raw.seller.name || raw.seller.seller_name,
+-       wallet_address: raw.seller.wallet_address || raw.seller.address
+-     } : {
+-       name: raw.seller_name,
+-       wallet_address: raw.wallet_address
+-     },
+-     method: raw.method || raw.http_method,
+-     payable_url: raw.payable_url || raw.payment_url,
+-     invoke_url: raw.invoke_url,
+-     input_schema: raw.input_schema,
+-     sample_response: raw.sample_response,
+-     headers_template: raw.headers_template
+-   };
+- export class MarketplaceClient {
+-   private readonly baseUrl: string;
+-   private readonly isJson: boolean;
+-   constructor(options: MarketplaceClientOptions = {}) {
+-     this.baseUrl = options.baseUrl || GLOBAL_CONFIG.MARKETPLACE_URL;
+-     this.isJson = !!options.json;
+-   private async request<T>(path: string, init?: RequestInit): Promise<T> {
+-     const url = joinUrl(this.baseUrl, path);
+-     const response = await withRetry(
+-       () => fetch(url, init),
+-       `marketplace:${path}`
+-     );
+-     if (!response.ok) {
+-       const text = await response.text();
+-       let errorMessage = `Marketplace request failed (${response.status}) at ${path}: ${text || 'empty response'}`;
+-       let errorCode = 'unknown_error';
+-       try {
+-         const json = JSON.parse(text);
+-         if (json.message) errorMessage = json.message;
+-         errorCode = json.code || json.error || errorCode;
+-       } catch { /* use defaults if parse fails */ }
+-       throw new MarketplaceError(errorMessage, response.status, errorCode);
+-     }
+-     }
+-     }
+-     return await response.json() as T;
+-   async listCatalog(options: ListCatalogOptions = {}): Promise<CatalogListResponse> {
+-     const params = new URLSearchParams();
+-     const params = new URLSearchParams();
+-     if (options.network) params.set('network', options.network);
+-     if (options.limit) params.set('limit', String(options.limit));
+-     if (options.seller) params.set('seller', options.seller);
+-     for (const tag of options.tag || []) {
+-       params.append('tag', tag);
+-     const query = params.toString();
+-     const query = params.toString();
+-     const path = `/api/v1/paid-apis${query ? `?${query}` : ''}`;
+-     const raw = await this.request<any>(path);
+-     const raw = await this.request<any>(path);
+-     const items = Array.isArray(raw.items)
+-       ? raw.items.map(normalizeCatalogItem)
+-       : Array.isArray(raw)
+-         ? raw.map(normalizeCatalogItem)
+-         : [];
+-     return {
+-       items,
+-       total: raw.total || items.length
+-     };
+-   async getApiDetail(apiId: string, network?: string): Promise<CatalogApiItem> {
+-     if (network) params.set('network', network);
+-     const path = `/api/v1/paid-apis/${encodeURIComponent(apiId)}${query ? `?${query}` : ''}`;
+-     return normalizeCatalogItem(raw);
+-   async prepareInvoke(apiId: string, options: PrepareInvokeOptions = {}): Promise<InvokePreparation> {
+-     try {
+-       const preparation = await this.request<InvokePreparation>(`/api/v1/paid-apis/${encodeURIComponent(apiId)}/invoke`, {
+-         method: 'POST',
+-         headers: {
+-           'Content-Type': 'application/json'
+-         },
+-         body: JSON.stringify({
+-           network: options.network,
+-           payload: options.payload ?? {}
+-         })
+-       });
+-       if (!preparation.invoke_url) {
+-         throw new Error('Preparation response missing invoke_url');
+-       }
+-       }
+-       return preparation;
+-     } catch (err: any) {
+-       console.warn(`[Marketplace] /invoke preparation failed for ${apiId}, falling back to direct proxy. Error: ${err.message}`);
+-       const detail = await this.getApiDetail(apiId, options.network);
+-       const invokeUrl = detail.payable_url || detail.invoke_url;
+-       if (!invokeUrl) {
+-         throw new Error(`API '${apiId}' is missing payable_url/invoke_url and marketplace did not provide an invoke preparation.`);
+-       return {
+-         api_id: detail.id,
+-         invoke_url: invokeUrl,
+-         method: detail.method || 'POST',
+-         headers: detail.headers_template || {},
+-         body: options.payload ?? {}
+-       };
+
+### scripts/marketplace/types.ts  [code]
+- export interface SellerInfo {
+-   name?: string;
+-   wallet_address?: string;
+- }
+- }
+- }
+- }
+- export interface CatalogApiItem {
+-   id: string;
+-   name: string;
+-   description?: string;
+-   tags?: string[];
+-   price_per_call?: string;
+-   currency?: string;
+-   network?: string;
+-   network?: string;
+-   seller?: SellerInfo;
+-   method?: string;
+-   method?: string;
+-   payable_url?: string;
+-   invoke_url?: string;
+-   input_schema?: Record<string, any>;
+-   sample_response?: any;
+-   headers_template?: Record<string, string>;
+-   [key: string]: any;
+-   [key: string]: any;
+- export interface CatalogListResponse {
+-   items: CatalogApiItem[];
+-   total?: number;
+- export interface InvokePreparation {
+-   api_id: string;
+-   invoke_url: string;
+-   headers?: Record<string, string>;
+-   body?: any;
+
+### scripts/paynode-402.ts  [code]
+- #!/usr/bin/env bun
+- import { cac } from 'cac';
+- import pkg from '../package.json';
+- import { checkAction } from './commands/check.ts';
+- import { mintAction } from './commands/mint.ts';
+- import { requestAction } from './commands/request.ts';
+- import { listPaidApisAction } from './commands/list-paid-apis.ts';
+- import { getApiDetailAction } from './commands/get-api-detail.ts';
+- import { invokePaidApiAction } from './commands/invoke-paid-api.ts';
+- import { EXIT_CODES } from './utils.ts';
+- const cli = cac('paynode-402');
+- // Global Options
+- cli.option('--json', 'Output results in JSON format');
+- cli.option('--network <name>', 'Network to use: mainnet or testnet/sepolia');
+- cli.option('--rpc <url>', 'Custom RPC URL');
+- cli.option('--rpc-timeout <ms>', 'Custom RPC timeout in milliseconds (default: 15000)');
+- cli.option('--confirm-mainnet', 'Required flag for mainnet operations (real USDC)');
+- cli.option('--dry-run', 'Show request details without sending');
+- cli.option('--market-url <url>', 'Marketplace base URL');
+- // Command: check
+- cli
+- cli
+- cli
+- cli
+- cli
+- cli
+-   .command('check', 'Check wallet balance (ETH and USDC) on Base L2')
+-   .action((options) => {
+-   .action((options) => {
+-   .action((options) => {
+-     return checkAction(options);
+-   });
+-   });
+-   });
+-   });
+-   });
+-   });
+- // Command: mint
+-   .command('mint', 'Mint USDC on Base Sepolia')
+-   .option('--amount <amount>', 'Amount to mint (default: 1000)')
+-     return mintAction(options);
+- // Command: request
+-   .command('request <url> [...params]', 'Access protected API and handle x402 payments. Params: key=value pairs for query/body.')
+-   .option('-X, --method <method>', 'HTTP method (GET, POST, etc.)')
+-   .option('-d, --data <data>', 'Raw request body data')
+-   .option('-H, --header [header]', 'HTTP header in "Key: Value" format (can be used multiple times)', { default: [] })
+-   .option('-H, --header [header]', 'HTTP header in "Key: Value" format (can be used multiple times)', { default: [] })
+-   .option('--background', 'Execute in background, return immediately (AI-friendly)')
+-   .option('--background', 'Execute in background, return immediately (AI-friendly)')
+-   .option('--output <path>', 'Output file path for result (used with --background)')
+-   .option('--output <path>', 'Output file path for result (used with --background)')
+-   .option('--max-age <seconds>', 'Auto-delete task files older than N seconds (default: 3600)')
+-   .option('--max-age <seconds>', 'Auto-delete task files older than N seconds (default: 3600)')
+-   .option('--task-dir <path>', 'Task directory for background results (default: <TMPDIR>/paynode-tasks)')
+-   .option('--task-dir <path>', 'Task directory for background results (default: <TMPDIR>/paynode-tasks)')
+-   .option('--task-id <id>', 'Internal: task ID for background worker')
+-   .option('--task-id <id>', 'Internal: task ID for background worker')
+-   .action((url, params, options) => {
+-     return requestAction(url, params, options);
+- // Command: list-paid-apis
+-   .command('list-paid-apis', 'List paid APIs from the marketplace catalog')
+-   .option('--limit <n>', 'Maximum number of APIs to return')
+-   .option('--tag [tag]', 'Catalog tag filter (can be used multiple times)', { default: [] })
+-   .option('--seller <seller>', 'Seller identifier filter')
+-     return listPaidApisAction(options);
+- // Command: get-api-detail
+-   .command('get-api-detail <apiId>', 'Get full detail for one paid API')
+-   .action((apiId, options) => {
+-   .action((apiId, options) => {
+-     return getApiDetailAction(apiId, options);
+- // Command: invoke-paid-api
+-   .command('invoke-paid-api <apiId>', 'Invoke one paid API through the marketplace flow')
+-   .option('-X, --method <method>', 'HTTP method override')
+-   .option('-d, --data <data>', 'Invocation payload as raw JSON string')
+-     return invokePaidApiAction(apiId, options);
+- cli.help();
+- cli.version(pkg.version);
+- try {
+-   const result = cli.parse();
+-   if (result instanceof Promise) {
+-     result.catch((err) => {
+-       console.error(`❌ Global Error: ${err.message}`);
+-       process.exit(EXIT_CODES.GENERIC_ERROR);
+-     });
+-   }
+-   }
+- } catch (error: any) {
+-   if (error.name === 'CACError') {
+-     console.error(`❌ Command Error: ${error.message}`);
+-     process.exit(EXIT_CODES.INVALID_ARGS);
+-   } else {
+-     console.error(`❌ Parse Error: ${error.message}`);
+-     process.exit(EXIT_CODES.GENERIC_ERROR);
+- }
+
+### scripts/utils.ts  [code]
+- import { ethers } from '@paynodelabs/sdk-js';
+- import * as dotenv from 'dotenv';
+- import { tmpdir } from 'os';
+- import { join, dirname } from 'path';
+- import fs from 'fs';
+- import { fileURLToPath } from 'url';
+- import pkg from '../package.json';
+- // --- Environment (System Only) ---
+- // [SECURITY] This skill strictly uses system environment variables for better update persistence
+- // and to avoid plaintext private keys on disk. .env files are no longer supported.
+- if (!process.env.CLIENT_PRIVATE_KEY) {
+-     // We don't exit here because some commands like 'check' or 'mint' provide their own helpful setup tips.
+-     // getPrivateKey() will handle the final enforcement.
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- /**
+- /**
+- /**
+- /**
+- /**
+- /**
+- /**
+- /**
+- /**
+- /**
+-  * Centralized Configuration Loader
+-  * [SECURITY] Consolidates environment variable access for better auditing.
+-  */
+-  */
+-  */
+-  */
+-  */
+-  */
+-  */
+-  */
+-  */
+-  */
+- export const GLOBAL_CONFIG = {
+-     MARKETPLACE_URL: process.env.PAYNODE_MARKET_URL || 'https://mk.paynode.dev',
+-     PRIVATE_KEY: process.env.CLIENT_PRIVATE_KEY,
+-     CUSTOM_ROUTER: process.env.CUSTOM_ROUTER_ADDRESS,
+-     CUSTOM_USDC: process.env.CUSTOM_USDC_ADDRESS,
+-     RPC_URL_OVERRIDE: process.env.PAYNODE_RPC_URL || process.env.RPC_URL,
+-     RPC_TIMEOUT: Number(process.env.PAYNODE_RPC_TIMEOUT) || 15_000
+- };
+-  * Skill version for JSON output metadata.
+- export const SKILL_VERSION = pkg.version;
+- export const SDK_VERSION = '2.2.3'; // Bundled default
+-  * Shared base options for all CLI commands.
+- export interface BaseCliOptions {
+-     json?: boolean;
+-     network?: string;
+-     network?: string;
+-     rpc?: string;
+-     rpcTimeout?: number;
+-     confirmMainnet?: boolean;
+-     dryRun?: boolean;
+-     marketUrl?: string;
+-     marketUrl?: string;
+-  * Network configuration object.
+- export interface NetworkConfig {
+-     provider: ethers.JsonRpcProvider;
+-     chainId: number;
+-     isSandbox: boolean;
+-     rpcUrl: string;
+-     rpcUrls: string[];
+-     usdcAddress: string;
+-     routerAddress: string;
+-     networkName: string;
+-  * CLI config from parsed arguments (CAC managed, but kept here for type reference).
+- export interface CliConfig {
+-     isJson: boolean;
+-     isHelp: boolean;
+-     isDryRun: boolean;
+-     confirmMainnet: boolean;
+-     background: boolean;
+-     output?: string;
+-     maxAge?: number;
+-     taskDir?: string;
+-     taskId?: string;
+-     rpcUrl?: string;
+-     method?: string;
+-     data?: string;
+-     headers?: Record<string, string>;
+-     params: string[];
+-  * Standardized Exit Codes
+- export const EXIT_CODES = {
+-     SUCCESS: 0,
+-     GENERIC_ERROR: 1,
+-     INVALID_ARGS: 2,
+-     AUTH_FAILURE: 3,
+-     NETWORK_ERROR: 4,
+-     MAINNET_REJECTED: 5,
+-     PAYMENT_FAILED: 6,
+-     INSUFFICIENT_FUNDS: 7,
+-     DUST_LIMIT: 8,
+-     RPC_TIMEOUT: 9,
+-     DUPLICATE_TRANSACTION: 10,
+-     WRONG_CONTRACT: 11,
+-     ORDER_MISMATCH: 12,
+-     MISSING_RECEIPT: 13,
+-     INTERNAL_ERROR: 14
+- } as const;
+- export const DEFAULT_TIMEOUT_MS = 15_000;
+- const MAX_RETRIES = 3;
+-  * Executes an async operation with exponential backoff retry.
+- export async function withRetry<T>(
+-     fn: () => Promise<T>,
+-     label: string,
+-     maxRetries = MAX_RETRIES
+- ): Promise<T> {
+-     let lastError: Error | null = null;
+-     let lastError: Error | null = null;
+-     for (let attempt = 0; attempt < maxRetries; attempt++) {
+-         try {
+-         try {
+-             return await fn();
+-         } catch (error: any) {
+-         } catch (error: any) {
+-             lastError = error;
+-             lastError = error;
+-             if (!isTransientError(error) || attempt >= maxRetries - 1) throw error;
+-             const backoffMs = Math.pow(2, attempt) * 1000 * (0.5 + Math.random());
+-             console.error(`⚠️ [${label}] ${error.message}. Retry #${attempt + 1} (of ${maxRetries - 1}) in ${Math.round(backoffMs)}ms...`);
+-             await new Promise(resolve => setTimeout(resolve, backoffMs));
+-         }
+-         }
+-         }
+-         }
+-         }
+-         }
+-     }
+-     }
+-     }
+-     }
+-     }
+-     }
+-     }
+-     }
+-     }
+-     throw lastError || new Error(`${label} failed after ${maxRetries} retries`);
+- function isTransientError(error: any): boolean {
+-     const msg = (error?.message || '').toLowerCase();
+-     const code = error?.code || '';
+-     // --- Error Unwrap ---
+-     // Extract the deepest cause if it's an RpcError wrapping another error
+-     const details = error?.details;
+-     const detailMsg = details
+-         ? (details.message || (typeof details === 'string' ? details : JSON.stringify(details))).toLowerCase()
+-         : '';
+-     // Never retry if it's a known non-transient failure
+-     const isNonRetryableCode = [
+-         'CALL_EXCEPTION',
+-         'INVALID_ARGUMENT',
+-         'UNSUPPORTED_OPERATION',
+-         'ACTION_REJECTED',
+-         'INSUFFICIENT_FUNDS'
+-     ].includes(code);
+-     ].includes(code);
+-     if (
+-         isNonRetryableCode ||
+-         msg.includes('insufficient funds') ||
+-         msg.includes('execution reverted') ||
+-         detailMsg.includes('insufficient funds') ||
+-         detailMsg.includes('execution reverted')
+-     ) {
+-         return false;
+-     const isRetryableCode = [
+-         'NETWORK_ERROR',
+-         'SERVER_ERROR',
+-         'TIMEOUT',
+-         'UNKNOWN_ERROR',
+-         'rpc_error'
+-     return (
+-     return (
+-         isRetryableCode ||
+-         msg.includes('timeout') ||
+-         msg.includes('network') ||
+-         msg.includes('fetch failed') ||
+-         msg.includes('econnrefused') ||
+-         msg.includes('econnreset') ||
+-         msg.includes('socket hang up') ||
+-         detailMsg.includes('timeout') ||
+-         detailMsg.includes('network')
+-     );
+-     );
+- export const DEFAULT_TASK_DIR = process.env.PAYNODE_TASK_DIR || join(tmpdir(), 'paynode-tasks');
+- export const DEFAULT_MAX_AGE_SECONDS = Number(process.env.PAYNODE_MAX_AGE) || 3600;
+- export function generateTaskId(): string {
+-     const ts = Date.now().toString(36);
+-     const rand = Math.random().toString(36).substring(2, 6);
+-     return `${ts}-${rand}`;
+- export function maskAddress(address: string): string {
+-     if (!address || address.length < 10) return address;
+-     return `${address.substring(0, 6)}...${address.substring(address.length - 4)}`;
+- export function isInlineContent(contentType: string): boolean {
+-     const ct = (contentType || '').split(';')[0].trim().toLowerCase();
+-         ct.startsWith('text/') ||
+-         ct === 'application/json' ||
+-         ct === 'application/javascript' ||
+-         ct === 'application/xml' ||
+-         ct === 'application/x-www-form-urlencoded'
+- export function cleanupOldTasks(taskDir: string, maxAgeSeconds: number): number {
+-     try {
+-         if (!fs.existsSync(taskDir)) return 0;
+-         const now = Date.now();
+-         const cutoff = now - maxAgeSeconds * 1000;
+-         let cleaned = 0;
+-         for (const file of fs.readdirSync(taskDir)) {
+-             if (file.startsWith('.')) continue;
+-             const fullPath = join(taskDir, file);
+-             try {
+-                 const stat = fs.statSync(fullPath);
+-                 // mtimeMs can be updated by reads (depending on mount options),
+-                 // birthtimeMs is creation. Use the minimum or birthtime for safe cleanup.
+-                 const effectiveTime = Math.min(stat.mtimeMs, stat.birthtimeMs || stat.mtimeMs);
+-                 if (effectiveTime < cutoff) {
+-                     fs.unlinkSync(fullPath);
+-                     cleaned++;
+-                 }
+-             } catch { /* skip */ }
+-         return cleaned;
+-     } catch { return 0; }
+-  * Validates existence and format of CLIENT_PRIVATE_KEY.
+- export function getPrivateKey(isJson: boolean): string {
+-     const pk: string | undefined = GLOBAL_CONFIG.PRIVATE_KEY;
+-     if (!pk || typeof pk !== 'string') {
+-         reportError('CLIENT_PRIVATE_KEY not found in environment. Please set it as a system environment variable.', isJson, EXIT_CODES.AUTH_FAILURE);
+-     const pkRegex = /^0x[0-9a-fA-F]{64}$/;
+-     if (!pkRegex.test(pk)) {
+-         reportError('Invalid CLIENT_PRIVATE_KEY format. Must be 0x-prefixed 64-hex chars.', isJson, EXIT_CODES.AUTH_FAILURE);
+-     return pk;
+-  * Validates mainnet access.
+- export function requireMainnetConfirmation(isSandbox: boolean, confirmMainnet: boolean, isJson: boolean): void {
+-     if (isSandbox) return;
+-     if (!confirmMainnet) {
+-         reportError(
+-             'Mainnet operation requires --confirm-mainnet flag (real USDC).',
+-             isJson,
+-             EXIT_CODES.MAINNET_REJECTED
+-         );
+-  * Resolves network configuration with multi-RPC failover.
+- export async function resolveNetwork(providedRpcUrl?: string, network?: string, timeoutMs = DEFAULT_TIMEOUT_MS): Promise<NetworkConfig> {
+-     const {
+-         PAYNODE_ROUTER_ADDRESS,
+-         PAYNODE_ROUTER_ADDRESS_SANDBOX,
+-         BASE_USDC_ADDRESS,
+-         BASE_USDC_ADDRESS_SANDBOX,
+-         BASE_RPC_URLS,
+-         BASE_RPC_URLS_SANDBOX
+-     } = await import('@paynodelabs/sdk-js');
+-     const networkAlias = (network || '').toLowerCase();
+-     const isTestnetRequest =
+-         networkAlias === 'testnet' ||
+-         networkAlias === 'sepolia' ||
+-         networkAlias === 'base-sepolia' ||
+-         networkAlias === '84532' ||
+-         networkAlias === 'base-testnet';
+-     const effectiveRpcUrl = providedRpcUrl || GLOBAL_CONFIG.RPC_URL_OVERRIDE;
+-     const sdkRpcUrls = (isTestnetRequest ? (BASE_RPC_URLS_SANDBOX || []) : (BASE_RPC_URLS || []));
+-     const rpcUrls: string[] = effectiveRpcUrl ? [effectiveRpcUrl] : sdkRpcUrls;
+-     let provider: ethers.JsonRpcProvider | null = null;
+-     let chainId: bigint | null = null;
+-     let activeRpcUrl: string | null = null;
+-     for (const url of rpcUrls) {
+-             const tempProvider = new ethers.JsonRpcProvider(url, undefined, { staticNetwork: true, batchMaxCount: 1 });
+-             const networkInfo = await Promise.race([
+-                 tempProvider.getNetwork(),
+-                 new Promise<never>((_, reject) => setTimeout(() => reject(new Error('RPC timeout')), timeoutMs))
+-             ]);
+-             provider = tempProvider;
+-             chainId = networkInfo.chainId;
+-             activeRpcUrl = url;
+-             break;
+-             if (rpcUrls.length > 1) console.error(`⚠️ [resolveNetwork] RPC ${url} failed: ${error.message}.`);
+-     if (!provider || !chainId || !activeRpcUrl) {
+-         throw new Error(`Failed to connect to any RPC in [${rpcUrls.join(', ')}]: ${lastError?.message}`);
+-     const isSandbox = chainId === 84532n;
+-     const networkName = isSandbox ? 'Base Sepolia (84532)' : 'Base L2 (8453)';
+-     const customRouter = GLOBAL_CONFIG.CUSTOM_ROUTER;
+-     const customUsdc = GLOBAL_CONFIG.CUSTOM_USDC;
+-     return {
+-         provider,
+-         chainId: Number(chainId),
+-         isSandbox,
+-         rpcUrl: activeRpcUrl,
+-         rpcUrls,

@@ -1,0 +1,336 @@
+darkd/backup-chain  1.0.5 -> 1.0.6
+change_type: instructions+docs+code   changelog: backup-chain v1.0.6  - Tightened workspace boundary enforcement: file ledger paths must resolve inside the workspace or require explicit operator opt-in with --allow-external-ledger. - Updated documentation to reflect new config boundary checks and operator control. - Removed the file skill-card.md.
+
+### PROVENANCE.md  [docs]
+- the suite grew to 119 assertions, first-run green.
++ the suite grew to 119 assertions, first-run green. The audit's fifth round
++ (against 1.0.5) held the T09 label but downgraded it to Warning/Medium and
++ narrowed it to the one sink 1.0.5 had deliberately left open — `ledger.file` —
++ with the scanner crediting the rest of the boundary in its own analysis.
++ 1.0.6 concedes the point and closes it with the same consent class as the
++ command adapter: `--allow-external-ledger` (refuse-by-default, all
++ subcommands), realpath containment resolved at every use so planted or
++ swapped symlinks fail closed, shape validation of the ledger object at load,
++ and the wipe-safety setup preserved with the destination chosen in the
++ operator's own voice. The suite grew to 151 assertions — which also caught
++ and repaired a latent round-4 test bug (a bogus `ledger.ledger` config
++ subkey meant the "absolute ledger path accepted" assertion never exercised
++ an external path at all); the production code needed no such repairs.
+
+### SKILL.md  [instructions]
+- # backup-chain v1.0.5
+- - **config path boundary (1.0.5)**: `.vault/config.json` is workspace-
+-   component, and `output_dir` must stay inside the workspace (symlinked
+-   output dirs that resolve outside are refused at build). External archive
+-   destinations remain a per-invocation operator choice: `--output`.
+- | `file` (default) | read `.vault/ledger.log` | append + fsync | a ledger inside the workspace is NOT wipe-safe — use it for testing, or move it elsewhere via `--ledger-file` |
++ # backup-chain v1.0.6
++ - **config path boundary (1.0.5/1.0.6)**: `.vault/config.json` is workspace-
++   component, `output_dir` must stay inside the workspace (symlinked
++   output dirs that resolve outside are refused at build), and the file-ledger
++   destination must *resolve* inside the workspace — absolute, traversing, or
++   symlinked-out paths refuse to append without the operator's
++   `--allow-external-ledger` (1.0.6; in-root ledgers never consult it).
++   External archive destinations remain a per-invocation operator choice:
++   `--output`.
++ | `file` (default) | read `.vault/ledger.log` | append + fsync | a ledger inside the workspace is NOT wipe-safe — use it for testing, or keep the real ledger elsewhere via `--ledger-file` (then pass `--allow-external-ledger` on every invocation that touches the ledger) |
++ File-ledger boundary rules (1.0.6): the ledger destination in
++ `.vault/config.json` must resolve inside the workspace — absolute,
++ traversing, or symlinked-out paths refuse to append without
++ `--allow-external-ledger` on the invocation (the read path reports
++ unreachable-with-guidance instead). Containment is resolved via `realpath`
++ at every use, so a symlink planted after `init` still fails closed.
++ The wipe-safety setup keeps working: `init --ledger-file /external/path`
++ chooses the destination in the operator's own voice, and every later
++ invocation that reads or appends the ledger carries the flag. The two
++ guards are independent: `--allow-external-ledger` never enables the command
++ adapter, and `--allow-cmd-ledger` never unlocks external ledger paths.
+
+### references/CHANGELOG.md  [docs]
++ ## 1.0.6 — 2026-09-25
++ Fifth ClawHub audit round (against 1.0.5). The T09 slot persisted, downgraded
++ **Error → Warning (High → Medium)** and narrowed to a single function:
++ *"Workspace-Controlled File Ledger Can Append Outside the Selected Workspace"*
++ (`scripts/backup_chain.py` `ledger_append`/`ledger_state`, the `file` adapter
++ branch). The scanner's own analysis explicitly credits the 1.0.5 boundary —
++ root pin, member re-validation, `chain_name`/`output_dir` containment — and
++ points at the one sink it does not cover: `ledger.file`. That was the
++ "deliberate exception" 1.0.5 kept, and the scanner's rebuttal is correct under
++ this project's own trust model: an append-only ledger is still a *write
++ primitive* when its destination is attacker-chosen, and `.vault/config.json`
++ is adversarial input. A planted config could aim ledger appends at
++ `~/.bashrc`, a cron file, or any writable path outside the workspace — with
++ partially attacker-controlled line content (`chain_name` legally contains
++ backticks, `$`, spaces). Round 3 built the consent mechanism for *what runs*;
++ round 4 for *what is read and where archives land*; round 5 closes the last
++ unvalidated sink: *where the ledger appends*.
++ Adopted (T09, round 5) — same consent class as the command adapter:
++ - **`--allow-external-ledger`** (shared guard parent, all subcommands): a
++   file-ledger destination that *resolves* outside the workspace — absolute,
++   traversing relative, or through a planted symlink — refuses to append
++   without it (`build --register` fails rc 1 naming the flag) and the read
++   path reports unreachable-with-guidance (status/check proceed marked, not
++   fatal — the round-3 semantics). In-root ledgers never consult the flag.
++ - **Realpath containment at every use.** `ledger_file_path()` resolves the
++   destination through `os.path.realpath` on each read/append, so a symlink
++   planted — or swapped — after approval still fails closed when it leaves
++   the boundary. In-root symlinked targets keep working without any flag.
++ - **Shape validation at load.** `load_config` now validates the `ledger`
++   object (must be an object; `ledger.file` must be a non-empty,
++   NUL-free string). Containment stays a *use-time* decision because the
++   verdict depends on a per-invocation flag, not on the config alone.
++ - **Wipe-safety preserved, now honestly priced.** `init --ledger-file
++   /external/path` still works — the operator chooses the destination in
++   their own voice — and init warns that every runtime invocation touching
++   the ledger will need the flag. Opted-in external appends print a stderr
++   `WARN` (once per process); stdout stays byte-clean for parsers.
++ - **Boundary separation held:** `--allow-external-ledger` does not enable
++   the command adapter, and `--allow-cmd-ledger` does not enable external
++   ledger paths — two flags, two distinct consent decisions.
++ One honest defect admitted in the same pass: the round-4 suite's "absolute
++ ledger file path still accepted" assertion set a bogus `ledger.ledger`
++ config subkey and never actually exercised an external path. The 1.0.6
++ suite repairs it and adds T26 (30 assertions): planted external config
++ refused with nothing written outside, traversing relative refused, planted
++ symlink refused (then allowed with the flag, landing in the target),
++ in-root symlink unaffected, malformed ledger shapes refused at load,
++ boundary separation, and the full wipe-safety workflow end to end.
++ Suite: 119 → 151, first-run green after the two test-authoring fixes
++ above; the production code itself needed none.
+
+### references/SECURITY.md  [docs]
+- - **Deliberate exception:** an absolute `--ledger-file` path is still
+-   accepted — pointing the ledger outside the workspace/machine is the
+-   documented wipe-safety feature (see Known limitations), and a ledger path
+-   only aims reads and appends of one log file, not execution.
++ - **File ledger destination (1.0.6).** The last config-controlled sink,
++   closed one round after the rest: an append-only ledger is still a write
++   primitive when its destination is attacker-chosen, so a file-ledger path
++   that *resolves* outside the workspace — absolute, traversing relative, or
++   through a planted symlink — refuses to append unless the invocation
++   carries `--allow-external-ledger` (the read path reports
++   unreachable-with-guidance, registration fails loudly naming the flag).
++   Containment is `realpath`-checked at every use, so a symlink planted or
++   swapped after approval still fails closed. In-root ledgers — including
++   symlinked in-root targets — never consult the flag, and the documented
++   wipe-safety setup survives with the destination chosen in the operator's
++   own voice (`init --ledger-file /external/path`) plus the flag at runtime.
++   The two consent flags are independent on purpose: `--allow-external-ledger`
++   never enables the command adapter and `--allow-cmd-ledger` never unlocks
++   external ledger paths.
+
+### scripts/backup_chain.py  [code]
+- """backup-chain v1.0.5 — fenced, hash-chained workspace backups.
+-      This script itself contains no platform code and makes no network calls.
+- VERSION = "1.0.5"
+-             p = led.get("file") or os.path.join(VAULT, LEDGER_FILE)
+-             if not os.path.isabs(p):
+-                 p = os.path.join(cfg.get("root") or ".", p)
+-         p = led.get("file") or os.path.join(VAULT, LEDGER_FILE)
+-         if not os.path.isabs(p):
+-             p = os.path.join(cfg["root"], p)
+-     global CMD_LEDGER_ALLOWED
++ """backup-chain v1.0.6 — fenced, hash-chained workspace backups.
++      A file ledger whose destination resolves outside the workspace (absolute,
++      traversing, or through a planted symlink) runs only when the invocation
++      carries --allow-external-ledger: the config may propose, the operator
++      disposes. This script itself contains no platform code and makes no
++      network calls.
++ VERSION = "1.0.6"
++     # Audit T09 (round 5): ledger is the last config-controlled sink — validate
++     # its SHAPE here (type/emptiness/NUL). Containment is decided at every USE
++     # (ledger_state/ledger_append -> ledger_file_path), because the decision
++     # depends on a per-invocation flag, not on the config alone.
++     led = cfg.get("ledger")
++     if led is not None:
++         if not isinstance(led, dict):
++             raise GateError("config ledger is not an object — edit "
++                             ".vault/config.json or re-init")
++                             ".vault/config.json or re-init")
++         lf = led.get("file")
++         if lf is not None and (not isinstance(lf, str) or not lf.strip()
++                                or "\x00" in lf):
++             raise GateError("ledger.file is not a usable path — edit "
++         if ledger_file:
++             cand = (ledger_file if os.path.isabs(ledger_file)
++                     else os.path.join(root, ledger_file))
++             root_rp = os.path.realpath(root)
++             if not (os.path.realpath(cand).startswith(root_rp + os.sep)):
++                 print(f"WARN  init: ledger file resolves outside the workspace "
++                       f"({os.path.realpath(cand)}) — every runtime invocation "
++                       f"that touches the ledger will need "
++                       f"--allow-external-ledger", file=sys.stderr)
++ #   1.0.6 (audit T09, round 5) — the boundary closes over the last unvalidated
++ #           config sink: ledger.file. An append-only ledger is still a write
++ #           primitive when its destination is attacker-chosen, and a path that
++ #           resolves outside the workspace (absolute, traversing, or through a
++ #           planted symlink) now requires the same per-invocation consent class
++ #           as the command adapter: --allow-external-ledger. In-root ledgers —
++ #           including symlinked in-root targets — are unaffected; the documented
++ #           wipe-safety setup (init --ledger-file /external/path) survives, with
++ #           the operator opting in once per invocation. Resolution is realpath-
++ #           based at every use, so a symlink swap after approval still fails
++ #           closed if it leaves the boundary.
++ EXTERNAL_LEDGER_ALLOWED = False
++ _EXTERNAL_LEDGER_WARNED = False
++         return
++         return
++ def require_external_ledger_opt_in():
++     """Audit T09 (round 5): refuse a file-ledger destination that resolves
++     outside the workspace unless this process was explicitly launched with
++     --allow-external-ledger. Same consent class as the command adapter:
++     a warning is not consent, and the config may propose, the operator
++     disposes."""
++     if EXTERNAL_LEDGER_ALLOWED:
++     raise GateError("file ledger resolves outside the workspace — a "
++                     "workspace-contributed config may not point ledger "
++                     "appends across the boundary; re-run with "
++                     "--allow-external-ledger if this destination is "
++                     "deliberate (config is code; see SECURITY.md)")
++ def ledger_file_path(cfg):
++     """Resolve the file-ledger destination (audit T09, round 5).
++     Returns (path, resolved_realpath, inside_root). The containment verdict
++     is REALPATH-based at every use — not cached from load time — so a symlink
++     planted (or swapped) after approval still fails closed if it leaves the
++     workspace. A relative path is joined to the pinned config root; the
++     default destination (<root>/.vault/ledger.log) is in-root by
++     construction."""
++     led = cfg.get("ledger") or {}
++     p = led.get("file") or os.path.join(VAULT, LEDGER_FILE)
++     if not isinstance(p, str) or not p.strip() or "\x00" in p:
++         raise GateError("ledger.file is not a usable path — edit "
++                         ".vault/config.json or re-init")
++     p = p if os.path.isabs(p) else os.path.join(cfg.get("root") or ".", p)
++     rp = os.path.realpath(p)
++     root_rp = os.path.realpath(cfg.get("root") or ".")
++     inside = (rp == root_rp or rp.startswith(root_rp + os.sep))
++     return p, rp, inside
++ def warn_external_ledger(rp):
++     """Opted-in external ledger use still warns once per process, on stderr
++     only — same transparency rule as the command adapter (stdout stays clean
++     for JSON consumers and ledger parsing)."""
++     global _EXTERNAL_LEDGER_WARNED
++     if _EXTERNAL_LEDGER_WARNED:
++     _EXTERNAL_LEDGER_WARNED = True
++     print(f"WARN  file ledger: destination resolves outside the workspace "
++           f"({rp}) — proceeding under --allow-external-ledger",
++           file=sys.stderr)
++             p, rp, inside = ledger_file_path(cfg)
++             if not inside:
++                 require_external_ledger_opt_in()
++                 warn_external_ledger(rp)
++         p, rp, inside = ledger_file_path(cfg)
++         if not inside:
++             require_external_ledger_opt_in()
++             warn_external_ledger(rp)
++     global CMD_LEDGER_ALLOWED, EXTERNAL_LEDGER_ALLOWED
++     # Shared guard (audit T09, round 5): same consent class for a file-ledger
++     # destination that resolves outside the workspace (absolute, traversing,
++     # or through a planted symlink). In-root ledgers never consult it.
++     guard.add_argument("--allow-external-ledger", action="store_true",
++                        help="opt in to a file-ledger destination outside the "
++                             "workspace for THIS invocation (refused without it; "
++                             "in-root ledgers unaffected)")
++     EXTERNAL_LEDGER_ALLOWED = bool(getattr(args, "allow_external_ledger", False))
+
+### tests/test_backup_chain.sh  [code]
+- # 8) absolute ledger file path stays allowed (documented wipe-safety feature)
+- cfgset ledger "\"$WS_BASE/ws5-ledger-ext.log\"" ledger
+- $BC status >/dev/null 2>&1; check "absolute ledger file path still accepted (documented)" 0 $?
++ }
++ PYEOF
++ PYEOF
++ PYEOF
++ import json, sys
++ ws, key, val = sys.argv[1], sys.argv[2], json.loads(sys.argv[3])
++ p = ws + "/.vault/config.json"
++ cfg = json.load(open(p))
++ if len(sys.argv) > 4:
++     cfg[key][sys.argv[4]] = val
++ else:
++     cfg[key] = val
++ json.dump(cfg, open(p, "w"), indent=2, sort_keys=True)
++ # 8) absolute ledger file path in config: exits 0 but is GATED since 1.0.6
++ #    (round-4 note: the old cfgset here set a bogus "ledger" subkey and never
++ #    exercised an external path at all — fixed by pointing at "file")
++ cfgset ledger "\"$WS_BASE/ws5-ledger-ext.log\"" file
++ S25L="$($BC status 2>&1)"; check "absolute external ledger config: status exits marked, rc=0" 0 $?
++ assert_has "status marks the external ledger unreachable" "ledger unreachable" "$S25L"
++ echo "== T26 external ledger gate (audit round 5): config proposes, operator disposes =="
++ WS6="$WS_BASE/ws6"; EXT6="$WS_BASE/ext26"; mkdir -p "$WS6" "$EXT6"; cd "$WS6" || exit 1
++ cfgset6() { # cfgset6 <key> <json-value> [subkey] — cfgset twin bound to $WS6
++   python3 - "$WS6" "$@" <<'PYEOF'
++ echo data26 > d26.txt
++ $BC init --name demo26 >/dev/null 2>&1; check "init (in-root ledger default)" 0 $?
++ $BC member add d26.txt >/dev/null 2>&1; check "member add" 0 $?
++ $BC build --carries 'control' --register >/dev/null 2>&1
++ check "control: register to in-root ledger unchanged" 0 $?
++ # 1) planted absolute external ledger.file — the T09 round-5 primitive
++ cfgset6 ledger "\"$EXT6/evil26.log\"" file
++ S26A="$($BC status 2>&1)"; check "status with planted external ledger exits marked, rc=0" 0 $?
++ assert_has "status marks the gated ledger unreachable" "ledger unreachable" "$S26A"
++ assert_has "status note names the opt-in flag" "--allow-external-ledger" "$S26A"
++ R26A="$($BC build --carries x --register 2>&1)"; check "register without flag refused" 1 $?
++ assert_has "register refusal names --allow-external-ledger" "--allow-external-ledger" "$R26A"
++ [ ! -e "$EXT6/evil26.log" ] && ok "refused register wrote nothing outside" || bad "append escaped without consent"
++ R26B="$($BC build --carries x --register --allow-external-ledger 2>&1)"
++ check "register with flag succeeds (operator voice)" 0 $?
++ assert_has "opted-in external append warns on stderr" "proceeding under --allow-external-ledger" "$R26B"
++ grep -q "gen=" "$EXT6/evil26.log" 2>/dev/null && ok "external ledger received the line" || bad "external ledger empty after opted-in register"
++ S26B="$($BC status --allow-external-ledger 2>&1)"
++ assert_has "status with flag reads the external ledger" "file ledger at $EXT6/evil26.log" "$S26B"
++ # 2) traversing relative path lands outside — same gate
++ cfgset6 ledger "\"../ext26/evil26b.log\"" file
++ $BC build --carries x --register >/dev/null 2>&1; check "traversing relative ledger.file refused" 1 $?
++ [ ! -e "$EXT6/evil26b.log" ] && ok "traversing append wrote nothing" || bad "traversal escaped"
++ # 3) symlink escape: lexical path in-root, resolved target outside
++ rm -f "$WS6/.vault/ledger.log"   # drop the real ledger from the control build
++ python3 - "$WS6" "$EXT6" <<'PYEOF'
++ import os, sys
++ import os, sys
++ ws, ext = sys.argv[1], sys.argv[2]
++ tgt = ext + "/evil26c.log"; open(tgt, "a").close()
++ os.symlink(tgt, ws + "/.vault/ledger.log")
++ cfgset6 ledger "\".vault/ledger.log\"" file
++ cfgset6 ledger "\".vault/ledger.log\"" file
++ $BC build --carries x --register >/dev/null 2>&1
++ check "symlinked in-root ledger.file refused (resolves outside)" 1 $?
++ [ "$(wc -l < "$EXT6/evil26c.log")" -eq 0 ] && ok "nothing written through planted symlink" || bad "symlink escape appended"
++ $BC build --carries x --register --allow-external-ledger >/dev/null 2>&1
++ check "same symlink append with flag succeeds" 0 $?
++ [ "$(wc -l < "$EXT6/evil26c.log")" -eq 1 ] && ok "opted-in symlink append landed in target" || bad "flagged symlink append missing"
++ rm -f "$WS6/.vault/ledger.log"
++ rm -f "$WS6/.vault/ledger.log"
++ # 4) in-root symlink to in-root target: unaffected, no flag needed
++ python3 - "$WS6" <<'PYEOF'
++ ws = sys.argv[1]
++ open(ws + "/plain26.log", "w").close()
++ # absolute target: a symlink INSIDE .vault/ would resolve relative names
++ # against .vault/, not the workspace root
++ os.symlink(ws + "/plain26.log", ws + "/.vault/ledger.log")
++ S26C="$($BC status 2>&1)"; check "in-root symlinked ledger needs no flag" 0 $?
++ assert_has "in-root symlink status reachable" "file ledger at" "$S26C"
++ rm -f "$WS6/.vault/ledger.log" "$WS6/plain26.log"
++ # 5) malformed ledger shapes refused at load (T09 round 5, shape validation)
++ cfgset6 ledger "{\"adapter\": \"file\"}"
++ $BC status >/dev/null 2>&1; check "ledger.file absent falls back to in-root default" 0 $?
++ cfgset6 ledger "{\"adapter\": \"file\", \"file\": \"\"}"
++ $BC status >/dev/null 2>&1; check "empty ledger.file refused at load" 1 $?
++ cfgset6 ledger "\"not-an-object\""
++ $BC status >/dev/null 2>&1; check "non-object ledger refused at load" 1 $?
++ cfgset6 ledger "{\"file\": \"ok.log\", \"adapter\": \"command\", \"read_cmd\": \"false\", \"append_cmd\": \"false\"}"
++ L26="$($BC status 2>&1)"
++ assert_has "external-ledger flag does NOT unlock the command adapter" "--allow-cmd-ledger" "$L26"
++ # 6) the documented wipe-safety workflow end to end (operator voice, both ends)
++ WS6B="$WS_BASE/ws6b"; mkdir -p "$WS6B"; cd "$WS6B" || exit 1
++ echo x > f26b.txt
++ I26="$($BC init --ledger-file "$EXT6/wipesafe26.log" 2>&1)"
++ check "init --ledger-file external accepted (operator voice)" 0 $?
++ assert_has "init warns about the per-invocation flag" "--allow-external-ledger" "$I26"
++ $BC member add f26b.txt >/dev/null 2>&1
++ $BC build --carries ws >/dev/null 2>&1
++ check "unflagged build without --register still works" 0 $?
++ $BC build --carries ws --register >/dev/null 2>&1; check "wipe-safety register needs the flag" 1 $?
++ $BC build --carries ws --register --allow-external-ledger >/dev/null 2>&1
++ check "wipe-safety register completes with flag" 0 $?
++ grep -q "gen=" "$EXT6/wipesafe26.log" 2>/dev/null && ok "wipe-safe external ledger holds the entry" || bad "wipe-safe ledger missing entry"

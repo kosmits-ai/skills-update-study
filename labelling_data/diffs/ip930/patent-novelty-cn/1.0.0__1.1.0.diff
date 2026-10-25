@@ -1,0 +1,598 @@
+ip930/patent-novelty-cn  1.0.0 -> 1.1.0
+change_type: instructions+docs+code   changelog: 提交前一条消息确认参数和价格；提交后十几秒就返回，生成过程中实时汇报进度；对话中断后可接着查看原任务，同样的内容不会重复提交、不会重复扣费；完成后 Word 报告自动保存到工作目录，并给出下一步建议；报错统一为中文；适配 WorkBuddy 等环境。查新可以直接用写好的交底书 / 专利初稿（.docx）；只要检索词或检索式时不花钱。
+
+### README.md  [docs]
+-   --wait --yes
++   --yes
+
+### SKILL.md  [instructions]
+- description: 专利查新与可专利性判断。当用户问一个技术方案有没有人做过、能不能申请专利、有没有新颖性或创造性、申请前要做查新、立项前要筛查方向是否被占，或要一份可交付的查新报告时使用。无需 API Key，首次使用自动领取免费试用。Use when the user asks whether a technical idea is novel, patentable, or already disclosed in prior art. Works without an API key: a free trial is claimed automatically on first use.
+- version: "1.0.0"
+- 接口与控制台：**https://api.ip930.com**
+- **不需要 API Key 就能用。** 没设 `PATENTMAX_API_KEY` 时，脚本第一次运行会自动领取一份免费试用（累计 ¥40 额度、30 天有效，只开通本技能的功能），存在本机 `~/.patentmax/`，之后自动沿用。领取成功时 stderr 会打一行「[PatentMax] 已自动领取免费试用……」，**把这句话转告用户**。
+- 试用用完、过期，或想用其他功能时，命令会返回带 `"free_trial": true` 的错误，`message` 里写着下一步怎么办（注册 PatentMax 再送 ¥50 体验额度），**原样转告用户，不要自己换写法重试**。用户设了 `PATENTMAX_API_KEY` 就一律用正式密钥，不会领试用。
+- python scripts/patentmax_novelty.py create \
+- python scripts/patentmax_novelty.py create \
+-   --wait --yes
+-   --solution-file ./solution.md --purpose novelty --wait --yes
+- python scripts/patentmax_novelty.py options
+- # 中途断了继续查
+- python scripts/patentmax_novelty.py status --operation-id <operation_id>
+- # 下载报告
+- python scripts/patentmax_novelty.py download --report-id <report_id> --out 查新报告.docx
+- python scripts/patentmax_novelty.py cancel --operation-id <operation_id>
+- ## 等待期间
+- `--wait` 轮询到出结果，间隔 10 秒起退到 60 秒，默认最多等 90 分钟。进度实时打到 stderr，**转述给用户**。
+- **超时不代表失败。** 任务还在服务端跑，**绝对不要重新提交**——查新是最容易被手滑重复提交的任务，因为等待时间长、用户容易以为没跑起来。用 `status --operation-id` 继续查。
++ description: 专利查新与可专利性判断。当用户问一个技术方案有没有人做过、能不能申请专利、有没有新颖性或创造性、申请前要做查新、立项前要筛查方向是否被占，或要一份可交付的查新报告时使用。常见说法：「帮我查新」「查新检索」「这个能不能申请专利」「有没有人做过」「相似专利对比」，也可以直接给写好的交底书或专利初稿。Use when the user asks whether a technical idea is novel, patentable, or already disclosed in prior art. Also: prior art search, novelty search, patentability check, or checking a finished invention disclosure.
++ version: "1.1.0"
++ 使用问题、企业采购：访问 **ip930.com**，右下角「联系客服」。
++ **不需要 API Key 就能用。** 没设 `PATENTMAX_API_KEY` 时，脚本第一次运行会自动领取一份免费试用（累计 ¥40 额度、30 天有效，只开通本技能的功能），存在本机 `~/.patentmax/`，之后自动沿用。输出里出现「[PatentMax] 已自动领取免费试用……」时，**把这句话原样转告用户**。用户设了 `PATENTMAX_API_KEY` 就一律用正式密钥，不会领试用。
++ ## 运行环境（必读，所有命令都适用）
++ 部分 WorkBuddy 等环境的命令行不完整，`cat`、`ls`、`sleep`、`rm` 等可能找不到。为保证任何电脑都能跑通：
++ - 脚本路径一律写**绝对路径**：`$DIR/scripts/patentmax_novelty.py`（`$DIR` 是本技能所在目录），不要写 `cd ... && ...`（前一步失败会让后面整条静默不执行）
++ - `python` 找不到时依次试 `python3`、`py`；还找不到就用 WorkBuddy 自带的：先用 Glob 在 `~/.workbuddy/binaries/python/versions/` 下找到 `python.exe`，用它的完整路径。**下文所有 `python` 都按这条替换**
++ - 不要用 `cat` 读文件、不要用 `sleep` 等待：读文件用 Read 工具；等待由脚本自己完成
++ - 命令在**用户的工作目录**里运行，生成的 Word 会存到这个目录；也可以用 `--out-dir` 指定
++ - 命令超时设为 120 秒。脚本每条命令最多跑 30 秒就返回，不会卡住
++ **不重新提交。** 报告要跑几十分钟，跑得久不代表失败。只要没有报错，就继续 `wait`。**重新提交是这个技能最常见、代价最大的错误**：输入写法一变就会新建任务、重复扣费，用户还要从头再等一遍，而原来那份其实还在正常生成。
++ | --- | --- |
++ | --- | --- |
++ | 「交底书 / 专利初稿写好了，看看有没有人做过」 | ✅ 用，直接 `--solution-file 交底书.docx` |
++ | 「先给我几个检索词 / 检索式」 | ✅ 不用提交任务，见「只要检索词或检索式」 |
++ ## 只要检索词或检索式（不花钱）
++ 用户只想要检索关键词或检索式、自己去别的库查时，**不提交查新任务**。按「技术对象 / 核心机制 / 区别特征」三块，各给中英文关键词和同义词，再组合成一条布尔检索式（`AND` / `OR`，短语用双引号），并标注「未实际检索」。最后问一句要不要正式查新。
++ ## 提交前确认（一条消息问完，不花钱）
++ 参数定好后，用一条消息列给用户确认，用户回「确认」或改完再加 `--yes`：
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ 📋 准备查新
++ - 技术问题：……
++ - 技术手段：……
++ - 技术效果：……
++ - 技术特征：F1 一种××（技术主体）；F2 ……；F3 ……（从方案里摘，不要编）
++ - 查新目的 / 深度 / 地域：novelty / standard / global
++ - 关键日：××××-××-××（用户没给就按今天）
++ - 费用：¥15（以提交后返回的价格为准；任务失败或取消全额退回）
++ - 用时：通常要几十分钟；完成后 Word 报告自动存到当前目录
++ 用户已经在同一轮对话里确认过的，不要再问第二遍。
++ ```bash
++ python "$DIR/scripts/patentmax_novelty.py" create \
++ python "$DIR/scripts/patentmax_novelty.py" create \
++   --yes
++   --solution-file "<绝对路径>/solution.md" --purpose novelty --yes
++ python "$DIR/scripts/patentmax_novelty.py" options
++ # 接着等：每次最多 30 秒，完成时自动下载 Word
++ python "$DIR/scripts/patentmax_novelty.py" wait --operation-id <operation_id>
++ python "$DIR/scripts/patentmax_novelty.py" wait --operation-id <operation_id>
++ # 重新下载 Word（wait 完成时已自动下载过）
++ python "$DIR/scripts/patentmax_novelty.py" download --report-id <report_id>
++ python "$DIR/scripts/patentmax_novelty.py" cancel --operation-id <operation_id>
++ ## 等待并报告进度
++ `create` 约 15 秒后返回。返回退出码 10 时，**先发这一句**，再发输出里的进度：
++ 专利查新报告已开始生成，这类报告通常要几十分钟，进度会实时告诉你。
++ 记下输出 JSON 里的 `operation_id`，后面都用它。不主动向用户展示任务编号，用户问起再给。然后运行：
++ 每条 `wait` 最多 30 秒就返回。按退出码处理：
++ | 退出码 | 含义 | 怎么做 |
++ | --- | --- | --- |
++ | 10 | 还在生成 | 发送输出里的进度，**然后立即再运行一次 `wait`** |
++ | 0 | 完成了，Word 报告已自动下载 | 按「读结果」交付 |
++ | 1 | 出错 | 按「出错时」处理 |
++ | 2 | 输入有误，什么都没提交 | 按 `message` 补齐后再运行 |
++ | 3 | 同样的任务已经在跑 | 用输出里的 `operation_id` 运行 `wait`，**不要**换写法重新提交 |
++ ### 进度怎么发（照原文，不改字）
++ 把每条 `[进度] ……` / `[进度 X%] ……` 去掉方括号部分，按下表加图标后**原文发送**：
++ | 进度行 | 发送 |
++ | `[进度] 已开始生成……` | 🚀 已开始生成…… |
++ | `[进度] 排队中，已等待……` | 🕒 排队中，已等待…… |
++ | `[进度] 生成中，已用时……` | 📝 生成中，已用时…… |
++ | `[进度 X%] 某阶段，已用时……` | 📝 X% 某阶段，已用时…… |
++ 例：`[进度 35%] 检索竞争对手专利，已用时 6分30秒` → 发送 `📝 35% 检索竞争对手专利，已用时 6分30秒`。
++ - **等待期间只发进度，不附加其它文字**；不改写进度文字，不自己估算剩余时间，不编造没出现的百分比
++ - **出结果之前不要结束回复。** 退出码为 10 时，发完进度立即再运行 `wait`
++ - 等了几十分钟还没完成 → **正常，继续 `wait`**。命令断了、对话重开了，也用同一个 `operation_id` 运行 `wait` 接着看，**不要重新 `create`**
++ 退出码 0 时 Word 报告已经下载好，输出 JSON 的 `files` 里是完整路径。先发：
++ ✅ 100% 专利查新报告已生成，用时 <elapsed>
++ 📄 报告：<files 里的报告路径>
++ `quality_status` 不是 `qualified` 时，紧接着把 `quality_hint` 讲给用户。没有 Word 时（有 `docx_note`）照实说。
++ 再根据 `summary` 用几句话讲要点，讲结论时遵守下面的「结论纪律」（不下保证性结论，交代检索边界）：
++ | 字段 | 怎么讲 |
++ | `searched` | 检索规模：找到多少篇专利、逐篇分析了多少篇、论文和网页各多少条 |
++ | `closest` | 最接近的几篇（按评分排）。`relevance` 是 X / Y / A：X 单篇就可能影响新颖性或创造性，Y 要和其他文献结合，A 只是背景。逐篇讲清撞在哪一点（`conclusion`） |
++ | `report_sections` | Word 报告里有哪几章，用户想细看时告诉他去哪章找 |
++ 交付消息里再加「给你的下一步」（还是同一条消息，不调用工具）：
++ - 用一道选择题帮用户想清楚怎么补强：「你的方案在〈撞上的那个特征〉上更接近哪种？A 常规做法 → 容易被〈最接近的那篇〉命中；B ……；C 最有区分力，但需要实验数据支撑。」选项必须来自用户的方案和报告内容，不要编
++ - 一句提醒：「正式递交申请前，不要公开发表、参展或销售，否则会破坏新颖性。」
++ - 「新颖性」「创造性」第一次出现时加白话括注：新颖性（之前有没有人公开过一模一样的方案）、创造性（和已有方案比，改进是不是显而易见）
++ 最后一句固定是：
++ > 在 https://api.ip930.com 控制台可以查看所有任务和余额。
++ - **不要打开 Word 把正文贴进对话，也不要读「完整结果」JSON 全文**：用户直接打开 Word 看。贴进来既拖长对话，又白白消耗积分
++ - **以上是本轮最后的输出，发完就停**：之后不再调用工具、不补表格、不写总结和建议，等用户回复。在这之后再调工具，收尾信息会被埋掉，用户看不到
++ 用户追问细节时，再按下面几条组织回答：
++ ## 出错时
++ 脚本出错时输出 `{"error": true, "message": "……"}`，`message` 是写给用户看的中文说明，里面已经写明了下一步怎么办。
++ - **原样转述 `message`，不猜原因、不补充建议、不自己换写法重试**
++ - 退出码 2（输入有误：少必填项、文件读不了、方案太短）：什么都没提交、没扣费，按 `message` 补齐后再运行
++ - 出现 `"free_trial": true`：免费试用用完、过期或想用其他功能，`message` 里写着怎么办（注册 PatentMax 再送 ¥50 体验额度），原样转告
++ - 任务失败或取消时，预扣的费用会**全额退回**，告诉用户这一点
+
+### references/faq.md  [docs]
+- - **报告还没跑完就来取结果** —— 先用 `status --operation-id` 确认状态是 `succeeded` 再取
+- **超时不代表失败。** `--wait` 默认等 90 分钟，这类报告跑几十分钟是正常的。
++ - **报告还没跑完就来取结果** —— 先用 `wait --operation-id <operation_id>` 确认状态是 `succeeded` 再取
++ **跑得久不代表失败。** 这类报告要跑几十分钟是正常的，只要没有报错就继续 `wait`，不要重新提交。
+
+### references/solution-guide.md  [docs]
+- python scripts/patentmax_novelty.py create --solution-file ./solution.md --purpose pre_filing --wait --yes
++ python scripts/patentmax_novelty.py create --solution-file ./solution.md --purpose pre_filing --yes
+
+### references/workflow.md  [docs]
+-   --wait --yes
+- **超时不代表失败。** 这是四个任务里最容易被手滑重复提交的——等待时间长，用户容易以为没跑起来。**绝对不要重新提交**，用 `status --operation-id` 继续查。
++   --yes
++ **超时不代表失败。** 这是四个任务里最容易被手滑重复提交的——等待时间长，用户容易以为没跑起来。**绝对不要重新提交**，用 `wait --operation-id <operation_id>` 继续查。
+
+### scripts/patentmax_novelty.py  [code]
+- """PatentMax 专利查新客户端。
+- 给 AI 用的命令行工具，每个子命令往 stdout 吐一份 JSON，出错时 JSON 里带
+- error 和中文提示，不抛栈。
+- 走 POST /api/v1/reports 的 report_type=novelty。老的 /api/v1/novelty/tasks
+- 仍然可用且共用同一个余额，但新接入官方建议走统一报告接口，所以这里用后者。
+- 三件事在这里处理掉：
+- 1. **Idempotency-Key 必填**。默认按请求内容算稳定指纹——同样的技术方案重试
+-    不会重复建任务、重复扣费。查新是这四个任务里最容易被手滑重复提交的，
+-    因为等待时间长、用户容易以为没跑起来。
+- 2. **技术方案长度护栏**。这个任务的结果质量几乎完全由 technical_solution 决定，
+-    一句"一种新型电池"查不出任何有用的东西，却照样扣费。
+- 3. **轮询退避**。间隔从 10 秒退到 60 秒。超时不代表失败，任务还在服务端跑。
+- if hasattr(sys.stdout, "reconfigure"):
+-     sys.stdout.reconfigure(encoding="utf-8")
+- # 没设 PATENTMAX_API_KEY 时，第一次调用自动领一把免费试用密钥（不用注册），
+- # 存在 ~/.patentmax/ 下，之后接着用。规则由服务端定：每把累计 ¥40、30 天有效、
+- # 只开通这个 Skill 用到的功能。用完或过期后，注册 PatentMax 换正式密钥即可。
+-     root = os.environ.get("PATENTMAX_CACHE_DIR") or os.path.join(os.path.expanduser("~"), ".patentmax")
+-     return os.path.join(root, f"trial-key-{TRIAL_GROUP}.json")
+- def _server_message(detail):
+-         return ""
+-     return str(error.get("message") or "") if isinstance(error, dict) else ""
+-         message = _server_message(exc.read().decode("utf-8", "replace"))
+-         die(message or f"领取免费试用密钥失败（HTTP {exc.code}）。也可以注册 PatentMax 创建正式密钥：{TRIAL_REGISTER_URL}",
+-             free_trial=True, register_url=TRIAL_REGISTER_URL)
+-         die(f"领取免费试用密钥失败：{getattr(exc, 'reason', exc)}", free_trial=True)
+-         die("领取免费试用密钥失败：服务端没有返回密钥。", free_trial=True)
+-     # 走 stderr，不混进 stdout 的 JSON；请把这句话转告用户。Windows 控制台默认 GBK，¥ 会变成转义
+-     if hasattr(sys.stderr, "reconfigure"):
+-         sys.stderr.reconfigure(encoding="utf-8")
+-     print(f"[PatentMax] 已自动领取免费试用：{data.get('note') or ''}", file=sys.stderr)
+- def explain_trial_error(code, detail, url):
+-     """试用密钥碰到额度用完、功能没开通时，原样给出服务端的话（里面有下一步怎么办）。"""
+-     if not KEY_FROM_TRIAL:
+-         return
+-     if code == 401:
+-         # 过期或被停用：清掉本地缓存，下次运行自动领新的
+-         try:
+-         try:
+-             os.remove(_trial_key_path())
+-         except OSError:
+-             pass
+-         die("免费试用密钥已过期或失效，本地缓存已清除。重跑同一条命令会自动领取新的试用密钥；"
+-             f"也可以注册 PatentMax 换正式密钥：{TRIAL_REGISTER_URL}",
+-             free_trial=True, url=url.split("?")[0])
+-     # 只接管试用特有的错误（额度用完、功能没开通），其余照常走通用提示
+-     message = _server_message(detail)
+-     if "免费试用" in message:
+-         die(f"HTTP {code}：{message}", free_trial=True, register_url=TRIAL_REGISTER_URL, url=url.split("?")[0])
+-     "qualified_degraded": "报告已生成但存在数据短板，结论要保守使用，交付时须说明限制。",
+- def die(message, **extra):
+-     sys.exit(1)
+-         with urllib.request.urlopen(req, timeout=TIMEOUT) as response:
+-         explain_trial_error(exc.code, detail, url)
+-         hint = {
+-             400: "参数不正确。technical_solution 必填；purpose / depth / legal_status 只接受枚举值。",
+-             401: "密钥无效或已撤销。",
+-             402: "余额不足，到 https://api.ip930.com/features/api-platform 充值。",
+-             403: "该密钥没有此接口的权限。",
+-             404: "任务或报告不存在。确认 id 抄全了。",
+-             409: "任务冲突：报告还没跑完就来取结果，或同一个 Idempotency-Key 正在处理中。",
+-             429: "触发限流或已有同类任务在排队，稍后再试。",
+-         }.get(exc.code, "")
+-         die(f"HTTP {exc.code}：{hint}", detail=detail, url=url.split("?")[0])
+-     except urllib.error.URLError as exc:
+-         die(f"网络请求失败：{exc.reason}")
+-         die("响应不是合法 JSON，可能上游异常。")
+-     raw = json.dumps(body, ensure_ascii=False, sort_keys=True)
+-             with open(args.solution_file, "r", encoding="utf-8") as handle:
+-                 text = handle.read().strip()
+-         except OSError as exc:
+-             die(f"读不到技术方案文件：{exc}")
+-         if not text:
+-             die(f"技术方案文件是空的：{args.solution_file}")
+-         return text
+-     if args.solution:
+-     die("必须提供技术方案：用 --solution 给文本，或 --solution-file 指定文件。",
+-         hint="方案描述的质量直接决定查新结果。见 references/solution-guide.md。")
+-         die("专利查新是付费任务，确认要跑请加 --yes。",
+-             hint="跑之前先确认技术方案写够细——描述太笼统等于白花钱。"
+-                  "只是想看看有没有类似的，用检索加相似专利就够了，便宜得多。")
+-     if len(solution) < 80 and not args.force:
+-         die(f"技术方案只有 {len(solution)} 字，太短了，查出来不会有参考价值。",
+-             hint="至少讲清三件事：解决什么问题、用什么手段（具体的结构/材料/步骤/参数）、"
+-                  "达到什么效果。见 references/solution-guide.md。确实只有这些就加 --force。")
+-             "regions": [x.strip() for x in args.regions.split(",") if x.strip()],
+-     }
+-         return {"created": created, "_warning": "响应里没有 operation_id，原样返回。"}
+-     result = {
+-         "report_id": created.get("report_id"),
+-         "title": created.get("title"),
+-         "status": created.get("status"),
+-         "purpose": args.purpose,
+-         "depth": args.depth,
+-         "price_yuan": created.get("price_yuan"),
+-         "simulated": created.get("simulated"),
+-         "idempotency_key": key,
+-     if not args.wait:
+-         result["_next"] = f"轮询：python {os.path.basename(__file__)} status --operation-id {operation}"
+-         return result
+-     return {**result, **poll(operation, args.timeout, args.quiet)}
+- def poll(operation, timeout, quiet=False):
+-     started = time.time()
+-     interval = 10
+-     while time.time() - started < timeout:
+-         stage = data.get("stage")
+-         if not quiet and stage and stage != last_stage:
+-             print(f"  [{data.get('progress', 0)}%] {stage}", file=sys.stderr)
+-             last_stage = stage
+-         if status in ("succeeded", "success", "completed", "done"):
+-             report_id = data.get("report_id")
+-             out = {
+-                 "status": status,
+-                 "report_id": report_id,
+-                 "quality_status": data.get("quality_status"),
+-                 "quality_hint": QUALITY_HINT.get(data.get("quality_status"), ""),
+-                 "quality_details": data.get("quality_details"),
+-                 "amount_charged_yuan": data.get("amount_charged_yuan"),
+-                 "links": data.get("links"),
+-             }
+-             if report_id:
+-                 out["result"] = unwrap(request(f"/api/v1/reports/{urllib.parse.quote(report_id)}"))
+-                 out["_docx"] = f"python {os.path.basename(__file__)} download --report-id {report_id}"
+-             return out
+-         if status in ("failed", "error", "cancelled", "canceled"):
+-             return {"status": status, "error": data.get("error"), "detail": data}
+-         time.sleep(interval)
+-         interval = min(interval * 1.4, 60)
+-         "status": "timeout",
+-         "message": f"等了 {timeout} 秒还没完成。任务仍在服务端运行，不要重新提交。",
+-         "_next": f"python {os.path.basename(__file__)} status --operation-id {operation}",
+-         "status": status,
+-         "progress": data.get("progress"),
+-         "stage": data.get("stage"),
+-         "quality_status": data.get("quality_status"),
+-         "quality_hint": QUALITY_HINT.get(data.get("quality_status"), ""),
+-         "links": data.get("links"),
+-     if status in ("succeeded", "success", "completed", "done") and data.get("report_id"):
+-         out["result"] = unwrap(request(f"/api/v1/reports/{urllib.parse.quote(data['report_id'])}"))
+-     with open(args.out, "wb") as handle:
+-     return {"saved": args.out, "bytes": len(payload)}
+-     data = unwrap(request(f"/api/v1/operations/{urllib.parse.quote(args.operation_id)}/cancel", method="POST"))
+-     return {"operation_id": args.operation_id, "status": data.get("status"), "detail": data}
+-     return {"purpose": PURPOSES, "depth": DEPTHS,
+-             "legal_status": {"all": "全部", "active": "有效", "pending": "审中", "inactive": "失效"},
+-             "regions": "global 或 CN,US,EP,JP,KR,WO 逗号分隔",
+-             "_note": "正式申请决策用 depth=standard 或 deep；立项摸底可以用 quick。"}
+-     p = sub.add_parser("create", help="创建查新任务")
+-     p.add_argument("--solution-file", dest="solution_file", default=None, help="技术方案文件路径（UTF-8）")
+-     p.add_argument("--wait", action="store_true", help="等到出结果")
+-     p.add_argument("--timeout", type=int, default=5400, help="等待上限（秒），默认 90 分钟")
+-     p.add_argument("--quiet", action="store_true", help="不打印进度")
+-     p = sub.add_parser("options", help="列出 purpose / depth 等可选值")
+-     p = sub.add_parser("status", help="查询任务状态")
+-     p = sub.add_parser("download", help="下载 DOCX 报告")
+-     p.add_argument("--out", default="专利查新报告.docx")
+-     p = sub.add_parser("cancel", help="取消任务")
+-     print(json.dumps(args.func(args), ensure_ascii=False, indent=2))
++ """PatentMax 专利查新客户端（v1.1.0）。
++ 给 AI 用的命令行工具，走 POST /api/v1/reports 的 report_type=novelty。
++ **每条命令最多跑 30 秒就返回。** WorkBuddy 这类宿主前台跑命令时，要等命令结束才显示输出，
++ AI 中途也插不了话；一条命令阻塞几十分钟，用户就几十分钟什么都看不到，宿主还可能把命令掐掉。
++ 所以 create 提交后只等 15 秒就先返回，之后用 wait 接着等，每次最多 30 秒：
++     退出码 0   完成了（Word 报告已自动下载到提交时的目录）
++     退出码 10  还在生成：把输出里的「[进度]」行告诉用户，再运行一次 wait
++     退出码 2   输入有误（少必填项、文件读不了、方案太短），什么都没提交
++     退出码 3   同样的任务已经在跑（这次没有重复提交、没有重复扣费），用输出里的 operation_id 接着 wait
++     退出码 1   出错，message 是给用户看的中文说明，原样转述即可
++ 输出：先打若干行「[进度] ……」，最后打一份 JSON。报告在服务端生成，命令结束、被杀、
++ 对话关掉都不影响，任何时候 wait --operation-id 都能接着看。
++ Idempotency-Key 默认按请求内容算稳定指纹——同样的输入重跑 create，拿回的是同一个任务，不会重复扣费。
++ import calendar
++ import re
++ for _stream in (sys.stdout, sys.stderr):
++     if hasattr(_stream, "reconfigure"):
++         _stream.reconfigure(encoding="utf-8")
++ REPORT_NAME = "专利查新报告"
++ EXIT_DONE, EXIT_ERROR, EXIT_INPUT, EXIT_BUSY, EXIT_RUNNING = 0, 1, 2, 3, 10
++ # 每条命令最多等多久就返回（秒）。刚提交那一次只等 15 秒，让「已开始」早点报出去
++ WAIT_SECONDS = max(15, int(os.environ.get("PATENTMAX_WAIT_SECONDS") or 30))
++ FIRST_WAIT_SECONDS = min(15, WAIT_SECONDS)
++ POLL_SECONDS = 10
++ ME = os.path.basename(__file__)
++ def cache_root():
++     return os.environ.get("PATENTMAX_CACHE_DIR") or os.path.join(os.path.expanduser("~"), ".patentmax")
++ # ─────────────────────── 输出 ───────────────────────
++ def emit(payload, code=EXIT_DONE):
++     sys.exit(code)
++ def die(message, code=EXIT_ERROR, **extra):
++     """出错：message 是给用户看的中文说明，AI 原样转述，不猜原因、不自己换写法重试。"""
++     emit(payload, code)
++ def say(line):
++     """进度行打到 stdout（不用 stderr：PowerShell 会把 stderr 当成报错显示）。"""
++     print(line, flush=True)
++ def clock(seconds):
++     seconds = max(0, int(seconds))
++     return f"{seconds // 60}分{seconds % 60:02d}秒" if seconds >= 60 else f"{seconds}秒"
++ #
++ # 免密钥版（TRIAL_SOURCE 非空）：没设 PATENTMAX_API_KEY 时，第一次调用自动领一把免费试用密钥（不用注册），
++ # 存在 ~/.patentmax/ 下，之后接着用。规则由服务端定：每把累计 ¥40、30 天有效、只开通这个 Skill 用到的功能。
++ # 密钥版（TRIAL_SOURCE 为空）：必须设 PATENTMAX_API_KEY，不领试用。
++     return os.path.join(cache_root(), f"trial-key-{TRIAL_GROUP}.json")
++     try:
++     try:
++     try:
++     try:
++     try:
++     try:
++             saved = json.load(fh)
++     except (OSError, ValueError):
++         return None
++ def _server_error(detail):
++     """取服务端返回的 error.code / error.message。"""
++     except ValueError:
++         return "", ""
++         return "", ""
++     if not isinstance(error, dict):
++     return str(error.get("code") or ""), str(error.get("message") or "")
++         _, message = _server_error(exc.read().decode("utf-8", "replace"))
++         die(message or f"领取免费试用失败（HTTP {exc.code}）。可以注册 PatentMax 创建正式密钥：{TRIAL_REGISTER_URL}",
++             free_trial=True)
++             free_trial=True)
++         die(f"领取免费试用失败，网络连不上 PatentMax（{getattr(exc, 'reason', exc)}）。请检查网络后重试。",
++         die("领取免费试用失败：服务端没有返回密钥，请稍后重试。", free_trial=True)
++     except OSError:
++     say(f"[PatentMax] 已自动领取免费试用：{data.get('note') or ''}")
++     if not TRIAL_SOURCE:
++         die("还没有设置 PatentMax 密钥。到 https://api.ip930.com/features/api-platform 注册（新用户送 ¥50 体验额度）"
++             "并创建密钥，设成环境变量 PATENTMAX_API_KEY=pm_live_xxx 后，再运行同一条命令。", EXIT_INPUT)
++ # ─────────────────────── 请求与报错 ───────────────────────
++ # 服务端个别报错只给了英文代码，这里翻成用户看得懂的话
++ CODE_MESSAGES = {
++     "DAILY_LIMIT_EXCEEDED": "今天提交的报告数已达上限，北京时间明天 0 点恢复。这次没有提交，未扣费。",
++     "CONCURRENT_LIMIT_EXCEEDED": "同时在生成的任务已达上限，等前面的任务完成后再提交。这次没有提交，未扣费。",
++     "API_BALANCE_INSUFFICIENT": f"余额不足，这次没有提交，未扣费。充值或换正式密钥：{TRIAL_REGISTER_URL}",
++     # 防重复提交的编号冲突：同一份内容之前由同一账户下的另一把密钥提交过，或手动给的编号对应的是别的内容
++     "IDEMPOTENCY_KEY_OWNED_BY_DIFFERENT_API_KEY": "这份内容之前用同一账户的另一把密钥提交过。这次没有提交、未扣费。"
++                                                   "去 https://api.ip930.com 控制台的调用记录里找原来那份；要重新生成，换个说法补充一句材料再提交。",
++     "IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_REQUEST": "这个任务编号已经用于另一份内容。这次没有提交、未扣费。不要手动指定 --idempotency-key，让脚本自动生成即可。",
++     "REPORT_NOT_READY": "报告还没有生成完，用 wait 接着等。",
++ }
++ }
++ HTTP_MESSAGES = {
++     400: "参数不正确：技术方案必填；purpose / depth / legal_status 只接受固定的取值（见 options）。这次没有提交，未扣费。",
++     401: "密钥无效或已撤销。请到 https://api.ip930.com 控制台重新创建。",
++     402: f"余额不足，这次没有提交，未扣费。充值或换正式密钥：{TRIAL_REGISTER_URL}",
++     403: "这把密钥没有开通这项功能。",
++     404: "找不到这个任务或报告，请确认编号完整。",
++     409: "同样的任务已经在生成，这次没有重复提交、没有重复扣费。",
++     429: "提交太频繁，请稍后再试。这次没有提交，未扣费。",
++ def _has_cjk(text):
++     return bool(re.search(r"[一-鿿]", text or ""))
++ def _open(path, method="GET", body=None, headers=None):
++     ensure_api_key()
++     return urllib.request.urlopen(req, timeout=TIMEOUT)
++         with _open(path, method, body, headers) as response:
++         code, message = _server_error(detail)
++         if KEY_FROM_TRIAL and exc.code == 401:
++             # 试用密钥过期或被停用：清掉本地缓存，下次运行自动领新的
++             try:
++                 os.remove(_trial_key_path())
++             except OSError:
++                 pass
++             die("免费试用已过期或失效。重新运行同一条命令会自动领取新的试用；"
++                 f"也可以注册 PatentMax 换正式密钥：{TRIAL_REGISTER_URL}", free_trial=True)
++         # 优先用服务端的中文说明（里面写着下一步怎么办）；只有英文代码时用本地翻译
++         text = (message if _has_cjk(message) else "") \
++             or CODE_MESSAGES.get(message) or CODE_MESSAGES.get(code) \
++             or HTTP_MESSAGES.get(exc.code) \
++             or f"PatentMax 服务暂时不可用（HTTP {exc.code}），请稍后重试。"
++         extra = {"free_trial": True} if "免费试用" in text else {}
++         busy = exc.code == 409 and not code.startswith("IDEMPOTENCY_") and not message.startswith("IDEMPOTENCY_")
++         die(text, EXIT_BUSY if busy else EXIT_ERROR, http_status=exc.code, **extra)
++     except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
++         die(f"网络连不上 PatentMax（{getattr(exc, 'reason', exc)}）。请检查网络后重试；"
++             "已提交的任务不受影响，稍后用 wait 接着看。")
++         die("PatentMax 返回的内容不完整，请稍后重试。")
++ def try_download(path):
++     """下载文件；失败不退出，返回 None（报告受限时可能没有 Word）。"""
++         with _open(path) as response:
++             return response.read()
++     except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, ConnectionError):
++     """同样的内容 + 同一把密钥 → 同一个编号：重跑拿回原任务，不重复扣费。
++     带上密钥本身的指纹（不是密钥原文）：同一账户换了密钥再交同样的内容时，服务端会因为「编号属于另一把密钥」拒绝，
++     用户卡在那里拿不到任务（2026-10-14 实测）。按密钥区分后，换密钥就是一个新任务。
++     """
++     raw = json.dumps(body, ensure_ascii=False, sort_keys=True) + "|" + hashlib.sha256(API_KEY.encode("utf-8")).hexdigest()[:12]
++ def read_docx(path, label):
++     """标准库取 .docx 正文（它就是个 zip，正文在 word/document.xml）。写好的交底书、初稿可以直接拿来用。"""
++     import zipfile
++         with zipfile.ZipFile(path) as archive:
++             xml = archive.read("word/document.xml").decode("utf-8", "replace")
++     except (zipfile.BadZipFile, KeyError, OSError) as exc:
++         die(f"读不了这个 Word 文件：{path}（{exc}）。只支持 .docx，老的 .doc 请先另存为 .docx。", EXIT_INPUT)
++     xml = re.sub(r"</w:tc>", " | ", xml)
++     xml = re.sub(r"</w:p>|</w:tr>", "\n", xml)
++     xml = re.sub(r"<w:tab/>", "\t", xml)
++     xml = re.sub(r"<w:br[^>]*/>", "\n", xml)
++     text = re.sub(r"<[^>]+>", "", xml)
++     for entity, char in (("&lt;", "<"), ("&gt;", ">"), ("&quot;", '"'), ("&apos;", "'"), ("&amp;", "&")):
++         text = text.replace(entity, char)
++     text = re.sub(r"\n{3,}", "\n\n", text).strip()
++     if not text:
++     if not text:
++         die(f"{label}文件是空的：{path}", EXIT_INPUT)
++         die(f"{label}文件是空的：{path}", EXIT_INPUT)
++     return text
++     return text
++ def read_text_file(path, label):
++     if not os.path.isfile(path):
++         die(f"找不到{label}文件：{path}", EXIT_INPUT)
++     if path.lower().endswith(".docx"):
++         return read_docx(path, label)
++         with open(path, "r", encoding="utf-8") as handle:
++             text = handle.read().strip()
++     except UnicodeDecodeError:
++         die(f"{label}文件不是 UTF-8 文本：{path}。只支持 .md / .txt / .docx。", EXIT_INPUT)
++     except OSError as exc:
++         die(f"读不到{label}文件：{path}（{exc}）", EXIT_INPUT)
++ def split_list(value):
++     return [x.strip() for x in value.replace("，", ",").replace("、", ",").split(",") if x.strip()] if value else []
++ # ─────────────────────── 本地任务记录 ───────────────────────
++ # 记下每个任务从哪个目录提交、几点提交，wait 完成时把 Word 存回那个目录，
++ # 「已用时」也从提交时刻算起，命令断了再接上不会从 0 重新数。
++ def _task_path(operation):
++     return os.path.join(cache_root(), "tasks", re.sub(r"[^\w.-]", "_", operation) + ".json")
++ def save_task(operation, **fields):
++     record = load_task(operation)
++     record = load_task(operation)
++     record = load_task(operation)
++     record = load_task(operation)
++     record.update({k: v for k, v in fields.items() if v is not None})
++         os.makedirs(os.path.dirname(_task_path(operation)), exist_ok=True)
++         with open(_task_path(operation), "w", encoding="utf-8") as fh:
++             json.dump(record, fh, ensure_ascii=False, indent=2)
++         pass
++     return record
++ def load_task(operation):
++         with open(_task_path(operation), encoding="utf-8") as fh:
++             return saved if isinstance(saved, dict) else {}
++         return {}
++ # ─────────────────────── 本技能的输入 ───────────────────────
++     "qualified_degraded": "报告已生成但存在数据短板，结论要保守使用，交付时须说明限制；这种情况本次费用已全额退回。",
++ MIN_SOLUTION_CHARS = 80
++ MAX_CHARS = 100_000
++         return read_text_file(args.solution_file, "技术方案")
++     if args.solution and args.solution.strip():
++     die("必须提供技术方案：用 --solution 给文本，或 --solution-file 指定文件（.md / .txt / .docx）。", EXIT_INPUT)
++         die("专利查新是付费任务，取得用户同意后加 --yes 再运行。", EXIT_INPUT)
++     if len(solution) < MIN_SOLUTION_CHARS and not args.force:
++         die(f"技术方案只有 {len(solution)} 字，太短了，查出来不会有参考价值。至少讲清三件事："
++             "解决什么问题、用什么手段（具体的结构 / 材料 / 步骤 / 参数）、达到什么效果。", EXIT_INPUT)
++     if len(solution) > MAX_CHARS:
++         die(f"技术方案 {len(solution)} 字，超过上限 {MAX_CHARS} 字。删掉与方案无关的部分再试。", EXIT_INPUT)
++             "regions": split_list(args.regions) or ["global"],
++         },
++     submit(body, args, args.title)
++     emit({"purpose": PURPOSES, "depth": DEPTHS,
++           "legal_status": {"all": "全部", "active": "有效", "pending": "审中", "inactive": "失效"},
++           "regions": "global 或 CN,US,EP,JP,KR,WO 逗号分隔",
++           "note": "正式申请决策用 depth=standard 或 deep；立项摸底可以用 quick。"})
++ def summarize(payload):
++     """查新结果里要讲的几项：检索规模、最接近的几篇、报告章节。完整结果另存文件。"""
++     results = payload.get("results") or {}
++     stats = results.get("stats") or {}
++     patents = [p for p in results.get("patents") or [] if isinstance(p, dict)]
++     patents.sort(key=lambda p: -(p.get("score") or 0))
++     report = payload.get("report") or {}
++         "searched": {
++             "patents_found": stats.get("patentDedupedCount") or stats.get("patentHitCount"),
++             "patents_analyzed": stats.get("patentAnalyzedCount"),
++             "papers": stats.get("paperHitCount"),
++             "web": stats.get("webHitCount"),
++         "closest": [{
++             "publication_number": p.get("publicationNumber"),
++             "title": p.get("title"),
++             "relevance": p.get("relevanceCode"),
++             "score": p.get("score"),
++             "novelty_risk": p.get("noveltyRisk"),
++             "inventiveness_risk": p.get("inventivenessRisk"),
++             "conclusion": (p.get("aiConclusion") or "")[:200],
++         } for p in patents[:5]],
++         "report_sections": [s.get("title") for s in report.get("sections") or []
++                             if isinstance(s, dict) and s.get("title")][:12],
++ # ─────────────────────────── 等待 ───────────────────────────
++ STATUS_TEXT = {"queued": "排队中", "accepting": "排队中", "running": "生成中"}
++ DONE_TEXT = {"succeeded": "已完成", "failed": "没有完成，预扣的费用已全额退回", "cancelled": "已取消，预扣的费用已全额退回"}
++ def progress_line(data, started_at):
++     """「[进度 X%] 阶段，已用时 N」。服务端给了分步进度就带百分比，没给就只报状态和已用时，不编百分比。"""
++     if status in DONE_TEXT:
++         return f"[进度] {DONE_TEXT[status]}"
++     stage = str(data.get("stage") or "")
++     percent = data.get("progress")
++     elapsed = clock(time.time() - started_at)
++     label = STATUS_TEXT.get(status, status or "处理中")
++     detailed = _has_cjk(stage) and stage not in ("正在接收任务",)
++     if detailed and isinstance(percent, (int, float)) and 0 < percent < 100:
++         return f"[进度 {int(percent)}%] {stage}，已用时 {elapsed}"
++     if status in ("queued", "accepting"):
++         return f"[进度] 排队中，已等待 {elapsed}"
++     return f"[进度] {stage if detailed else label}，已用时 {elapsed}"
++ def started_at_of(operation, data):
++     if record.get("started_at"):
++         return float(record["started_at"])
++     created = str(data.get("created_at") or "")
++         return calendar.timegm(time.strptime(created[:19], "%Y-%m-%dT%H:%M:%S"))
++         return time.time()
++ def wait_for(operation, seconds, out_dir=None):
++     """最多等 seconds 秒：完成就交付（退出码 0），还没完就报进度（退出码 10）。"""
++     deadline = time.time() + seconds
++     while True:
++         if status == "succeeded":
++             emit(deliver(operation, data, out_dir), EXIT_DONE)
++         if status in ("failed", "cancelled"):
++             error = data.get("error") or {}
++             message = error.get("message") if _has_cjk(error.get("message")) else ""
++             die(message or ("任务已取消。" if status == "cancelled" else f"{REPORT_NAME}没有生成成功。"),
++                 EXIT_ERROR, operation_id=operation, status=status,
++                 refund="预扣的费用已全额退回。")
++         line = progress_line(data, started_at_of(operation, data))
++         stage = line.split("，")[0]
++         ending = time.time() + POLL_SECONDS > deadline
++         # 一条命令只在返回前报一行最新进度；中途换了阶段再多报一行。不要每次轮询都刷一行
++         if ending or (last_stage is not None and stage != last_stage):
++             say(line)
++         last_stage = stage
++         if ending:
++             emit({
++                 "status": "running",
++                 "operation_id": operation,
++                 "next": f"把上面的进度告诉用户，然后运行：python {ME} wait --operation-id {operation}",
++             }, EXIT_RUNNING)
++         time.sleep(POLL_SECONDS)
++ def safe_name(text):
++     return re.sub(r'[\\/:*?"<>|\s]+', "", str(text))[:40] or REPORT_NAME
++ def deliver(operation, data, out_dir=None):
++     """完成：Word 报告自动存到提交时的目录；完整结果存成文件，只返回要讲的几项。"""
++     report_id = data.get("report_id")
++     target = out_dir or record.get("out_dir") or os.getcwd()
++     payload = unwrap(request(f"/api/v1/reports/{urllib.parse.quote(report_id)}")) or {}
++     quality = payload.get("quality_status") or data.get("quality_status")
++         "status": "succeeded",
++         "report_id": report_id,
++         "elapsed": clock(time.time() - started_at_of(operation, data)),
++         "quality_status": quality,
++         "quality_hint": QUALITY_HINT.get(quality, ""),
++     summary = summarize(payload)
++     stem = safe_name(summary.get("title") or record.get("title") or data.get("title") or REPORT_NAME)
++     os.makedirs(target, exist_ok=True)
++     files = {}
++     docx = try_download(f"/api/v1/reports/{urllib.parse.quote(report_id)}/files/report.docx")
++     if docx:
++         path = os.path.abspath(os.path.join(target, f"{REPORT_NAME}_{stem}.docx"))
++         with open(path, "wb") as handle:
++             handle.write(docx)
++         files[REPORT_NAME] = path
++     else:
++     else:

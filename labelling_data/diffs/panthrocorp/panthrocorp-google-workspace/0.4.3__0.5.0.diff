@@ -1,0 +1,1020 @@
+panthrocorp/panthrocorp-google-workspace  0.4.3 -> 0.5.0
+change_type: instructions+docs+code   changelog: Version 0.5.0 — Adds Google Docs and Sheets support, enhances Drive, and updates configuration options.  - New: Google Docs and Google Sheets commands with configurable access (read-only or read-write). - New: Drive now supports comments (list, add, reply); write access can be enabled for comments only. - Breaking: Mode/configuration controls extended to Docs, Sheets, and Drive (beyond Calendar). - Docs and Sheets support is disabled by default; enable via `config set`. - Security note: Setting 
+
+### CHANGELOG.md  [docs]
++ ## [0.5.0](https://github.com/PanthroCorp-Limited/openclaw-skills/compare/google-workspace/v0.4.3...google-workspace/v0.5.0) (2026-04-02)
++ ### Features
++ * add Docs, Sheets, and Drive comments ([#44](https://github.com/PanthroCorp-Limited/openclaw-skills/issues/44)) ([27a00fb](https://github.com/PanthroCorp-Limited/openclaw-skills/commit/27a00fbd16160cb5ba1938aa7398c082b2026d37)), closes [#40](https://github.com/PanthroCorp-Limited/openclaw-skills/issues/40)
+
+### CLAUDE.md  [docs]
+- Read-only Gmail, Contacts, and Drive skill with configurable Calendar access. Security-first design: write code paths for Gmail, Contacts, and Drive do not exist in the codebase.
+- - `cmd/` — Cobra CLI. Service commands (`gmail`, `calendar`, `contacts`, `drive`, `auth`, `config`) register on `rootCmd`. Helper functions `gmailClient()`, `calendarClient()`, `contactsClient()`, `driveClient()` handle config loading, scope validation, token decryption, and API client construction inline.
+- - `internal/config/config.go` — JSON config model with four fields: `Gmail bool`, `Contacts bool`, `Drive bool`, and `Calendar CalendarMode` (`off`, `readonly`, `readwrite`). `CalendarMode` is the only multi-state gate; Gmail, Contacts, and Drive are simple on/off booleans. `Config.OAuthScopes()` derives the OAuth scope list from the current config; scopes expand as services are enabled. Changing any value requires re-authentication to issue a new token with the updated scopes.
+- - `internal/google/` — Thin typed wrappers around Google API services. Each wrapper exposes only the operations the skill permits: `GmailClient` has no send/modify/delete; `ContactsClient` has no write operations; `DriveClient` has no create/update/delete operations and auto-detects Google Workspace files for export vs direct download.
+- 1. Code: write methods do not exist in `internal/google/`.
+- 2. Config: Calendar write operations check `config.CalendarMode == "readwrite"` at runtime and return an error otherwise.
+- 3. Google Cloud project: only Gmail API, Calendar API, People API, and Google Drive API should be enabled, providing server-side enforcement.
+- ## Calendar mode and scope changes
+- If `CalendarMode` changes (e.g. `readonly` to `readwrite`), the stored token was issued with the old scopes. The operator must run `google-workspace auth login` again to issue a new token with the expanded scopes. The binary does not detect scope mismatches at runtime.
++ Gmail (read-only), Contacts (read-only), Calendar (configurable), Drive (configurable with comments), Docs (configurable), and Sheets (configurable) for OpenClaw agents. Security-first design: write operations are always opt-in and gated at code, config, and GCP levels.
++ - `cmd/` — Cobra CLI. Service commands (`gmail`, `calendar`, `contacts`, `drive`, `docs`, `sheets`, `auth`, `config`) register on `rootCmd`. Helper functions `gmailClient()`, `calendarClient()`, `contactsClient()`, `driveClient()`, `docsClient()`, `sheetsClient()` handle config loading, scope validation, token decryption, and API client construction inline.
++ - `internal/config/config.go` — JSON config model with a unified `ServiceMode` type (`off`/`readonly`/`readwrite`) used by Calendar, Drive, Docs, and Sheets. Gmail and Contacts are simple on/off booleans. `Config.OAuthScopes()` derives the OAuth scope list from the current config; scopes expand as services are enabled. Changing any value requires re-authentication to issue a new token with the updated scopes. Custom `UnmarshalJSON` handles backwards compatibility for the Drive field (previously a bool).
++ - `internal/google/` — Thin typed wrappers around Google API services. Each wrapper exposes only the operations the skill permits. Write methods on multi-mode services (Calendar, Drive, Docs, Sheets) check `mode != ModeReadWrite` at runtime and return an error. Gmail and Contacts wrappers have no write methods at all.
++ 1. Code: Gmail and Contacts wrappers have no write methods. Calendar, Drive, Docs, and Sheets write methods guard on `config.ModeReadWrite`.
++ 2. Config: CLI commands check mode before calling the client. Readonly config never requests write scopes, so the token physically cannot perform write operations.
++ 3. Google Cloud project: only Gmail API, Calendar API, People API, Google Drive API, Google Docs API, and Google Sheets API should be enabled, providing server-side enforcement.
++ ## ServiceMode config model
++ `ServiceMode` is a unified string type with three values: `off`, `readonly`, `readwrite`. `CalendarMode` is a type alias for backwards compatibility. The Drive field was previously a `bool`; custom `UnmarshalJSON` on Config maps `true`→`readonly` and `false`→`off` for legacy configs. This is a one-way migration: once re-saved, old binaries cannot read the new format.
++ ## Mode and scope changes
++ If any `ServiceMode` changes (e.g. Drive `readonly` to `readwrite`), the stored token was issued with the old scopes. The operator must run `google-workspace auth login` again to issue a new token with the expanded scopes. The binary does not detect scope mismatches at runtime.
++ ## Drive auto-detection
++ `DriveClient.DownloadFile` checks the file's MIME type before downloading. Google Workspace types (`application/vnd.google-apps.document`, `.spreadsheet`, `.presentation`) are exported via `Files.Export` (Docs as plain text, Sheets as CSV, Slides as plain text). All other files use `Files.Get` with `alt=media` for a raw byte download.
++ ## Drive comments
++ All comments (on any file type including Docs and Sheets) are managed via the Drive API (`drive comment`, `drive comments list`, `drive comment reply`). The Google Docs API does not have a comments endpoint. Drive comments require `readwrite` mode (full `drive` scope).
++ ## Docs editing
++ `docs edit` supports three modes via flags: `--insert-text` with optional `--index` for positional insert, `--find`/`--replace-with` for find-and-replace-all, and `--requests-json` for raw Docs API batch updates. Only one mode per invocation.
+
+### README.md  [docs]
+- A custom OpenClaw skill providing read-only Gmail, Contacts, and Drive access, plus configurable Calendar, via the Google APIs. Built for environments where the agent instance is treated as potentially hostile.
+- Every existing Google-related skill on clawskills.sh requests broad read-write OAuth scopes and most are flagged suspicious by VirusTotal or OpenClaw moderation. This skill enforces strict scope boundaries at three levels: code (no write functions for Gmail/Contacts/Drive), config (Calendar write is opt-in), and Google Cloud project (only required APIs enabled).
+- | Drive | `drive.readonly` | Read-only | None |
+-   google-workspace config set --gmail=true --calendar=readonly --contacts=true --drive=true
+- If you are upgrading from a version that did not include Drive support, you need to:
+- 1. Enable the **Google Drive API** in your Google Cloud project at [console.cloud.google.com/apis/library/drive.googleapis.com](https://console.cloud.google.com/apis/library/drive.googleapis.com)
+- 2. Re-authenticate to obtain a token with the new `drive.readonly` scope:
+- The new `drive` config field defaults to `true`. If you do not want Drive access, disable it before re-authenticating:
+- google-workspace config set --drive=false
+- - A Google Cloud project with Gmail API, Calendar API, People API, and Google Drive API enabled (see deployment guide above)
+- google-workspace config set --gmail=true --calendar=readonly --contacts=true --drive=true
+- ### Drive (read-only)
+- Google Docs are exported as plain text, Sheets as CSV, and Slides as plain text. All other files download as raw bytes.
+- - Gmail has no send, modify, or delete code paths. The `internal/google/gmail.go` file only contains `messages.list`, `messages.get`, `labels.list`, and `threads` operations.
+- - Drive has no create, update, or delete code paths. Only file listing, metadata retrieval, and content download/export are supported.
+- - Calendar write operations check `config.CalendarMode == "readwrite"` at runtime and return an error if the mode is `readonly`.
+- - The Google Cloud project should only have Gmail API, Calendar API, People API, and Google Drive API enabled, providing server-side scope enforcement.
++ A custom OpenClaw skill providing Gmail, Calendar, Contacts, Drive (with comments), Docs, and Sheets access via the Google APIs. Write operations are always opt-in. Built for environments where the agent instance is treated as potentially hostile.
++ Every existing Google-related skill on clawskills.sh requests broad read-write OAuth scopes and most are flagged suspicious by VirusTotal or OpenClaw moderation. This skill enforces strict scope boundaries at three levels: code (write methods guard on config mode), config (write scopes are opt-in per service), and Google Cloud project (only required APIs enabled).
++ | Drive | `drive.readonly` or `drive` | Configurable: `off`, `readonly`, `readwrite` | Comments gated by config check |
++ | Docs | `documents.readonly` or `documents` | Configurable: `off`, `readonly`, `readwrite` | Edit/replace gated by config check |
++ | Sheets | `spreadsheets.readonly` or `spreadsheets` | Configurable: `off`, `readonly`, `readwrite` | Write gated by config check |
++ ```bash
++ ```
++    - Google Docs API (if using Docs)
++    - Google Sheets API (if using Sheets)
++   google-workspace config set --gmail=true --calendar=readonly --contacts=true --drive=readonly --docs=off --sheets=off
++ ### From versions without Docs/Sheets/Drive comments
++ 1. Enable **Google Docs API** and **Google Sheets API** in your Google Cloud project (if using those services)
++ 2. Update the config to enable the new services:
++    ```bash
++    google-workspace config set --docs=readwrite --sheets=readwrite --drive=readwrite
++    ```
++ 3. Re-authenticate to obtain a token with the new scopes:
++ The `drive` config field was previously a boolean (`true`/`false`). It is now a mode string (`off`/`readonly`/`readwrite`). Existing configs with `"drive": true` are automatically migrated to `"readonly"` on load. No manual config editing is needed.
++ - A Google Cloud project with Gmail API, Calendar API, People API, Google Drive API, and optionally Google Docs API and Google Sheets API enabled (see deployment guide above)
++ google-workspace config set --gmail=true --calendar=readonly --contacts=true --drive=readonly --docs=off --sheets=off
++ ### Drive
++ # Comments (list works in readonly; create/reply require readwrite):
++ google-workspace drive comments list --file-id FILE_ID
++ google-workspace drive comment --file-id FILE_ID --content "Approved"
++ google-workspace drive comment reply --file-id FILE_ID --comment-id CID --content "Thanks"
++ Google Docs are exported as plain text, Sheets as CSV, and Slides as plain text. All other files download as raw bytes. Drive comments work on any file type (Docs, Sheets, PDFs, etc.).
++ ### Docs
++ google-workspace docs read --document-id DOC_ID
++ # Edit operations require readwrite mode:
++ google-workspace docs edit --document-id DOC_ID --insert-text "Hello" --index 1
++ google-workspace docs edit --document-id DOC_ID --find "old" --replace-with "new"
++ ### Sheets
++ google-workspace sheets list --spreadsheet-id SSID
++ google-workspace sheets read --spreadsheet-id SSID --range "Sheet1!A1:C10"
++ # Write requires readwrite mode:
++ google-workspace sheets write --spreadsheet-id SSID --range "Sheet1!A1:B2" --values '[["Name","Score"],["Alice","95"]]'
++ - Gmail has no send, modify, or delete code paths.
++ - Drive file creation/modification/deletion code paths do not exist. Write access is limited to comments, gated by readwrite mode.
++ - Calendar, Drive (comments), Docs, and Sheets write operations check `config.ServiceMode == "readwrite"` at runtime and return an error if the mode is `readonly`.
++ - OAuth scopes are derived from config, so a readonly config never requests write scopes. The token physically cannot perform write operations.
++ - The Google Cloud project should only have the APIs in use enabled (Gmail, Calendar, People, Drive, Docs, Sheets), providing server-side scope enforcement.
+
+### SKILL.md  [instructions]
+- description: Read-only Gmail, Contacts, and Drive access with configurable Calendar (readonly or readwrite) for OpenClaw agents
+- Access Gmail (read-only), Google Calendar (configurable), Google Contacts (read-only), and Google Drive (read-only).
+- - Drive is strictly read-only. You cannot create, modify, or delete files.
+- - Calendar access depends on the configured mode. Check with `google-workspace config show`.
++ description: Gmail, Contacts, Calendar, Drive (with comments), Docs, and Sheets for OpenClaw agents
++ Access Gmail (read-only), Google Calendar (configurable), Google Contacts (read-only), Google Drive (configurable, with comments), Google Docs (configurable), and Google Sheets (configurable).
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ - Drive, Calendar, Docs, and Sheets access depends on the configured mode. Check with `google-workspace config show`.
++ - Drive file creation/deletion is not supported. Drive write access is limited to comments.
++ - Docs and Sheets default to off. Enable them with `config set` before use.
++ - Setting `--drive=readwrite` requests the full `drive` OAuth scope, which grants broad access to all Drive files at the token level. Only enable this if the operator accepts that risk.
++ List comments on a file:
++ google-workspace drive comments list --file-id FILE_ID
++ Add a comment (requires readwrite mode):
++ google-workspace drive comment --file-id FILE_ID --content "Looks good, approved."
++ Reply to a comment (requires readwrite mode):
++ google-workspace drive comment reply --file-id FILE_ID --comment-id COMMENT_ID --content "Thanks!"
++ ## Docs commands
++ Read a document:
++ google-workspace docs read --document-id DOC_ID
++ Insert text (requires readwrite mode):
++ google-workspace docs edit --document-id DOC_ID --insert-text "Hello" --index 1
++ Find and replace (requires readwrite mode):
++ google-workspace docs edit --document-id DOC_ID --find "old text" --replace-with "new text"
++ ## Sheets commands
++ List sheets in a spreadsheet:
++ google-workspace sheets list --spreadsheet-id SPREADSHEET_ID
++ Read cell values:
++ google-workspace sheets read --spreadsheet-id SPREADSHEET_ID --range "Sheet1!A1:C10"
++ Write cell values (requires readwrite mode):
++ google-workspace sheets write --spreadsheet-id SPREADSHEET_ID --range "Sheet1!A1:B2" --values '[["Name","Score"],["Alice","95"]]'
+
+### cmd/config.go  [code]
+- 	setDrive    *bool
+- 			cfg.Drive = *setDrive
+- 	setDrive = configSetCmd.Flags().Bool("drive", true, "enable Drive read-only access")
++ 		}
++ 		}
++ 	setDrive    string
++ 	setDocs     string
++ 	setSheets   string
++ 			cfg.Drive = config.ServiceMode(setDrive)
++ 		if cmd.Flags().Changed("docs") {
++ 			cfg.Docs = config.ServiceMode(setDocs)
++ 		if cmd.Flags().Changed("sheets") {
++ 			cfg.Sheets = config.ServiceMode(setSheets)
++ 	configSetCmd.Flags().StringVar(&setDrive, "drive", "readonly", "drive mode: off, readonly, or readwrite")
++ 	configSetCmd.Flags().StringVar(&setDocs, "docs", "off", "docs mode: off, readonly, or readwrite")
++ 	configSetCmd.Flags().StringVar(&setSheets, "sheets", "off", "sheets mode: off, readonly, or readwrite")
+
+### cmd/docs.go  [code]
++ package cmd
++ import (
++ 	"context"
++ 	"github.com/PanthroCorp-Limited/openclaw-skills/google-workspace/internal/config"
++ 	gw "github.com/PanthroCorp-Limited/openclaw-skills/google-workspace/internal/google"
++ 	"github.com/PanthroCorp-Limited/openclaw-skills/google-workspace/internal/oauth"
++ 	"github.com/spf13/cobra"
++ )
++ )
++ var docsCmd = &cobra.Command{
++ 	Use:   "docs",
++ 	Short: "Google Docs operations",
++ }
++ }
++ }
++ }
++ }
++ func docsClient() (*gw.DocsClient, config.ServiceMode, context.Context) {
++ 	ctx := context.Background()
++ 	key := encryptionKey()
++ 	if key == "" {
++ 		exitf("GOOGLE_WORKSPACE_TOKEN_KEY is not set")
++ 	}
++ 	}
++ 	}
++ 	}
++ 	}
++ 	cfg, err := config.Load(configDir)
++ 	if err != nil {
++ 	if err != nil {
++ 	if err != nil {
++ 		exitf("loading config: %v", err)
++ 	if cfg.Docs == config.ModeOff {
++ 		exitf("docs is disabled in config; run 'google-workspace config set --docs=readonly'")
++ 	token, err := oauth.LoadToken(configDir, key)
++ 		exitf("%v", err)
++ 	oauthCfg := oauth.NewOAuthConfig(clientID(), clientSecret(), cfg.OAuthScopes())
++ 	ts := oauthCfg.TokenSource(ctx, token)
++ 	client, err := gw.NewDocsClient(ctx, ts, cfg.Docs)
++ 		exitf("creating docs client: %v", err)
++ 	return client, cfg.Docs, ctx
++ var docsReadDocID string
++ var docsReadCmd = &cobra.Command{
++ 	Use:   "read",
++ 	Short: "Read a document",
++ 	Run: func(cmd *cobra.Command, args []string) {
++ 	Run: func(cmd *cobra.Command, args []string) {
++ 		if docsReadDocID == "" {
++ 			exitf("--document-id is required")
++ 			exitf("--document-id is required")
++ 		}
++ 		}
++ 		}
++ 		}
++ 		}
++ 		}
++ 		}
++ 		client, _, ctx := docsClient()
++ 		doc, err := client.GetDocument(ctx, docsReadDocID)
++ 		if err != nil {
++ 			exitf("%v", err)
++ 		printJSON(doc)
++ 	},
++ 	},
++ var (
++ 	docsEditDocID       string
++ 	docsEditInsertText  string
++ 	docsEditIndex       int64
++ 	docsEditFind        string
++ 	docsEditReplaceWith string
++ var docsEditCmd = &cobra.Command{
++ 	Use:   "edit",
++ 	Short: "Edit a document (requires readwrite mode)",
++ 	Long: `Edit a document using one of two modes:
++   Insert text:       --insert-text TEXT [--index N]
++   Find and replace:  --find TEXT --replace-with TEXT`,
++ 		if docsEditDocID == "" {
++ 		client, mode, ctx := docsClient()
++ 		if mode != config.ModeReadWrite {
++ 			exitf("docs is configured as %s; change to readwrite with 'google-workspace config set --docs=readwrite' then re-authenticate", mode)
++ 		hasInsert := docsEditInsertText != ""
++ 		hasReplace := docsEditFind != "" || docsEditReplaceWith != ""
++ 		if !hasInsert && !hasReplace {
++ 			exitf("specify one of: --insert-text or --find/--replace-with")
++ 		if hasInsert && hasReplace {
++ 			exitf("specify only one operation mode per invocation")
++ 		if hasInsert {
++ 			if err := client.InsertText(ctx, docsEditDocID, docsEditInsertText, docsEditIndex); err != nil {
++ 				exitf("%v", err)
++ 				exitf("%v", err)
++ 			}
++ 			}
++ 			}
++ 			printJSON(map[string]string{"status": "ok", "operation": "insert"})
++ 		} else {
++ 			if docsEditFind == "" || docsEditReplaceWith == "" {
++ 				exitf("both --find and --replace-with are required")
++ 			resp, err := client.ReplaceAllText(ctx, docsEditDocID, docsEditFind, docsEditReplaceWith)
++ 			if err != nil {
++ 			printJSON(resp)
++ func init() {
++ 	docsReadCmd.Flags().StringVar(&docsReadDocID, "document-id", "", "document ID")
++ 	docsEditCmd.Flags().StringVar(&docsEditDocID, "document-id", "", "document ID")
++ 	docsEditCmd.Flags().StringVar(&docsEditInsertText, "insert-text", "", "text to insert")
++ 	docsEditCmd.Flags().Int64Var(&docsEditIndex, "index", 0, "character index for insertion (0 = start of body)")
++ 	docsEditCmd.Flags().StringVar(&docsEditFind, "find", "", "text to find (used with --replace-with)")
++ 	docsEditCmd.Flags().StringVar(&docsEditReplaceWith, "replace-with", "", "replacement text (used with --find)")
++ 	docsCmd.AddCommand(docsReadCmd, docsEditCmd)
++ 	rootCmd.AddCommand(docsCmd)
+
+### cmd/drive.go  [code]
+- func driveClient() (*gw.DriveClient, context.Context) {
+- 	if !cfg.Drive {
+- 		exitf("drive is disabled in config; run 'google-workspace config set --drive=true'")
+- 	client, err := gw.NewDriveClient(ctx, ts)
+- 	return client, ctx
+- 		client, ctx := driveClient()
+- 		client, ctx := driveClient()
+- 		client, ctx := driveClient()
+- 	driveCmd.AddCommand(driveListCmd, driveGetCmd, driveDownloadCmd)
++ )
++ )
++ )
++ }
++ }
++ }
++ }
++ func driveClient() (*gw.DriveClient, config.ServiceMode, context.Context) {
++ 	if cfg.Drive == config.ModeOff {
++ 		exitf("drive is disabled in config; run 'google-workspace config set --drive=readonly'")
++ 	client, err := gw.NewDriveClient(ctx, ts, cfg.Drive)
++ 	return client, cfg.Drive, ctx
++ var (
++ var (
++ var (
++ 	Use:   "list",
++ 	Run: func(cmd *cobra.Command, args []string) {
++ 	Run: func(cmd *cobra.Command, args []string) {
++ 	Run: func(cmd *cobra.Command, args []string) {
++ 		client, _, ctx := driveClient()
++ 		client, _, ctx := driveClient()
++ 		client, _, ctx := driveClient()
++ 		client, _, ctx := driveClient()
++ 		if err != nil {
++ 		if err != nil {
++ 		if err != nil {
++ 			exitf("%v", err)
++ 			exitf("%v", err)
++ 			exitf("%v", err)
++ 		}
++ 		}
++ 		}
++ 		}
++ 		}
++ 		}
++ 		}
++ 		}
++ 		}
++ 		}
++ 		}
++ 	},
++ 	},
++ 	},
++ // Drive comments
++ var driveCommentsCmd = &cobra.Command{
++ 	Use:   "comments",
++ 	Short: "Manage comments on Drive files",
++ 	driveCommentsListFileID     string
++ 	driveCommentsListMaxResults int64
++ var driveCommentsListCmd = &cobra.Command{
++ 	Short: "List comments on a file",
++ 		if driveCommentsListFileID == "" {
++ 			exitf("--file-id is required")
++ 			exitf("--file-id is required")
++ 			exitf("--file-id is required")
++ 		comments, err := client.ListComments(ctx, driveCommentsListFileID, driveCommentsListMaxResults)
++ 		printJSON(comments)
++ 	driveCommentFileID  string
++ 	driveCommentContent string
++ var driveCommentCmd = &cobra.Command{
++ 	Use:   "comment",
++ 	Short: "Add a comment to a file (requires readwrite mode)",
++ 		if driveCommentFileID == "" {
++ 		if driveCommentContent == "" {
++ 			exitf("--content is required")
++ 			exitf("--content is required")
++ 		client, mode, ctx := driveClient()
++ 		client, mode, ctx := driveClient()
++ 		if mode != config.ModeReadWrite {
++ 		if mode != config.ModeReadWrite {
++ 			exitf("drive is configured as %s; change to readwrite with 'google-workspace config set --drive=readwrite' then re-authenticate", mode)
++ 			exitf("drive is configured as %s; change to readwrite with 'google-workspace config set --drive=readwrite' then re-authenticate", mode)
++ 		comment, err := client.CreateComment(ctx, driveCommentFileID, driveCommentContent)
++ 		printJSON(comment)
++ 	driveReplyFileID    string
++ 	driveReplyCommentID string
++ 	driveReplyContent   string
++ var driveCommentReplyCmd = &cobra.Command{
++ 	Use:   "reply",
++ 	Short: "Reply to a comment on a file (requires readwrite mode)",
++ 		if driveReplyFileID == "" {
++ 		if driveReplyCommentID == "" {
++ 			exitf("--comment-id is required")
++ 		if driveReplyContent == "" {
++ 		reply, err := client.ReplyToComment(ctx, driveReplyFileID, driveReplyCommentID, driveReplyContent)
++ 		printJSON(reply)
++ 	driveCommentsListCmd.Flags().StringVar(&driveCommentsListFileID, "file-id", "", "file ID")
++ 	driveCommentsListCmd.Flags().Int64Var(&driveCommentsListMaxResults, "max-results", 20, "maximum number of comments")
++ 	driveCommentCmd.Flags().StringVar(&driveCommentFileID, "file-id", "", "file ID")
++ 	driveCommentCmd.Flags().StringVar(&driveCommentContent, "content", "", "comment text")
++ 	driveCommentReplyCmd.Flags().StringVar(&driveReplyFileID, "file-id", "", "file ID")
++ 	driveCommentReplyCmd.Flags().StringVar(&driveReplyCommentID, "comment-id", "", "comment ID to reply to")
++ 	driveCommentReplyCmd.Flags().StringVar(&driveReplyContent, "content", "", "reply text")
++ 	driveCommentsCmd.AddCommand(driveCommentsListCmd)
++ 	driveCommentCmd.AddCommand(driveCommentReplyCmd)
++ 	driveCmd.AddCommand(driveListCmd, driveGetCmd, driveDownloadCmd, driveCommentsCmd, driveCommentCmd)
+
+### cmd/root.go  [code]
+- 	Short:   "Read-only Gmail, Drive, Contacts, and configurable Calendar for OpenClaw agents",
++ 	Short:   "Gmail, Calendar, Contacts, Drive, Docs, and Sheets for OpenClaw agents",
+
+### cmd/sheets.go  [code]
++ package cmd
++ import (
++ 	"context"
++ 	"encoding/json"
++ 	"github.com/PanthroCorp-Limited/openclaw-skills/google-workspace/internal/config"
++ 	gw "github.com/PanthroCorp-Limited/openclaw-skills/google-workspace/internal/google"
++ 	"github.com/PanthroCorp-Limited/openclaw-skills/google-workspace/internal/oauth"
++ 	"github.com/spf13/cobra"
++ )
++ )
++ )
++ var sheetsCmd = &cobra.Command{
++ 	Use:   "sheets",
++ 	Short: "Google Sheets operations",
++ }
++ }
++ }
++ }
++ }
++ }
++ func sheetsClient() (*gw.SheetsClient, config.ServiceMode, context.Context) {
++ 	ctx := context.Background()
++ 	key := encryptionKey()
++ 	if key == "" {
++ 		exitf("GOOGLE_WORKSPACE_TOKEN_KEY is not set")
++ 	}
++ 	}
++ 	}
++ 	}
++ 	}
++ 	cfg, err := config.Load(configDir)
++ 	if err != nil {
++ 	if err != nil {
++ 	if err != nil {
++ 		exitf("loading config: %v", err)
++ 	if cfg.Sheets == config.ModeOff {
++ 		exitf("sheets is disabled in config; run 'google-workspace config set --sheets=readonly'")
++ 	token, err := oauth.LoadToken(configDir, key)
++ 		exitf("%v", err)
++ 	oauthCfg := oauth.NewOAuthConfig(clientID(), clientSecret(), cfg.OAuthScopes())
++ 	ts := oauthCfg.TokenSource(ctx, token)
++ 	client, err := gw.NewSheetsClient(ctx, ts, cfg.Sheets)
++ 		exitf("creating sheets client: %v", err)
++ 	return client, cfg.Sheets, ctx
++ var sheetsListSpreadsheetID string
++ var sheetsListCmd = &cobra.Command{
++ 	Use:   "list",
++ 	Short: "List sheets in a spreadsheet",
++ 	Run: func(cmd *cobra.Command, args []string) {
++ 	Run: func(cmd *cobra.Command, args []string) {
++ 	Run: func(cmd *cobra.Command, args []string) {
++ 		if sheetsListSpreadsheetID == "" {
++ 			exitf("--spreadsheet-id is required")
++ 			exitf("--spreadsheet-id is required")
++ 			exitf("--spreadsheet-id is required")
++ 		}
++ 		}
++ 		}
++ 		}
++ 		}
++ 		}
++ 		}
++ 		}
++ 		}
++ 		}
++ 		}
++ 		client, _, ctx := sheetsClient()
++ 		client, _, ctx := sheetsClient()
++ 		ss, err := client.GetSpreadsheet(ctx, sheetsListSpreadsheetID)
++ 		if err != nil {
++ 		if err != nil {
++ 			exitf("%v", err)
++ 			exitf("%v", err)
++ 			exitf("%v", err)
++ 		printJSON(ss)
++ 	},
++ 	},
++ 	},
++ var (
++ var (
++ 	sheetsReadSpreadsheetID string
++ 	sheetsReadRange         string
++ var sheetsReadCmd = &cobra.Command{
++ 	Use:   "read",
++ 	Short: "Read cell values from a range",
++ 		if sheetsReadSpreadsheetID == "" {
++ 		if sheetsReadRange == "" {
++ 			exitf("--range is required")
++ 			exitf("--range is required")
++ 		vr, err := client.ReadRange(ctx, sheetsReadSpreadsheetID, sheetsReadRange)
++ 		printJSON(vr)
++ 	sheetsWriteSpreadsheetID string
++ 	sheetsWriteRange         string
++ 	sheetsWriteValues        string
++ 	sheetsWriteRaw           bool
++ var sheetsWriteCmd = &cobra.Command{
++ 	Use:   "write",
++ 	Short: "Write cell values to a range (requires readwrite mode)",
++ 		if sheetsWriteSpreadsheetID == "" {
++ 		if sheetsWriteRange == "" {
++ 		if sheetsWriteValues == "" {
++ 			exitf("--values is required")
++ 		client, mode, ctx := sheetsClient()
++ 		if mode != config.ModeReadWrite {
++ 			exitf("sheets is configured as %s; change to readwrite with 'google-workspace config set --sheets=readwrite' then re-authenticate", mode)
++ 		var values [][]interface{}
++ 		if err := json.Unmarshal([]byte(sheetsWriteValues), &values); err != nil {
++ 			exitf("parsing --values JSON: %v", err)
++ 		if err := client.WriteRange(ctx, sheetsWriteSpreadsheetID, sheetsWriteRange, values, sheetsWriteRaw); err != nil {
++ 		printJSON(map[string]string{"status": "ok", "operation": "write"})
++ func init() {
++ 	sheetsListCmd.Flags().StringVar(&sheetsListSpreadsheetID, "spreadsheet-id", "", "spreadsheet ID")
++ 	sheetsReadCmd.Flags().StringVar(&sheetsReadSpreadsheetID, "spreadsheet-id", "", "spreadsheet ID")
++ 	sheetsReadCmd.Flags().StringVar(&sheetsReadRange, "range", "", "A1-notation range (e.g. Sheet1!A1:C10)")
++ 	sheetsWriteCmd.Flags().StringVar(&sheetsWriteSpreadsheetID, "spreadsheet-id", "", "spreadsheet ID")
++ 	sheetsWriteCmd.Flags().StringVar(&sheetsWriteRange, "range", "", "A1-notation range (e.g. Sheet1!A1:C3)")
++ 	sheetsWriteCmd.Flags().StringVar(&sheetsWriteValues, "values", "", "JSON 2D array (e.g. [[\"a\",\"b\"],[\"c\",\"d\"]])")
++ 	sheetsWriteCmd.Flags().BoolVar(&sheetsWriteRaw, "raw", false, "store values as-is without formula evaluation")
++ 	sheetsCmd.AddCommand(sheetsListCmd, sheetsReadCmd, sheetsWriteCmd)
++ 	rootCmd.AddCommand(sheetsCmd)
+
+### dist/artifacts.json  [code]
+- [{"name":"metadata.json","path":"dist/metadata.json","internal_type":35,"type":"Metadata"},{"name":"google-workspace","path":"dist/google-workspace_darwin_amd64_v1/google-workspace","goos":"darwin","goarch":"amd64","goamd64":"v1","target":"darwin_amd64_v1","internal_type":4,"type":"Binary","extra":{"Binary":"google-workspace","Builder":"go","Ext":"","ID":"google-workspace"}},{"name":"google-workspace","path":"dist/google-workspace_linux_arm64_v8.0/google-workspace","goos":"linux","goarch":"arm64","goarm64":"v8.0","target":"linux_arm64_v8.0","internal_type":4,"type":"Binary","extra":{"Binary":"google-workspace","Builder":"go","Ext":"","ID":"google-workspace"}},{"name":"google-workspace","path":"dist/google-workspace_darwin_arm64_v8.0/google-workspace","goos":"darwin","goarch":"arm64","goarm64":"v8.0","target":"darwin_arm64_v8.0","internal_type":4,"type":"Binary","extra":{"Binary":"google-workspace","Builder":"go","Ext":"","ID":"google-workspace"}},{"name":"google-workspace","path":"dist/google-workspace_linux_amd64_v1/google-workspace","goos":"linux","goarch":"amd64","goamd64":"v1","target":"linux_amd64_v1","internal_type":4,"type":"Binary","extra":{"Binary":"google-workspace","Builder":"go","Ext":"","ID":"google-workspace"}},{"name":"google-workspace_0.4.3_darwin_arm64.tar.gz","path":"dist/google-workspace_0.4.3_darwin_arm64.tar.gz","goos":"darwin","goarch":"arm64","goarm64":"v8.0","target":"darwin_arm64_v8.0","internal_type":1,"type":"Archive","extra":{"Binaries":["google-workspace"],"Checksum":"sha256:08e33f8cfa73a87fb22455e43342568f50d0c9a0bb505d3ec0df14362b39678e","Files":["CHANGELOG.md","LICENSE","README.md"],"Format":"tar.gz","ID":"google-workspace","WrappedIn":""}},{"name":"google-workspace_0.4.3_linux_arm64.tar.gz","path":"dist/google-workspace_0.4.3_linux_arm64.tar.gz","goos":"linux","goarch":"arm64","goarm64":"v8.0","target":"linux_arm64_v8.0","internal_type":1,"type":"Archive","extra":{"Binaries":["google-workspace"],"Checksum":"sha256:c9c9d3939aca4ed3e4bdc1deff502b8400eaefdfa2307a96c5f497bda68c723e","Files":["CHANGELOG.md","LICENSE","README.md"],"Format":"tar.gz","ID":"google-workspace","WrappedIn":""}},{"name":"google-workspace_0.4.3_darwin_amd64.tar.gz","path":"dist/google-workspace_0.4.3_darwin_amd64.tar.gz","goos":"darwin","goarch":"amd64","goamd64":"v1","target":"darwin_amd64_v1","internal_type":1,"type":"Archive","extra":{"Binaries":["google-workspace"],"Checksum":"sha256:35775aed986cd0fe7459118dcaaccfc1cbb5b28db6697e91cb353fc37e82bedf","Files":["CHANGELOG.md","LICENSE","README.md"],"Format":"tar.gz","ID":"google-workspace","WrappedIn":""}},{"name":"google-workspace_0.4.3_linux_amd64.tar.gz","path":"dist/google-workspace_0.4.3_linux_amd64.tar.gz","goos":"linux","goarch":"amd64","goamd64":"v1","target":"linux_amd64_v1","internal_type":1,"type":"Archive","extra":{"Binaries":["google-workspace"],"Checksum":"sha256:58aa9fc469657de95cc9466b9da6a70b3e1e26a1e57e5e85aecf71fe03cafd32","Files":["CHANGELOG.md","LICENSE","README.md"],"Format":"tar.gz","ID":"google-workspace","WrappedIn":""}},{"name":"checksums.txt","path":"dist/checksums.txt","internal_type":12,"type":"Checksum","extra":{}}]
++ [{"name":"metadata.json","path":"dist/metadata.json","internal_type":35,"type":"Metadata"},{"name":"google-workspace","path":"dist/google-workspace_darwin_amd64_v1/google-workspace","goos":"darwin","goarch":"amd64","goamd64":"v1","target":"darwin_amd64_v1","internal_type":4,"type":"Binary","extra":{"Binary":"google-workspace","Builder":"go","Ext":"","ID":"google-workspace"}},{"name":"google-workspace","path":"dist/google-workspace_linux_amd64_v1/google-workspace","goos":"linux","goarch":"amd64","goamd64":"v1","target":"linux_amd64_v1","internal_type":4,"type":"Binary","extra":{"Binary":"google-workspace","Builder":"go","Ext":"","ID":"google-workspace"}},{"name":"google-workspace","path":"dist/google-workspace_linux_arm64_v8.0/google-workspace","goos":"linux","goarch":"arm64","goarm64":"v8.0","target":"linux_arm64_v8.0","internal_type":4,"type":"Binary","extra":{"Binary":"google-workspace","Builder":"go","Ext":"","ID":"google-workspace"}},{"name":"google-workspace","path":"dist/google-workspace_darwin_arm64_v8.0/google-workspace","goos":"darwin","goarch":"arm64","goarm64":"v8.0","target":"darwin_arm64_v8.0","internal_type":4,"type":"Binary","extra":{"Binary":"google-workspace","Builder":"go","Ext":"","ID":"google-workspace"}},{"name":"google-workspace_0.5.0_darwin_arm64.tar.gz","path":"dist/google-workspace_0.5.0_darwin_arm64.tar.gz","goos":"darwin","goarch":"arm64","goarm64":"v8.0","target":"darwin_arm64_v8.0","internal_type":1,"type":"Archive","extra":{"Binaries":["google-workspace"],"Checksum":"sha256:55493302370755fa1a7e5d0261514def1845c1fea77be6854aa21bb9221135cc","Files":["CHANGELOG.md","LICENSE","README.md"],"Format":"tar.gz","ID":"google-workspace","WrappedIn":""}},{"name":"google-workspace_0.5.0_linux_arm64.tar.gz","path":"dist/google-workspace_0.5.0_linux_arm64.tar.gz","goos":"linux","goarch":"arm64","goarm64":"v8.0","target":"linux_arm64_v8.0","internal_type":1,"type":"Archive","extra":{"Binaries":["google-workspace"],"Checksum":"sha256:8b0be64af11d1903efbfe28089d8800b7e81bd7428b347b08134f651b7964ff6","Files":["CHANGELOG.md","LICENSE","README.md"],"Format":"tar.gz","ID":"google-workspace","WrappedIn":""}},{"name":"google-workspace_0.5.0_darwin_amd64.tar.gz","path":"dist/google-workspace_0.5.0_darwin_amd64.tar.gz","goos":"darwin","goarch":"amd64","goamd64":"v1","target":"darwin_amd64_v1","internal_type":1,"type":"Archive","extra":{"Binaries":["google-workspace"],"Checksum":"sha256:42a64753173e6fb3acca98b5b9355c202378585e7543d82720bb427183448eb0","Files":["CHANGELOG.md","LICENSE","README.md"],"Format":"tar.gz","ID":"google-workspace","WrappedIn":""}},{"name":"google-workspace_0.5.0_linux_amd64.tar.gz","path":"dist/google-workspace_0.5.0_linux_amd64.tar.gz","goos":"linux","goarch":"amd64","goamd64":"v1","target":"linux_amd64_v1","internal_type":1,"type":"Archive","extra":{"Binaries":["google-workspace"],"Checksum":"sha256:791092e0028c1d05a57644f412f6b1fef05df1529880fc37b53b96a01d38ea14","Files":["CHANGELOG.md","LICENSE","README.md"],"Format":"tar.gz","ID":"google-workspace","WrappedIn":""}},{"name":"checksums.txt","path":"dist/checksums.txt","internal_type":12,"type":"Checksum","extra":{}}]
+
+### dist/checksums.txt  [docs]
+- 35775aed986cd0fe7459118dcaaccfc1cbb5b28db6697e91cb353fc37e82bedf  google-workspace_0.4.3_darwin_amd64.tar.gz
+- 08e33f8cfa73a87fb22455e43342568f50d0c9a0bb505d3ec0df14362b39678e  google-workspace_0.4.3_darwin_arm64.tar.gz
+- 58aa9fc469657de95cc9466b9da6a70b3e1e26a1e57e5e85aecf71fe03cafd32  google-workspace_0.4.3_linux_amd64.tar.gz
+- c9c9d3939aca4ed3e4bdc1deff502b8400eaefdfa2307a96c5f497bda68c723e  google-workspace_0.4.3_linux_arm64.tar.gz
++ 42a64753173e6fb3acca98b5b9355c202378585e7543d82720bb427183448eb0  google-workspace_0.5.0_darwin_amd64.tar.gz
++ 55493302370755fa1a7e5d0261514def1845c1fea77be6854aa21bb9221135cc  google-workspace_0.5.0_darwin_arm64.tar.gz
++ 791092e0028c1d05a57644f412f6b1fef05df1529880fc37b53b96a01d38ea14  google-workspace_0.5.0_linux_amd64.tar.gz
++ 8b0be64af11d1903efbfe28089d8800b7e81bd7428b347b08134f651b7964ff6  google-workspace_0.5.0_linux_arm64.tar.gz
+
+### dist/metadata.json  [code]
+- {"project_name":"google-workspace","tag":"v0.4.3","previous_tag":"google-workspace/v0.4.2","version":"0.4.3","commit":"dca4d52fd49e417c5211066acfeaa23c70b7ece3","date":"2026-04-02T14:06:56.089649957Z","runtime":{"goos":"linux","goarch":"amd64"}}
++ {"project_name":"google-workspace","tag":"v0.5.0","previous_tag":"google-workspace/v0.4.3","version":"0.5.0","commit":"ead136b24ac74c1ef661e0b22c178d76861cc7ca","date":"2026-04-02T15:02:49.053205418Z","runtime":{"goos":"linux","goarch":"amd64"}}
+
+### internal/config/config.go  [code]
+- // CalendarMode controls the level of Calendar API access.
+- type CalendarMode string
+- 	CalendarOff       CalendarMode = "off"
+- 	CalendarReadOnly  CalendarMode = "readonly"
+- 	CalendarReadWrite CalendarMode = "readwrite"
+- 	Gmail    bool         `json:"gmail"`
+- 	Calendar CalendarMode `json:"calendar"`
+- 	Contacts bool         `json:"contacts"`
+- 	Drive    bool         `json:"drive"`
+- // DefaultConfig returns the default (most restrictive) configuration.
+- 		Calendar: CalendarReadOnly,
+- 		Drive:    true,
+- 	switch c.Calendar {
+- 	case CalendarOff, CalendarReadOnly, CalendarReadWrite:
+- 		// valid
+- 		return fmt.Errorf("invalid calendar mode %q: must be off, readonly, or readwrite", c.Calendar)
+- 	case CalendarReadOnly:
+- 	case CalendarReadWrite:
+- 	if c.Drive {
++ )
++ // ServiceMode controls the level of API access for a service.
++ type ServiceMode string
++ const (
++ 	ModeOff       ServiceMode = "off"
++ 	ModeReadOnly  ServiceMode = "readonly"
++ 	ModeReadWrite ServiceMode = "readwrite"
++ // CalendarMode is an alias for ServiceMode retained for backwards compatibility.
++ type CalendarMode = ServiceMode
++ 	CalendarOff       = ModeOff
++ 	CalendarReadOnly  = ModeReadOnly
++ 	CalendarReadWrite = ModeReadWrite
++ 	Gmail    bool        `json:"gmail"`
++ 	Calendar ServiceMode `json:"calendar"`
++ 	Contacts bool        `json:"contacts"`
++ 	Drive    ServiceMode `json:"drive"`
++ 	Docs     ServiceMode `json:"docs"`
++ 	Sheets   ServiceMode `json:"sheets"`
++ }
++ }
++ // UnmarshalJSON handles backwards compatibility for the Drive field,
++ // which was previously a bool (true/false) and is now a ServiceMode string.
++ func (c *Config) UnmarshalJSON(data []byte) error {
++ 	type raw struct {
++ 		Gmail    bool            `json:"gmail"`
++ 		Calendar ServiceMode     `json:"calendar"`
++ 		Contacts bool            `json:"contacts"`
++ 		Drive    json.RawMessage `json:"drive"`
++ 		Docs     ServiceMode     `json:"docs"`
++ 		Sheets   ServiceMode     `json:"sheets"`
++ 	}
++ 	}
++ 	}
++ 	}
++ 	}
++ 	}
++ 	}
++ 	}
++ 	}
++ 	}
++ 	}
++ 	var r raw
++ 	if err := json.Unmarshal(data, &r); err != nil {
++ 		return err
++ 		return err
++ 		return err
++ 		return err
++ 	c.Gmail = r.Gmail
++ 	c.Calendar = r.Calendar
++ 	if c.Calendar == "" {
++ 		c.Calendar = ModeOff
++ 	c.Contacts = r.Contacts
++ 	c.Docs = r.Docs
++ 	if c.Docs == "" {
++ 		c.Docs = ModeOff
++ 	c.Sheets = r.Sheets
++ 	if c.Sheets == "" {
++ 		c.Sheets = ModeOff
++ 	if len(r.Drive) > 0 {
++ 		if r.Drive[0] == 't' || r.Drive[0] == 'f' {
++ 			var b bool
++ 			if err := json.Unmarshal(r.Drive, &b); err != nil {
++ 				return fmt.Errorf("parsing legacy drive bool: %w", err)
++ 			}
++ 			}
++ 			}
++ 			if b {
++ 				c.Drive = ModeReadOnly
++ 			} else {
++ 				c.Drive = ModeOff
++ 		} else {
++ 			var m ServiceMode
++ 			if err := json.Unmarshal(r.Drive, &m); err != nil {
++ 				return fmt.Errorf("parsing drive mode: %w", err)
++ 			c.Drive = m
++ 		}
++ // DefaultConfig returns the default configuration.
++ 		Calendar: ModeReadOnly,
++ 		Drive:    ModeReadOnly,
++ 		Docs:     ModeOff,
++ 		Sheets:   ModeOff,
++ func validateMode(name string, m ServiceMode) error {
++ 	switch m {
++ 	case ModeOff, ModeReadOnly, ModeReadWrite:
++ 		return nil
++ 		return fmt.Errorf("invalid %s mode %q: must be off, readonly, or readwrite", name, m)
++ 	if err := validateMode("calendar", c.Calendar); err != nil {
++ 	if err := validateMode("drive", c.Drive); err != nil {
++ 	if err := validateMode("docs", c.Docs); err != nil {
++ 	return validateMode("sheets", c.Sheets)
++ 	case ModeReadOnly:
++ 	case ModeReadOnly:
++ 	case ModeReadOnly:
++ 	case ModeReadOnly:
++ 	case ModeReadWrite:
++ 	case ModeReadWrite:
++ 	case ModeReadWrite:
++ 	case ModeReadWrite:
++ 	switch c.Drive {
++ 		scopes = append(scopes, "https://www.googleapis.com/auth/drive")
++ 	switch c.Docs {
++ 		scopes = append(scopes, "https://www.googleapis.com/auth/documents.readonly")
++ 		scopes = append(scopes, "https://www.googleapis.com/auth/documents")
++ 	switch c.Sheets {
++ 		scopes = append(scopes, "https://www.googleapis.com/auth/spreadsheets.readonly")
++ 		scopes = append(scopes, "https://www.googleapis.com/auth/spreadsheets")
+
+### internal/config/config_test.go  [code]
+- 	if cfg.Calendar != CalendarReadOnly {
+- 	if !cfg.Drive {
+- 		t.Error("expected drive enabled by default")
+- 		mode    CalendarMode
+- 		{"off", CalendarOff, false},
+- 		{"readonly", CalendarReadOnly, false},
+- 		{"readwrite", CalendarReadWrite, false},
+- 		{"invalid", CalendarMode("bogus"), true},
+- 			cfg := Config{Gmail: true, Calendar: tt.mode, Contacts: true, Drive: true}
+- 			err := cfg.Validate()
+- 		{"all enabled readonly", Config{Gmail: true, Calendar: CalendarReadOnly, Contacts: true, Drive: true}, 4},
+- 		{"all enabled readwrite", Config{Gmail: true, Calendar: CalendarReadWrite, Contacts: true, Drive: true}, 4},
+- 		{"gmail only", Config{Gmail: true, Calendar: CalendarOff, Contacts: false, Drive: false}, 1},
+- 		{"nothing", Config{Gmail: false, Calendar: CalendarOff, Contacts: false, Drive: false}, 0},
+- 		{"calendar only", Config{Gmail: false, Calendar: CalendarReadOnly, Contacts: false, Drive: false}, 1},
+- 		{"drive only", Config{Gmail: false, Calendar: CalendarOff, Contacts: false, Drive: true}, 1},
+- 		Calendar: CalendarReadWrite,
+- 		Drive:    true,
+- 	if loaded.Gmail != cfg.Gmail || loaded.Calendar != cfg.Calendar || loaded.Contacts != cfg.Contacts || loaded.Drive != cfg.Drive {
++ 	"encoding/json"
++ 	}
++ 	}
++ 	}
++ 	}
++ 	}
++ 	}
++ 	}
++ 	}
++ 	}
++ 	}
++ 	}
++ 	}
++ 	}
++ 	}
++ 	}
++ 	}
++ 	}
++ 	}
++ 	}
++ 	if cfg.Calendar != ModeReadOnly {
++ 	if cfg.Drive != ModeReadOnly {
++ 	if cfg.Drive != ModeReadOnly {
++ 	if cfg.Drive != ModeReadOnly {
++ 		t.Errorf("expected drive readonly by default, got %s", cfg.Drive)
++ 	if cfg.Docs != ModeOff {
++ 	if cfg.Docs != ModeOff {
++ 		t.Errorf("expected docs off by default, got %s", cfg.Docs)
++ 	if cfg.Sheets != ModeOff {
++ 	if cfg.Sheets != ModeOff {
++ 		t.Errorf("expected sheets off by default, got %s", cfg.Sheets)
++ }
++ }
++ }
++ }
++ }
++ }
++ 		cfg     Config
++ 		{"all valid", Config{Gmail: true, Calendar: ModeReadOnly, Contacts: true, Drive: ModeReadOnly, Docs: ModeOff, Sheets: ModeOff}, false},
++ 		{"all readwrite", Config{Gmail: true, Calendar: ModeReadWrite, Contacts: true, Drive: ModeReadWrite, Docs: ModeReadWrite, Sheets: ModeReadWrite}, false},
++ 		{"all off", Config{Gmail: false, Calendar: ModeOff, Contacts: false, Drive: ModeOff, Docs: ModeOff, Sheets: ModeOff}, false},
++ 		{"invalid calendar", Config{Calendar: ServiceMode("bogus")}, true},
++ 		{"invalid drive", Config{Calendar: ModeOff, Drive: ServiceMode("bogus"), Docs: ModeOff, Sheets: ModeOff}, true},
++ 		{"invalid docs", Config{Calendar: ModeOff, Drive: ModeOff, Docs: ServiceMode("bogus"), Sheets: ModeOff}, true},
++ 		{"invalid sheets", Config{Calendar: ModeOff, Drive: ModeOff, Docs: ModeOff, Sheets: ServiceMode("bogus")}, true},
++ 			err := tt.cfg.Validate()
++ 		{"all enabled readonly", Config{Gmail: true, Calendar: ModeReadOnly, Contacts: true, Drive: ModeReadOnly, Docs: ModeReadOnly, Sheets: ModeReadOnly}, 6},
++ 		{"all enabled readwrite", Config{Gmail: true, Calendar: ModeReadWrite, Contacts: true, Drive: ModeReadWrite, Docs: ModeReadWrite, Sheets: ModeReadWrite}, 6},
++ 		{"gmail only", Config{Gmail: true, Calendar: ModeOff, Contacts: false, Drive: ModeOff, Docs: ModeOff, Sheets: ModeOff}, 1},
++ 		{"nothing", Config{Gmail: false, Calendar: ModeOff, Contacts: false, Drive: ModeOff, Docs: ModeOff, Sheets: ModeOff}, 0},
++ 		{"calendar only", Config{Gmail: false, Calendar: ModeReadOnly, Contacts: false, Drive: ModeOff, Docs: ModeOff, Sheets: ModeOff}, 1},
++ 		{"drive only", Config{Gmail: false, Calendar: ModeOff, Contacts: false, Drive: ModeReadOnly, Docs: ModeOff, Sheets: ModeOff}, 1},
++ 		{"docs only", Config{Gmail: false, Calendar: ModeOff, Contacts: false, Drive: ModeOff, Docs: ModeReadOnly, Sheets: ModeOff}, 1},
++ 		{"sheets only", Config{Gmail: false, Calendar: ModeOff, Contacts: false, Drive: ModeOff, Docs: ModeOff, Sheets: ModeReadOnly}, 1},
++ 		{"default config", DefaultConfig(), 4},
++ func TestDriveScopeValues(t *testing.T) {
++ 	readonly := Config{Drive: ModeReadOnly, Calendar: ModeOff, Docs: ModeOff, Sheets: ModeOff}
++ 	readwrite := Config{Drive: ModeReadWrite, Calendar: ModeOff, Docs: ModeOff, Sheets: ModeOff}
++ 	roScopes := readonly.OAuthScopes()
++ 	if len(roScopes) != 1 || roScopes[0] != "https://www.googleapis.com/auth/drive.readonly" {
++ 		t.Errorf("expected drive.readonly scope, got %v", roScopes)
++ 	rwScopes := readwrite.OAuthScopes()
++ 	if len(rwScopes) != 1 || rwScopes[0] != "https://www.googleapis.com/auth/drive" {
++ 		t.Errorf("expected full drive scope, got %v", rwScopes)
++ 	dir := t.TempDir()
++ 		Calendar: ModeReadWrite,
++ 		Drive:    ModeReadWrite,
++ 		Docs:     ModeReadOnly,
++ 		Sheets:   ModeReadWrite,
++ 	if err := Save(dir, cfg); err != nil {
++ 		t.Fatalf("Save: %v", err)
++ 	if err != nil {
++ 	if err != nil {
++ 	if loaded != cfg {
++ 	cfg, err := Load(dir)
++ 	path := filepath.Join(dir, "config.json")
++ 		t.Fatal(err)
++ func TestLegacyDriveBoolTrue(t *testing.T) {
++ 	data := []byte(`{"gmail":true,"calendar":"readonly","contacts":true,"drive":true}`)
++ 	var cfg Config
++ 	var cfg Config
++ 	var cfg Config
++ 	var cfg Config
++ 	if err := json.Unmarshal(data, &cfg); err != nil {
++ 	if err := json.Unmarshal(data, &cfg); err != nil {
++ 	if err := json.Unmarshal(data, &cfg); err != nil {
++ 	if err := json.Unmarshal(data, &cfg); err != nil {
++ 		t.Fatalf("Unmarshal: %v", err)
++ 		t.Fatalf("Unmarshal: %v", err)
++ 		t.Fatalf("Unmarshal: %v", err)
++ 		t.Fatalf("Unmarshal: %v", err)
++ 		t.Errorf("expected drive readonly for legacy true, got %s", cfg.Drive)
++ func TestLegacyDriveBoolFalse(t *testing.T) {
++ 	data := []byte(`{"gmail":true,"calendar":"readonly","contacts":true,"drive":false}`)
++ 	if cfg.Drive != ModeOff {
++ 		t.Errorf("expected drive off for legacy false, got %s", cfg.Drive)
++ func TestNewDriveStringMode(t *testing.T) {
++ 	data := []byte(`{"gmail":true,"calendar":"readonly","contacts":true,"drive":"readwrite"}`)
++ 	if cfg.Drive != ModeReadWrite {
++ 		t.Errorf("expected drive readwrite, got %s", cfg.Drive)
++ func TestMissingDocsSheets(t *testing.T) {
++ 	data := []byte(`{"gmail":true,"calendar":"readonly","contacts":true,"drive":"readonly"}`)
++ 		t.Errorf("expected docs off for missing field, got %s", cfg.Docs)
++ 		t.Errorf("expected sheets off for missing field, got %s", cfg.Sheets)
++ func TestLegacyConfigRoundTrip(t *testing.T) {
++ 	legacy := []byte(`{"gmail":true,"calendar":"readonly","contacts":true,"drive":true}`)
++ 	if err := os.WriteFile(path, legacy, 0o600); err != nil {
++ 		t.Fatalf("Load legacy: %v", err)
++ 		t.Errorf("expected drive readonly after loading legacy, got %s", cfg.Drive)
++ 	reloaded, err := Load(dir)
++ 		t.Fatalf("Reload: %v", err)
++ 	if reloaded.Drive != ModeReadOnly {
++ 		t.Errorf("expected drive readonly after round-trip, got %s", reloaded.Drive)
+
+### internal/google/docs.go  [code]
++ package google
++ import (
++ 	"context"
++ 	"errors"
++ 	"fmt"
++ 	"github.com/PanthroCorp-Limited/openclaw-skills/google-workspace/internal/config"
++ 	"golang.org/x/oauth2"
++ 	"google.golang.org/api/docs/v1"
++ 	"google.golang.org/api/option"
++ )
++ // ErrDocsReadOnly is returned when a write operation is attempted in readonly mode.
++ var ErrDocsReadOnly = errors.New("docs is configured as readonly; change to readwrite with 'google-workspace config set --docs=readwrite' then re-authenticate")
++ // DocsClient provides access to the Google Docs API with configurable
++ // read/write mode.
++ type DocsClient struct {
++ 	svc  *docs.Service
++ 	mode config.ServiceMode
++ }
++ }
++ }
++ }
++ }
++ }
++ // NewDocsClient creates a Docs API client using the provided token source.
++ func NewDocsClient(ctx context.Context, ts oauth2.TokenSource, mode config.ServiceMode) (*DocsClient, error) {
++ 	svc, err := docs.NewService(ctx, option.WithTokenSource(ts))
++ 	if err != nil {
++ 	if err != nil {
++ 	if err != nil {
++ 	if err != nil {
++ 	if err != nil {
++ 		return nil, fmt.Errorf("creating docs service: %w", err)
++ 	}
++ 	}
++ 	}
++ 	}
++ 	}
++ 	}
++ 	}
++ 	}
++ 	}
++ 	}
++ 	}
++ 	return &DocsClient{svc: svc, mode: mode}, nil
++ // GetDocument retrieves a document by ID.
++ func (c *DocsClient) GetDocument(ctx context.Context, docID string) (*docs.Document, error) {
++ 	doc, err := c.svc.Documents.Get(docID).Context(ctx).Do()
++ 		return nil, fmt.Errorf("getting document %s: %w", docID, err)
++ 	return doc, nil
++ // InsertText inserts text at the given index. Use index 1 for the start of the
++ // document body. If index is 0, the text is appended to the end of the body.
++ // Requires readwrite mode.
++ // Requires readwrite mode.
++ func (c *DocsClient) InsertText(ctx context.Context, docID string, text string, index int64) error {
++ 	if c.mode != config.ModeReadWrite {
++ 	if c.mode != config.ModeReadWrite {
++ 	if c.mode != config.ModeReadWrite {
++ 		return ErrDocsReadOnly
++ 	var loc *docs.Location
++ 	if index > 0 {
++ 		loc = &docs.Location{Index: index}
++ 	} else {
++ 		loc = &docs.Location{Index: 1}
++ 	req := &docs.BatchUpdateDocumentRequest{
++ 	req := &docs.BatchUpdateDocumentRequest{
++ 		Requests: []*docs.Request{
++ 		Requests: []*docs.Request{
++ 			{
++ 			{
++ 				InsertText: &docs.InsertTextRequest{
++ 					Text:     text,
++ 					Location: loc,
++ 				},
++ 				},
++ 			},
++ 			},
++ 		},
++ 		},
++ 	_, err := c.svc.Documents.BatchUpdate(docID, req).Context(ctx).Do()
++ 		return fmt.Errorf("inserting text in %s: %w", docID, err)
++ 	return nil
++ // ReplaceAllText replaces all occurrences of find with replace in the document.
++ func (c *DocsClient) ReplaceAllText(ctx context.Context, docID, find, replace string) (*docs.BatchUpdateDocumentResponse, error) {
++ 		return nil, ErrDocsReadOnly
++ 		return nil, ErrDocsReadOnly
++ 				ReplaceAllText: &docs.ReplaceAllTextRequest{
++ 					ContainsText: &docs.SubstringMatchCriteria{
++ 						Text:      find,
++ 						MatchCase: true,
++ 					},
++ 					ReplaceText: replace,
++ 	resp, err := c.svc.Documents.BatchUpdate(docID, req).Context(ctx).Do()
++ 	resp, err := c.svc.Documents.BatchUpdate(docID, req).Context(ctx).Do()
++ 		return nil, fmt.Errorf("replacing text in %s: %w", docID, err)
++ 	return resp, nil
++ 	return resp, nil
++ // BatchUpdate performs a raw batch update. Requires readwrite mode.
++ func (c *DocsClient) BatchUpdate(ctx context.Context, docID string, requests []*docs.Request) (*docs.BatchUpdateDocumentResponse, error) {
++ 	req := &docs.BatchUpdateDocumentRequest{Requests: requests}
++ 		return nil, fmt.Errorf("batch update on %s: %w", docID, err)
+
+### internal/google/drive.go  [code]
+- // DriveClient provides read-only access to the Google Drive API.
+- // No create, update, or delete operations exist in this type.
+- 	svc *drive.Service
+- func NewDriveClient(ctx context.Context, ts oauth2.TokenSource) (*DriveClient, error) {
+- 	return &DriveClient{svc: svc}, nil
++ 	"errors"
++ 	"github.com/PanthroCorp-Limited/openclaw-skills/google-workspace/internal/config"
++ // ErrDriveReadOnly is returned when a write operation is attempted in readonly mode.
++ var ErrDriveReadOnly = errors.New("drive is configured as readonly; change to readwrite with 'google-workspace config set --drive=readwrite' then re-authenticate")
++ }
++ }
++ }
++ // DriveClient provides access to the Google Drive API with configurable
++ // read/write mode. File write operations do not exist in this type; write
++ // access is limited to comments.
++ 	svc  *drive.Service
++ 	mode config.ServiceMode
++ func NewDriveClient(ctx context.Context, ts oauth2.TokenSource, mode config.ServiceMode) (*DriveClient, error) {
++ 	if err != nil {
++ 	if err != nil {
++ 	if err != nil {
++ 	}
++ 	}
++ 	}
++ 	}
++ 	}
++ 	return &DriveClient{svc: svc, mode: mode}, nil
++ 		Context(ctx).
++ 		Context(ctx).
++ 		Context(ctx).
++ 		Do()
++ 		Do()
++ 		Do()
++ // ListComments returns comments on a file. Works in both readonly and readwrite modes.
++ func (c *DriveClient) ListComments(ctx context.Context, fileID string, maxResults int64) ([]*drive.Comment, error) {
++ 	resp, err := c.svc.Comments.List(fileID).
++ 		PageSize(maxResults).
++ 		Fields("comments(id,author(displayName,emailAddress),content,createdTime,resolved,replies(id,author(displayName,emailAddress),content,createdTime))").
++ 		return nil, fmt.Errorf("listing comments on %s: %w", fileID, err)
++ 	return resp.Comments, nil
++ // CreateComment adds a comment to a file. Requires readwrite mode.
++ func (c *DriveClient) CreateComment(ctx context.Context, fileID, content string) (*drive.Comment, error) {
++ 	if c.mode != config.ModeReadWrite {
++ 	if c.mode != config.ModeReadWrite {
++ 		return nil, ErrDriveReadOnly
++ 		return nil, ErrDriveReadOnly
++ 	comment, err := c.svc.Comments.Create(fileID, &drive.Comment{Content: content}).
++ 		Fields("id,author(displayName,emailAddress),content,createdTime").
++ 		Fields("id,author(displayName,emailAddress),content,createdTime").
++ 		return nil, fmt.Errorf("creating comment on %s: %w", fileID, err)
++ 	return comment, nil
++ // ReplyToComment replies to an existing comment. Requires readwrite mode.
++ func (c *DriveClient) ReplyToComment(ctx context.Context, fileID, commentID, content string) (*drive.Reply, error) {
++ 	reply, err := c.svc.Replies.Create(fileID, commentID, &drive.Reply{Content: content}).
++ 		return nil, fmt.Errorf("replying to comment %s on %s: %w", commentID, fileID, err)
++ 	return reply, nil
+
+### internal/google/sheets.go  [code]
++ package google
++ import (
++ 	"context"
++ 	"errors"
++ 	"fmt"
++ 	"github.com/PanthroCorp-Limited/openclaw-skills/google-workspace/internal/config"
++ 	"golang.org/x/oauth2"
++ 	"google.golang.org/api/option"
++ 	"google.golang.org/api/sheets/v4"
++ )
++ // ErrSheetsReadOnly is returned when a write operation is attempted in readonly mode.
++ var ErrSheetsReadOnly = errors.New("sheets is configured as readonly; change to readwrite with 'google-workspace config set --sheets=readwrite' then re-authenticate")
++ // SheetsClient provides access to the Google Sheets API with configurable
++ // read/write mode.
++ type SheetsClient struct {
++ 	svc  *sheets.Service
++ 	mode config.ServiceMode
++ }
++ }
++ }
++ }
++ }
++ // NewSheetsClient creates a Sheets API client using the provided token source.
++ func NewSheetsClient(ctx context.Context, ts oauth2.TokenSource, mode config.ServiceMode) (*SheetsClient, error) {
++ 	svc, err := sheets.NewService(ctx, option.WithTokenSource(ts))
++ 	if err != nil {
++ 	if err != nil {
++ 	if err != nil {
++ 	if err != nil {
++ 		return nil, fmt.Errorf("creating sheets service: %w", err)
++ 	}
++ 	}
++ 	}
++ 	}
++ 	}
++ 	}
++ 	}
++ 	return &SheetsClient{svc: svc, mode: mode}, nil
++ // GetSpreadsheet retrieves spreadsheet metadata including sheet names.
++ func (c *SheetsClient) GetSpreadsheet(ctx context.Context, spreadsheetID string) (*sheets.Spreadsheet, error) {
++ 	ss, err := c.svc.Spreadsheets.Get(spreadsheetID).
++ 		Fields("spreadsheetId,properties(title),sheets(properties(sheetId,title,index))").
++ 		Context(ctx).
++ 		Context(ctx).
++ 		Context(ctx).
++ 		Do()
++ 		Do()
++ 		Do()
++ 		return nil, fmt.Errorf("getting spreadsheet %s: %w", spreadsheetID, err)
++ 	return ss, nil
++ // ReadRange reads cell values from the specified A1-notation range.
++ func (c *SheetsClient) ReadRange(ctx context.Context, spreadsheetID, rangeA1 string) (*sheets.ValueRange, error) {
++ 	resp, err := c.svc.Spreadsheets.Values.Get(spreadsheetID, rangeA1).
++ 		return nil, fmt.Errorf("reading range %s from %s: %w", rangeA1, spreadsheetID, err)
++ 	return resp, nil
++ // WriteRange writes cell values to the specified A1-notation range.
++ // When raw is true, values are stored as-is without formula evaluation.
++ // When raw is false, values are interpreted as if typed by a user (formulas
++ // are evaluated). Requires readwrite mode.
++ func (c *SheetsClient) WriteRange(ctx context.Context, spreadsheetID, rangeA1 string, values [][]interface{}, raw bool) error {
++ 	if c.mode != config.ModeReadWrite {
++ 		return ErrSheetsReadOnly
++ 	inputOption := "USER_ENTERED"
++ 	if raw {
++ 		inputOption = "RAW"
++ 	vr := &sheets.ValueRange{
++ 		Range:  rangeA1,
++ 		Values: values,
++ 	_, err := c.svc.Spreadsheets.Values.Update(spreadsheetID, rangeA1, vr).
++ 		ValueInputOption(inputOption).
++ 		return fmt.Errorf("writing range %s in %s: %w", rangeA1, spreadsheetID, err)
++ 	return nil

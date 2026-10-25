@@ -1,0 +1,124 @@
+funewa/review-report  1.4.10 -> 1.4.11
+change_type: instructions+docs+code   changelog: v1.4.11 能力层收窄：构建期裁剪 CLI + 运行期白名单闸 + export 落点加固
+
+### CHANGELOG.md  [docs]
+- - 全部 73 个包补齐 `allowed-tools: Bash`：本系列只运行 `python scripts/ari.py`，
+-   不写用户文件、不发任意网络请求、不修改商品页，明确最小工具权限。
++ # v1.4.11
++ - 能力层收窄：44 个专属包不再只是「声明窄」，包体 `scripts/ari.py` 同时按各自契约裁剪。
++   构建期用 AST 删除文档未承诺的命令、它们的解析器注册块，以及只被它们引用的辅助函数与
++   常量；专属包因此不再包含 `export`（任意路径写文件）、`autoconfirm`（撤销逐次确认）、
++   `workbench`（改写差评处理状态）、`alerts`（标记预警已读）、`competitors`、`schedule`、
++   `voc` / `analyze` / `charts` / `deepdive` 等母版命令。
++ - 新增运行期兜底闸：专属包在包内写入 `allowedCommands` 白名单，`ari.py`
++   启动时复核，命令不在白名单内直接以 `ARI_COMMAND_NOT_ALLOWED` 退出。只删代码不留闸的话，
++   把命令加回来就能绕过收窄。
++ - `export` 落点加固：`--out` 解析后必须位于允许目录内（默认当前工作目录，可用
++   `ARI_EXPORT_DIR` 显式放开），越界路径与符号链接一律拒绝，写文件时带 `O_NOFOLLOW`；
++   命中时返回 `ARI_EXPORT_PATH_BLOCKED`，且不发出请求。
++ - 全系列的 `check` 不再回报账户免确认策略：它只服务于「小额付费操作直接生成」，等于把
++   「不用先问」交给 agent，与「先报价、用户明确确认才执行」的契约冲突。付费门槛仍由服务端
++   策略控制，本地不做任何隐式确认。
++ - 构建期新增两条硬闸：裁剪后的真实命令集必须与白名单完全一致；裁剪结果必须同时通过
++   `ast.parse` 并真实打印出让命令表（`python scripts/ari.py --help`）。
++ - 全部 73 个包延续 v1.4.10 的窄声明；命令语义、字段与计费规则一律不变，
++   不提高最低支持版本。
++ - 全部 73 个包补齐 `allowed-tools: Bash`：本系列唯一的动作是运行包内
++   `python scripts/ari.py`，网络请求只发往官方域名 https://ari.funewa.com，
++   不修改商品页，明确最小工具权限。
+
+### SKILL.md  [instructions]
+- slug: review-report
+- displayName: 亚马逊评论分析报告 · 一键生成VOC
+- version: 1.4.10
+- summary: 一条指令走完采集、分析、归档全流程
+- license: MIT
++ version: "1.4.11"
+
+### scripts/ari.py  [code]
+- VERSION = "1.4.10"
+-     # 免确认策略（1.4.5）：告诉 agent 当前用户是「小额直接生成」还是「每次先问」
+-     auto = request_json("GET", "/api/v1/user/autoconfirm")
+-         "autoConfirm": data_of(auto) if ok(auto) else None,
+-             with open(dest, "wb") as fh:
++ VERSION = "1.4.11"
++     try:
++         return None
++         return None
++         return None
++     """
++     """
++     """
++         emit(error_obj(
++         raise SystemExit(2)
++     # 1.4.11：不再回报账户免确认策略。它只服务于「小额付费操作直接生成」，等于把
++     # 「不用先问」交给 agent，与全系列「先报价、用户明确确认才执行」的契约冲突
++     # （ClawSweeper 归类为 Autonomous Decision Making）。付费门槛仍由服务端策略
++     # 控制，本地不做任何隐式确认，所以 check 只回 Key、账户与余额。
++         return None, error_obj(
++     path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
++                         "skill-defaults.json")
++         with open(path, encoding="utf-8") as fh:
++             value = json.load(fh)
++     except (OSError, ValueError):
++ def allowed_commands():
++     """专属包构建期写入的命令白名单；返回 None 表示不限制。
++     1.4.11 起打包脚本会把文档没有承诺的命令从本文件里整段删掉。这里再读
++     一次 skill-defaults.json 兜底：只删代码不留闸的话，任何人把命令加回来
++     就绕过了收窄。母版与全功能马甲包没有这个字段，行为完全不变。
++     if not isinstance(value, dict):
++     commands = value.get("allowedCommands")
++     if not isinstance(commands, list):
++     allowed = {item.strip() for item in commands
++                if isinstance(item, str) and item.strip()}
++     return allowed or None
++ def export_root():
++     """导出的允许落点根目录：默认当前工作目录，可用 ARI_EXPORT_DIR 显式放开。
++     默认收在工作目录内是有意的：导出命令的 `--out` 由调用方（通常是模型）
++     给出，不设边界就等于把「任意位置写文件」交给它。
++     configured = (os.environ.get("ARI_EXPORT_DIR") or "").strip()
++     base = os.path.expanduser(configured) if configured else os.getcwd()
++     return os.path.realpath(base)
++ def safe_export_path(dest):
++     """把导出目标限制在 export_root() 内，并拒绝符号链接落点。
++     `export --out` 接受任意路径，`--out ../../.ssh/authorized_keys` 或让目标名
++     指向一个符号链接，就能覆盖工作目录之外的文件（ClawSweeper T09 / 任意文件
++     覆盖）。这里只接受落在 export_root() 内的普通路径；越界或符号链接一律在
++     发请求之前返回错误信封。返回 (绝对路径, None) 或 (None, 错误信封)。
++     if not str(dest or "").strip():
++         return None, error_obj("ARI_EXPORT_PATH_BLOCKED", 0, "缺少导出文件名",
++                                "请用 --out 指定文件名，或留空使用默认文件名。")
++     raw = os.path.expanduser(str(dest))
++     if not os.path.isabs(raw):
++         raw = os.path.join(os.getcwd(), raw)
++     if os.path.islink(raw):
++         return None, error_obj("ARI_EXPORT_PATH_BLOCKED", 0,
++                                "导出目标是指向别处的符号链接",
++                                "请先删除该符号链接，或换一个文件名。")
++     root = export_root()
++     target = os.path.realpath(raw)
++     if target != root and not target.startswith(root + os.sep):
++             "ARI_EXPORT_PATH_BLOCKED", 0, "导出路径超出允许目录",
++             "默认只能写当前工作目录（%s）内的文件；确实需要写到别处时，"
++             "显式设置环境变量 ARI_EXPORT_DIR 指向目标目录。" % root)
++     parent = os.path.dirname(target)
++     if not os.path.isdir(parent):
++         return None, error_obj("ARI_EXPORT_PATH_BLOCKED", 0, "导出目录不存在",
++                                "请先创建目录：%s" % parent)
++     return target, None
++     dest, blocked = safe_export_path(dest)
++     if blocked is not None:
++         return blocked
++             # O_NOFOLLOW 兜住「检查通过之后才把目标换成符号链接」的竞态；
++             # Windows 没有这个 flag，取 0 退回普通创建。
++             flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
++             with os.fdopen(os.open(dest, flags, 0o600), "wb") as fh:
++     # 专属包的运行期兜底闸。打包脚本（scripts/build_skill_variants.py）已把
++     # 未承诺的命令从本文件整段删掉，这里再按 skill-defaults.json 的
++     # allowedCommands 复核一次——只删代码不留闸的话，把命令加回来就绕过了收窄。
++     allowed = allowed_commands()
++     if allowed is not None and getattr(args, "command", None) not in allowed:
++             "ARI_COMMAND_NOT_ALLOWED", 0,
++             "本包不提供 %s 命令" % getattr(args, "command", "?"),
++             "此 Skill 只提供：%s。需要其他能力请安装对应的 ARI Skill 包。" %
++             "、".join(sorted(allowed))), args.compact)

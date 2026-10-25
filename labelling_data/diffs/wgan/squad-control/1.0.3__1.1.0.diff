@@ -1,0 +1,585 @@
+wgan/squad-control  1.0.3 -> 1.1.0
+change_type: instructions+docs+code   changelog: Multi-workspace support: account-level API keys, workspace object embedded per task
+
+### SKILL.md  [instructions]
+-     description: API key from Squad Control Settings → API Keys. Scoped to your workspace.
+- Parse `workspace.repoUrl` and `workspace.githubToken` from the pending response.
+- Count agents with `status = "running"`. The concurrency limit comes from the workspace API response: `workspace.agentConcurrency` (default: 2 if not set). If running agents ≥ limit, skip all spawning this cycle and reply `HEARTBEAT_OK`.
+- Also, never dispatch more than `workspace.agentConcurrency` tasks per cron run. The rest will be picked up on the next run.
+- Then spawn a sub-agent with the task's agent persona:
+-   label: "${agent.name}-${taskTitle}",
++ version: 1.1.0
++     description: >
++       API key from Squad Control Settings → API Keys. Can be workspace-scoped (single workspace)
++       or account-scoped (all workspaces). Account-scoped keys are recommended for multi-workspace
++       setups — tasks will include an embedded workspace object with all config needed.
++ Parse workspace config from the response (see **Multi-Workspace Response Handling** below).
++ ### Multi-Workspace Response Handling
++ `/api/tasks/pending` can return tasks from **multiple workspaces** when using an account-level API key. Each task includes an embedded `workspace` object with all config needed to work on it.
++ **Response shape — workspace-scoped key (legacy / single-workspace):**
++ ```json
++ ```json
++ {
++ {
++   "workspace": { "_id": "wsId", "name": "MyApp", "repoUrl": "...", "githubToken": "..." },
++   "tasks": [{ "_id": "taskId", "title": "...", "agent": { ... } }]
++ }
++ }
++ }
++ ```
++ ```
++ ```
++ ```
++ → `workspace` is at the top level; tasks do not have their own workspace object.
++ **Response shape — account-scoped key (multi-workspace):**
++   "tasks": [
++     {
++       "_id": "taskId",
++       "title": "...",
++       "workspace": {
++         "_id": "wsId",
++         "name": "MyApp",
++         "repoUrl": "https://github.com/org/repo",
++         "githubToken": "ghp_...",
++         "agentConcurrency": 3
++       },
++       "agent": { ... }
++     }
++   ]
++ → Each task carries its own `workspace` object. Tasks from different workspaces may appear in the same response.
++ **Handling both shapes (backward compatible):**
++ ```javascript
++ ```javascript
++ // For each task:
++ // - If task.workspace is present → use it directly
++ // - If not → use the top-level workspace from the response
++ const wsConfig = task.workspace ?? response.workspace;
++ const repoUrl = wsConfig.repoUrl;
++ const githubToken = wsConfig.githubToken;
++ const concurrencyLimit = wsConfig.agentConcurrency ?? 2;
++ **Concurrency per workspace:** When tasks from multiple workspaces are returned, apply `agentConcurrency` **per workspace independently**. Do not count agents running for workspace A against workspace B's limit.
++ // Group by workspace, then dispatch up to concurrency limit for each
++ const byWorkspace = groupBy(tasks, t => (t.workspace ?? topLevelWs)._id);
++ for (const [wsId, wsTasks] of Object.entries(byWorkspace)) {
++   const ws = wsTasks[0].workspace ?? topLevelWs;
++   const limit = ws.agentConcurrency ?? 2;
++   const running = countRunningAgentsFor(wsId);
++   const slots = Math.max(0, limit - running);
++   for (const task of wsTasks.slice(0, slots)) {
++     dispatch(task, ws);
++   }
++ Count agents with `status = "running"`. The concurrency limit comes from `workspace.agentConcurrency` (default: 2 if not set).
++ **With a single workspace:** If running agents ≥ limit, skip all spawning this cycle and reply `HEARTBEAT_OK`.
++ **With multiple workspaces (account-level key):** Apply the limit **per workspace independently**. A workspace with `agentConcurrency: 3` can have up to 3 agents running regardless of what other workspaces are doing. Group tasks by workspace and check each workspace's running count separately.
++ Also, never dispatch more than `workspace.agentConcurrency` tasks per workspace per cron run. The rest will be picked up on the next run.
++ Then spawn a sub-agent with the task's agent persona. Include the workspace name in the label so multi-workspace runs are easy to identify:
++   label: "${agent.name}-${workspace.name}-${taskTitle}",
++ When building this prompt, resolve workspace config as follows:
++ - **If `task.workspace` is present** (account-scoped key): use `task.workspace.repoUrl`, `task.workspace.githubToken`, `task.workspace.agentConcurrency`
++ - **If `task.workspace` is absent** (workspace-scoped key): use the top-level `workspace` from the response
++ 9. **Applying global concurrency instead of per-workspace** — When handling tasks from multiple workspaces (account-level key), each workspace has its own `agentConcurrency` limit. Don't count agents running for workspace A against workspace B's limit.
++ 10. **Ignoring `task.workspace` and always using top-level config** — Account-level keys embed workspace config directly in each task. If `task.workspace` is present, use it; fall back to the top-level workspace only when it's absent.
+
+### config/workspaces.json  [code]
++ {
++   "workspaces": [
++     {
++     {
++       "id": "squad-control",
++       "name": "Squad Control",
++       "enabled": true,
++       "enabled": true,
++       "api": {
++       "api": {
++         "url": "https://upbeat-eagle-356.convex.site",
++         "url": "https://upbeat-eagle-356.convex.site",
++         "key": "mc_1806e66c579840e5b3b07d99beb20906"
++       },
++       },
++       },
++       },
++       },
++       },
++       },
++       },
++       "repo": {
++       "repo": {
++         "path": "/root/clawd/git/mission-control",
++         "remote": "origin",
++         "remote": "origin",
++         "branch": "main",
++         "branch": "main",
++         "githubRepo": "wgan/squad-control"
++       "deploy": {
++       "deploy": {
++         "pipeline": "convex",
++         "convex": {
++           "deployKeyEnv": "CONVEX_DEPLOY_KEY",
++           "deployKey": "dev:upbeat-eagle-356|eyJ2MiI6IjA4Zjg3NDY3ZTljNzQ5M2Y4MDI3ZjY1ZjU0MjVhMDk0In0="
++         },
++         },
++         "buildCheck": {
++         "buildCheck": {
++           "type": "vercel",
++           "githubRepo": "wgan/squad-control"
++         }
++         }
++       "agents": {
++       "agents": {
++         "cody": "j973wm4sh9gpm1gjhcsqrcyf1580t5g2",
++         "hawk": "j975j53qbwxf0d1hf4r14j246180x1w6",
++         "sid": "j97f47ftbhm3521ewyt783ckah80vxd3",
++         "pixel": "j970qbxd5501pgvd8h97wpynbd80yydq",
++         "doc": "j9703nrfrw7xxam2p7cvqp3jkx812dq3"
++       "stack": {
++       "stack": {
++         "type": "nextjs-convex",
++         "buildCommand": "npm run build",
++         "buildCommand": "npm run build",
++         "testCommand": "npm test",
++         "keyFiles": ["convex/schema.ts", "convex/http.ts", "src/app/layout.tsx", "package.json"],
++         "conventions": "Convex for backend (mutations/queries/actions), Next.js App Router, Tailwind CSS, Clerk auth"
++       }
++       }
++     },
++       "id": "picturebooks",
++       "name": "PictureBooks",
++         "key": "mc_28165f0799f04693a11d77a82f3b6e3a"
++         "path": "/root/clawd/git/train-game",
++         "githubRepo": "wgan/picturebooks"
++         "pipeline": "firebase",
++         "firebase": {
++           "project": "toddlerbooks-prod",
++           "tokenEnv": "FIREBASE_TOKEN",
++           "targets": ["hosting", "functions"]
++           "type": "none"
++         "cody": "j976e69qexd6wpgt0qdg14ygm18194cy",
++         "hawk": "j97f5h67bycykagsnn96q13wr981948x",
++         "sid": "j9728bshg7w95emvzb33xd625n819je0",
++         "pixel": "j979t1f3q61h4xfqcm5ee0m1qh81862n",
++         "doc": "j97680c6z7mb1cp8v1f91by7qs818d2d"
++         "type": "vite-firebase",
++         "testCommand": null,
++         "keyFiles": ["src/App.tsx", "src/main.tsx", "firebase.json", "package.json"],
++         "conventions": "React + Vite, Firebase (Firestore + Auth + Hosting + Functions), Capacitor for native, Gemini AI for story generation"
++     }
++   ]
++ }
+
+### references/api.md  [docs]
+- Response:
+-     "_id": "...",
+-     "githubToken": "ghp_xxxx"
+- **Important:** `workspace.repoUrl` and `workspace.githubToken` are your repo credentials. Use them when cloning. `githubToken` may be empty for public repos.
++ ---
++ ---
++ ## API Key Scopes
++ **Workspace-scoped key** — bound to a single workspace. All endpoints return/operate on that workspace only.
++ **Account-scoped key** — spans all workspaces in your account.
++ - `/api/tasks/pending` returns tasks from **all workspaces**, each with an embedded `workspace` object
++ - `/api/tasks/list` returns tasks across all workspaces; use `?workspaceId=<id>` to scope to one
++ - All write endpoints (`pickup`, `complete`, `set-review`, etc.) work normally with either key type
++ **Response (workspace-scoped key):**
++ ```json
++ {
++     "_id": "wsId",
++     "githubToken": "ghp_xxxx",
++     "agentConcurrency": 2
++   "tasks": [{
++     "_id": "taskId",
++     "title": "Add dark mode toggle",
++     "description": "...",
++     "priority": "medium",
++     "tags": ["frontend"],
++     "agent": {
++       "_id": "agentId",
++       "name": "Cody",
++       "role": "Developer",
++       "model": "anthropic/claude-sonnet-4-6",
++       "soulMd": "You are Cody..."
++     }
++   }]
++ }
++ ```
++ **Response (account-scoped key):**
++     "workspace": {
++       "_id": "wsId",
++       "name": "My Workspace",
++       "repoUrl": "https://github.com/org/repo",
++       "githubToken": "ghp_xxxx",
++       "agentConcurrency": 3
++     },
++ With an account-scoped key, tasks from different workspaces may appear in the same response. Each task's `workspace` object contains all config needed — no local workspace file required.
++ ### The `workspace` Object
++ | Field | Type | Description |
++ |---|---|---|
++ | `_id` | string | Workspace ID |
++ | `name` | string | Human-readable workspace name |
++ | `repoUrl` | string | GitHub repo URL |
++ | `githubToken` | string | GitHub token for this workspace's repo (may be empty for public repos) |
++ | `agentConcurrency` | number | Max simultaneous agents for this workspace |
++ **Important:** When `task.workspace` is present, use it directly for all workspace config. If absent, use the top-level `workspace` from the response (workspace-scoped key, backward-compatible behavior).
++ ## GET /api/tasks/list
++ List all tasks accessible to this API key.
++ Optional query params:
++ - `?status=<status>` — filter by task status (e.g. `review`, `working`, `done`)
++ - `?workspaceId=<id>` — filter by workspace ID (useful with account-scoped keys to scope results to one workspace)
++ Response: `{ "tasks": [...] }`
+
+### references/architecture.md  [docs]
++ # Mission Control Architecture & Integration
++ ## Gateway Integration
++ - **Pattern:** Pull-based (Agent polls MC, no public Gateway URL needed)
++ - **Flow:** Heartbeat → poll pending → pickup → spawn sub-agent → complete
++ - **Auth:** API key in `x-api-key` header (generated in Settings)
++ - **Convex deploy:** Needs interactive auth; run `npx convex dev` locally or use deploy key on VPS.
++ - **GitHub PRs:** Create via curl + GitHub API.
++ ## Architecture Decisions
++ - **Multi-tenancy:** 1 Workspace = 1 Project.
++ - **Agent Memory:** Lives in Convex (`activities` table).
++ - **Agent Identity:** Passed in spawn task (dynamic `soulMd`, not pre-configured files).
++ - **Worktrees:** Task-based temp directories with git worktrees.
++ - **Coding Model:** Opus 4.6 preferred for Cody.
++ - **Review Loop:** Cody builds → set-review → Hawk reviews → approve/bounce.
++ - **Triggers:** System built for schedule/webhook/event with CRUD.
++ ## Agent Roles
++ - **System:** `system:gateway` (Actor for API calls)
++ - **Code Reviewer:** Hawk (Reviews PRs)
++ - **Coder:** Cody (Builds features)
+
+### references/setup.md  [docs]
++ **About SC_API_KEY scopes:**
++ - **Workspace-scoped key** — bound to a single workspace. `/api/tasks/pending` returns only that workspace's tasks. Good for single-workspace setups.
++ - **Account-scoped key** — spans all workspaces in your account. `/api/tasks/pending` returns tasks from all workspaces, each with an embedded `workspace` object containing repo URL, GitHub token, and concurrency settings. **Recommended for multi-workspace setups** — no local workspace config needed.
++ > Both key types are fully supported. If you're only using one workspace, a workspace-scoped key works fine. If you're managing multiple projects from one OpenClaw instance, generate an account-scoped key in Squad Control → Settings → API Keys.
+
+### scripts/check-build-status.sh  [code]
++ #!/bin/bash
++ # Check build status for a PR before merging
++ # Usage: check-build-status.sh <workspace_id> <pr_number>
++ # Exit codes: 0=success (merge ok), 1=failure, 2=pending, 3=error
++ # Output: status string (success|failure|pending|skip|error)
++ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
++ source "$SCRIPT_DIR/workspace-utils.sh"
++ WS_ID="$1"
++ PR_NUMBER="$2"
++ if [ -z "$WS_ID" ] || [ -z "$PR_NUMBER" ]; then
++   echo "error"
++   echo "Usage: check-build-status.sh <workspace_id> <pr_number>" >&2
++   exit 3
++ fi
++ BUILD_CHECK=$(get_build_check_type "$WS_ID")
++ GITHUB_REPO=$(get_github_repo "$WS_ID")
++ TOKEN=$(cat /root/.git-credentials | grep github | head -1 | sed 's|https://[^:]*:\([^@]*\)@.*|\1|')
++ case "$BUILD_CHECK" in
++   vercel)
++     # Get PR head SHA
++     HEAD_SHA=$(curl -s -H "Authorization: token $TOKEN" \
++     HEAD_SHA=$(curl -s -H "Authorization: token $TOKEN" \
++       "https://api.github.com/repos/$GITHUB_REPO/pulls/$PR_NUMBER" | jq -r '.head.sha')
++       "https://api.github.com/repos/$GITHUB_REPO/pulls/$PR_NUMBER" | jq -r '.head.sha')
++     if [ -z "$HEAD_SHA" ] || [ "$HEAD_SHA" = "null" ]; then
++     if [ -z "$HEAD_SHA" ] || [ "$HEAD_SHA" = "null" ]; then
++       echo "error"
++       echo "error"
++       exit 3
++       exit 3
++     fi
++     fi
++     # Check Vercel deployment status (statuses endpoint returns array or object with .statuses)
++     STATUS=$(curl -s -H "Authorization: token $TOKEN" \
++     STATUS=$(curl -s -H "Authorization: token $TOKEN" \
++       "https://api.github.com/repos/$GITHUB_REPO/commits/$HEAD_SHA/status" | \
++       jq -r '[.statuses[]? | select(.context | contains("vercel"))] | .[0].state // "pending"')
++     case "$STATUS" in
++     case "$STATUS" in
++       success)
++         echo "success"
++         exit 0
++         ;;
++         ;;
++         ;;
++       failure|error)
++         echo "failure"
++         exit 1
++       pending|null)
++         echo "pending"
++         exit 2
++     esac
++     esac
++     ;;
++     ;;
++     ;;
++     ;;
++     ;;
++   github-actions)
++     # Check GitHub Actions status (for future use)
++       "https://api.github.com/repos/$GITHUB_REPO/commits/$HEAD_SHA/check-runs" | \
++       jq -r 'if (.check_runs | length) == 0 then "pending"
++               elif (.check_runs | all(.conclusion == "success")) then "success"
++               elif (.check_runs | any(.conclusion == "failure")) then "failure"
++               elif (.check_runs | any(.status == "in_progress" or .status == "queued")) then "pending"
++               else "pending" end')
++       success) echo "success"; exit 0 ;;
++       failure) echo "failure"; exit 1 ;;
++       *) echo "pending"; exit 2 ;;
++   firebase)
++     # Firebase: no pre-merge CI check — deploy is the verification
++     # Exit code based on deploy command result (handled by caller)
++     echo "skip"
++     echo "skip"
++     exit 0
++     exit 0
++   none|skip|"")
++   *)
++     echo "error"
++     echo "Unknown build check type: $BUILD_CHECK" >&2
++     exit 3
++ esac
+
+### scripts/check-reviews.sh  [code]
++ #!/bin/bash
++ # Check for tasks in review status that need Hawk's review
++ # Usage: check-reviews.sh [workspace_id]
++ # If workspace_id provided, reads config from workspace registry
++ # Otherwise falls back to hardcoded Squad Control defaults
++ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
++ source "$SCRIPT_DIR/workspace-utils.sh"
++ WS_ID="${1:-squad-control}"
++ API=$(get_api_url "$WS_ID")
++ KEY=$(get_api_key "$WS_ID")
++ # Get review tasks
++ REVIEW_TASKS=$(curl -s "$API/api/tasks/list?status=review" -H "x-api-key: $KEY")
++ # Filter: has PR deliverable, reviewIteration is 0 or null (not yet reviewed),
++ # AND pickedUpAt is null (not already being worked on by Hawk)
++ echo "$REVIEW_TASKS" | jq '[.tasks[] | select(
++   (.deliverables // [] | map(select(.type == "pr")) | length > 0) and
++   ((.reviewIteration // 0) == 0) and
++   (.pickedUpAt == null)
++ ) | {
++   taskId: ._id,
++   title,
++   prUrl: (.deliverables[] | select(.type == "pr") | .url),
++   prNumber: (.deliverables[] | select(.type == "pr") | .url | split("/") | last),
++   assignedAgentId
++ }]'
+
+### scripts/check_all_tasks.py  [code]
++ import json
++ import requests
++ import time
++ import os
++ CONFIG_PATH = "/root/clawd/git/civfanatics/skills/mission-control/config/workspaces.json"
++ def get_workspaces():
++     with open(CONFIG_PATH) as f:
++         return json.load(f)["workspaces"]
++ def check_workspace(ws):
++     if not ws.get("enabled"):
++         return None
++     ws_id = ws["id"]
++     api_url = ws["api"]["url"]
++     api_key = ws["api"]["key"]
++     headers = {"x-api-key": api_key}
++     # Check pending tasks
++     try:
++     try:
++         resp = requests.get(f"{api_url}/api/tasks/pending", headers=headers, timeout=10)
++         pending = resp.json().get("tasks", [])
++     except Exception as e:
++     except Exception as e:
++         print(f"Error checking pending tasks for {ws_id}: {e}")
++         pending = []
++     # Check stuck tasks
++         resp = requests.get(f"{api_url}/api/tasks/list", headers=headers, timeout=10)
++         all_tasks = resp.json().get("tasks", [])
++         now_ms = time.time() * 1000
++         stuck = []
++         stuck = []
++         for t in all_tasks:
++             if t.get("status") == "working" and t.get("deliverables"):
++                 started_at = t.get("startedAt")
++                 picked_up_at = t.get("pickedUpAt")
++                 is_stuck = False
++                 if not picked_up_at:
++                     is_stuck = True
++                     is_stuck = True
++                 elif started_at and (now_ms - started_at > 1800000): # 30 mins
++                 if is_stuck:
++                     stuck.append(t)
++         print(f"Error checking stuck tasks for {ws_id}: {e}")
++     return {
++         "workspace": ws,
++         "pending": pending,
++         "stuck": stuck
++     }
++ def main():
++     workspaces = get_workspaces()
++     results = []
++     for ws in workspaces:
++         res = check_workspace(ws)
++         if res and (res["pending"] or res["stuck"]):
++             results.append(res)
++     print(json.dumps(results))
++ if __name__ == "__main__":
++     main()
+
+### scripts/deploy.sh  [code]
++ #!/bin/bash
++ # Deploy a workspace based on its pipeline configuration
++ # Usage: deploy.sh <workspace_id>
++ # Exit codes: 0=success, 1=failure
++ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
++ source "$SCRIPT_DIR/workspace-utils.sh"
++ WS_ID="$1"
++ if [ -z "$WS_ID" ]; then
++   echo "Usage: deploy.sh <workspace_id>" >&2
++   exit 1
++ fi
++ PIPELINE=$(get_deploy_pipeline "$WS_ID")
++ REPO_PATH=$(get_repo_path "$WS_ID")
++ echo "Deploying $WS_ID (pipeline: $PIPELINE)"
++ case "$PIPELINE" in
++   convex)
++     DEPLOY_KEY=$(get_convex_deploy_key "$WS_ID")
++     if [ -z "$DEPLOY_KEY" ] || [ "$DEPLOY_KEY" = "null" ]; then
++       echo "ERROR: No Convex deploy key configured for $WS_ID" >&2
++       exit 1
++       exit 1
++       exit 1
++       exit 1
++       exit 1
++       exit 1
++     fi
++     fi
++     fi
++     fi
++     fi
++     fi
++     fi
++     cd "$REPO_PATH" || exit 1
++     cd "$REPO_PATH" || exit 1
++     echo "Running Convex deploy..."
++     CONVEX_DEPLOY_KEY="$DEPLOY_KEY" npx convex deploy 2>&1
++     DEPLOY_EXIT=$?
++     DEPLOY_EXIT=$?
++     if [ $DEPLOY_EXIT -ne 0 ]; then
++     if [ $DEPLOY_EXIT -ne 0 ]; then
++       echo "ERROR: Convex deploy failed (exit $DEPLOY_EXIT)" >&2
++     # Commit updated generated types if changed
++     if [ -n "$(git diff --name-only convex/_generated/ 2>/dev/null)" ]; then
++       echo "Committing updated generated types..."
++       git add convex/_generated/
++       git commit -m "chore: update generated Convex types"
++       git push origin main
++     echo "Convex deploy successful"
++     ;;
++     ;;
++     ;;
++     ;;
++   firebase)
++     PROJECT=$(get_firebase_project "$WS_ID")
++     TARGETS=$(get_workspace_field "$WS_ID" '.deploy.firebase.targets | join(",")')
++     TOKEN_ENV=$(get_workspace_field "$WS_ID" '.deploy.firebase.tokenEnv // "FIREBASE_TOKEN"')
++     # Source bashrc to get Firebase token
++     source ~/.bashrc 2>/dev/null
++     FIREBASE_TOKEN_VAL="${!TOKEN_ENV}"
++     if [ -z "$FIREBASE_TOKEN_VAL" ]; then
++       echo "ERROR: Firebase token not found in env var $TOKEN_ENV" >&2
++     # SAFETY: Remove stale dist/ before building to prevent deploying old artifacts
++     echo "Cleaning dist/..."
++     rm -rf dist/
++     # Build first
++     echo "Building..."
++     npm run build 2>&1
++     BUILD_EXIT=$?
++     if [ $BUILD_EXIT -ne 0 ]; then
++       echo "ERROR: Build failed (exit $BUILD_EXIT)" >&2
++     # Verify dist/ was actually created by the build
++     if [ ! -f "dist/index.html" ]; then
++       echo "ERROR: Build did not produce dist/index.html — aborting deploy" >&2
++     # Deploy
++     echo "Deploying to Firebase (project: $PROJECT, targets: $TARGETS)..."
++     firebase deploy --only "$TARGETS" --project "$PROJECT" --token "$FIREBASE_TOKEN_VAL" 2>&1
++       echo "ERROR: Firebase deploy failed (exit $DEPLOY_EXIT)" >&2
++     echo "Firebase deploy successful"
++   none|"")
++     echo "No deploy pipeline configured for $WS_ID — skipping"
++   *)
++     echo "ERROR: Unknown deploy pipeline: $PIPELINE" >&2
++     exit 1
++ esac
++ exit 0
+
+### scripts/workspace-utils.sh  [code]
++ #!/bin/bash
++ # Workspace registry utilities
++ # Source this file to access workspace configuration
++ SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
++ WORKSPACES_CONFIG="$SKILL_DIR/config/workspaces.json"
++ # List enabled workspace IDs
++ list_enabled_workspaces() {
++   jq -r '.workspaces[] | select(.enabled == true) | .id' "$WORKSPACES_CONFIG"
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ # List all workspace IDs
++ list_all_workspaces() {
++   jq -r '.workspaces[].id' "$WORKSPACES_CONFIG"
++ # Get a workspace config by ID (returns full JSON object)
++ get_workspace() {
++   local ws_id="$1"
++   local ws_id="$1"
++   local ws_id="$1"
++   jq ".workspaces[] | select(.id == \"$ws_id\")" "$WORKSPACES_CONFIG"
++ # Get a specific field from a workspace
++ # Usage: get_workspace_field "squad-control" ".api.url"
++ get_workspace_field() {
++   local field="$2"
++   jq -r ".workspaces[] | select(.id == \"$ws_id\") | $field" "$WORKSPACES_CONFIG"
++ # Get API URL for a workspace
++ get_api_url() {
++   get_workspace_field "$1" ".api.url"
++ # Get API key for a workspace
++ get_api_key() {
++   get_workspace_field "$1" ".api.key"
++ # Get repo path for a workspace
++ get_repo_path() {
++   get_workspace_field "$1" ".repo.path"
++ # Get GitHub repo (owner/name) for a workspace
++ get_github_repo() {
++   get_workspace_field "$1" ".repo.githubRepo"
++ # Get deploy pipeline type (convex, firebase, none)
++ get_deploy_pipeline() {
++   get_workspace_field "$1" ".deploy.pipeline"
++ # Get build check type (vercel, none)
++ get_build_check_type() {
++   get_workspace_field "$1" ".deploy.buildCheck.type"
++ # Get agent ID by role for a workspace
++ # Usage: get_agent_id "squad-control" "cody"
++ get_agent_id() {
++   local role="$2"
++   get_workspace_field "$ws_id" ".agents.$role"
++ # Get stack type for a workspace
++ get_stack_type() {
++   get_workspace_field "$1" ".stack.type"
++ # Get stack conventions (for spawn templates)
++ get_stack_conventions() {
++   get_workspace_field "$1" ".stack.conventions"
++ # Get Convex deploy key for a workspace
++ get_convex_deploy_key() {
++   get_workspace_field "$1" ".deploy.convex.deployKey"
++ # Get Firebase project for a workspace
++ get_firebase_project() {
++   get_workspace_field "$1" ".deploy.firebase.project"

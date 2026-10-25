@@ -1,0 +1,456 @@
+seairteng/macmini-knowledge-base  1.1.0 -> 1.2.0
+change_type: instructions+code   changelog: macmini-knowledge-base 1.2.0  - 新增“分批处理”机制，run_analysis.py和generate_catalog.js支持大批量文件断点续跑，自动分多批处理，每批完成后保存进度。 - 防止定时任务因文件过多导致超时失败，提升稳定性和可控性。 - SKILL.md 增加了详细的分批处理流程说明和手动断点触发命令。 - 现有功能和安装方法保持兼容，无需更改已有部署。
+
+### SKILL.md  [instructions]
++ ```bash
++ ```
++ ```
++ ```
++ ```
++ ```
++ ### 分批处理机制（2026-05-15 新增）
++ **解决场景：** 文件数量多（500+）时，一次性全量处理超过 cron 300s 超时限制
++ **核心思路：** 每次只处理一小批（20个），处理完立即保存进度并退出，下次定时任务自动继续下一批
++ #### run_analysis.py — 文档分析分批
++ 状态文件：analysis_state.json
++ ├── analyzed_files: [...]  已完成文件名
++ └── pending_files: [...]   待处理队列（文件名）
++ 每次运行流程：
++ 每次运行流程：
++ 1. 从 pending_files 取前 20 个文件名
++ 2. 全文提取 → 写入 summaries/
++ 3. pending_files 移除已处理，追加到 analyzed_files
++ 4. save_state() 持久化 → 退出
++ 下次触发时自动从断点恢复
++ **效果：** 300个待分析文件 → 分15次 cron 完成，每次 ~30s
++ #### generate_catalog.js — 标签提取分批
++ 进度文件：.catalog_progress.json
++ ├── last_index: 39     已处理到第几个（0-based）
++ ├── rows: [...]        每行标签数据
++ ├── total: 598        文件总数
++ └── done: false       是否全部完成
++ 1. 从 last_index+1 取 20 个文件
++ 2. 提取标签（缓存命中则跳过）
++ 3. 保存到 rows[last_index]
++ 4. 每批保存一次 progress.json
++ 5. 处理到最后一个？→ done=true → 生成完整目录
++ 6. 否则保存 progress.json → 退出
++ **效果：** 598个文件标签 → 分30批完成，每次 ~15s
++ #### 手动运行命令
++ # 手动触发一批文档分析
++ python3 ~/.openclaw/workspace/knowledge/.analysis/run_analysis.py
++ # 手动触发一批标签提取
++ cd ~/.openclaw/workspace/knowledge/.analysis && node generate_catalog.js
++ # 查看标签提取进度
++ cat ~/.openclaw/workspace/knowledge/.analysis/.catalog_progress.json | python3 -c "
++ import json,sys; d=json.load(sys.stdin)
++ print(f'{d[\"last_index\"]+1}/{d[\"total\"]} 个文件, done={d[\"done\"]}')"
++ **注意：** pending_files 为空时说明没有新文件，脚本直接退出。进度文件损坏可删除重新开始。
+
+### scripts/generate_catalog.js  [code]
+-   '宏观','微观','折现率','风险溢价','大城市','北上深','日本',
+-   'Hong Kong','Japan','REIT','TOD','industrial','park','infrastructure'
+- // 快速预检：只读前50KB做pdf-parse，判断是否有戏
+-     const result = spawnSync(
+-     const result = spawnSync(
+-     );
+-     );
+- // 完整pdf-parse
+-       { timeout: 30000, stdio: ['ignore', 'pipe', 'ignore'] }
+-       { timeout: 30000, stdio: ['ignore', 'pipe', 'ignore'] }
+- // OCR：pymupdf渲染+tesseract识别
+- const OCR_SCRIPT = `
+- import pymupdf, pytesseract, sys, os
+- doc = pymupdf.open(fp)
+- for i in range(min(len(doc), 3)):
+-     page = doc[i]
+-     mat = pymupdf.Matrix(2, 2)
+-     pix = page.get_pixmap(matrix=mat)
+-     pix.save(f'/tmp/ocr_cat_{i}.png')
+-     try:
+-         text = pytesseract.image_to_string(f'/tmp/ocr_cat_{i}.png', lang='eng+chi')
+-         if text.strip():
+-             text_parts.append(text[:500])
+-     finally:
+-         if os.path.exists(f'/tmp/ocr_cat_{i}.png'):
+-             os.remove(f'/tmp/ocr_cat_{i}.png')
+- doc.close()
+- sys.stdout.write(chr(0).join(text_parts))
+-     fs.writeFileSync(scriptPath, OCR_SCRIPT);
+-       'python3',
+-       'python3',
+-       [scriptPath, filepath, '3'],
+-     return (result.stdout || '').toString().replace(/\x00/g, '\n');
+-       [scriptPath, filepath],
+-       // Step 1: 快速预检（前50KB）
+-         // 预检命中关键词，用完整pdf-parse
+-         // 预检失败：要么是乱码（pdf-parse读出来是乱码），要么是真没内容
+-         // 直接走OCR，不浪费时间做完整pdf-parse
+-     } else if (ext === '.pptx' || ext === '.docx' || ext === '.xlsx') {
+-       let text = '';
+-       if (ext === '.pptx') text = extractPptxText(filepath);
+-         if (['.pdf', '.docx', '.xlsx', '.pptx', '.md'].includes(ext)) {
+-   let md = '# 📚 知识库文章目录\n\n';
+-   md += '> 自动生成，每晚更新\n\n';
+-   md += '| 序号 | 文件名 | 所在文件夹 | 核心标签 |\n';
+-   md += '|------|--------|------------|----------|\n';
+-   const BATCH = 5;
+-   for (let i = 0; i < files.length; i++) {
+-     const filepath = files[i];
+-     const filename = path.basename(filepath);
+-     const mtime = fs.statSync(filepath).mtimeMs;
+-     let tags;
+-     if (cache[filepath] && cache[filepath].mtime === mtime && cache[filepath].tags !== '待提取') {
+-       tags = cache[filepath].tags;
+-     } else {
+-       tags = extractTags(filepath);
+-       cache[filepath] = { mtime, tags };
+-     let folder = path.dirname(filepath).replace(KNOWLEDGE_DIR + '/', '');
+-     if (!folder || folder === KNOWLEDGE_DIR) folder = '根目录';
+-     md += `| ${i + 1} | ${filename} | ${folder} | ${tags} |\n`;
+-     if ((i + 1) % BATCH === 0) {
+-       saveCache(cache);
+-       process.stdout.write(`进度：${i + 1}/${files.length}\n`);
+-   saveCache(cache);
+-   md += '\n---\n';
+-   md += `*最后更新：${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}*\n`;
+-   md += `*共收录 ${files.length} 篇文章*\n`;
+-   fs.writeFileSync(CATALOG_FILE, md);
+-   process.stdout.write(`✅ 目录已更新，共 ${files.length} 篇文章\n`);
++ const PROGRESS_FILE = path.join(KNOWLEDGE_DIR, '.analysis/.catalog_progress.json');
++ const BATCH_SIZE = 20;  // 每批处理文件数
++   '宏观','微观','折现率','风险溢价','大城市','北上深','日本','建筑',
++   '施工','承包商','总包','分包','监理','验收','竣工','交付','成本',
++   '预算','结算','审计','合同','招投标','安全','质量','进度','管理',
++   'Hong Kong','Japan','REIT','TOD','industrial','park','infrastructure',
++   'construction','contractor','subcontractor','supervisor','acceptance','completion',
++   'cost','budget','settlement','audit','contract','bidding','safety','quality',
++   'schedule','management','project','engineering','building','architect'
++ const UNSUPPORTED_EXT = new Set([
++   '.zip','.rar','.7z','.tar','.gz','.emlsx','.emjsx','.dwg','.dxf',
++   '.msg','.pst','.ost','.bin','.dat','.iso','.mobi','.epub','.bak',
++   '.13jt','.log','.pdf','.tmp'
++ ]);
++   try {
++   try {
++   try {
++   try {
++   } catch (e) {}
++ }
++ }
++ }
++ }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++     if (result.error || result.status !== 0) return '';
++     if (result.error || result.status !== 0) return '';
++     if (result.error || result.status !== 0) return '';
++     return (result.stdout || '').toString();
++     return (result.stdout || '').toString();
++     return (result.stdout || '').toString();
++     return (result.stdout || '').toString();
++   } catch (e) {
++   } catch (e) {
++   } catch (e) {
++     return '';
++     return '';
++     return '';
++     const script = `
++     const script = `
++     const script = `
++ import sys
++ import sys
++ import sys
++ import fitz
++ import subprocess
++ import tempfile
++ import os
++ doc = fitz.open(fp)
++ for i, page in enumerate(doc):
++     if i >= 3: break
++     pix = page.get_pixmap(dpi=150)
++     with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
++         pix.save(tmp.name)
++         try:
++             result = subprocess.run(['tesseract', tmp.name, 'stdout', '-l', 'chi_sim+eng', '--psm', '6'],
++                                     capture_output=True, timeout=30)
++             if result.returncode == 0 and result.stdout:
++                 text_parts.append(result.stdout.decode('utf-8', errors='ignore')[:1000])
++         finally:
++             os.unlink(tmp.name)
++ print('\\n'.join(text_parts))
++ `;
++ `;
++     fs.writeFileSync(scriptPath, script);
++     fs.writeFileSync(scriptPath, script);
++     fs.writeFileSync(scriptPath, script);
++     const result = spawnSync('python3', [scriptPath, filepath], { timeout: 60000, stdio: ['ignore', 'pipe', 'ignore'] });
++     try { fs.unlinkSync(scriptPath); } catch (e) {}
++     try { fs.unlinkSync(scriptPath); } catch (e) {}
++     const result = spawnSync('python3', [scriptPath, filepath], { timeout: 30000, stdio: ['ignore', 'pipe', 'ignore'] });
++     const result = spawnSync('python3', [scriptPath, filepath], { timeout: 30000, stdio: ['ignore', 'pipe', 'ignore'] });
++     const result = spawnSync('python3', [scriptPath, filepath], { timeout: 30000, stdio: ['ignore', 'pipe', 'ignore'] });
++ function extractTextutil(filepath) {
++     const result = spawnSync('/usr/bin/textutil', ['-convert', 'txt', '-stdout', filepath],
++       { timeout: 30000, stdio: ['ignore', 'pipe', 'ignore'] });
++ function extractXlsText(filepath) {
++ import xlrd
++ wb = xlrd.open_workbook(sys.argv[1])
++ for sheet in wb.sheets():
++     for row in sheet.get_rows():
++         vals = [str(c.value) for c in row if str(c.value).strip()]
++         if vals:
++         if vals:
++             print(' '.join(vals))
++             print(' '.join(vals))
++     const scriptPath = '/tmp/extract_xls.py';
++ function extractXlsxText(filepath) {
++ from openpyxl import load_workbook
++ wb = load_workbook(sys.argv[1], data_only=True, read_only=True)
++ for sheet in wb.worksheets:
++     for row in sheet.iter_rows(values_only=True):
++         vals = [str(c) for c in row if c is not None and str(c).strip()]
++     const scriptPath = '/tmp/extract_xlsx.py';
++       } else {
++       } else {
++       }
++       }
++       }
++       if (!text) return '待提取';
++       if (!text) return '待提取';
++       if (!text) return '待提取';
++       if (!text) return '待提取';
++       if (!text) return '待提取';
++       const found = [...new Set(KEYWORDS.filter(k => text.includes(k)))];
++       const found = [...new Set(KEYWORDS.filter(k => text.includes(k)))];
++       const found = [...new Set(KEYWORDS.filter(k => text.includes(k)))];
++       const found = [...new Set(KEYWORDS.filter(k => text.includes(k)))];
++       const found = [...new Set(KEYWORDS.filter(k => text.includes(k)))];
++       return found.slice(0, 3).join('、') || '待提取';
++       return found.slice(0, 3).join('、') || '待提取';
++       return found.slice(0, 3).join('、') || '待提取';
++       return found.slice(0, 3).join('、') || '待提取';
++       return found.slice(0, 3).join('、') || '待提取';
++     } else if (ext === '.pptx') {
++       const text = extractPptxText(filepath);
++     } else if (ext === '.doc') {
++       const text = extractTextutil(filepath);
++       const text = extractTextutil(filepath);
++       const text = extractTextutil(filepath);
++     } else if (ext === '.xls') {
++       const text = extractXlsText(filepath);
++     } else if (ext === '.xlsx' || ext === '.xlsm') {
++       const text = extractXlsxText(filepath);
++     } else if (ext === '.docx') {
++     } else if (ext === '.ppt') {
++     }
++     }
++     }
++     const entries = fs.readdirSync(dir, { withFileTypes: true });
++     for (const entry of entries) {
++       if (entry.name.startsWith('.')) continue;
++       const fullPath = path.join(dir, entry.name);
++       if (entry.isDirectory()) {
++         if (entry.name === '.analysis') continue;
++         const ext = path.extname(entry.name).toLowerCase();
++         const supported = ['.pdf','.docx','.xlsx','.pptx','.md','.doc','.xls','.xlsm','.ppt'];
++         if (supported.includes(ext) && dir !== KNOWLEDGE_DIR && !path.relative(KNOWLEDGE_DIR, fullPath).startsWith('temp_docs' + path.sep)) {
++         }
++ function getUnsupported(dir, results = []) {
++         getUnsupported(fullPath, results);
++         if (UNSUPPORTED_EXT.has(ext)) {
++           results.push(fullPath);
++   return results;
++   // 收集支持的文件
++   // 收集不支持的文件
++   const unsupported = getUnsupported(KNOWLEDGE_DIR);
++   // 读取进度文件
++   let progress = { last_index: -1, rows: [], total: files.length, done: false };
++   if (fs.existsSync(PROGRESS_FILE)) {
++     try {
++       progress = JSON.parse(fs.readFileSync(PROGRESS_FILE, 'utf8'));
++     } catch (e) {}
++   // 如果是新一轮（文件总数变化），重置进度
++   if (progress.total !== files.length) {
++     progress = { last_index: -1, rows: [], total: files.length, done: false };
++   const start = progress.last_index + 1;
++   const end = Math.min(start + BATCH_SIZE - 1, files.length - 1);
++   if (start > end && !progress.done) {
++     // 没有任何文件需要处理，说明已全部完成
++     progress.done = true;
++     fs.writeFileSync(PROGRESS_FILE, JSON.stringify(progress));
++   if (!progress.done) {
++     console.log(`[目录更新] 第 ${start + 1} - ${end + 1} 个文件（共 ${files.length} 个）`);
++     for (let i = start; i <= end; i++) {
++       const filepath = files[i];
++       const filename = path.basename(filepath);
++       const mtime = fs.statSync(filepath).mtimeMs;
++       let tags;
++       if (cache[filepath] && cache[filepath].mtime === mtime && cache[filepath].tags !== '待提取') {
++         tags = cache[filepath].tags;
++         tags = extractTags(filepath);
++         cache[filepath] = { mtime, tags };
++       let folder = path.dirname(filepath).replace(KNOWLEDGE_DIR + '/', '');
++       if (!folder || folder === KNOWLEDGE_DIR) folder = '根目录';
++       progress.rows[i] = { filename, folder, tags };
++       progress.last_index = i;
++       // 每个批次保存一次进度 + cache
++       if ((i + 1) % BATCH_SIZE === 0 || i === end) {
++         saveCache(cache);
++         fs.writeFileSync(PROGRESS_FILE, JSON.stringify(progress));
++         process.stdout.write(`已处理：${i + 1}/${files.length}\n`);
++     // 检查是否全部完成
++     if (progress.last_index >= files.length - 1) {
++       progress.done = true;
++       fs.writeFileSync(PROGRESS_FILE, JSON.stringify(progress));
++       console.log(`✅ 全部 ${files.length} 个文件标签提取完成`);
++   // 如果本轮完成（或之前已完成），生成完整目录
++   if (progress.done) {
++     console.log('[目录更新] 生成最终目录...');
++     let md = '# 📚 知识库文章目录\n\n';
++     md += '> 自动生成，每晚更新\n\n';
++     md += '| 序号 | 文件名 | 所在文件夹 | 核心标签 |\n';
++     md += '|------|--------|------------|----------|\n';
++     for (let i = 0; i < files.length; i++) {
++       const row = progress.rows[i] || {};
++       const filename = row.filename || path.basename(files[i]);
++       const folder = row.folder || '根目录';
++       const tags = row.tags || '待提取';
++       md += `| ${i + 1} | ${filename} | ${folder} | ${tags} |\n`;
++     md += '\n---\n';
++     md += `*最后更新：${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}*\n`;
++     md += `*共收录 ${files.length} 篇文章*\n`;
++     fs.writeFileSync(CATALOG_FILE, md);
++     saveCache(cache);
++     console.log(`✅ 目录已更新，共 ${files.length} 篇文章`);
++     // 保存不支持的文件列表
++     const unsupportedFile = path.join(KNOWLEDGE_DIR, '.analysis', 'unsupported_files.md');
++     let umd = '# 📁 无法解析的文件列表\n\n';
++     umd += '> 以下文件格式当前不支持解析，已单独归档\n\n';
++     umd += '| 序号 | 文件名 | 所在文件夹 | 格式 |\n';
++     umd += '|------|--------|------------|------|\n';
++     for (let i = 0; i < unsupported.length; i++) {
++       const fp = unsupported[i];
++       const fn = path.basename(fp);
++       const folder = path.dirname(fp).replace(KNOWLEDGE_DIR + '/', '');
++       const ext = path.extname(fp).toLowerCase();
++       umd += `| ${i + 1} | ${fn} | ${folder} | ${ext} |\n`;
++     umd += `\n*共 ${unsupported.length} 个无法解析的文件*\n`;
++     fs.writeFileSync(unsupportedFile, umd);
++     console.log(`✅ 不支持文件列表已更新，共 ${unsupported.length} 个文件`);
++   } else {
++     console.log(`[目录更新] 本轮完成，剩余 ${files.length - progress.last_index - 1} 个文件，下次继续`);
+
+### scripts/run_analysis.py  [code]
+-     return {"analyzed_files": [], "last_analysis": None, "summaries": []}
+- def is_new_file(filepath, analyzed_files):
+-     filename = os.path.basename(filepath)
+-     return filename not in analyzed_files
+-         for page_num in range(min(len(doc), 10)):  # 最多10页
+-             mat = pymupdf.Matrix(2, 2)  # 2x zoom for good OCR quality
+-             # Write temp image
+-             tmp_path = f"/tmp/ocr_page_{page_num}.png"
+-     # Fallback to OCR
+-     # Check if more than 50% of characters are weird CJK-like or high-end codepoints
+-     # Remove whitespace and common punctuation
+-     # Count "normal" printable ASCII letters
+-     ratio = normal_count / len(cleaned)
+-         elif ext in [".docx", ".xlsx", ".pptx"]:
+-             return f"【{ext}文件，待深度分析】{os.path.basename(filepath)}"
+-     new_files = [f for f in all_files if is_new_file(f, state["analyzed_files"])]
+-     if not new_files:
+-     print(f"发现 {len(new_files)} 个新文件，开始分析...")
+-     for filepath in new_files:
+-         filename = os.path.basename(filepath)
+-         print(f"分析中: {filename}")
+-     state["last_analysis"] = datetime.now().isoformat()
+-     print(f"分析完成！已保存 {len(summaries)} 个摘要")
++ """
++ """
++ 知识库文档分析脚本 - 分批增量版
++ 每次只处理 BATCH_SIZE 个新文件，处理完立即退出，不超时
++ import docx
++ import openpyxl
++ import pptx
++ BATCH_SIZE = 20  # 每批处理文件数
++     return {
++         "analyzed_files": [],      # 已完成分析的文件名列表
++         "pending_files": [],       # 待处理队列（文件名）
++         "last_run": None,
++         "last_batch_at": None,
++         "summaries": []
++     }
++     """扫描知识库所有支持的文件"""
++         elif ext == ".docx":
++             try:
++             try:
++             try:
++                 doc = docx.Document(filepath)
++                 text = "\n".join([p.text for p in doc.paragraphs if p.text.strip()])
++                 return text[:4000] if text.strip() else "【Word文档无文字内容】"
++             except Exception as e:
++             except Exception as e:
++             except Exception as e:
++                 return f"【DOCX提取失败】{str(e)}"
++         elif ext == ".xlsx":
++                 wb = openpyxl.load_workbook(filepath, data_only=True)
++                 sheets_text = []
++                 for sheet in wb.worksheets:
++                     for row in sheet.iter_rows(values_only=True):
++                         row_text = " ".join([str(c) for c in row if c is not None])
++                         if row_text.strip():
++                             sheets_text.append(row_text)
++                 return "\n".join(sheets_text)[:4000] if sheets_text else "【Excel无内容】"
++                 return f"【XLSX提取失败】{str(e)}"
++         elif ext == ".pptx":
++                 prs = pptx.Presentation(filepath)
++                 text_parts = []
++                 for i, slide in enumerate(prs.slides[:10]):
++                     slide_text = []
++                     for shape in slide.shapes:
++                         if hasattr(shape, "text") and shape.text.strip():
++                             slide_text.append(shape.text)
++                     if slide_text:
++                         text_parts.append(f"[Page {i+1}]\n" + "\n".join(slide_text))
++                 return "\n".join(text_parts)[:4000] if text_parts else "【PPT无文字内容】"
++                 return f"【PPTX提取失败】{str(e)}"
++     ratio = normal_count / len(cleaned) if len(cleaned) > 0 else 0
++         for page_num in range(min(len(doc), 10)):
++             mat = pymupdf.Matrix(2, 2)
++             tmp_path = os.path.expanduser(f"~/.openclaw/workspace/tmp_files/ocr_page_{page_num}.png")
++     # 构建待处理队列：从未分析过的文件
++     analyzed_set = set(state["analyzed_files"])
++     pending = [f for f in all_files if os.path.basename(f) not in analyzed_set]
++     if not pending:
++     # 如果 pending_files 为空（首次运行或队列耗尽），用当前 pending 初始化
++     if not state.get("pending_files"):
++         state["pending_files"] = [os.path.basename(f) for f in pending]
++         save_state(state)
++     # 取出前 BATCH_SIZE 个
++     pending_names = state["pending_files"]
++     batch_names = pending_names[:BATCH_SIZE]
++     remaining_names = pending_names[BATCH_SIZE:]
++     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M')}] 待处理队列：{len(pending_names)} 个文件")
++     print(f"本批处理：{len(batch_names)} 个文件，剩余：{len(remaining_names)} 个")
++     for filename in batch_names:
++         # 找文件路径
++         filepath_candidates = [f for f in all_files if os.path.basename(f) == filename]
++         if not filepath_candidates:
++             print(f"  ⚠️ 文件不存在，跳过：{filename}")
++             continue
++         filepath = filepath_candidates[0]
++         print(f"  分析中: {filename}")
++     # 更新待处理队列
++     state["pending_files"] = remaining_names
++     state["last_run"] = datetime.now().isoformat()
++     state["last_batch_at"] = datetime.now().isoformat()
++     done = len(state["analyzed_files"])
++     total = len(pending) + done
++     print(f"✅ 本批完成 {len(summaries)} 个，累计已完成 {done}/{total}，剩余 {len(remaining_names)} 个待处理")
++     if remaining_names:
++         print(f"提示：下次 cron 触发时会自动继续处理剩余文件")

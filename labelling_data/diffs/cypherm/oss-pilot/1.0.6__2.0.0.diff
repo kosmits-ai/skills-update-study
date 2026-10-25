@@ -1,0 +1,570 @@
+cypherm/oss-pilot  1.0.6 -> 2.0.0
+change_type: docs   changelog: Major rewrite: expanded discover scoring/decay, richer check retrospective, improved pr root-cause analysis, auto cold-start refinements
+
+### auto.md  [docs]
+-   to opened PR with CI monitoring. Triggers on "oss auto", "auto PR", "auto fix".
+- **Role: Workflow orchestrator.** Composes discover -> implement -> pr-review -> check into one end-to-end flow. Not an independent capability -- delegates quality checks to /oss-pr and discovery to /oss-discover.
+-    - If >2 competing PRs **actually targeting the same fix** -> **stop**. Skim titles/descriptions to filter noise.
+-    `cd <LOCAL_PATH> && git fetch upstream $DEFAULT_BRANCH && git checkout -b fix/<branch> upstream/$DEFAULT_BRANCH`
+- 4. **Scope checkpoint** (MANDATORY): After reading the code and identifying the fix, if it requires >5 files or >200 lines -> **stop and ask the user** whether to continue. Do NOT silently commit to a large change. This prevents wasted effort on PRs that will be labeled `dirty` or rejected for scope creep.
+-    - If `package.json` exists -> detect package manager from lock file (pnpm-lock.yaml -> pnpm, yarn.lock -> yarn, package-lock.json -> npm), then read scripts
+-    - If `Cargo.toml` exists -> `cargo fmt`, `cargo clippy`, `cargo test`
+-    - If `go.mod` exists -> `go fmt`, `go vet`, `go test`
+-    - If `Makefile` exists -> check for `make lint`, `make test`
+- - Accept real bugs -> fix, push, reply with commit hash
+- - Decline with evidence -> explain WHY, not just disagree
+- - Repeat concern -> progressively shorter replies referencing prior answer
+- - If PR was created as draft -> `gh pr ready <NUMBER> -R <REPO>`
+- - Implementation fails after 3 attempts -> stop, report
+- - CI upstream failures -> post triage, continue
+- - Bot P1 we can't resolve -> stop, report to user
+- - PR limit exceeded -> hard stop
++   to opened PR with CI monitoring. Triggers on "oss auto", "auto PR", "auto fix",
++   "openclaw auto".
++ **Role: Workflow orchestrator.** Composes discover --> implement --> pr-review --> check into one end-to-end flow. Not an independent capability -- delegates quality checks to /oss-pr and discovery to /oss-discover.
++    - If >2 competing PRs **actually targeting the same fix** --> **stop**. Skim titles/descriptions to filter noise.
++    `cd <LOCAL_PATH> && git fetch <UPSTREAM_REMOTE> $DEFAULT_BRANCH && git checkout -b fix/<branch> <UPSTREAM_REMOTE>/$DEFAULT_BRANCH`
++    **Use `upstream_remote` from the profile** -- not hardcoded `upstream` or `origin`. The local clone may have multiple remotes; only the profile's `upstream_remote` is guaranteed to point to the real upstream repo.
++    - **Caller vs callee**: In high-competition issues, prefer fixing callers over callees. A callee fix is fragile -- someone else can fix all callers and make your callee fix redundant. A caller fix is self-contained and harder to supersede.
++ 4. **Scope checkpoint** (MANDATORY): After reading the code and identifying the fix, if it requires >5 files or >200 lines --> **stop and ask the user** whether to continue. Do NOT silently commit to a large change. This prevents wasted effort on PRs that will be labeled `dirty` or rejected for scope creep.
++    - If `package.json` exists --> detect package manager from lock file (pnpm-lock.yaml --> pnpm, yarn.lock --> yarn, package-lock.json --> npm), then read scripts
++    - If `Cargo.toml` exists --> `cargo fmt`, `cargo clippy`, `cargo test`
++    - If `go.mod` exists --> `go fmt`, `go vet`, `go test`
++    - If `Makefile` exists --> check for `make lint`, `make test`
++ - Accept real bugs --> fix, push, reply with commit hash
++ - Decline with evidence --> explain WHY, not just disagree
++ - Repeat concern --> progressively shorter replies referencing prior answer
++ - If PR was created as draft --> `gh pr ready <NUMBER> -R <REPO>`
++ - Implementation fails after 3 attempts --> stop, report
++ - CI upstream failures --> post triage, continue
++ - Bot P1 we can't resolve --> stop, report to user
++ - PR limit exceeded --> hard stop
+
+### check.md  [docs]
+-   "check PRs", "morning check", "PR status".
+- Read the profile from `./oss-pilot-data/profiles/<repo>.md` (schema: see `_template.md` bundled with this skill) to get:
+- - `repo` -- owner/repo (e.g., `some-org/some-repo`)
+- - `fork` -- our fork (e.g., `your-username/some-repo`)
+- If no repo specified, scan `./oss-pilot-data/context/` for context files and infer repos from them. If no context files exist and no repo specified, ask the user which repo to check or suggest running `oss-discover` first.
+- # Human reviews (exclude bots and self)
+- gh pr view <NUMBER> -R <REPO> --json reviews --jq '[.reviews[] | select(.author.login != "<USERNAME>" and (.author.login | test("bot"; "i") | not))] | length'
+- **CI rules:** [Y] = 0 fail + 0 pending. [N] = any fail. [...] = 0 fail + some pending. [LOCK] = all jobs skipping (fork PR -- needs maintainer to trigger CI, this is normal, not a failure).
+- **Bot rules:** [Y] = 0 unanswered. [N] = any unanswered -> auto-respond before reporting.
+- | **New human review** | Report to user -- needs human judgment. After addressing feedback, run `/oss-pr review` to verify quality before pushing. |
+- | **Stale (48h+ since ping, no response)** | Enrich the ping: update triage comment with area-specific pass list, add new linked issues if found. Makes the PR look active and gives maintainer fresh reason to look. |
+- | **Stale (>3 days since ping, no response)** | Re-ping same person with updated context, or try a different maintainer via `git log` |
+- When CI has failures, don't just report [N] -- **classify each failure**:
+- 1. **Our code failing** -- the failed test/check is in a file we changed -> fix and push
+- 2. **Upstream failing, our area passes** -- failures are in unrelated files, AND checks covering our area (e.g., `extension-fast (telegram)` for telegram changes) all pass -> **PR is ready for review.** Post/update triage comment listing our passing checks.
+- 3. **Upstream failing, can't tell** -- failures are in shared infra (build, lint, type-check) that cover everything -> check if main has same failure. If yes, post triage comment.
+- - [Y] = all pass
+- - [...] = still running
+- - [WARN] = upstream failures only, our area passes -> **ready for review with triage**
+- - [N] = our code failing, or can't determine
+- **Anomaly-only checks** -- surface in Action Taken only when triggered:
+- - **Competing PR**: `gh pr list -R <REPO> --search "<issue>" --state open` -- alert if non-us PRs found for same issue.
+- - **New cross-references**: `gh api repos/<REPO>/issues/<NUMBER>/timeline --jq '[.[] | select(.event == "cross-referenced")] | length'` -- only report if new ones found since last check. Filter bot noise per cross-reference rules above.
+-    # Our ping -> first response time
+- 2. **Calculate timeline**: opened -> pinged -> first human response -> merged/closed. How many days at each stage?
+-    - **Timeline**: opened [date] -> pinged [date] -> reviewed [date] -> merged [date] ([N] days total)
+-    - **Repo-specific** (maintainer name, bot quirk, label, convention) -> also append to profile's Lessons Learned section
+-    - **Universal** (methodology improvement, new technique) -> flag to user: "This lesson may be universal -- consider updating oss-* skill"
+- 4. **Then** archive context file: `mv pr-<REPO>-<N>.md` -> `./oss-pilot-data/context/_archived/`
+- **Why write retrospective into the context file**: The archived file becomes a complete record -- approach -> decisions -> outcome -> lesson. When oss-discover encounters a similar issue in the future, checking `_archived/` reveals not just "we tried this" but "we tried this and here's what happened."
+-    - Encoded in Architecture Patterns -> remove from Lessons Learned
+-    - Encoded in Maintainer Styles -> remove from Lessons Learned
+-    - Encoded in Bot Behavior -> remove from Lessons Learned
+-    - Stale (references a bot that no longer exists, a maintainer who left, a process that changed) -> remove or update
+-    - Older than 6 months AND Outcome is "clean merge, no new lessons" -> delete
+-    - Older than 6 months AND Outcome has lessons -> keep (valuable reference)
+-    - Any age AND Outcome is "closed for technical rejection" -> keep (prevents re-attempts)
+-  PR       Status    CI    Bot     Action Taken
+-  #123     open      [Y]    [Y]      Waiting (pinged 25h ago)
+-  #456     open      [N]    [Y]      Upstream fail, main recovered -> rebase
+-  #789     merged    [OK]    -       Archived context file
+- - Missing context file for open PR -> create from GitHub data
+- - Merged/closed PR -> archive context file to `./oss-pilot-data/context/_archived/`
+- - GitHub API failure -> report error, skip that PR
++   "check PRs", "morning check", "PR status", "openclaw check".
++ Read the profile from `./oss-pilot-data/profiles/<repo>.md` (schema: see `./oss-pilot-data/profiles/_template.md`) to get:
++ - `repo` -- owner/repo (e.g., `openclaw/openclaw`)
++ - `fork` -- our fork (e.g., `Cypherm/openclaw`)
++ If no repo specified, scan `./oss-pilot-data/context/` for context files and infer repos from them.
++ ```bash
++ ```bash
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ # Human reviews -- fetch details, not just count (compare with context file Decisions to spot new ones)
++ gh pr view <NUMBER> -R <REPO> --json reviews --jq '[.reviews[] | select(.author.login != "<USERNAME>" and (.author.login | test("bot"; "i") | not))] | group_by(.author.login) | map({author: .[0].author.login, latest_state: (sort_by(.submittedAt) | last.state), count: length, latest_body: (sort_by(.submittedAt) | last.body[:200])})'
++ # Maintainer engagement -- check BOTH the linked issue AND the PR itself
++ ISSUE=$(grep -oE 'issue: [0-9]+' <CONTEXT_FILE> | grep -oE '[0-9]+')
++ # 1. Issue-level: maintainer comments + metadata
++ gh api repos/<REPO>/issues/$ISSUE --jq '{
++   author_association: .author_association,
++   assignee: (.assignee.login // "none"),
++   labels: [.labels[].name],
++   milestone: (.milestone.title // "none")
++ }'
++ gh api repos/<REPO>/issues/$ISSUE/comments --jq '[.[] | select(.author_association == "MEMBER" or .author_association == "COLLABORATOR" or .author_association == "OWNER")] | length'
++ # 2. Issue-level: who applied the labels? (auto-applied by reporter/bot != maintainer triage)
++ gh api repos/<REPO>/issues/$ISSUE/events --jq '.[] | select(.event == "labeled") | {label: .label.name, actor: .actor.login, association: .actor.author_association}' 2>/dev/null
++ # 3. PR-level: maintainer mentioned/subscribed (they SAW the ping even if they didn't reply)
++ gh api repos/<REPO>/issues/<NUMBER>/timeline --jq '[.[] | select((.event == "mentioned" or .event == "subscribed") and .actor.login != "<USERNAME>")] | [.[] | {actor: .actor.login, event: .event}] | unique_by(.actor)'
++ # 4. PR-level: cross-references -- WHO cross-referenced us and are they a maintainer?
++ #    Domain maintainers may not have MEMBER association but still control an area.
++ #    Check: cross-reference source PR/issue labels for "maintainer" tag, and actor's profile.
++ gh api repos/<REPO>/issues/<NUMBER>/timeline --jq '[.[] | select(.event == "cross-referenced")] | .[] | {actor: .actor.login, source_number: .source.issue.number, source_title: .source.issue.title[:80]}' 2>/dev/null
++ #    For each cross-reference actor, check if they're a known maintainer in the profile
++ #    or if their source PR/issue has a "maintainer" label.
++ #    A domain maintainer tracking your PR = [yellow] signal (they're aware, may review)
++ # Competing PRs -- always run, only report if found
++ gh pr list -R <REPO> --search "<ISSUE>" --state open --json number,author --jq '[.[] | select(.author.login != "<USERNAME>")] | .[] | {number, author: .author.login}'
++ # Linked issue state -- always run, flag if closed (supersession check)
++ gh api repos/<REPO>/issues/<ISSUE> --jq '{state: .state, closed_at: .closed_at[:16]}'
++ **CI rules:** [pass] = 0 fail + 0 pending. [fail] = any fail. [pending] = 0 fail + some pending. [locked] = all jobs skipping (fork PR -- needs maintainer to trigger CI, this is normal, not a failure).
++ **Merge rules:** Only show in report when actionable. `MERGEABLE` = [pass] (omit from report). `CONFLICTING` = flag for rebase. `UNKNOWN` = verify before dismissing:
++ # When UNKNOWN, check if the branch can actually merge by inspecting the diff against main
++ gh pr view <NUMBER> -R <REPO> --json baseRefName,headRefOid --jq '{base: .baseRefName, head: .headRefOid}'
++ # Re-query mergeable up to 2 times (GitHub often resolves UNKNOWN within seconds)
++ sleep 3 && gh pr view <NUMBER> -R <REPO> --json mergeable --jq .mergeable
++ If still `UNKNOWN` after retry, report as "! mergeable unknown -- verify manually" rather than silently omitting. Multiple PRs all showing `UNKNOWN` simultaneously is unusual and worth flagging.
++ **Bot rules:** [pass] = 0 unanswered. [fail] = any unanswered --> auto-respond before reporting.
++ | **New human review** | Compare Step 2 review details with context file Decisions section. Reviews whose author+state are not already noted in Decisions = new. Report to user with author, state, and body snippet -- needs human judgment. After addressing feedback, run `/oss-pr review` to verify quality before pushing. |
++ | **Stale (<72h since ping, no response)** | Wait. Don't enrich, don't follow up -- any PR activity generates notifications and bothers the maintainer. |
++ | **Stale (>72h since ping, no response)** | Diagnose WHY (see Stale Diagnosis below). Report diagnosis + merge prospect. Do NOT re-ping -- let user decide. |
++ ### Stale Diagnosis (replacing blind re-ping)
++ When a PR is stale >72h, don't just re-ping. First understand **why** it's stale using the maintainer engagement data from Step 2:
++ | Diagnosis | Evidence | Action |
++ |---|---|---|
++ | **Maintainer engaged with issue but not PR** | Maintainer commented/labeled the issue, but hasn't reviewed the PR | [yellow] Merge prospect: moderate. They know the problem -- just haven't reached the PR yet. |
++ | **Maintainer saw our ping but didn't respond** | PR timeline shows `mentioned`/`subscribed` events for a maintainer (they received the notification), but no review or comment followed | [orange] Merge prospect: low. They know about the PR and chose not to act. Possible silent disagreement with approach. |
++ | **Domain maintainer cross-referenced our PR** | A cross-reference from a user who is a known area maintainer (check profile) or whose source PR has a `maintainer` label. | [yellow] Merge prospect: moderate. They're tracking -- may champion it to core maintainers. |
++ | **Maintainer never engaged with issue or PR** | Zero maintainer comments on issue, no labels (or labels are auto-applied by reporter/bot), no maintainer activity on PR, AND no domain-maintainer cross-references | [red] Merge prospect: very low. Nobody with merge power has ever engaged. Consider closing to free a PR slot. |
++ | **Maintainer active in same area but skipping us** | Recent merges in same files/module, but our PR ignored | [orange] Merge prospect: low. They see it but chose not to engage -- may plan to fix differently or disagree with approach. Consider closing. |
++ | **Maintainer inactive across the board** | No merges from anyone in the last 7 days | [grey] Repo-wide slowdown. Not about our PR -- wait. |
++ **How to check "active in same area"** -- required for >72h stale PRs, not optional:
++ # Recent merges touching same files as our PR (last 7 days)
++ OUR_FILES=$(gh pr diff <NUMBER> -R <REPO> --name-only | head -5)
++ for FILE in $OUR_FILES; do
++   gh api "repos/<REPO>/commits?path=$FILE&since=$(date -v-7d +%Y-%m-%dT%H:%M:%SZ)&per_page=3" --jq '.[].author.login' 2>/dev/null
++ done
++ # Also check recent merges by the pinged maintainer
++ gh api "repos/<REPO>/commits?author=<PINGED_MAINTAINER>&since=$(date -v-7d +%Y-%m-%dT%H:%M:%SZ)&per_page=5" --jq '.[] | {sha: .sha[:7], message: .commit.message[:80], date: .commit.author.date[:16]}' 2>/dev/null
++ **Label provenance matters.** Labels applied by the issue reporter or by bots (e.g., barnacle) are auto-applied from the issue template -- they do NOT indicate maintainer triage. Check `issues/<N>/events` to see who applied each label. Only count labels applied by MEMBER/COLLABORATOR/OWNER as triage signal.
++ **Report the diagnosis, not just the timestamp.** "Stale 4 days -- maintainer never engaged with issue [red], merge prospect very low" is actionable. "Stale 4 days" is not.
++ **Do NOT suggest re-pinging.** Re-pinging (even after 72h, even to a different maintainer) has not been effective in practice. Report the diagnosis and merge prospect so the user can decide. Only re-ping if the user explicitly asks.
++ When CI has failures, don't just report [fail] -- **classify each failure**:
++ 1. **Our code failing** -- the failed test/check is in a file we changed --> fix and push
++ 2. **Upstream failing, our area passes** -- failures are in unrelated files, AND checks covering our area (e.g., `extension-fast (telegram)` for telegram changes) all pass --> **PR is ready for review.** Post/update triage comment listing our passing checks.
++ 3. **Upstream failing, can't tell** -- failures are in shared infra (build, lint, type-check) that cover everything --> check if main has same failure. If yes, post triage comment.
++ - [pass] = all pass
++ - [pending] = still running
++ - [yellow] = upstream failures only, our area passes --> **ready for review with triage**
++ - [fail] = our code failing, or can't determine
++ **Conditional actions** -- data already collected in Step 2, act only when triggered:
++ - **Competing PR found** (Step 2 query returned results): Alert in report. Check if competing PR covers the same fix -- if so, compare approaches and assess supersession risk.
++ - **Linked issue closed** (Step 2 query returned `state: "closed"`): Determine supersession:
++   ```bash
++   # Find which PR closed it
++   gh api repos/<REPO>/issues/<ISSUE>/comments --jq '.[] | select(.user.login != "<USERNAME>") | {date: .created_at[:16], body: .body[:200]}' | tail -3
++   # Compare the competing PR's diff with ours
++   gh pr diff <COMPETING_PR> -R <REPO> --name-only
++   gh pr diff <OUR_PR> -R <REPO> --name-only
++   # If same files: read both diffs and compare approaches
++   ```
++   Report one of three conclusions:
++   - **Fully superseded** -- competing PR covers all our changes --> recommend closing our PR
++   - **Partially overlapping** -- competing PR fixes some cases but not ours --> report which cases remain, PR is still needed
++   - **Different approach, same issue** -- both valid but competing PR already merged --> recommend closing unless ours is strictly better
++ - **New cross-references**: Only report if new ones found since last check. Filter bot noise per cross-reference rules above.
++    # Our ping --> first response time
++ 2. **Calculate timeline**: opened --> pinged --> first human response --> merged/closed. How many days at each stage?
++    - **Timeline**: opened [date] --> pinged [date] --> reviewed [date] --> merged [date] ([N] days total)
++    - **Repo-specific** (maintainer name, bot quirk, label, convention) --> also append to profile's Lessons Learned section
++    - **Universal** (methodology improvement, new technique) --> flag to user: "This lesson may be universal -- consider updating oss-* skill"
++ 4. **Then** archive context file: `mv pr-<REPO>-<N>.md` --> `./oss-pilot-data/context/_archived/`
++ **Why write retrospective into the context file**: The archived file becomes a complete record -- approach --> decisions --> outcome --> lesson. When oss-discover encounters a similar issue in the future, checking `_archived/` reveals not just "we tried this" but "we tried this and here's what happened."
++    - Encoded in Architecture Patterns --> remove from Lessons Learned
++    - Encoded in Maintainer Styles --> remove from Lessons Learned
++    - Encoded in Bot Behavior --> remove from Lessons Learned
++    - Stale (references a bot that no longer exists, a maintainer who left, a process that changed) --> remove or update
++    - Older than 6 months AND Outcome is "clean merge, no new lessons" --> delete
++    - Older than 6 months AND Outcome has lessons --> keep (valuable reference)
++    - Any age AND Outcome is "closed for technical rejection" --> keep (prevents re-attempts)
++ ### Diff-only repeat checks
++ If this is a repeat check within the same conversation, only report **what changed** since the last check. Skip the full table if nothing changed. Example:
++ Since last check (2h ago): no changes. All 4 PRs waiting for review.
++ If something changed:
++ Since last check (6h ago):
++  - #52644 crossed 72h --> [orange] agents area active but skipping us, merge prospect low
++  - #51384 mergeable resolved --> MERGEABLE [pass]
++  Rest unchanged (3 PRs waiting).
++ ### Full report (first check or significant changes)
++  PR       CI   Bot  Stale Diagnosis                  Merge Prospect
++  #123     [pass]   [pass]   [yellow] maint. knows issue (2d)        moderate
++  #456     [fail]   [pass]   --                                 blocked (CI)
++  #789     [pass]   [pass]   [red] no maint. engagement (5d)      very low
++  #012     [merged]   -    --                                 merged --> archived
++ ### Portfolio Health (always include on first check)
++ After the PR table, add a portfolio summary:
++ Portfolio: 4 open PRs (of 10 max). Total wait: 17 days across all PRs.
++ Slot pressure: low / medium / high (based on proximity to barnacle's 10-PR limit)
++ Merge outlook:
++  - 1 moderate prospect (#51384)
++  - 1 moderate prospect (#52053 -- domain maint. tracking)
++  - 1 low prospect (#52644 -- being skipped)
++  - 1 very low prospect (#52137 -- zero engagement)
++ Recommendation: [only if actionable, e.g., "Consider closing #52137 to free a slot for higher-value work"]
++ **Slot pressure levels:**
++ - **Low** (<=5 open): plenty of room
++ - **Medium** (6-8 open): be selective about new PRs
++ - **High** (9-10 open): barnacle will auto-close at 11 -- close low-prospect PRs before opening new ones
++ - Missing context file for open PR --> create from GitHub data
++ - Merged/closed PR --> archive context file to `./oss-pilot-data/context/_archived/`
++ - GitHub API failure --> report error, skip that PR
+
+### discover.md  [docs]
+-   "oss discover", "find issues", "what should I work on", "next PR".
+- Read `./oss-pilot-data/profiles/<repo>.md` for repo, fork, username, local_path. Profile schema: see `_template.md` (bundled) for expected sections.
+- **Cold start**: If the profile doesn't exist, this is a new repo. Copy `_template.md` to `./oss-pilot-data/profiles/<repo>.md`, fill in the 4 required fields (repo, fork, username, local_path), and ask the user to confirm before proceeding. Also ensure `./oss-pilot-data/context/` and `./oss-pilot-data/context/_archived/` directories exist.
+- - **>30% external** -> open repo, good for contributions. Proceed normally.
+- - **10-30% external** -> selective repo, PRs need to be high quality. Proceed but be picky.
+- - **<10% external** -> closed repo, maintainers do most work themselves. **Warn the user**: "This repo merges very few external contributions. Consider whether the time investment is worth it, or pick a more open repo."
+- - **<50% of issues have competing PRs** -> LOW velocity. Normal flow (Source 1-8).
+- - **50-80% have competing PRs** -> MEDIUM velocity. Prioritize Source 8 (codebase scan) and stale-PR reclaimable, but still check Source 1-2.
+- - **>80% have competing PRs** -> HIGH velocity. **Skip Source 1-7** -- issues get claimed within hours, scanning them is a waste of time. Go directly to:
+- - **Closed for hygiene** (dirty, stale, too-many-prs) -> issue may still be valid, don't auto-exclude but note the prior attempt
+- - **Closed for technical rejection** (wrong approach, won't fix) -> exclude unless the Outcome suggests a different approach could work
+- - **Merged** -> exclude (already done)
+- **IMPORTANT: Search order is by merge signal strength, not source number. Start from Source 1 (strongest signal) and work down. If Source 1-2 yield enough good candidates, don't waste time on weaker sources.**
+- - Quick win / low-hanging fruit (e.g., `[lightning] Quick Wins`, `easy fix`)
+- - Help wanted / good first issue (e.g., `[hand]help wanted`, `[Y] good first issue`)
+- - Regression labels (e.g., `[chart] regressing`, `regression`) -- maintainers want these fixed urgently
+- **These candidates should be evaluated FIRST** -- a bounty or quick-win issue has 3-5x the merge probability of an unlabeled bug.
+- If local clone exists, scan for known-safe cleanup patterns that don't need an issue. **Detect the project language first**, then apply appropriate patterns:
+- **Auto-detect language:**
+- # Detect primary language from repo files
+- if [ -f "<LOCAL_PATH>/package.json" ]; then LANG="node"
+- elif [ -f "<LOCAL_PATH>/go.mod" ]; then LANG="go"
+- elif [ -f "<LOCAL_PATH>/Cargo.toml" ]; then LANG="rust"
+- elif [ -f "<LOCAL_PATH>/pyproject.toml" ] || [ -f "<LOCAL_PATH>/setup.py" ]; then LANG="python"
+- else LANG="unknown"; fi
+- echo "Detected: $LANG"
+- **Node.js / TypeScript:**
+- # Duplicate translation keys (JSON i18n files)
+- find <LOCAL_PATH> -name "*.json" -path "*/i18n/*" -o -name "*.json" -path "*/locales/*" | head -3 | while read f; do
+-   python3 -c "import json,re; lines=open('$f').readlines(); seen={}; dupes=[(i+1,m.group(1)) for i,l in enumerate(lines) if (m:=re.match(r'\s*\"([^\"]+)\"\s*:\s*(.*)',l)) and m.group(1) in seen and seen[m.group(1)]==m.group(2).rstrip().rstrip(',').strip() or (seen.setdefault(m.group(1),m.group(2).rstrip().rstrip(',').strip()) and False)]; [print(f'$f L{ln}: dup \"{k}\"') for ln,k in dupes]" 2>/dev/null
+- # Images missing alt text (a11y)
+- grep -rn '<img' --include="*.tsx" --include="*.jsx" <LOCAL_PATH> 2>/dev/null | grep -v 'alt=' | grep -v node_modules | head -5
+- **Python:**
+- # Unused imports (ruff check)
+- cd <LOCAL_PATH> && ruff check --select F401 --statistics . 2>/dev/null | head -5
+- # Type annotation gaps (mypy)
+- cd <LOCAL_PATH> && mypy --ignore-missing-imports --no-error-summary . 2>/dev/null | grep "error:" | head -5
+- **Go:**
+- # Unformatted files
+- cd <LOCAL_PATH> && gofmt -l . 2>/dev/null | head -5
+- # Static analysis
+- cd <LOCAL_PATH> && go vet ./... 2>/dev/null | head -5
+- **Rust:**
+- # Clippy warnings
+- cd <LOCAL_PATH> && cargo clippy --message-format short 2>/dev/null | grep "warning" | head -5
+- 4. If either level finds >2 competing PRs actually targeting the same fix -> mark as [N].
+- # BAD: "server_default exists somewhere" -> too broad, false positive
+- # GOOD: "server_default=sa.text('uuid_generate_v4()') exists in model files" -> specific pattern from issue
+- - Comment says "likely fixed in version X" -> verify before working
+- - Root cause analysis contradicts itself -> scope risk, needs deeper investigation
+- - Maintainer says "by design" or "won't fix" -> skip
+- - Multiple people offering different root causes -> unclear problem, risky
+- | **Maintainer cares?** | Has high-signal label (bounty, quick win, help wanted, regression), filed by maintainer, or has real (non-bot) user reports |
+-  #  Issue    Maintainer?  No comp?  Small?  Title
+-  1  #XXXXX   [Y] reason     [Y]        [Y]      description
+-  2  #YYYYY   [Y] reason     [N] 3 PRs  [Y]      description
++   "oss discover", "find issues", "what should I work on", "next PR",
++   "openclaw discover".
++ Read `./oss-pilot-data/profiles/<repo>.md` for repo, fork, username, local_path, upstream_remote. Profile schema: see `./oss-pilot-data/profiles/_template.md` for expected sections.
++ **Critical: `upstream_remote` determines which git remote is used for ALL local code verification** (e.g., `git show <UPSTREAM_REMOTE>/main:`). If the local clone has multiple remotes (origin, upstream, fork), using the wrong one produces false positives -- you'll verify against a stale fork instead of the real upstream. Always use the profile's `upstream_remote` value, never hardcode `origin`.
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ ```
++ ```
++ ```
++ ```
++ - **>30% external** --> open repo, good for contributions. Proceed normally.
++ - **10-30% external** --> selective repo, PRs need to be high quality. Proceed but be picky.
++ - **<10% external** --> closed repo, maintainers do most work themselves. **Warn the user**: "This repo merges very few external contributions. Consider whether the time investment is worth it, or pick a more open repo."
++ done
++ done
++ - **<50% of issues have competing PRs** --> LOW velocity. Normal flow (Source 0-8).
++ - **50-80% have competing PRs** --> MEDIUM velocity. Prioritize Source 0 (maintainer-filed), Source 8 (codebase scan), and stale-PR reclaimable, but still check Source 1-2.
++ - **>80% have competing PRs** --> HIGH velocity. **Skip Source 1-7** -- issues get claimed within hours, scanning them is a waste of time. Always run Source 0 (maintainer-filed issues don't compete the same way). Then go directly to:
++ - **Closed for hygiene** (dirty, stale, too-many-prs) --> issue may still be valid, don't auto-exclude but note the prior attempt
++ - **Closed for technical rejection** (wrong approach, won't fix) --> exclude unless the Outcome suggests a different approach could work
++ - **Merged** --> exclude (already done)
++ **IMPORTANT: Search order is by merge signal strength, not source number. Start from Source 0 (strongest signal) and work down. If Source 0-1 yield enough good candidates, don't waste time on weaker sources.**
++ **Early exit rule:** After Source 1, run competition checks on all high-signal candidates. If every Bounty / Quick Win / good-first-issue candidate already has competing PRs, the repo is too competitive for async discovery. Report this immediately -- don't proceed through Sources 2-7 one by one arriving at the same conclusion. Jump directly to Source 8 (codebase scan) for one quick attempt, and if that also fails, recommend the user either watch for new issues in real-time or focus on a less competitive repo.
++ **Source 0 -- Maintainer-filed issues (STRONGEST SIGNAL):**
++ Issues filed by maintainers are the highest-signal candidates -- the person with merge power cares enough to write it up. These are [green] by definition and skip the triage gate.
++ # Search issues filed by known maintainers (from profile's Maintainer Review Styles section)
++ for MAINT in <MAINTAINER_LIST>; do
++   gh issue list -R <REPO> --author "$MAINT" --state open --json number,title,createdAt --limit 5 --jq '.[] | {number, title: .title[:70], created: .createdAt[:10], author: "'$MAINT'"}'
++ If the profile doesn't list maintainers, derive them from recent merge activity:
++ gh pr list -R <REPO> --state merged --limit 20 --json mergedBy --jq '[.[].mergedBy.login] | unique | .[]'
++ **Filter**: skip feature requests, roadmap items, and anything with >10 files in scope. Focus on bugs and build-blockers that a maintainer filed and wants fixed.
++ **Staleness decay for maintainer-filed issues**: [green] is not permanent. Apply decay based on last maintainer activity on the issue (comment, label, linked PR review -- not just filing date):
++ - **<14 days since last maintainer activity** --> [green] full signal
++ - **14-30 days, no endorsed PR was closed** --> [green] but note staleness
++ - **14-30 days, endorsed PR was closed by maintainer** --> downgrade to [yellow] -- maintainer deprioritized or plans to handle it differently
++ - **>30 days with zero activity** --> downgrade to [yellow] -- issue may be abandoned, verify it's still relevant before investing
++ Staleness decay does NOT apply if the maintainer is still active in the repo (merging other PRs). It only matters when the specific issue has gone cold.
++ - Quick win / low-hanging fruit (e.g., `! Quick Wins`, `easy fix`)
++ - Help wanted / good first issue (e.g., `[hand]help wanted`, `[pass] good first issue`)
++ - Regression labels (e.g., `[regressing] regressing`, `regression`) -- maintainers want these fixed urgently
++ **These candidates should be evaluated FIRST** -- a bounty or quick-win issue has 3-5x the merge probability of an unlabeled bug. However, still run **label provenance** in Step 3b -- some repos auto-apply high-signal labels from issue templates. Only labels applied by MEMBER/COLLABORATOR/OWNER are true triage signals.
++ **Source 4b -- Reclaimable from other contributors' closed PRs on maintainer-filed issues:**
++ High-signal variant of Source 4. Maintainer-filed issues where someone submitted a fix but the PR was closed without merging -- the issue is validated, the fix direction is often known, but no one finished the work.
++ # For each Source 0 maintainer-filed issue, check if there were closed (not merged) PRs
++ for ISSUE in <SOURCE_0_ISSUE_NUMBERS>; do
++   closed_prs=$(gh pr list -R <REPO> --search "$ISSUE" --state closed --json number,title,author,mergedAt --jq '.[] | select(.mergedAt == null) | {number, title: .title[:70], author: .author.login}')
++   if [ -n "$closed_prs" ]; then
++     echo "=== Issue #$ISSUE has closed (unmerged) PRs ==="
++     echo "$closed_prs"
++   fi
++   fi
++ **Closure reason analysis is CRITICAL for reclaimables.** Check WHO closed the PR and WHY:
++ # For each closed PR found above:
++ gh api repos/<REPO>/issues/<PR_NUMBER>/events --jq '.[] | select(.event == "closed") | {actor: .actor.login}' 2>/dev/null
++ gh api repos/<REPO>/issues/<PR_NUMBER>/comments --jq '.[-3:] | .[] | {user: .user.login, body: .body[:200]}'
++ Classify the closure:
++ | Closer | Likely reason | Action |
++ |---|---|---|
++ |---|---|---|
++ | **openclaw-barnacle[bot]** or stale bot | Hygiene (stale, dirty, too-many-prs) | [pass] Safe to reclaim -- bot doesn't judge quality |
++ | **PR author** | Author abandoned or submitted a better version | Check if replacement exists; if not, [pass] reclaimable |
++ | **Maintainer who endorsed the PR** | ! **Ambiguous -- investigate before committing** | Read the last 3 comments. Look for: batch cleanup, deprioritization, "will handle internally", or silence. If no explanation found, treat as [yellow] not [green] |
++ | **Maintainer who did NOT comment on the PR** | Likely batch cleanup or repo hygiene | [pass] Probably safe to reclaim, but verify issue is still wanted |
++ **The "maintainer endorsed then closed" pattern deserves extra scrutiny.** When a maintainer says "this is the right fix" and then closes the PR themselves (not stale bot), possible reasons include:
++ - Batch-closing old PRs during a cleanup sweep
++ - Decided to handle it internally (will fix themselves)
++ - Deprioritized the issue entirely
++ - Wanted a different scope (e.g., fix all `||` vs `??` in one PR, not one at a time)
++ If you cannot determine the reason from comments/timeline, **do not present as [green]**. Mark as [yellow] with explicit note: "Prior endorsed PR was closed by maintainer without explanation -- reclaim with caution."
++ If local clone exists, scan for known-safe cleanup patterns that don't need an issue:
++ # 1. Run the type checker -- catches real errors maintainers want fixed
++ #    IMPORTANT: run `pnpm install --frozen-lockfile` FIRST to avoid stale node_modules false positives
++ cd <LOCAL_PATH> && git checkout <UPSTREAM_REMOTE>/main --detach && pnpm install --frozen-lockfile && pnpm tsgo 2>&1 | tail -30
++ # 2. Truthy coercion bugs: || where ?? is correct (0 treated as falsy)
++ #    These are real bugs, not style issues -- validated by scoootscooob filing 3 issues for this pattern
++ grep -rn '|| [0-9]' --include="*.ts" <LOCAL_PATH>/src/ <LOCAL_PATH>/extensions/ 2>/dev/null | grep -v node_modules | grep -v '.test.' | head -10
++ # 3. Missing test files for recently changed source files
++ for f in $(git log <UPSTREAM_REMOTE>/main --oneline --name-only -20 -- '*.ts' | grep -v '.test.' | grep -v node_modules | sort -u | head -10); do
++   test_file="${f%.ts}.test.ts"
++   if [ ! -f "$test_file" ]; then
++     echo "MISSING TEST: $f (no $test_file)"
++ # 4. Duplicate translation keys (JSON)
++ python3 -c "import json,re; lines=open('<LOCAL_PATH>/packages/i18n/locales/en/common.json' if '<LOCAL_PATH>' else '').readlines(); seen={}; [print(f'L{i+1}: dup \"{m.group(1)}\"') for i,l in enumerate(lines) if (m:=re.match(r'\s*\"([^\"]+)\"\s*:\s*(.*)',l)) and ((seen.setdefault(m.group(1),(i,m.group(2).rstrip().rstrip(',').strip())) and False) or (m.group(1) in seen and seen[m.group(1)][1]==m.group(2).rstrip().rstrip(',').strip()))]" 2>/dev/null
++ # 5. Images missing alt text (a11y)
++ grep -rn '<img' --include="*.tsx" --include="*.jsx" <LOCAL_PATH>/packages/ 2>/dev/null | grep -v 'alt=' | grep -v node_modules | head -5
++ # 6. Inconsistent error handling patterns (e.g., bare catch {})
++ grep -rn 'catch\s*{' --include="*.ts" <LOCAL_PATH>/src/ <LOCAL_PATH>/extensions/ 2>/dev/null | grep -v node_modules | grep -v '.test.' | head -5
++ **Important for Source 8**: Run `pnpm install --frozen-lockfile` before any local verification. Stale `node_modules` can produce false type errors that waste significant time investigating non-issues. This was validated by experience: tsgo reported 20 errors that all disappeared after a fresh install.
++ ### Step 3b: Maintainer Interest Gate (MANDATORY for every candidate)
++ Before investing in competition check and code verification, assess whether a maintainer is likely to review a PR for this issue. This is the #1 predictor of merge -- a perfect PR with zero maintainer interest will sit forever.
++ # For each candidate issue:
++ # 1. Basic metadata + issue author association
++ gh api repos/<REPO>/issues/<NUMBER> --jq '{
++   author_association: .author_association,
++   assignee: (.assignee.login // "none"),
++   labels: [.labels[].name],
++   milestone: (.milestone.title // "none")
++ }'
++ # 2. Count maintainer comments (MEMBER, COLLABORATOR, OWNER)
++ gh api repos/<REPO>/issues/<NUMBER>/comments --jq '[.[] | select(.author_association == "MEMBER" or .author_association == "COLLABORATOR" or .author_association == "OWNER")] | length'
++ # 3. Label provenance -- WHO applied each label?
++ #    Labels from issue reporter (template dropdowns) or bots != maintainer triage
++ gh api repos/<REPO>/issues/<NUMBER>/events --jq '.[] | select(.event == "labeled") | {label: .label.name, actor: .actor.login, association: (.actor.author_association // "UNKNOWN")}' 2>/dev/null
++ # 4. Area activity -- are maintainers committing to affected files recently?
++ #    Identify likely affected files from issue title/body, then check recent commits.
++ #    A maintainer active in the same files = they'll see your PR in their diff review.
++ gh api "repos/<REPO>/commits?path=<LIKELY_FILE>&since=$(date -v-7d +%Y-%m-%dT%H:%M:%SZ)&per_page=3" --jq '[.[] | .author.login] | unique'
++ Classify each candidate using **verified signals only**:
++ | Signal | Evidence | Icon |
++ | Maintainer **filed** the issue | `author_association` is MEMBER/COLLABORATOR/OWNER | [green] |
++ | Maintainer **assigned** the issue | `assignee` is set | [green] |
++ | Maintainer **commented** on the issue | Maintainer comment count > 0 | [green] |
++ | Maintainer **labeled** the issue | Label event shows actor with MEMBER/COLLABORATOR/OWNER association | [yellow] |
++ | Issue has **milestone** | Went through triage and was scheduled | [yellow] |
++ | Maintainer **active in affected files** (last 7 days) | Recent commits by maintainer to files the issue touches | [yellow] |
++ | Labels exist but applied by **reporter or bot only** | Label provenance shows non-maintainer actors | [grey] neutral -- NOT triage |
++ | Zero maintainer interaction of any kind | No maintainer comments, no maintainer-applied labels, no assignee, filed by non-maintainer | [red] |
++ **Label provenance matters.** Labels applied by the issue reporter (from template dropdowns) or by bots (e.g., barnacle `bug:behavior`) do NOT indicate maintainer triage. Only labels applied by MEMBER/COLLABORATOR/OWNER count as [yellow]. Validated by data: issues with reporter-applied labels and zero maintainer interaction had the same merge outcome as fully unlabeled issues.
++ **Area activity is a leading indicator.** A maintainer actively committing to the files an issue touches means (a) they'll notice your PR in their review queue and (b) they have recent context on the code. This is [yellow] even without direct issue engagement. However, if a maintainer is active in the area AND ignoring your pinged PR, that's a [orange] signal in oss-check -- meaning they've seen it and chosen not to engage.
++ **[red] is a soft blocker.** Data shows PRs targeting [red] issues have very low merge rates -- maintainers active in the same files will skip your PR rather than review it. **Skip [red] candidates unless no [green]/[yellow] candidates exist.** If you must report a [red] candidate, it goes last with an explicit warning.
++ **Ordering rule**: [green] > [yellow] > [grey] > [red]. Within the same tier, use competition and scope as tiebreakers.
++ **[red] batch early-exit**: In high-volume repos (>20 bugs/day), reporter-filed issues almost never have maintainer triage. When running Step 3b on Source 2 candidates: check the first 5. If all 5 are [red], sample 2 more. If still all [red], **stop checking Source 2** -- report "Source 2: 7/7 sampled bugs are [red] (zero maintainer engagement), skipping remaining" and move to higher-signal sources (Source 0, Source 5, Source 3). Do not spend 45 API calls confirming what the first 5 already told you.
++ 4. If either level finds >2 competing PRs actually targeting the same fix --> mark as [fail].
++ **VERIFY STALENESS EARLY.** Before deep-diving into competition checks and comment analysis for Source 0 candidates, do a quick existence check: does the specific file/function/pattern mentioned in the issue still exist on current main? This takes 30 seconds and can save 10 minutes of wasted research.
++ **Prerequisite**: Fetch the correct remote first. Use `upstream_remote` from the profile -- NOT `origin` (which may point to a stale fork):
++ cd <LOCAL_PATH> && git fetch <UPSTREAM_REMOTE> main
++ Then verify the EXACT function and EXACT pattern from the issue -- not just a keyword grep:
++ # BAD: grep for a keyword that exists in OTHER functions
++ #   git show <UPSTREAM_REMOTE>/main:<FILE> | grep "isFinite(pid)"  <-- finds hits in wrong function!
++ # GOOD: verify the specific function contains the specific bug pattern
++ #   git show <UPSTREAM_REMOTE>/main:<FILE> | sed -n '/function parseLaunchctlPrint/,/^}/p' | grep "isFinite(pid)"
++ git show <UPSTREAM_REMOTE>/main:<FILE_FROM_ISSUE> 2>&1 | head -3  # does file exist?
++ git show <UPSTREAM_REMOTE>/main:<FILE_FROM_ISSUE> | sed -n '/function <FUNCTION_NAME>/,/^}/p' | grep "<EXACT_PATTERN>"  # does the SPECIFIC function still have the bug?
++ If the file is gone or the pattern is fixed, mark as STALE immediately and move to the next candidate. Do not spend API calls on competition/interest checks for dead issues.
++ # BAD: "server_default exists somewhere" --> too broad, false positive
++ # GOOD: "server_default=sa.text('uuid_generate_v4()') exists in model files" --> specific pattern from issue
++ ### Step 5A: Code Authorship Signal
++ Once you've identified the buggy file/function, check who wrote that code. If the original author is a known maintainer, this is a strong merge signal -- they understand the context instantly and have no friction deleting/modifying their own code.
++ # Identify the original author of the bug pattern
++ git blame <UPSTREAM_REMOTE>/main -- <FILE_FROM_ISSUE> |
++   sed -n '/<BUG_PATTERN>/p' |
++   awk '{print $2}' | tr -d '(' | sort | uniq -c | sort -rn | head -3
++ Cross-reference the result with the profile's Maintainer Review Styles section:
++ - **Author is a known maintainer** --> upgrade candidate to [green] in Step 3b, and note this maintainer as the **primary ping target**. Validated by PR #55922: vincentkoc authored the OAuth guard, we pinged him, merged in 2.1 days with zero review friction.
++ - **Author is a former contributor (not active)** --> no signal change, but the code may lack an active champion.
++ - **Author is unknown** --> no signal change.
++ **Why this works**: A maintainer reviewing a fix to code they wrote has near-zero cognitive load. They already know why the code exists, what edge cases matter, and whether your fix is correct. This is the difference between "please review this unfamiliar code" and "hey, this guard you wrote in #45453 is now stale."
++ - Comment says "likely fixed in version X" --> verify before working
++ - Root cause analysis contradicts itself --> scope risk, needs deeper investigation
++ - Maintainer says "by design" or "won't fix" --> skip
++ - Multiple people offering different root causes --> unclear problem, risky
++ **Verification is NOT optional.** If you cannot verify a candidate (e.g., no local clone, can't access the file), you MUST mark it as `! UNVERIFIED` in Step 6. Never present an unverified candidate without this flag -- the user needs to know verification was skipped so they can decide whether to invest time.
++ | **Maintainer interest?** | From Step 3b: [green] (filed/assigned/commented by maintainer), [yellow] (maintainer-applied label, milestone, or active in affected files), [grey] (reporter/bot labels only), [red] (zero maintainer interaction). **#1 merge predictor.** |
++ | **Supersession-resistant?** | Fix is at the caller level (self-contained), not callee level (fragile -- someone fixing all callers makes your callee fix redundant). Especially important for high-competition issues. |
++  #  Issue    Interest               No comp?  Small?  Verified?  Title
++  1  #XXXXX   [green] maint. filed        [pass]        [pass]      [pass]          description
++  2  #YYYYY   [yellow] maint. labeled      [pass]        [pass]      [pass]          description
++  3  #AAAAA   [yellow] area active (7d)    [pass]        [pass]      ! UNVERIFIED  description
++  4  #BBBBB   [grey] reporter-labeled     [pass]        [pass]      [pass]          description -- no triage signal
++  5  #ZZZZZ   [red] zero engagement     [pass]        [pass]      [pass]          description ! skip unless no [green]/[yellow]
++ **[red] candidates MUST include a warning**: "No maintainer has engaged with this issue. Data shows these PRs have very low merge rates even when technically perfect. Skipping recommended -- only proceed if no [green]/[yellow] candidates are available."
++ **[grey] candidates note**: "Labels were applied by the issue reporter or bots, not by a maintainer. This does not count as triage -- treat as slightly better than [red] but do not confuse with maintainer interest."
+
+### pr.md  [docs]
+-   "prepare PR", "check PR quality".
+- Read `./oss-pilot-data/profiles/<repo>.md` thoroughly. Profile schema: see `_template.md` (bundled) for expected sections.
+- **Cold start**: If the profile doesn't exist, create one from `_template.md` with the 4 required fields and ask the user to confirm before proceeding.
+- In particular:
+- 1. **Duplicate check (two-level):**
+-    - Issue-level: `gh pr list -R <REPO> --search "<issue>" --state open`
+-    - Code-level: `gh pr list -R <REPO> --search "<context> <function>" --state open` -- use context keyword + function name to avoid false positives. Skim titles to filter noise.
+-    - If >2 competing PRs actually targeting the same fix -> warn
+- 4. **Cross-boundary tracing** -- For fixes where data crosses boundaries (UI -> API, config -> runtime, external input -> internal state), trace BOTH sides:
+-    Only by tracing both sides can you find the right fix point. A guard like `includes("/")` may seem correct at the consumer, but can fail when "/" is part of a vendor prefix rather than a separator -- only tracing producer -> wire -> consumer reveals the correct fix (e.g., `startsWith(provider + "/")` instead).
+- - Mistaking log noise for a crash -> disabling a feature to "fix" startup failure, when the real issue is verbose retry logging
+- - Adding a cache TTL to fix stale data -> when the real problem is cache-key divergence across multiple code paths
+- - Adding a guard at the consumer -> when the producer's wire format makes the guard's assumption invalid (e.g., a "/" in a vendor-prefixed ID is data, not a separator)
+- - Setting `rejectUnauthorized = false` for one case -> but it silently disables cert validation for ALL connections of that type
+- - Fixing a shared function for your use case -> but breaking another caller's invariant (buffer lifecycle, compaction boundary, queue semantics)
+- - Multiple boolean flags tracking related state -> should be a single enum or ordered array
+- - Nested try/catch with duplicated recovery -> should be a data-driven loop over an attempts array
+- - Adding new exports for each variant -> should extend existing types with optional fields
+- - Separate code paths for similar operations -> should be a unified chain
+- - Adding special-case `if` branches -> should extend existing data structures
+- - Channel/module-specific fix where a shared fix is possible -> fix the root cause in shared infrastructure
+- - XS: <50 lines -> ideal
+- - S: 50-200 -> good
+- - M: 200-500 -> warn "consider splitting"
+- - L: >500 -> fail "split this PR"
+- Scope check: all changed files in one domain? Mixing feature + refactor + fix -> warn "one concern per PR."
+- - `package.json` -> read scripts for format, lint, test commands. Check for lock file to determine package manager (pnpm-lock.yaml -> pnpm, yarn.lock -> yarn, package-lock.json -> npm).
+- - `Cargo.toml` -> `cargo fmt && cargo clippy && cargo test`
+- - `go.mod` -> `go fmt && go vet && go test ./...`
+- - `Makefile` -> `make lint && make test`
+- Run: format -> lint -> type-check -> test (in that order).
+- **Auto-detect template**: Read `.github/pull_request_template.md` if it exists. Fill it out following the template structure.
+- **If no template**, use this format:
+- **Problem**: [what's broken and who it affects]
+- **Fix**: [what changed, 2-3 bullets]
+- **What did NOT change**: [scope boundary -- this is the MOST IMPORTANT section]
+- **Key rules:**
+- - **"What did NOT change"** is the most important section. Maintainers check scope boundaries first. A PR that clearly states what it doesn't touch gives reviewers confidence.
+- 1. First occurrence -> address substantively
+- 2. Second occurrence -> "This was addressed in the prior reply (see above). [1-sentence restatement]."
+- 3. Third+ occurrence -> "Same concern as above -- see prior replies."
+- - CI has upstream-only failures, our area-specific checks pass, and triage comment is posted (see oss-check CI Triage -- [WARN] status means ready to ping)
++   "prepare PR", "check PR quality", "openclaw PR".
++ Read `./oss-pilot-data/profiles/<repo>.md` thoroughly. Profile schema: see `./oss-pilot-data/profiles/_template.md` for expected sections. In particular:
++ 1. **Duplicate check (three-level):**
++    - Issue-level (open): `gh pr list -R <REPO> --search "<issue>" --state open`
++    - Issue-level (merged): `gh pr list -R <REPO> --search "<issue>" --state merged --limit 5` -- if a fix was already merged, our PR is a duplicate. Also search by keywords: `gh pr list -R <REPO> --search "<keywords>" --state merged --limit 5`
++    - Code-level (open): `gh pr list -R <REPO> --search "<context> <function>" --state open` -- use context keyword + function name to avoid false positives. Skim titles to filter noise.
++    - If >2 competing open PRs actually targeting the same fix --> warn
++    - If a merged PR already fixes the same issue --> **stop**. Do not open a duplicate.
++ 4. **Cross-boundary tracing** -- For fixes where data crosses boundaries (UI --> API, config --> runtime, external input --> internal state), trace BOTH sides:
++    Only by tracing both sides can you find the right fix point. A guard like `includes("/")` may seem correct at the consumer, but can fail when "/" is part of a vendor prefix rather than a separator -- only tracing producer --> wire --> consumer reveals the correct fix (e.g., `startsWith(provider + "/")` instead).
++ - Mistaking log noise for a crash --> disabling a feature to "fix" startup failure, when the real issue is verbose retry logging
++ - Adding a cache TTL to fix stale data --> when the real problem is cache-key divergence across multiple code paths
++ - Adding a guard at the consumer --> when the producer's wire format makes the guard's assumption invalid (e.g., a "/" in a vendor-prefixed ID is data, not a separator)
++ - Setting `rejectUnauthorized = false` for one case --> but it silently disables cert validation for ALL connections of that type
++ - Fixing a shared function for your use case --> but breaking another caller's invariant (buffer lifecycle, compaction boundary, queue semantics)
++ - Multiple boolean flags tracking related state --> should be a single enum or ordered array
++ - Nested try/catch with duplicated recovery --> should be a data-driven loop over an attempts array
++ - Adding new exports for each variant --> should extend existing types with optional fields
++ - Separate code paths for similar operations --> should be a unified chain
++ - Adding special-case `if` branches --> should extend existing data structures
++ - Channel/module-specific fix where a shared fix is possible --> fix the root cause in shared infrastructure
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ ```
++ ```
++ ```
++ ```
++ - XS: <50 lines --> ideal
++ - S: 50-200 --> good
++ - M: 200-500 --> warn "consider splitting"
++ - L: >500 --> fail "split this PR"
++ Scope check: all changed files in one domain? Mixing feature + refactor + fix --> warn "one concern per PR."
++ - `package.json` --> read scripts for format, lint, test commands. Check for lock file to determine package manager (pnpm-lock.yaml --> pnpm, yarn.lock --> yarn, package-lock.json --> npm).
++ - `Cargo.toml` --> `cargo fmt && cargo clippy && cargo test`
++ - `go.mod` --> `go fmt && go vet && go test ./...`
++ - `Makefile` --> `make lint && make test`
++ Run: format --> lint --> type-check --> test (in that order).
++ ### Step 1: Fetch the repo's PR template (MANDATORY)
++ gh api repos/<REPO>/contents/.github/pull_request_template.md -H "Accept: application/vnd.github.raw+json" 2>/dev/null
++ If the command succeeds --> use that template verbatim as the skeleton. Fill in **every section** -- do not skip sections, do not collapse them, do not reorder them. If a section is not applicable, write `N/A` rather than omitting it.
++ If the command fails (404 / permissions) --> try the local clone:
++ cat <LOCAL_PATH>/.github/pull_request_template.md 2>/dev/null
++ **Only if both fail** --> learn the format from the repo's own merged PRs (Step 1b).
++ ### Step 1b: Learn format from merged PRs (ONLY when no template)
++ When the repo has no PR template, do NOT immediately use the fallback. Instead, learn what format this repo actually uses:
++ # 1. Read the 5 most recently merged PRs
++ for PR in $(gh pr list -R <REPO> --state merged --limit 5 --json number --jq '.[].number'); do
++   echo "=== PR #$PR ==="
++   gh pr view $PR -R <REPO> --json body --jq '.body[:500]'
++ done
++ Extract the common pattern: which sections appear? What level of detail? Checkboxes or free text? Formal or informal?
++ If the recent 5 PRs don't include a PR similar to yours (e.g., yours is a bug fix but all 5 are features), search for similar changes:
++ # 2. Find 3 merged PRs with similar change type or area
++ gh pr list -R <REPO> --state merged --search "<change-type> <area-keyword>" --limit 3 --json number --jq '.[].number'
++ # Read their bodies the same way
++ **Use the observed pattern as your skeleton.** Match the section structure, heading style, and level of detail from the merged PRs. If merged PRs are minimal (just a summary + test output), write a minimal description. If they use structured sections, match that structure.
++ **Fall back to the fallback template below only if**: the repo has <5 merged PRs total, or the merged PR descriptions are empty/one-liners with no discernible pattern.
++ ### Step 2: Fill the template
++ Whether using the repo template, a learned pattern, or the fallback, follow these rules:
++ - **Use the exact section headings, checkbox formats, and ordering from the template.** Do not rename sections, merge sections, or use free text where checkboxes are expected.
++ - **"What did NOT change"** is the most important content. Maintainers check scope boundaries first.
++ - For bug fixes: fill Root Cause with sub-bullets (root cause, missing guardrail, prior context, why now) and Regression Test Plan (coverage level, target test, scenario, why smallest guardrail).
++ - For all PRs: fill Repro + Verification with environment details and numbered steps (adapt from the linked issue if available).
++ ### Fallback template (ONLY when repo has no template)
++ - **Problem**: [what's broken and who it affects]
++ - **Why it matters**: [impact]
++ - **What changed**: [2-3 bullets]
++ - **What did NOT change** (scope boundary): [explicit boundaries]
++ 1. First occurrence --> address substantively
++ 2. Second occurrence --> "This was addressed in the prior reply (see above). [1-sentence restatement]."
++ 3. Third+ occurrence --> "Same concern as above -- see prior replies."
++ - CI has upstream-only failures, our area-specific checks pass, and triage comment is posted (see oss-check CI Triage -- [yellow] status means ready to ping)

@@ -1,0 +1,1564 @@
+baiye1997/huahua-daily  4.0.2 -> 4.1.0
+change_type: instructions+docs+code   changelog: v4.1.0: 新增 CLI 工具、import_contract、重构 manifest/tool_registry/system tools、新增 7 个 reference 文档
+
+### README.md  [docs]
+- 通过 MCP 让 Codex、Codex CLI、Claude Code、Claude Code CLI、Claude Desktop、Cursor、Windsurf、OpenClaw 以及其他支持 MCP 的 Agent 读取花花日记后端数据、查询市场行情、识别截图，并向 App 发送待确认交易或导入请求。
+- - `core`（35 个工具）：仅高频日常能力（持仓、行情、交易请求、截图导入、量化上下文），
+-     ├── tool_registry.py         # 工具注册与 core/full profile 过滤（默认 76 个，core 35 个）
+- 你可以使用花花日记 HuahuaDaily MCP 工具查询用户基金持仓、交易流水、云同步状态、市场行情和公告，也可以识别截图并把导入结果发送到 App 确认页。
+- - 截图导入先调用 import_holding_screenshots 或 import_transaction_screenshots。
+- - 截图工具的 image_paths 已禁用（安全限制）：必须使用 images_base64 传图片内容，本地路径会直接报错。
+- - `get_tool_manifest()`：返回能力边界、认证方式、安全说明、MCP 更新预检和 `backendCompatibility` 后端量化契约握手。Agent 在每个会话首次使用 HuahuaDaily 时调用；若 `runtime.updateCheck.updateAvailable=true`，应按 `updateInstructions` 提示用户更新并重启 MCP；若 `backendCompatibility.compatible=false`，不要继续调用量化写入工具。
+- - `get_fund_quant_metrics(code, view, ...)`：按需读取后端统一计算的单基金量化数据。`technical` 返回技术卡与历史统计，`momentum` 返回短中期收益/均线偏离/连跌，`risk` 返回中长期收益/回撤/波动，`full` 才组合全部数据；不要无条件请求 `full`。必须检查 `historyFreshness/historyExpectedAsOf`、指标 `complete` 与 `current.status`。实时估算帧只适用于 `technical/full`。官方口径不接受客户端自定义净值，不输出买卖建议。
+- - `get_batch_fund_quant_metrics(codes, view, current_frames=None)`：按相同语义视图批量取数；`technical/momentum/risk` 最多 50 只，`full` 最多 10 只。Agent 不应并发调用多次单只接口，也不应重复拉 NAV 历史计算。必须同时检查顶层 `complete/staleCodes/unverifiedCodes/refreshingCodes`、`item.historyFreshness/historyExpectedAsOf`、指标 `metrics.complete` 和 `current.status`；过期或无法证明新鲜的数据会 fail-closed，并在可行时后台刷新。
+- 截图导入：
+- - `import_holding_screenshots(images_base64, import_type="HOLDINGS")`：识别持仓/自选截图（`image_paths` 已禁用，只能传 `images_base64`），返回 `items`、`summary`、`resolution_required` 等字段，不写入数据。`import_type` 只能是 `HOLDINGS`（默认，按基金名称匹配）或 `WATCHLIST`（按 6 位代码优先精确匹配，自选截图务必传此值以提高准确率），未知值会直接报错。
+- - `import_transaction_screenshots(images_base64)`：识别交易流水截图（`image_paths` 已禁用，只能传 `images_base64`），返回交易类型、基金匹配、日期、金额/份额和歧义标记，不写入数据。
+- - `request_import_review(import_type, items, source_note="Agent screenshot import", client_request_id="")`：把轻确认后的整批结果发送到 App 现有确认页。`import_type` 只能是 `HOLDINGS`、`WATCHLIST`、`TRANSACTIONS`；7 天内重试必须复用 `client_request_id`。
+- ## 截图导入流程
+- 1. Agent 调用截图识别工具，获取结构化结果。
+- 2. Agent 只对未匹配或有歧义的条目做轻确认。
+- 3. Agent 调用 `request_import_review` 创建一个批量导入请求。
+- - 截图导入只把识别结果发送到 App 确认页，不直接写入数据。
+- - 本地截图路径 `image_paths` 已禁用，必须使用 `images_base64` 传图片内容。
++ 通过 MCP 让 Codex、Codex CLI、Claude Code、Claude Code CLI、Claude Desktop、Cursor、Windsurf、OpenClaw 以及其他支持 MCP 的 Agent 读取花花日记后端数据、查询市场行情，并向 App 发送待确认交易或导入请求；配套有限 CLI 负责本地文件和完整导出。
++ ```bash
++ ```
++ - `core`（33 个工具）：仅高频日常能力（持仓、行情、交易请求、结构化导入、量化上下文），
++ 本地截图不要转 Base64 交给模型。安装同一 Python 包后使用有限文件 CLI：
++ huahua import screenshots --type transactions --file /path/trade.png --result /path/result.json
++ huahua import review --type transactions --input /path/result.json
++ CLI 只负责文件、完整导出和诊断；普通持仓、基金、市场、交易和量化交互继续使用 MCP。
++ 若 MCP 仅通过 `uvx` 临时运行且 PATH 中没有 `huahua`，使用
++ `uvx --from git+https://github.com/baiye1997/HuaHuaDailyMCP huahua ...`。
++ ### 版本 4.1.0 变更
++ - 新增有限 `huahua` CLI，直接处理截图文件、完整导出、报告文件和连接诊断；图片不再经过模型 Base64。
++ - 新增 `/api/agent/import-reviews` 结构化导入契约，文字/表格/JSON 直接使用 `import:request` scope。
++ - 新增独立 `/api/agent/capabilities` 契约握手，量化与 Agent 导入兼容状态分域报告。
++ - MCP 工具元数据收敛到 ToolSpec；core 调整为 33 个工具，旧 Base64 截图工具仅在 full 兼容并标记弃用。
++ - HuahuaDaily Skill 改为短路由器，领域规则按需加载 references。
++ ### 版本 4.0.2 变更
++ - 单基金量化结果新增指数 PE、历史分位、官方 PE 基准日及盘中估算口径。
++ - 非指数基金新增近 250 个官方净值点的位置分位，支持传入有效盘中估算帧计算今日位置。
++ - 指数估值复用后端共享缓存与短暂保留帧；批量量化工具不会触发第三方指数估值源。
++     ├── cli.py                   # 有限文件/大结果 CLI
++     ├── import_contract.py       # MCP 与 CLI 共用的结构化导入契约
++     ├── tool_registry.py         # ToolSpec 单源与 core/full 过滤（默认 76 个，core 33 个）
++ 你可以使用花花日记 HuahuaDaily MCP 工具查询用户基金持仓、交易流水、云同步状态、市场行情和公告，也可以把用户提供的文字、表格、JSON 或截图整理成批量导入请求，发送到 App 确认页。
++ - 用户已用文字、表格或 JSON 给出批量记录时，校验字段后直接调用 request_import_review，不需要经过截图识别接口。
++ - 只有用户输入是图片时才使用 `huahua import screenshots`；不得为新调用选择 MCP Base64 截图工具。
++ - full profile 中的旧截图工具仅作兼容且已弃用；新调用使用 `huahua import screenshots` 直接上传显式文件路径，不传 Base64。
++ - `get_tool_manifest()`：返回能力边界、认证方式、安全说明、MCP 更新预检和 `backendCompatibility.components` 后端分域契约握手。Agent 在每个会话首次使用 HuahuaDaily 时调用；若 `runtime.updateCheck.updateAvailable=true`，应按 `updateInstructions` 提示用户更新并重启 MCP；量化与 Agent 导入分别按自己的 component 判断，不能互相误伤。
++ - `get_fund_quant_metrics(code, view, ...)`：按需读取后端统一计算的单基金量化数据。`technical` 返回技术卡、位置分位与历史统计：可精确关联境内指数时 `current.indexValuation` 给出指数 PE 与历史分位，其他基金用近 250 个官方净值点的 `navPositionPercentilePct`。指数结果还需检查 `peBasis`：`live_index_price_estimate` 以 `officialPeAsOf` 的官方 PE 为基准、按今日指数点位估算，`official_daily` 直接使用 `dataAsOf` 当日官方 PE；`estimateStale=true` 是估值同款的短暂保留帧，后台正在刷新。`momentum` 返回短中期收益/均线偏离/连跌，`risk` 返回中长期收益/回撤/波动，`full` 才组合全部数据。必须检查 `historyFreshness/historyExpectedAsOf`、`current.status`、`current.valueBasis` 与数据日期。传入有效盘中估算帧时，非指数基金的位置分位使用实时估算值；实时估算帧只适用于 `technical/full`。官方口径不接受客户端自定义净值，不输出买卖建议。
++ - `get_batch_fund_quant_metrics(codes, view, current_frames=None)`：按相同语义视图批量取数；`technical/momentum/risk` 最多 50 只，`full` 最多 10 只。为避免批量触发第三方估值源，批量结果不包含详情按需字段 `current.indexValuation`；需要指数 PE 时只查询用户正在查看的单只基金。Agent 不应并发调用多次单只接口，也不应重复拉 NAV 历史计算。必须同时检查顶层 `complete/staleCodes/unverifiedCodes/refreshingCodes`、`item.historyFreshness/historyExpectedAsOf`、指标 `metrics.complete` 和 `current.status`；过期或无法证明新鲜的数据会 fail-closed，并在可行时后台刷新。
++ 批量导入：
++ - `request_import_review(import_type, items, source_note="Agent 整理的批量导入", client_request_id="", source_kind="text")`：把文字、表格或 JSON 的结构化记录发送到 App 批量确认页；`source_kind` 支持 `text/table/json/screenshot/file`，7 天内重试必须复用 `client_request_id`。
++ - `import_holding_screenshots` / `import_transaction_screenshots`：只在 full profile 为旧调用兼容，已弃用，不属于 core；新截图工作流使用 `huahua import screenshots`，避免 Base64 经过模型上下文。
++ ## 批量导入流程
++ 1. 文字、表格或 JSON 直接整理为 items，并调用 `request_import_review`。
++ 2. 本地截图使用 `huahua import screenshots` 写入结构化结果文件，不经过 Base64。
++ 3. Agent 只对识别歧义做轻确认，再用 `huahua import review` 创建批量导入请求。
++ - 批量导入只创建 App 确认请求，不直接写入数据。
++ - full profile 旧截图工具的 `image_paths` 仍禁用；新工作流由 CLI 读取显式文件路径。
+
+### SKILL.md  [instructions]
+- description: Use HuahuaDaily MCP for authorized portfolio and transaction queries, fund and market data, strategy backtests and quant snapshots, community actions, screenshot recognition, and App-confirmed trade or import requests. Trigger when users ask about their HuahuaDaily holdings or cloud sync, request fund or market analysis through HuahuaDaily, run or review portfolio backtests, save or review strategy snapshots, use HuahuaDaily community features, or send transactions/imports for App confirmation.
+- # 花花日记助手（HuahuaDaily）
+- ## 0. Compatibility
+- This SKILL.md intentionally uses the smallest common Agent Skills format: YAML frontmatter with only `name` and `description`, followed by Markdown instructions. Platform-specific setup for Codex, Codex CLI, Claude Code, Claude Desktop, OpenClaw, and other MCP clients belongs in README/configuration, not in this file.
+- ## 1. 核心边界
+- 花花日记 MCP 让 Agent 读取用户授权的云端同步数据、基金行情、交易流水和系统公告，识别截图，并向 App 发送待确认请求。
+- Agent 不直接写入交易、不直接导入持仓、不覆盖云同步。所有买入、卖出、持仓导入、自选导入、交易记录导入，都必须由用户在 App 确认页最终确认。
+- 社区授权、取消授权、关注/取消关注、社区收益同步是直接后端写操作，不走 App 待确认页。只有用户明确确认该社区操作时才调用；不要把它们描述为“已发送到 App 等待确认”。
+- MCP 可读取完整持仓、交易流水、原始云端实时同步主数据和截图内容，可能包含金额、成本、收益率等敏感投资数据。回答时不要主动暴露超过用户问题所需的明细。
+- 策略实验室的组合回放和历史试算必须调用服务端工具，不要在 Agent 内复制交易排序、收益或回撤算法。`save_quant_snapshot` 是不可变的“当时判断”档案：真实持仓和组合版本由服务端捕获，只保存市场状态、特征、逐基金观察、风险否决和数据质量，不创建虚拟账户、不计算模拟收益、不保存建议金额，也不会下单。
+- 业务请求仅通过 MCP 注册工具执行。`server.py` 是兼容入口，`huahua_mcp_runtime` 是内部实现包；内部 Python 模块不构成公共调用面。
+- ## 2. 会话启动
+- 每个 Agent 会话首次使用 HuahuaDaily 时，调用：
+- ```json
+- ```json
+- ```json
+- ```json
+- ```json
+- ```json
+- ```json
+- ```json
+- ```json
+- ```json
+- ```json
+- ```json
+- ```json
+- ```json
+- ```json
+- ```json
+- ```json
+- ```json
+- ```json
+- ```json
+- ```json
+- ```json
+- ```json
+- ```json
+- ```json
+- ```json
+- ```json
+- ```json
+- ```json
+- ```json
+- ```json
+- ```json
+- ```json
+- ```json
+- ```json
+- ```json
+- ```json
+- ```json
+- ```json
+- ```json
+- ```json
+- ```json
+- ```json
+- ```json
+- ```json
+- ```json
+- ```json
+- ```json
+- ```json
+- ```json
+- ```json
+- ```json
+- ```json
+- ```json
+- ```json
+- ```json
+- ```json
+- ```json
+- ```json
+- ```json
+- get_tool_manifest()
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- 用途：
+- 用途：
+- 用途：
+- - 确认可用工具、认证方式、安全边界。
+- - 检查 MCP 启动时生成的 `runtime.updateCheck`。若 `updateAvailable=true`，先告知用户当前版本、最新版本和返回的 `updateInstructions`；不要自行安装或覆盖用户环境。`unavailable` 只表示版本检查暂不可用，不阻断其他工具。
+- - 检查 `backendCompatibility`。若 `compatible=false`，说明后端量化契约与当前 MCP 不兼容，不要继续调用量化写入工具；`unavailable` 只表示握手暂不可用。
+- - 不访问用户数据，不消耗行情请求。
+- Token 缺失、无效或过期时，提示用户在 App「小窝 / 设置 → Agent 访问令牌」重新生成，并配置环境变量 `HUAHUA_AGENT_TOKEN`。
+- 如果当前 MCP client 支持运行时传 token，也可以调用：
+- set_token({"token": "HUAHUA_AGENT_TOKEN_VALUE"})
+- 确认当前账号信息（昵称、UID、会员状态）：
+- get_current_user()
+- 适合回答"我是谁""我的会员什么时候到期"等问题。
+- ## 3. 查询持仓和云端实时同步
+- 本节所有持仓、交易、分组、标签、自选和原始同步数据读取，都以云端实时同步主数据为准：固定读取结构化组合快照，不读取旧版同步大包。不要把 `history_snapshot` 或 `/api/cloud-snapshots` 历史备份快照当成当前持仓数据源。
+- ### 3.1 用户问“今天收益/总资产/持有收益”
+- 首选：
+- 首选：
+- get_summary()
+- 返回重点：
+- 返回重点：
+- 返回重点：
+- 返回重点：
+- 返回重点：
+- - `totalMarketValue`：总市值。
+- - `todayProfit`：今日收益。
+- - `todayProfitRate`：今日/昨日收益率，口径为 `todayProfit / totalDayBaseMarketValue × 100%`，不要用当前总市值重算。
+- - `totalDayBaseMarketValue`：`todayProfitRate` 使用的归属日组合期初市值。
+- - `displayedDayCompleteness`：组合当日收益完整度。若 `complete=false` 或 `pendingAttributionCount>0`，说明至少一只 QDII/T+N 最新官方净值尚无可靠 G 日；现有 `todayProfit` / `todayProfitRate` 仅覆盖可归属基金，不得表述为完整组合当日收益。
+- - `estimateCompleteness`：当前估值帧可用性。若 `complete=false`、`timeoutCount>0` 或 `staleCount>0`，至少一只持仓缺少可用估值帧；`evidenceComplete`、`partialCodes` 和汇率/代理证据用于避免 Agent 虚构完整覆盖。普通回答不要主动逐只传播这些技术状态，只有用户明确询问诊断、证据或估算口径时才展开。0 元不能表述为真实零涨跌；过期 last-good 只供内部审计，不参与今日收益。
+- - `totalHoldingProfit`：持有收益。
+- - `totalHoldingReturnRate`：持有收益率。
+- - `cumulativeProfit`：累计收益；这是本 App 已记录交易推导的累计，仅在用户明确询问历史累计或该字段时使用。
+- - `portfolioUpdatedAt`：PowerSync v3 云端实时同步主数据时间。
+- - `portfolioUpdatedAt`：PowerSync v3 云端实时同步主数据时间。
+- - `strategyPreferences.maxDrawdownLimitPct`：用户在策略实验室设置的组合回撤阈值百分数；`0` 表示未启用。不得自行假定为 10%。
+- 回答时必须说明 `portfolioUpdatedAt`。原始数据中的 `data.timestamp`/`meta.payload_timestamp` 只是客户端快照谱系或迁移元数据，不表示同步新鲜度。如果同步时间明显旧，提醒用户检查 App 的「小窝 → 数据 → 实时同步」连接状态；实时同步没有开关，不应让用户寻找旧版开启入口。
+- 不要为了资产概况先调用 `get_raw_sync_data()`。
+- ### 3.2 用户问“完整持仓/自选/分组”
+- get_records({"include_transactions": false})
+- - `holdings`：有持仓的基金；已配置定投时含 `autoInvestPlans`。
+- - `watchlist`：App 中可见的自选或清仓观察项；不包含已送养隐藏项，同代码的显式自选优先；
+-   与 App 刷新口径一致，含估算值及 source/freshness/estimateAudit（观察列不按估算计价）；
+-   已配置定投时含 `autoInvestPlans`。
+- - `groups`：分组。
+- - `summary`：汇总。
+- 云端实时同步主数据会保存最后一次官方净值作为恢复基线，但不会保存盘中估值等高频行情。`get_records` 会主动拉取最新行情，并比较行情帧的官方 `dwjz/last_nav_date` 与主数据 `lastNav/lastNavDate`：`marketValue` 使用较新的官方锚点，`valuationNavDate`/`valuationSource` 说明依据；盘中 `estimatedNav` 仅用于 `estimatedMarketValue` 和当日收益，绝不冒充官方市值。
+- 当前口径：持仓市值和持有收益只按官方净值计价；MCP 可用行情接口返回的更新官方锚点修正滞后的云端恢复基线，但盘中估算不会回填官方市值。`cumulativeProfit` 是本 App 已记录交易推导的累计收益，不代表用户所有平台/历史清仓买卖的完整累计收益。`get_records` 会读取云端主数据里的 `userPreferences.fundDataSourceMode` 和基金级 `dataSourceMode`，自动按用户选择的行情源请求估值。
+- `huahua` 是稳定的花花托管策略身份，不等于某一个固定内部实现。用户明确要求排查链路时才读取并展开 holdings/watchlist 的 `estimateAudit`：`provider`、`engine`、`proxyCoverage`、`fxDegraded`、`partial`、`evidenceComplete`、`fallback`，以及审计传输实际提供时才存在的 `coverage`。普通回答只给估值时间、类型、来源、涨幅、估算净值和官方净值日期；不能把代理描述成持仓股票完整覆盖。`targetNavDate`/`latestOfficialNavDate` 是净值 D 日，`estimateDisplayDate` 是估算展示/T 帧日期，`returnAttributionDate` 才是可靠收益 G 日；后者为 null 时不得用 D 日代替。
+- 用户询问定投计划、止盈止损纪律、夜盘自选或限购观察等组合偏好时，优先使用聚合只读工具一次取回（共享同一快照缓存，不产生额外网络请求）：
+- get_portfolio_preferences({"include_night_watch": true, "include_purchase_limit": true, "include_auto_invest": true, "include_disciplines": true, "code": ""})
+- 返回 `nightWatch`（夜盘实际生效代码，可传给 `get_night_estimate`）、`purchaseLimit`（按 App 迁移规则得到的实际生效限购观察，可配合 `get_batch_fund_fees`）、`autoInvest`（定投计划）和 `disciplines`（止盈止损纪律）四个 section。`nightWatch.configuredCodes` 与 `purchaseLimit.configuredItems` 保留用户原始配置；不要把默认池误述为用户手动添加。只读，不会创建、修改、暂停或删除任何计划；不得把 `triggered=true` 描述成 Agent 已执行交易。
+- 需要单独读取某一类偏好时，也可用旧工具 `get_auto_invest_plans`、`get_fund_disciplines`、`get_night_watchlist`、`get_purchase_limit_watchlist`（full profile）。
+- 如果用户要求交易流水、成本来源、审计收益，再调用：
+- get_transactions({"code": "", "include_pending": true})
+- 需要费用、确认日、净值日和分页游标齐全的量化账本时，优先调用：
+- get_transaction_ledger({"start_date": "2026-01-01", "end_date": "2026-12-31", "limit": 100})
+- 账本的日期筛选和排序统一使用 `effectiveDate = confirmDate || tradeDate`；`tradeDate` 与 `confirmDate` 仍会同时返回用于审计。不要按下单日自行重排确认后的持仓。
+- 真实组合历史单位净值与回撤使用：
+- get_portfolio_nav_history({"start_date": "2025-01-01", "end_date": "2026-01-01", "benchmark_code": "000300"})
+- 不要用 `get_transactions` 返回值自行另算一套组合净值。
+- 或：
+- get_records({"include_transactions": true})
+- ### 3.3 用户问“云端主数据是不是最新/同步是否完整”
+- 先调用：
+- get_sync_meta()
+- - `updated_at`：云端实时同步主数据更新时间。
+- - `etag`：云端主数据指纹。
+- - `data_source`：固定为 `portfolio_v3`，表示 PowerSync v3 权威组合数据。
+- - `size_bytes`：主数据大小。
+- - `has_restorable_sync_payload`：是否可由新版 App 安全恢复。
+- - `empty_portfolio_confirmed`：是否是用户确认过的空组合主数据；为 true 且可恢复时，不要误判为云端损坏。
+- - `history_snapshot`：最新云端历史快照摘要，只用于恢复、回滚和灾备，不代表当前主数据。
+- 需要完整检查时调用：
+- get_raw_sync_data({"include_json_text": false})
+- 默认复用会话内 30 秒组合缓存；若刚完成实时同步，先调用 `get_sync_meta()` 确认
+- `updated_at` 已更新，再对比 `get_raw_sync_data` 返回的 `meta.updated_at`。仅当用户
+- 明确要求导出原始 JSON 时才设置 `include_json_text=true`（该模式绕过缓存，只用于
+- 导出/迁移审计，不要默认使用）。
+- 检查重点：
+- - `data.funds` 是否存在且非空。
+- - 若 `meta.is_confirmed_empty_portfolio_snapshot=true`，这是用户确认清空组合后的合法空组合主数据。
+- - `data.groups`、`data.watchlistGroups` 是否存在。
+- - `data.globalTags` 是否存在。
+- - `data.nightWatchCodes`、`data.purchaseLimitWatchItems`、`data.marketIndexSelection` 是否存在。
+- - `meta.contains_ledger` 通常为 false，这是正常的。
+- ### 3.4 用户问“标签/分组”
+- 分组：
+- get_groups()
+- 标签：
+- get_tags()
+- 使用规则：
+- - `get_groups()` 用于解释持仓账户分组、自选分组。
+- - `get_tags()` 用于解释全局标签和每只基金绑定标签。
+- ### 3.5 用户问“限购观察/哪些基金限制申购”
+- 先读取用户在 App 保存的观察列表：
+- get_purchase_limit_watchlist()
+- 再按需对返回的代码调用 `get_batch_fund_fees(codes)` 或 `get_fund_fees(code)` 查看申购状态、QDII/限大额日累计限购金额和确认天数。`items[].lastSnapshot` 只是 App 最近一次检查快照，当前状态仍以费用接口为准；`snapshot` 是兼容别名。旧版本或尚未同步过该功能的云端主数据会按 App 相同规则并入默认池，并通过 `migrationApplied=true` 标明。
+- ### 3.6 策略实验室
+- 需要多只基金官方净值时，使用 `get_batch_fund_nav_history`，不要并发循环调用 `get_item_history`。逐基金检查 `coverageStart`、`coverageEnd`、`baselineDate` 和 `complete`；只有请求区间的期初基线与结束边界都覆盖时，`complete` 才为 true。
+- 量化复盘优先使用 `get_quant_strategy_context` 获取紧凑、真实、可审计的聚合输入。必须先检查 `readyForAnalysis`、`blockingReasons` 和 `dataQuality.fundOfficialNavFreshness`；存在 stale/missing/unverified 时不得解释逐基金指标、组合风险或执行信号，按后台刷新状态稍后重试。`view=full` 的 `market.indices` 包含全部启用指数的服务端预计算收益、均线、回撤、波动和 `trendState`；默认 compact 视图只保留主基准明细。`market.indexGroups`、`market.indexThemes`、`leaders20d`、`laggards20d` 在两种视图中都已完成市场宽度、科技成长等主题结构、平均收益与强弱排序。使用排名前必须检查 `rankingEligible`、`asOf`、`freshness` 和 `market.indexCoverage.rankingAsOf`。Agent 不得再逐指数拉取原始历史或自行计算、计数、排序，只负责解释这些确定性结果。该上下文不含资讯、Serenity 研究、评分、信号、建议金额或交易建议。
+- 逐基金 `metrics` 已直接提供 `r5Pct`、`r10Pct`、`r20Pct` 等交易点收益，
+- `bias5Pct`、`bias10Pct`、`bias20Pct`、`bias60Pct` 分别表示最新官方净值相对最近
+- 5、10、20、60 个有效官方净值点简单均值的乖离百分比；`consecutiveDownDays`
+- 表示最新官方净值序列的连续下跌交易点数。Agent 和策略引擎必须直接使用这些
+- 服务端字段，并在字段为 `null` 或列入 `missing` 时退出对应判断，不得拉取原始
+- 净值自行重算。
+- 个人组合量化复盘应先单独调用 `get_quant_strategy_context`，不要同时并发调用
+- `get_index_metrics`、`get_fund_flow` 或 `get_status`。上下文已经包含核心指数指标、
+- 与持仓相关的板块资金流、执行窗口和数据质量；只有用户随后明确要求完整市场明细，
+- 或需要诊断服务健康状态时，才按需补充对应工具。读取 `portfolio.risk` 时同时检查
+- `blockingFunds` 与 `pendingFirstReturnFunds`：后者表示新持仓尚未产生首个可归属 G 日
+- 收益，不等同于历史不可重建。若全部持仓都处于该状态，顶层阻断原因为
+- `portfolio_risk_pending_first_return`，不得改写成“历史数据丢失”。
+- MCP 默认请求 `view=compact`：保留分析就绪状态、风控、执行、市场和逐基金核心指标，省略
+- 可由顶层审计统一表达的逐基金指标来源/方法版本、重复净值与成本明细以及
+- `drillRefs`；`market.indices` 只保留主基准逐指数明细，全市场结构仍由
+- `indexCoverage`、`indexGroups`、`indexThemes`、`leaders20d` 和 `laggards20d`
+- 完整表达。需要逐基金份额、成本、官方净值、完整指数明细或下钻引用时才显式使用
+- `view=full`。两种视图复用同一份服务端 canonical Context 缓存，不会重复触发重任务。
+- `execution.canCancel` 表示当前是否存在可撤销的花花日记本地 `PENDING` 记录，
+- `execution.cancelableTransactionIds` 给出对应 ID，语义固定为
+- `delete_local_pending_ledger_record`。这与外部基金公司订单无关；尚未在 App
+- 确认的 Agent 请求则通过 `update_agent_request(..., "DISMISSED")` 撤回提示。
+- 历史回测使用 `run_portfolio_backtest`，统一采用零费率。结果必须满足 `coverageRatio == 1` 且 `metrics.dataQuality.historyComplete == true`；未补齐的 `unresolvedHistoryDates` 是阻断项，不能把截至较早 `dataAsOf` 的局部结果说成完整回测。`strategy_type=target_rebalance` 按 `none/daily/weekly/monthly/quarterly` 频率恢复目标权重；`strategy_type=threshold_reentry` 按止盈、止损及反向波动再次买入阈值运行。只能提交基金代码、目标权重、日期、初始资金和这些白名单参数；不得提交动态代码、URL、文件路径或表达式。如果要重试同一次运行，复用同一 `client_run_id`。
+- 运行成功后保留返回的 `run_id`。需要读取已保存回测、审计完整交易或继续分页时调用：
+- get_portfolio_backtest({
+-   "run_id": 123,
+-   "trade_offset": 0,
+-   "trade_limit": 100,
+-   "max_series_points": 300
+- })
+- })
+- })
+- })
+- })
+- })
+- })
+- })
+- })
+- })
+- })
+- })
+- })
+- })
+- `trade_limit` 最大 200，`max_series_points` 最大 500。完整审计应持续使用 `nextTradeOffset` 分页，直到该字段为空。已保存的服务端交易序列是回测审计的权威数据源。
+- 需要证明“某日、某版本、基于当时数据得出了什么判断”时调用 `save_quant_snapshot`：
+- save_quant_snapshot({
+-   "snapshot_key": "strategy-a:<北京时间今天>:close:v1",
+-   "snapshot_date": "<北京时间今天 YYYY-MM-DD>",
+-   "strategy_id": "strategy-a",
+-   "strategy_version": "1.0.0",
+-   "group_id": "<可选的资产分组 ID>",
+-   "data_cutoff_at": "<不晚于当前写入时间的 UTC ISO 时间>",
+-   "market_mode": {"regime": "range"},
+-   "features": {"momentumWindow": 20},
+-   "risk": {"portfolioAlert": false},
+-   "data_quality": {"complete": true},
+-   "fund_signals": [{
+-     "code": "000001",
+-     "observation": "HOLD",
+-     "triggers": ["20日动量仍为正"],
+-     "riskVeto": {"blocked": false, "reasons": []}
+-   }]
+- 只分析某个资产分组时，组合查询、历史试算和 `save_quant_snapshot` 必须使用同一个 `group_id`；未传表示全部持仓，旧快照也按全部持仓解释。
+- `snapshot_key` 是幂等键，同一键且内容相同才返回原记录，内容不同会返回冲突。首版只允许写入北京时间当天快照，`data_cutoff_at` 不能晚于服务端写入时间，也必须属于快照当天。服务端会补入真实持仓、组合版本、写入时间和 SHA-256 `payloadHash`。每条逐基金观察必须明确 `observation`、`triggers` 和 `riskVeto.blocked`；任何层级出现建议金额、建议份额或同义建议文本都会被拒绝。读取旧判断用 `get_quant_snapshots` 分页获取摘要，再传 `snapshot_id` 读取完整内容。后续方向统一调用 `get_quant_snapshot_review`，按 1、7、20、60 个收益日读取后端权威验证结果；不得自行复制收益或 G 日归属算法，不回填或覆盖原快照，也不得把 QDII 涨跌提前。需要复盘真实加减仓时调用 `get_portfolio_trade_review`，不要从交易账本自行推算 T1/T7/T20/T60 表现。
++ description: 查询和分析花花日记中的基金持仓、行情、交易、量化与社区数据，并创建需要用户在 App 内确认的交易或批量导入请求。输入是本地图片、完整导出或大型文件时使用配套 huahua CLI。
++ version: 4.1.0
++ # 花花日记 Agent 路由
++ 花花日记后端是同步主数据、日期语义、权限、幂等和导入规范化的业务真相；现有组合读取仍保留 MCP 兼容适配层。MCP 用于小型结构化交互；CLI 只用于文件、完整导出和本地诊断。
++ ## 开始会话
++ 首次使用先调用 `get_tool_manifest`，确认 profile、版本兼容、scope 和安全边界。需要用户数据的工具必须有 Agent Token；不要索取、展示或复述完整 Token。
++ manifest 报告版本可更新时只提示用户，不自行安装或覆盖环境。按 `backendCompatibility.components` 分别判断：量化不兼容时停止量化写入，Agent 导入不兼容时停止新导入请求，并说明原因；不要让一个组件的版本差异误伤另一组件。
++ ## 路由顺序
++ 依次判断：
++ 1. 用户要完成什么业务任务；
++ 2. 输入是文字/结构化数据还是本地文件；
++ 3. 结果是有界回答还是完整导出；
++ 4. 操作是只读、创建 App 待确认请求，还是直接改变状态。
++ 不要使用“能用 CLI 就优先 CLI”或“批量导入先截图识别”作为通用规则。
++ ## 按意图读取说明
++ - 持仓、收益、同步状态、交易流水、分组或偏好：读取 [references/portfolio.md](references/portfolio.md)。
++ - 基金搜索、估值、画像、市场、指数、QDII 夜盘或交易日：读取 [references/fund-market.md](references/fund-market.md)。
++ - 买卖请求、批量导入、待处理请求：读取 [references/trade-import.md](references/trade-import.md)。
++ - 策略上下文、历史净值、组合回放、回测或快照：读取 [references/quant.md](references/quant.md)。
++ - 社区、JCTI 或个人报告：读取 [references/community-reports.md](references/community-reports.md)。
++ - 涉及收益日期、确认日、历史回放或副作用边界：读取 [references/date-safety.md](references/date-safety.md)。
++ - 本地截图、完整组合/净值导出、大型报告文件或诊断：读取 [references/cli-artifacts.md](references/cli-artifacts.md)。
++ 只读取当前任务需要的 reference；不要为简单查询加载全部说明。
++ ## 核心选路
++ | 用户任务 | 默认入口 | 首选能力 |
++ | --- | --- | --- |
++ | 今日收益、总资产、持仓明细 | MCP | `get_summary` / `get_records` |
++ | 基金和市场查询 | MCP | 搜索、估值、批量画像和市场聚合工具 |
++ | 单笔买入或卖出 | MCP | `request_transaction` |
++ | 文字、表格、JSON 批量记录 | MCP | `request_import_review` |
++ | 本地图片或截图 | CLI | `huahua import screenshots` |
++ | 完整同步数据或长历史导出 | CLI | `huahua export ...` |
++ | 量化分析和复盘 | MCP | compact、有界或分页工具 |
++ | 个人报告 | MCP；大型文件用 CLI | `submit_personal_strategy_report` / `huahua report submit` |
++ ## 通用安全边界
++ - `request_transaction` 和 `request_import_review` 只创建 App 待确认请求，不直接交易或写入组合。
++ - 创建请求后明确告诉用户“尚未完成，需在花花日记 App 中确认”。
++ - Agent Token 只能把请求标记为 `DISMISSED`，不能标记为 `PROCESSED`。
++ - 写操作重试必须复用对应的 `client_request_id` 或 `client_message_id`。
++ - 不调用同步写入、历史恢复、管理员报告或未在 manifest 暴露的后端接口。
++ - 不根据不完整估值、缺失 G 日或 stale/timeout 帧把收益解释为真实零涨跌。
++ - 用户没有明确要求写入、关注、授权、归档或投递时，只执行读取和分析。
++ ## 文件与上下文边界
++ - 不在对话、MCP 参数或中间文本中生成、复制、拆分或重组图片 Base64。
++ - 本地文件只能使用用户在当前请求中明确提供的路径；不得由 Agent 猜测、搜索或扫描路径。CLI 本身不扫描目录。
++ - 大型结果写入文件，模型只读取摘要或必要片段。
++ - MCP full 中的截图 Base64 工具只用于旧调用兼容，已弃用且不属于 core；新工作流不得选择它们。
++ ## 回答要求
++ - 区分官方净值、盘中估算和夜盘参考，不把估算描述成已确认收益。
++ - 涉及组合结论时检查返回中的 freshness、complete、readyForAnalysis 和 blockingReasons。
++ - 基金代码或名称存在歧义时轻确认，不猜测。
++ - 投资分析说明依据、数据截止时间和不确定性，不承诺收益。
++ ## 常见失败
++ - 401：Token 无效或过期，请用户在 App 重新生成。
++ - 403：scope、会员等级或写入边界不满足；不要改用更宽接口绕过。
++ - 409：幂等 ID 与原意图冲突；不要用同一 ID 提交不同内容。
++ - 413/422：按错误提示缩小文件、条目数或日期范围，不静默截断。
++ - 行情或上游部分失败：保留可用结果并披露不完整项，不伪造缺失数据。
+
+### huahua_mcp_runtime/cli.py  [code]
++ """Small artifact CLI for payloads that should not cross the MCP context."""
++ from __future__ import annotations
++ import argparse
++ import asyncio
++ import json
++ import sys
++ import tempfile
++ from pathlib import Path
++ from typing import Any
++ from .client import get, post, post_files, require_token
++ from .import_contract import (
++     IMPORT_REVIEW_SCHEMA_VERSION,
++     normalize_import_review_items,
++ )
++ )
++ from .validation import (
++     MAX_IMAGE_SIZE,
++     MAX_UPLOAD_FILES,
++     MAX_UPLOAD_TOTAL_SIZE,
++     summarize_import_items,
++     validate_fund_code,
++     validate_image_file,
++ class _JsonArgumentParser(argparse.ArgumentParser):
++     def error(self, message: str) -> None:
++         raise ValueError(f"参数错误：{message}")
++ def _write_json(path_value: str, payload: Any) -> Path:
++     path = Path(path_value).expanduser().resolve()
++     path = Path(path_value).expanduser().resolve()
++     path.parent.mkdir(parents=True, exist_ok=True)
++     encoded = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8") + b"\n"
++     temporary: Path | None = None
++     try:
++     try:
++     try:
++         with tempfile.NamedTemporaryFile(dir=path.parent, prefix=f".{path.name}.", delete=False) as handle:
++             temporary = Path(handle.name)
++             handle.write(encoded)
++         temporary.replace(path)
++     except Exception:
++         if temporary is not None:
++             temporary.unlink(missing_ok=True)
++         raise
++     return path
++ def _read_json(path_value: str) -> Any:
++         return json.loads(path.read_text(encoding="utf-8"))
++     except FileNotFoundError:
++         raise ValueError(f"文件不存在：{path}") from None
++     except json.JSONDecodeError as exc:
++         raise ValueError(f"JSON 文件格式无效：{path}（{exc.msg}）") from None
++ def _read_images(path_values: list[str]) -> list[tuple[str, bytes, str]]:
++     if not path_values or len(path_values) > MAX_UPLOAD_FILES:
++         raise ValueError(f"请提供 1-{MAX_UPLOAD_FILES} 张图片")
++     files = []
++     total_size = 0
++     declared_total_size = 0
++     for path_value in path_values:
++         path = Path(path_value).expanduser().resolve()
++         try:
++         try:
++             declared_size = path.stat().st_size
++         except FileNotFoundError:
++         except FileNotFoundError:
++             raise ValueError(f"图片不存在：{path}") from None
++             raise ValueError(f"图片不存在：{path}") from None
++         if declared_size > MAX_IMAGE_SIZE:
++             raise ValueError(
++                 f"图片文件过大：{declared_size / 1024 / 1024:.1f}MB，最大允许 10MB"
++             )
++         declared_total_size += declared_size
++         if declared_total_size > MAX_UPLOAD_TOTAL_SIZE:
++             raise ValueError("单次上传图片总大小不能超过 50MB")
++             raise ValueError("单次上传图片总大小不能超过 50MB")
++             content = path.read_bytes()
++         mime = validate_image_file(path.name, content, "")
++         total_size += len(content)
++         if total_size > MAX_UPLOAD_TOTAL_SIZE:
++         files.append((path.name, content, mime))
++     return files
++ async def _doctor(_args: argparse.Namespace) -> dict:
++     require_token()
++     require_token()
++     require_token()
++     require_token()
++     require_token()
++     require_token()
++     user, version = await asyncio.gather(get("/api/auth/me"), get("/api/version"))
++     return {
++     return {
++     return {
++         "status": "ok",
++         "api": "reachable",
++         "user": {
++             "uid": user.get("uid") if isinstance(user, dict) else None,
++             "nickname": user.get("nickname") if isinstance(user, dict) else None,
++         },
++         "appVersion": version.get("version") if isinstance(version, dict) else None,
++     }
++     }
++     }
++     }
++     }
++ async def _import_screenshots(args: argparse.Namespace) -> dict:
++     input_paths = {Path(value).expanduser().resolve() for value in args.file}
++     result_path = Path(args.result).expanduser().resolve()
++     if result_path in input_paths:
++         raise ValueError("--result 不能与输入截图使用同一路径")
++     files = _read_images(args.file)
++     import_type = args.type.upper()
++     if import_type == "TRANSACTIONS":
++         raw = await post_files("/api/import_transactions", files)
++     else:
++         mode = "watchlist" if import_type == "WATCHLIST" else "holdings"
++         raw = await post_files("/api/import_screenshot", files, form_data={"mode": mode})
++     items = raw if isinstance(raw, list) else []
++     result = {
++         "schema_version": IMPORT_REVIEW_SCHEMA_VERSION,
++         "import_type": import_type,
++         "source_kind": "screenshot",
++         "items": items,
++     output = _write_json(args.result, result)
++         "status": "recognized",
++         "result_file": str(output),
++         "summary": summarize_import_items(items),
++         "next_step": "检查未匹配项后运行 huahua import review；当前尚未写入 App。",
++ async def _import_review(args: argparse.Namespace) -> dict:
++     raw = _read_json(args.input)
++     schema_version = str(raw.get("schema_version") or "").strip() if isinstance(raw, dict) else ""
++     if schema_version and schema_version != IMPORT_REVIEW_SCHEMA_VERSION:
++         raise ValueError(
++             f"不支持的结果文件 schema_version：{schema_version}；"
++             f"当前仅支持 {IMPORT_REVIEW_SCHEMA_VERSION}"
++         )
++     items = raw.get("items") if isinstance(raw, dict) else raw
++     requested_type = args.type.upper()
++     file_type = str(raw.get("import_type") or "").strip().upper() if isinstance(raw, dict) else ""
++     if file_type and file_type != requested_type:
++         raise ValueError(f"结果文件类型为 {file_type}，不能按 {requested_type} 提交")
++     normalized_type, normalized_items = normalize_import_review_items(requested_type, items)
++     source_kind = str(raw.get("source_kind") or "file").strip().lower() if isinstance(raw, dict) else "file"
++     if source_kind not in {"text", "table", "json", "screenshot", "file"}:
++         raise ValueError("结果文件 source_kind 无效")
++     body = {
++         "import_type": normalized_type,
++         "source_kind": source_kind,
++         "source_note": args.source_note,
++         "items": normalized_items,
++     if args.client_request_id:
++         body["client_request_id"] = args.client_request_id
++     result = await post("/api/agent/import-reviews", body)
++         **(result if isinstance(result, dict) else {}),
++         "next_step": "请在花花日记 App 中检查并确认；当前尚未写入持仓或交易。",
++ async def _export_portfolio(args: argparse.Namespace) -> dict:
++     payload = await get("/api/sync/v3/state")
++     output = _write_json(args.output, payload)
++     output = _write_json(args.output, payload)
++     return {"status": "ok", "output": str(output)}
++ async def _export_nav_history(args: argparse.Namespace) -> dict:
++     codes = list(dict.fromkeys(validate_fund_code(code) for code in args.codes.split(",") if code.strip()))
++     if not 1 <= len(codes) <= 20:
++         raise ValueError("codes 需要包含 1-20 个基金代码")
++     payload = await post("/api/funds/nav-history/batch", {
++         "codes": codes,
++         "start_date": args.start_date or None,
++         "end_date": args.end_date or None,
++         "order": args.order,
++     })
++     return {"status": "ok", "output": str(output), "codes": codes}
++ async def _submit_report(args: argparse.Namespace) -> dict:
++     body = _read_json(args.file)
++     if not isinstance(body, dict):
++         raise ValueError("报告文件必须是 JSON 对象")
++     return await post("/api/agent/messages", body)
++ def _parser() -> argparse.ArgumentParser:
++     parser = _JsonArgumentParser(prog="huahua", description="花花日记文件、完整导出与诊断 CLI")
++     subparsers = parser.add_subparsers(dest="command", required=True)
++     doctor = subparsers.add_parser("doctor", help="检查 Token、网络和后端版本")
++     doctor.set_defaults(handler=_doctor)
++     imports = subparsers.add_parser("import", help="处理文件导入")
++     import_commands = imports.add_subparsers(dest="import_command", required=True)
++     screenshots = import_commands.add_parser("screenshots", help="直接上传本地截图进行识别")
++     screenshots.add_argument("--type", required=True, choices=("holdings", "watchlist", "transactions"))
++     screenshots.add_argument("--file", action="append", required=True)
++     screenshots.add_argument("--result", required=True)
++     screenshots.set_defaults(handler=_import_screenshots)
++     review = import_commands.add_parser("review", help="从结构化结果文件创建 App 待确认请求")
++     review.add_argument("--type", required=True, choices=("holdings", "watchlist", "transactions"))
++     review.add_argument("--input", required=True)
++     review.add_argument("--source-note", default="Agent 文件导入")
++     review.add_argument("--client-request-id", default="")
++     review.set_defaults(handler=_import_review)
++     exports = subparsers.add_parser("export", help="把完整结果写入文件")
++     export_commands = exports.add_subparsers(dest="export_command", required=True)
++     portfolio = export_commands.add_parser("portfolio", help="导出完整组合主数据")
++     portfolio.add_argument("--output", required=True)
++     portfolio.set_defaults(handler=_export_portfolio)
++     nav = export_commands.add_parser("nav-history", help="导出基金历史净值")
++     nav.add_argument("--codes", required=True, help="逗号分隔的 1-20 个基金代码")
++     nav.add_argument("--start-date", default="")
++     nav.add_argument("--end-date", default="")
++     nav.add_argument("--order", choices=("asc", "desc"), default="asc")
++     nav.add_argument("--output", required=True)
++     nav.set_defaults(handler=_export_nav_history)
++     report = subparsers.add_parser("report", help="从文件投递个人报告")
++     report_commands = report.add_subparsers(dest="report_command", required=True)
++     submit = report_commands.add_parser("submit")
++     submit.add_argument("--file", required=True)
++     submit.set_defaults(handler=_submit_report)
++     return parser
++ async def _run(args: argparse.Namespace) -> int:
++     result = await args.handler(args)
++     print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
++     return 0
++ def main() -> None:
++         raise SystemExit(asyncio.run(_run(_parser().parse_args())))
++     except (ValueError, RuntimeError, OSError, UnicodeError) as exc:
++         print(json.dumps({"status": "error", "error": str(exc)}, ensure_ascii=False), file=sys.stderr)
++         raise SystemExit(2) from None
++ if __name__ == "__main__":
++     main()
+
+### huahua_mcp_runtime/client.py  [code]
+-     except (httpx.TimeoutException, httpx.HTTPStatusError) as error:
+-     except (httpx.TimeoutException, httpx.HTTPStatusError) as error:
+-     except (httpx.TimeoutException, httpx.HTTPStatusError) as error:
+-     except (httpx.TimeoutException, httpx.HTTPStatusError) as error:
+-     except (httpx.TimeoutException, httpx.HTTPStatusError) as error:
+-     except (httpx.TimeoutException, httpx.HTTPStatusError) as error:
++             ("POST", "/api/agent/import-reviews"),
++     if isinstance(error, httpx.RequestError):
++         raise RuntimeError("无法连接花花日记后端，请检查网络和 API 地址。") from error
++     except (httpx.RequestError, httpx.HTTPStatusError) as error:
++     except (httpx.RequestError, httpx.HTTPStatusError) as error:
++     except (httpx.RequestError, httpx.HTTPStatusError) as error:
++     except (httpx.RequestError, httpx.HTTPStatusError) as error:
++     except (httpx.RequestError, httpx.HTTPStatusError) as error:
++     except (httpx.RequestError, httpx.HTTPStatusError) as error:
+
+### huahua_mcp_runtime/import_contract.py  [code]
++ """Typed import-review contract shared by the MCP tool and artifact CLI."""
++ from __future__ import annotations
++ import math
++ import re
++ from datetime import datetime
++ from typing import Annotated, Any, Literal, cast
++ from pydantic import BaseModel, ConfigDict, Field, StrictBool
++ ImportType = Literal["HOLDINGS", "WATCHLIST", "TRANSACTIONS"]
++ SourceKind = Literal["text", "table", "json", "screenshot", "file"]
++ IMPORT_REVIEW_SCHEMA_VERSION = "huahua.import-review.v1"
++ MAX_AGENT_TRANSACTION_AMOUNT = 100_000_000
++ MAX_AGENT_TRANSACTION_SHARES = 1_000_000_000
++ StrictFiniteFloat = Annotated[
++     float,
++     Field(strict=True, allow_inf_nan=False),
++ ]
++ class ImportReviewItem(BaseModel):
++     """Superset schema; ``normalize_import_review_items`` enforces type rules."""
++     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True, allow_inf_nan=False)
++     code: str | None = Field(default=None, pattern=r"^\d{6}$", description="持仓/自选基金代码，6 位数字")
++     name: str | None = Field(default=None, max_length=200, description="持仓/自选基金名称")
++     amount: StrictFiniteFloat | None = Field(default=None, description="持仓总金额或买入金额")
++     total_return: StrictFiniteFloat | None = Field(default=None, description="持仓累计收益金额")
++     match_quality: str | None = Field(default=None, max_length=30)
++     reference_nav: StrictFiniteFloat | None = None
++     reference_nav_date: str | None = Field(default=None, max_length=10)
++     type: Literal["BUY", "SELL"] | None = Field(default=None, description="交易方向")
++     fund_name: str | None = Field(default=None, max_length=200, description="交易原始基金名称")
++     fund_code: str | None = Field(default=None, pattern=r"^\d{6}$", description="交易基金代码，6 位数字")
++     fund_real_name: str | None = Field(default=None, max_length=200, description="交易标准基金名称")
++     matched: StrictBool | None = Field(default=None, description="基金身份是否已明确匹配")
++     date: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$", description="交易申请日，YYYY-MM-DD")
++     time: str | None = Field(default="09:00", pattern=r"^\d{2}:\d{2}$", description="交易时间，HH:MM")
++     time_mode: Literal["PRE_MARKET", "POST_MARKET"] | None = None
++     shares: StrictFiniteFloat | None = Field(default=None, description="卖出份额")
++     skip: StrictBool = False
++     skip_reason: str | None = Field(default=None, max_length=500)
++     match_status: str | None = Field(default=None, max_length=30)
++     resolution_required: StrictBool | None = None
++     resolution_reason: str | None = Field(default=None, max_length=500)
++ def _positive_number(value: Any, *, maximum: float) -> bool:
++     return (
++         isinstance(value, (int, float))
++         and not isinstance(value, bool)
++         and math.isfinite(float(value))
++         and float(value) > 0
++         and float(value) <= maximum
++     )
++ def _valid_code(value: Any) -> bool:
++     return bool(re.fullmatch(r"\d{6}", str(value or "").strip())) and str(value).strip() != "000000"
++ def _valid_date(value: Any) -> bool:
++     try:
++     try:
++     try:
++         datetime.strptime(str(value or ""), "%Y-%m-%d")
++         return True
++         return True
++     except ValueError:
++     except ValueError:
++         return False
++         return False
++ def _valid_time(value: Any) -> bool:
++         datetime.strptime(str(value or "09:00"), "%H:%M")
++ def derive_time_mode(time_value: str) -> str:
++         hour = int(str(time_value or "09:00").split(":", 1)[0])
++     except (TypeError, ValueError):
++         hour = 9
++     return "POST_MARKET" if hour >= 15 else "PRE_MARKET"
++ def _is_explicitly_unmatched(item: dict[str, Any]) -> bool:
++     return str(item.get("match_quality") or "").strip().lower() in {
++         "none", "unmatched", "ambiguous",
++     }
++ def normalize_import_review_items(import_type: str, items: list[Any]) -> tuple[ImportType, list[dict[str, Any]]]:
++     """Validate the public review shape before any HTTP request is sent."""
++     normalized_type = str(import_type or "").strip().upper()
++     if normalized_type not in {"HOLDINGS", "WATCHLIST", "TRANSACTIONS"}:
++         raise ValueError("import_type 必须是 HOLDINGS、WATCHLIST 或 TRANSACTIONS")
++     if not isinstance(items, list) or not items:
++         raise ValueError("items 不能为空")
++     if len(items) > 300:
++         raise ValueError("单次导入请求最多 300 条")
++     normalized: list[dict[str, Any]] = []
++     for index, raw_item in enumerate(items, start=1):
++         try:
++             candidate = dict(raw_item) if isinstance(raw_item, dict) else raw_item
++             if normalized_type == "TRANSACTIONS" and isinstance(candidate, dict):
++                 candidate.setdefault("fund_code", candidate.get("code"))
++                 candidate.setdefault("fund_name", candidate.get("name"))
++                 candidate.setdefault("fund_real_name", candidate.get("name") or candidate.get("fund_name"))
++             item = ImportReviewItem.model_validate(candidate).model_dump(exclude_none=True, exclude_unset=True)
++         except Exception as exc:
++             raise ValueError(f"第 {index} 条导入记录格式无效：{exc}") from None
++         if normalized_type == "HOLDINGS":
++             if not _valid_code(item.get("code")):
++             if not _valid_code(item.get("code")):
++                 if str(item.get("code") or "") not in {"", "000000"} or not _is_explicitly_unmatched(item):
++                 if str(item.get("code") or "") not in {"", "000000"} or not _is_explicitly_unmatched(item):
++                     raise ValueError(f"第 {index} 条持仓缺少有效的 6 位基金代码或未匹配标记")
++                 item.update(code="000000", match_quality="none")
++                 item.update(code="000000", match_quality="none")
++             if not _positive_number(
++                 item.get("amount"),
++                 item.get("amount"),
++                 maximum=MAX_AGENT_TRANSACTION_AMOUNT,
++                 maximum=MAX_AGENT_TRANSACTION_AMOUNT,
++             ):
++             ):
++             ):
++                 raise ValueError(
++                 raise ValueError(
++                 raise ValueError(
++                 raise ValueError(
++                     f"第 {index} 条持仓 amount 必须大于 0 且不能超过 "
++                     f"{MAX_AGENT_TRANSACTION_AMOUNT:g}"
++                     f"{MAX_AGENT_TRANSACTION_AMOUNT:g}"
++                     f"{MAX_AGENT_TRANSACTION_AMOUNT:g}"
++                 )
++                 )
++                 )
++                 )
++             total_return = item.get("total_return", 0)
++             if not isinstance(total_return, (int, float)) or isinstance(total_return, bool) or not math.isfinite(float(total_return)):
++                 raise ValueError(f"第 {index} 条持仓 total_return 必须是有限数字")
++             if abs(float(total_return)) > MAX_AGENT_TRANSACTION_AMOUNT:
++                     f"第 {index} 条持仓 total_return 绝对值不能超过 "
++             if float(total_return) >= float(item["amount"]):
++                 raise ValueError(f"第 {index} 条持仓 total_return 必须小于 amount")
++             item.setdefault("total_return", 0.0)
++         elif normalized_type == "WATCHLIST":
++                     raise ValueError(f"第 {index} 条自选缺少有效的 6 位基金代码或未匹配标记")
++         else:
++             if item.get("skip") is True:
++                 if not str(item.get("skip_reason") or "").strip():
++                     raise ValueError(f"第 {index} 条跳过交易必须提供 skip_reason")
++                 normalized.append(item)
++                 continue
++             if not isinstance(item.get("matched"), bool):
++                 raise ValueError(f"第 {index} 条交易 matched 必须是明确的布尔值")
++             if not str(item.get("fund_name") or "").strip():
++                 raise ValueError(f"第 {index} 条交易缺少基金名称")
++             if item["matched"] is True:
++                 if not _valid_code(item.get("fund_code")):
++                     raise ValueError(f"第 {index} 条已匹配交易缺少有效的 6 位基金代码")
++                 if not str(item.get("fund_real_name") or "").strip():
++                     raise ValueError(f"第 {index} 条已匹配交易缺少标准基金名称")
++             elif not _valid_code(item.get("fund_code")):
++                 item["fund_code"] = "000000"
++             if item.get("type") not in {"BUY", "SELL"}:
++                 raise ValueError(f"第 {index} 条交易 type 必须是 BUY 或 SELL")
++             if not _valid_date(item.get("date")):
++                 raise ValueError(f"第 {index} 条交易 date 必须是有效的 YYYY-MM-DD")
++             if not _valid_time(item.get("time")):
++                 raise ValueError(f"第 {index} 条交易 time 必须是有效的 HH:MM")
++             item["time_mode"] = derive_time_mode(str(item.get("time") or "09:00"))
++             if item["type"] == "BUY" and not _positive_number(
++                     f"第 {index} 条买入 amount 必须大于 0 且不能超过 "
++             if item["type"] == "SELL" and not _positive_number(
++                 item.get("shares"),
++                 maximum=MAX_AGENT_TRANSACTION_SHARES,
++                     f"第 {index} 条卖出 shares 必须大于 0 且不能超过 "
++                     f"{MAX_AGENT_TRANSACTION_SHARES:g}"
++         normalized.append(item)
++     return cast(ImportType, normalized_type), normalized
+
+### huahua_mcp_runtime/manifest.py  [code]
+- from .tool_registry import CORE_PROFILE, FULL_PROFILE, active_tool_names, resolve_profile
+- def _capabilities() -> dict[str, list[str]]:
+-     """Return the full capability lists.
+-     Cancelled tools (removed in framework v2) are absent from every profile;
+-     profile narrowing happens in :func:`_filter_for_profile`.
+-     """
+-     """
+-     return {
+-     return {
+-     return {
+-         "profile": ["get_current_user"],
+-         "portfolio": [
+-             "get_sync_meta",
+-             "get_raw_sync_data",
+-             "get_records",
+-             "get_summary",
+-             "get_transactions",
+-             "get_groups",
+-             "get_tags",
+-             "get_night_watchlist",
+-             "get_purchase_limit_watchlist",
+-             "get_auto_invest_plans",
+-             "get_fund_disciplines",
+-             "get_portfolio_preferences",
+-             "get_transaction_ledger",
+-             "get_portfolio_nav_history",
+-             "get_portfolio_trade_review",
+-         ],
+-         ],
+-         ],
+-         ],
+-         ],
+-         ],
+-         "quant": [
+-             "get_batch_fund_nav_history",
+-             "get_quant_strategy_context",
+-             "run_portfolio_backtest",
+-             "get_portfolio_backtest",
+-             "save_quant_snapshot",
+-             "get_quant_snapshots",
+-             "get_quant_snapshot_review",
+-         "market": [
+-             "search_item",
+-             "get_item_estimate",
+-             "get_fund_source_previews",
+-             "get_item_detail",
+-             "get_item_history",
+-             "get_item_dividends",
+-             "get_fund_timeline",
+-             "get_fund_fees",
+-             "get_batch_fund_fees",
+-             "get_fund_period_rank",
+-             "get_batch_fund_period_ranks",
+-             "get_fund_profile",
+-             "get_batch_fund_profiles",
+-             "get_fund_quant_metrics",
+-             "get_batch_fund_quant_metrics",
+-             "get_night_estimate",
+-             "get_daily_rank",
+-             "get_status",
+-             "get_overview",
+-             "get_sector_wind",
+-             "get_yesterday_rank",
+-             "get_fund_flow",
+-             "get_index_metrics",
+-             "get_sector_metrics",
+-             "get_holder_ranking",
+-             "get_benchmark_history",
+-             "get_instrument_catalog",
+-             "get_instrument_quotes",
+-             "get_instrument_timeline",
+-             "get_instrument_history",
+-             "calculate_trading_dates",
+-             "get_next_trading_day",
+-         "community": [
+-             "get_community_ranking",
+-             "get_community_my_rank",
+-             "get_community_user",
+-             "get_community_stats",
+-             "get_community_following",
+-             "search_community_users",
+-             "get_community_authorization",
+-             "authorize_community",
+-             "revoke_community_authorization",
+-             "follow_community_user",
+-         "trade": ["request_transaction", "get_agent_requests", "update_agent_request"],
+-         "personal_reports": ["submit_personal_strategy_report"],
+-         "imports": [
+-             "import_holding_screenshots",
+-             "import_transaction_screenshots",
+-             "request_import_review",
+-         "misc": [
+-             "analyze_jcti",
+-             "get_app_version",
+-     }
+-     }
+-     }
+-     }
+-     }
+- def _filter_for_profile(capabilities: dict[str, list[str]], profile: str) -> dict[str, list[str]]:
+-     """Drop full-only tools when the active profile is ``core``.
+-     Cancelled tools are already absent from the static lists above, so this
+-     only narrows the surface; it never re-adds removed tools.
+-     if profile == FULL_PROFILE:
+-         return capabilities
+-     from .tool_registry import CORE_TOOLS
+-         key: [name for name in names if name in CORE_TOOLS]
+-         for key, names in capabilities.items()
+- def _tool_scopes(profile: str) -> dict[str, str]:
+-     """Expose every active tool's real backend access requirement."""
+-     scopes = {
+-         "set_token": "local",
+-         "get_tool_manifest": "local",
+-         "get_app_version": "agent_token:any (backend endpoint public)",
+-     scope_by_capability = {
+-         "profile": "profile:read",
+-         "portfolio": "portfolio:read",
+-         "quant": "quant:read",
+-         "market": "market:read",
+-         "community": "community:read",
+-         "trade": "trade:request",
+-         "personal_reports": "messages:write",
+-         "imports": "import:request",
+-         "misc": "ai:analyze",
+-     for capability, tools in _capabilities().items():
+-         for name in tools:
+-             scopes.setdefault(name, scope_by_capability[capability])
+-     scopes.update({
+-         "authorize_community": "community:write",
+-         "revoke_community_authorization": "community:write",
+-         "follow_community_user": "community:write",
+-         "get_batch_fund_nav_history": "market:read",
+-         "run_portfolio_backtest": "quant:write",
+-         "save_quant_snapshot": "quant:write",
+-         "request_import_review": "trade:request",
+-     })
+-         name: scopes[name]
+-         for name in active_tool_names(profile)
+-     scopes = filtered.get("quant_tool_scopes")
+-     if isinstance(scopes, dict):
+-         filtered["quant_tool_scopes"] = {
+-             name: scope for name, scope in scopes.items() if name in CORE_TOOLS
+-         }
+-             },
+-         "toolScopes": _tool_scopes(active_profile),
+-         "capabilities": _filter_for_profile(_capabilities(), active_profile),
+-             "direct_state_change_tools": [
+-                 "authorize_community",
+-                 "authorize_community",
+-                 "revoke_community_authorization",
+-                 "revoke_community_authorization",
+-                 "follow_community_user",
+-                 "follow_community_user",
+-                 "request_transaction",
+-                 "request_transaction",
+-                 "update_agent_request",
+-                 "update_agent_request",
+-                 "request_import_review",
+-                 "request_import_review",
+-                 "submit_personal_strategy_report",
+-                 "submit_personal_strategy_report",
+-                 "run_portfolio_backtest",
+-                 "save_quant_snapshot",
+-             ],
+-             ],
+-             "confirmation_required_tools": [
+-             "non_idempotent_toggle_tools": ["follow_community_user"],
+-             "quant_tool_scopes": {
+-                 "get_transaction_ledger": "portfolio:read",
+-                 "get_portfolio_nav_history": "portfolio:read",
+-                 "get_portfolio_trade_review": "portfolio:read",
+-                 "get_batch_fund_nav_history": "market:read",
+-                 "get_fund_quant_metrics": "market:read",
+-                 "get_batch_fund_quant_metrics": "market:read",
+-                 "get_quant_strategy_context": "quant:read",
+-                 "run_portfolio_backtest": "quant:write",
+-                 "get_portfolio_backtest": "quant:read",
+-                 "get_quant_snapshots": "quant:read",
+-                 "get_quant_snapshot_review": "quant:read",
+-                 "save_quant_snapshot": "quant:write",
++ from .tool_registry import (
++     CORE_PROFILE,
++     FULL_PROFILE,
++     active_tool_specs,
++     capabilities_for_profile,
++     resolve_profile,
++     tool_scopes_for_profile,
++     tools_with_effect,
++ )
++         },
++         "toolScopes": tool_scopes_for_profile(active_profile),
++         "toolMetadata": {
++             spec.name: {
++                 "domain": spec.domain,
++                 "profile": spec.profile,
++                 "payloadClass": spec.payload_class,
++                 "deprecated": spec.deprecated,
++             }
++             for spec in active_tool_specs(active_profile)
++         "capabilities": capabilities_for_profile(active_profile),
++             "direct_state_change_tools": tools_with_effect(active_profile, "state_change"),
++             "confirmation_required_tools": tools_with_effect(active_profile, "confirmation_required"),
++             "non_idempotent_toggle_tools": tools_with_effect(active_profile, "non_idempotent_toggle"),
+
+### huahua_mcp_runtime/tool_registry.py  [code]
+- # High-frequency daily surface. Single-code variants of batch tools and all
+- # low-frequency/quant/community tools live only in the full profile.
+- CORE_TOOLS = frozenset({
+- TOOL_NAMES = (
+-         runtime_globals[name] = next(getattr(module, name) for module in TOOL_MODULES if hasattr(module, name))
++ from dataclasses import dataclass
++ })
++ })
++ })
++ # Stable daily workflows. Binary screenshot tools intentionally remain full-only:
++ # local agents should upload explicit files through the CLI instead of sending Base64
++ # through the model context.
++ _CORE_TOOL_NAMES = frozenset({
++     "request_transaction",
++     "update_agent_request",
++     "request_import_review",
++     "submit_personal_strategy_report",
++     "submit_personal_strategy_report",
++     "get_batch_fund_nav_history",
++ _TOOL_ORDER = (
++     "get_item_history",
++     "get_instrument_history",
++     "get_raw_sync_data",
++     "authorize_community",
++     "revoke_community_authorization",
++     "follow_community_user",
++     "run_portfolio_backtest",
++     "save_quant_snapshot",
++ @dataclass(frozen=True)
++ class ToolSpec:
++     name: str
++     domain: str
++     profile: str
++     scope: str
++     effects: frozenset[str] = frozenset()
++     payload_class: str = "small_json"
++     deprecated: bool = False
++ _DOMAIN_BY_MODULE = {
++     system: "profile",
++     fund: "market",
++     market: "market",
++     portfolio: "portfolio",
++     reports: "personal_reports",
++     portfolio_actions: "trade",
++     import_tools: "imports",
++     community: "community",
++     quant: "quant",
++ }
++ }
++ }
++ }
++ }
++ _DOMAIN_OVERRIDES = {
++     "set_token": "local",
++     "get_tool_manifest": "local",
++     "get_app_version": "misc",
++     "analyze_jcti": "misc",
++     "get_transaction_ledger": "portfolio",
++     "get_portfolio_nav_history": "portfolio",
++     "get_portfolio_trade_review": "portfolio",
++     "get_batch_fund_nav_history": "quant",
++ _SCOPE_BY_DOMAIN = {
++     "local": "local",
++     "profile": "profile:read",
++     "portfolio": "portfolio:read",
++     "quant": "quant:read",
++     "market": "market:read",
++     "community": "community:read",
++     "trade": "trade:request",
++     "personal_reports": "messages:write",
++     "imports": "import:request",
++     "misc": "ai:analyze",
++ _SCOPE_OVERRIDES = {
++     "get_app_version": "agent_token:any (backend endpoint public)",
++     "authorize_community": "community:write",
++     "revoke_community_authorization": "community:write",
++     "follow_community_user": "community:write",
++     "get_batch_fund_nav_history": "market:read",
++     "run_portfolio_backtest": "quant:write",
++     "save_quant_snapshot": "quant:write",
++ _CONFIRMATION_REQUIRED = frozenset({
++ _STATE_CHANGE = _CONFIRMATION_REQUIRED | {
++ _LARGE_JSON_TOOLS = frozenset({
++ _BINARY_TOOLS = frozenset({
++ def _tool_module(name: str):
++     return next(module for module in TOOL_MODULES if hasattr(module, name))
++ def _build_tool_spec(name: str) -> ToolSpec:
++     domain = _DOMAIN_OVERRIDES.get(name, _DOMAIN_BY_MODULE[_tool_module(name)])
++     effects = set()
++     if name in _STATE_CHANGE:
++         effects.add("state_change")
++     if name in _CONFIRMATION_REQUIRED:
++         effects.add("confirmation_required")
++     if name == "follow_community_user":
++         effects.add("non_idempotent_toggle")
++     payload_class = (
++         "binary" if name in _BINARY_TOOLS
++         else "large_json" if name in _LARGE_JSON_TOOLS
++         else "small_json"
++     )
++     )
++     return ToolSpec(
++         name=name,
++         domain=domain,
++         profile=CORE_PROFILE if name in _CORE_TOOL_NAMES else FULL_PROFILE,
++         scope=_SCOPE_OVERRIDES.get(name, _SCOPE_BY_DOMAIN[domain]),
++         effects=frozenset(effects),
++         payload_class=payload_class,
++         deprecated=name in _BINARY_TOOLS,
++ TOOL_SPECS = tuple(_build_tool_spec(name) for name in _TOOL_ORDER)
++ TOOL_NAMES = tuple(spec.name for spec in TOOL_SPECS)
++ CORE_TOOLS = frozenset(spec.name for spec in TOOL_SPECS if spec.profile == CORE_PROFILE)
++ TOOL_SPEC_BY_NAME = {spec.name: spec for spec in TOOL_SPECS}
++ assert len(TOOL_NAMES) == len(set(TOOL_NAMES)), "tool registry names must be unique"
++ def active_tool_specs(profile: Optional[str] = None) -> tuple[ToolSpec, ...]:
++     names = set(active_tool_names(profile))
++     return tuple(spec for spec in TOOL_SPECS if spec.name in names)
++ def capabilities_for_profile(profile: str) -> dict[str, list[str]]:
++     capabilities: dict[str, list[str]] = {}
++     for spec in active_tool_specs(profile):
++         if spec.domain == "local":
++             continue
++         capabilities.setdefault(spec.domain, []).append(spec.name)
++     return capabilities
++ def tool_scopes_for_profile(profile: str) -> dict[str, str]:
++     return {spec.name: spec.scope for spec in active_tool_specs(profile)}
++ def tools_with_effect(profile: str, effect: str) -> list[str]:
++     return [
++         spec.name for spec in active_tool_specs(profile)
++         if effect in spec.effects
++     ]
++         runtime_globals[name] = getattr(_tool_module(name), name)
+
+### huahua_mcp_runtime/tools/fund.py  [code]
+- import asyncio  # noqa: F401
+- import json  # noqa: F401
+- import os  # noqa: F401
+- import re  # noqa: F401
+- import time  # noqa: F401
+-     technical=技术卡与历史统计；momentum=短中期收益/均线偏离/连跌；
++     technical=技术卡、估值位置与历史统计；momentum=短中期收益/均线偏离/连跌；
++     可精确关联境内指数时，technical.current.indexValuation 返回指数 PE 与历史分位；
++     peBasis=live_index_price_estimate 表示 PE 按今日指数点位估算，officialPeAsOf 是官方 PE 基准日，
++     peBasis=official_daily 表示直接使用 dataAsOf 当日官方 PE；estimateStale=true 表示正在后台刷新、
++     当前返回的是短暂保留的最近估算帧；
++     其他基金的 navPositionPercentilePct 使用近 250 个官方净值点作为分布，传入
++     live_estimate 时以实时估算净值计算今日位置。必须检查 valueBasis 与数据日期。
+
+### huahua_mcp_runtime/tools/import_tools.py  [code]
+- import json  # noqa: F401
+-     time_mode = str(item.get("time_mode") or "").strip().upper()
+-     if time_mode not in {"PRE_MARKET", "POST_MARKET"}:
+-         try:
+-             hour = int(time_value.split(":", 1)[0])
+-         except (TypeError, ValueError):
+-             hour = 9
+-         time_mode = "POST_MARKET" if hour >= 15 else "PRE_MARKET"
+-     识别持仓/自选截图，只返回结构化结果，不写入 App。
+-     识别交易记录截图，只返回结构化结果，不写入 App。
+-     import_type: str,
+-     items: list[dict],
+-     source_note: str = "Agent screenshot import",
+- ) -> str:
+-     将 Agent 识别和轻确认后的导入结果发送到 App，复用 App 现有批量导入确认页。
+-     normalized_type = (import_type or "").strip().upper()
+-     action_map = {
+-         "HOLDINGS": "IMPORT_HOLDINGS",
+-         "WATCHLIST": "IMPORT_WATCHLIST",
+-         "TRANSACTIONS": "IMPORT_TRANSACTIONS",
+-     action_type = action_map.get(normalized_type)
+-     if not action_type:
+-         raise ValueError("import_type 必须是 HOLDINGS、WATCHLIST 或 TRANSACTIONS")
+-     if not isinstance(items, list) or not items:
+-         raise ValueError("items 不能为空")
+-     if len(items) > 300:
+-         raise ValueError("单次导入请求最多 300 条")
+-     normalized_items = (
+-         [
+-             _normalize_transaction_review_item(
+-                 item,
+-                 infer_missing_match=True,
+-             )
+-             for item in items
+-         if normalized_type == "TRANSACTIONS"
+-         else items
+-     )
+-     payload_dict = {
+-         "importType": normalized_type,
+-         "source": "agent_screenshot",
+-         "sourceNote": source_note,
+-         "summary": _summarize_import_items(normalized_items),
+-     if normalized_client_request_id:
+-         payload_dict["client_request_id"] = normalized_client_request_id
+-     payload = json.dumps(payload_dict, ensure_ascii=False)
+-     if len(payload.encode("utf-8")) > 1024 * 1024:
+-         raise ValueError("导入请求体不能超过 1MB，请拆分后发送")
+-     request_body = {"action_type": action_type, "payload": payload}
+-     await _post("/api/agent/request", request_body)
+-     return f"✅ 已发送 {payload_dict['summary']['total']} 条导入结果到 App，请打开花花日记批量确认后导入。"
++ from ..import_contract import (
++     ImportReviewItem,
++     ImportType,
++     SourceKind,
++     derive_time_mode,
++     normalize_import_review_items,
++ )
++ ) -> dict:
++     time_mode = derive_time_mode(time_value)
++     [已弃用] 识别持仓/自选截图，只为 full profile 旧调用兼容。
++     新调用不得把图片转为 Base64；请使用配套 huahua CLI 直接上传用户明确提供的文件。
++     新调用不得把图片转为 Base64；请使用配套 huahua CLI 直接上传用户明确提供的文件。
++     return {
++     [已弃用] 识别交易记录截图，只为 full profile 旧调用兼容。
++     import_type: ImportType,
++     items: list[ImportReviewItem],
++     source_note: str = "Agent 整理的批量导入",
++     source_kind: SourceKind = "text",
++     将 Agent 整理好的结构化结果发送到 App，复用 App 现有批量导入确认页。
++     items 可直接来自用户提供的文字、表格或 JSON。本工具不接收图片；本地
++     截图应使用 ``huahua import screenshots`` CLI，禁止把 Base64 传入 MCP。
++         source_kind: 输入来源，支持 text/table/json/screenshot/file。
++     normalized_type, normalized_items = normalize_import_review_items(import_type, items)
++     normalized_source_kind = str(source_kind or "").strip().lower()
++     if normalized_source_kind not in {"text", "table", "json", "screenshot", "file"}:
++         raise ValueError("source_kind 必须是 text、table、json、screenshot 或 file")
++     normalized_source_note = str(source_note or "").strip()
++     if not normalized_source_note:
++         raise ValueError("source_note 不能为空")
++     if len(normalized_source_note) > 500:
++         raise ValueError("source_note 不能超过 500 字符")
++     if normalized_type == "TRANSACTIONS":
++         normalized_items = [
++             _normalize_transaction_review_item(item, infer_missing_match=True)
++             for item in normalized_items
++     request_body = {
++         "import_type": normalized_type,
++         "import_type": normalized_type,
++         "source_kind": normalized_source_kind,
++         "source_kind": normalized_source_kind,
++         "source_note": normalized_source_note,
++     result = await _post("/api/agent/import-reviews", request_body)
++         **(result if isinstance(result, dict) else {}),
++         "item_count": len(normalized_items),
++         "next_step": "请在花花日记 App 中检查并确认；当前尚未写入持仓或交易。",
+
+### huahua_mcp_runtime/tools/system.py  [code]
+-     同时以最多 2 秒读取后端量化能力握手，报告当前契约是否兼容。
+-             "schemaVersion": _EXPECTED_QUANT_SCHEMA_VERSION,
+-             "strategyContextSchemaVersion": _EXPECTED_STRATEGY_CONTEXT_SCHEMA_VERSION,
+-             capabilities = await asyncio.wait_for(_get("/api/quant/capabilities"), timeout=2)
+-             result = {
+-             result = {
+-                 "status": "unavailable",
+-                 "compatible": None,
+-                 "expected": expected,
+-                 "expected": expected,
+-                 "reported": None,
+-                 "reported": None,
+-             }
+-             }
+-             _backend_compatibility_cache["value"] = result
+-             _backend_compatibility_cache["value"] = result
+-             _backend_compatibility_cache["expires_at"] = (
+-             _backend_compatibility_cache["expires_at"] = (
+-                 time.monotonic() + _BACKEND_COMPATIBILITY_FAILURE_TTL
+-                 time.monotonic() + _BACKEND_COMPATIBILITY_FAILURE_TTL
+-             )
+-             return result
+-             return result
+-         if not isinstance(capabilities, dict):
+-                 "status": "invalid",
+-                 "compatible": False,
+-         features = capabilities.get("features")
+-             capabilities.get("schemaVersion") == _EXPECTED_QUANT_SCHEMA_VERSION
+-             and capabilities.get("strategyContextSchemaVersion") == _EXPECTED_STRATEGY_CONTEXT_SCHEMA_VERSION
+-             and isinstance(features, dict)
+-             and all(features.get(name) is True for name in (
+-                 "portfolioPerformance",
+-                 "backtests",
+-                 "quantSnapshots",
+-             "status": "compatible" if compatible else "incompatible",
+-             "reported": capabilities,
+-             if compatible
++ _EXPECTED_AGENT_SCHEMA_VERSION = "agent-v1"
++ _EXPECTED_AGENT_IMPORT_REVIEW_SCHEMA_VERSION = "agent_import_review.v1"
++     同时以最多 2 秒读取后端量化与 Agent 能力握手，分别报告契约是否兼容。
++             "quant": {
++                 "schemaVersion": _EXPECTED_QUANT_SCHEMA_VERSION,
++                 "strategyContextSchemaVersion": _EXPECTED_STRATEGY_CONTEXT_SCHEMA_VERSION,
++             },
++             },
++             },
++             },
++             "agentImports": {
++                 "schemaVersion": _EXPECTED_AGENT_SCHEMA_VERSION,
++                 "importReviewSchemaVersion": _EXPECTED_AGENT_IMPORT_REVIEW_SCHEMA_VERSION,
++             quant_result, agent_result = await asyncio.wait_for(
++                 asyncio.gather(
++                     _get("/api/quant/capabilities"),
++                     _get("/api/agent/capabilities"),
++                     return_exceptions=True,
++                 ),
++                 timeout=2,
++             quant_result = agent_result = RuntimeError("capability handshake timeout")
++         quant_unavailable = isinstance(quant_result, BaseException)
++         agent_unavailable = isinstance(agent_result, BaseException)
++         quant_invalid = not quant_unavailable and not isinstance(quant_result, dict)
++         agent_invalid = not agent_unavailable and not isinstance(agent_result, dict)
++         quant_capabilities = quant_result if isinstance(quant_result, dict) else None
++         agent_capabilities = agent_result if isinstance(agent_result, dict) else None
++         quant_features = quant_capabilities.get("features") if quant_capabilities else None
++         quant_compatible = (
++             quant_capabilities.get("schemaVersion") == _EXPECTED_QUANT_SCHEMA_VERSION
++             and quant_capabilities.get("strategyContextSchemaVersion") == _EXPECTED_STRATEGY_CONTEXT_SCHEMA_VERSION
++             and isinstance(quant_features, dict)
++             and all(quant_features.get(name) is True for name in (
++                 "portfolioPerformance", "backtests", "quantSnapshots",
++         ) if quant_capabilities is not None else False if quant_invalid else None
++         agent_compatible = (
++             agent_capabilities.get("schemaVersion") == _EXPECTED_AGENT_SCHEMA_VERSION
++             and agent_capabilities.get("importReviewSchemaVersion") == _EXPECTED_AGENT_IMPORT_REVIEW_SCHEMA_VERSION
++         ) if agent_capabilities is not None else False if agent_invalid else None
++         component_compatibilities = (quant_compatible, agent_compatible)
++             False if False in component_compatibilities
++             else True if all(value is True for value in component_compatibilities)
++             else None
++             "status": (
++                 "compatible" if compatible is True
++                 else "incompatible" if compatible is False
++                 else "unavailable"
++             ),
++             "reported": {
++                 "quant": quant_capabilities,
++                 "agentImports": agent_capabilities,
++             "components": {
++                 "quant": {
++                     "status": (
++                     "status": (
++                         "unavailable" if quant_unavailable
++                         else "invalid" if quant_invalid
++                         else "compatible" if quant_compatible
++                         else "incompatible"
++                         else "incompatible"
++                     ),
++                     ),
++                     "compatible": quant_compatible,
++                 },
++                 },
++                 "agentImports": {
++                         "unavailable" if agent_unavailable
++                         else "invalid" if agent_invalid
++                         else "compatible" if agent_compatible
++                     "compatible": agent_compatible,
++             if compatible is True
+
+### huahua_mcp_runtime/version.py  [code]
+- __version__ = "4.0.1"
++ __version__ = "4.1.0"
+
+### pyproject.toml  [code]
++ huahua = "huahua_mcp_runtime.cli:main"
+
+### references/cli-artifacts.md  [docs]
++ # CLI 文件与完整导出
++ CLI 只处理不适合经过模型上下文的数据形态。需要环境变量 `HUAHUA_AGENT_TOKEN`，可用 `HUAHUA_API_BASE` 覆盖后端地址。
++ 持久安装该 Python 包后使用 `huahua`。如果 MCP 仅通过推荐的 `uvx` 临时运行、宿主没有 `huahua` 命令，则使用：
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ uvx --from git+https://github.com/baiye1997/HuaHuaDailyMCP huahua <子命令>
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ 不得因为 CLI 不可用而回退到图片 Base64。
++ ## 诊断
++ huahua doctor
++ 输出小型 JSON，检查 Token、网络、当前用户和 App 版本。错误写 stderr，退出码为 2。
++ ## 截图识别
++ huahua import screenshots \
++   --type transactions \
++   --type transactions \
++   --file /absolute/path/one.png \
++   --file /absolute/path/two.png \
++   --result /absolute/path/recognized.json
++ `--type` 支持 `holdings`、`watchlist`、`transactions`。路径必须由用户在当前请求中明确提供；Agent 不得猜测、搜索或扫描路径。限制为最多 10 张、单张 10MB、总计 50MB，并校验真实图片 magic bytes。
++ 识别只生成结果文件，不写入 App。检查摘要和未匹配项后提交：
++ huahua import review \
++   --input /absolute/path/recognized.json \
++   --source-note "Agent 识别交易截图" \
++   --client-request-id import:transactions:20260820:1
++ 结果文件记录原始导入类型；`review --type` 不一致时 CLI 会拒绝。提交后仍需用户在 App 中确认。
++ ## 完整导出
++ huahua export portfolio --output /absolute/path/portfolio.json
++ huahua export nav-history \
++   --codes 110022,000001 \
++   --start-date 2020-01-01 \
++   --end-date 2026-08-20 \
++   --output /absolute/path/nav-history.json
++ 净值接口单次最多 20 只基金、最长 5 年。大结果写文件，stdout 只返回状态、路径和少量摘要。不要把完整文件内容重新粘贴到对话中；只读取回答当前问题所需的片段。
++ ## 大型报告
++ 报告文件应包含后端 `/api/agent/messages` 所需的 `type`、`title`、`summary`、`payload` 和可选 `clientMessageId`：
++ huahua report submit --file /absolute/path/report.json
++ CLI 不提供普通持仓、基金、市场、交易和社区命令；这些继续使用 MCP。
+
+### references/community-reports.md  [docs]
++ # 社区、JCTI 与个人报告
++ ## 社区
++ - 排行榜、个人排名、用户详情、关注列表和搜索均使用对应 MCP 工具。
++ - 授权、撤销授权和关注会改变状态；只在用户明确要求后执行。
++ - `follow_community_user` 是非幂等切换操作，失败或结果不明时不要自动重试。
++ - 社区收益使用后端统一 G 日口径；不自行平移 QDII 日期。
++ ## JCTI
++ 只有用户明确要求人格分析并提供必要答案时调用 `analyze_jcti`。结果是辅助解释，不是风险承受能力或投资适当性的替代品。
++ ## 个人报告
++ - 用户明确要求生成并保存报告时才调用 `submit_personal_strategy_report`。
++ - 报告只能投递到当前 Agent Token 所属用户，不能指定其他用户或广播。
++ - 同一报告重试复用 `client_message_id`；同一 ID 不得携带不同内容。
++ - 普通大小报告走 MCP；已经存在的大型 JSON 报告文件走 `huahua report submit --file ...`。
++ - 不调用 `/api/hermes/reports`，该接口不属于公开用户 Agent。
+
+### references/date-safety.md  [docs]
++ # 日期语义与安全不变量
++ ## 日期词典
++ - T 日：当前估算帧所属日，不等于官方净值日。
++ - D 日：官方净值 `navDate/jzrq/FundNav.date`。
++ - G 日：收益在日历、组合、社区和回测中的实际归属日。
++ - tradeDate：用户提交操作的日期。
++ - confirmDate：份额变化生效日；历史持仓使用 `confirmDate || tradeDate`。
++ - navDate：该笔交易实际采用的成交净值日。
++ 普通 T+1 基金通常 G=D；QDII/T+N 按后端确认的 D→G 配对处理。不能用自然日猜周末或节假日，不能把未知 G 日回退为 D 日。
++ 策略信号依赖某笔官方收益时，只能在对应 G 日产生；成交必须发生在之后可用的成交净值日。
++ ## 副作用
++ - 交易和导入只创建 App 待确认请求。
++ - 报告、社区授权、关注、回测保存和量化快照属于状态变化，必须匹配用户意图。
++ - Agent 不写云同步主数据、不恢复历史快照、不处理 App 最终确认状态。
++ - 不扩大 scope、不绕过 403、不调用未公开接口。
++ ## 不完整数据
++ - 缺失、stale、timeout、partial 或 unavailable 必须作为不确定性披露。
++ - 最新 QDII 官方净值缺少可靠 G 日时保持未归属。
++ - 组合完整度不能因为其他基金已公布就被视为完整。
++ - 不把空值、错误回退或超时默认值描述成真实零收益。
+
+### references/fund-market.md  [docs]
++ # 基金与市场
++ ## 基金识别
++ - 用户提供 6 位代码：直接调用对应批量或单只工具。
++ - 用户只提供名称：先 `search_item`；多个候选时向用户轻确认。
++ - 多只基金优先批量工具，避免逐只循环。
++ ## 常用能力
++ - 当前估值：`get_item_estimate`。
++ - 画像、费率、周期排名、量化指标：优先批量版本。
++ - 市场概览：`get_overview`；只需要交易状态时用 `get_status`。
++ - 指数/ETF：先 catalog，再 quotes；时间线和历史只在用户需要时读取。
++ - 资金流和板块：使用 fund flow、sector metrics 等有界工具，不把单一指标解释成确定交易信号。
++ - 交易日、确认日推导：使用 `calculate_trading_dates` / `get_next_trading_day`，不按自然日猜节假日。
++ ## 数据表达
++ - 明确区分官方净值、盘中估算和 QDII 夜盘参考。
++ - 夜盘只作执行参考，不是官方净值，也不是已确认收益。
++ - 技术指标数据不足、freshness 不可靠或 partial 时说明限制。
++ - 用户要完整长区间历史文件时使用 CLI export；普通分析使用 MCP 的范围参数。
+
+### references/portfolio.md  [docs]
++ # 持仓与同步
++ ## 选路
++ - “今天收益、总资产、持有收益”：先用 `get_summary`。
++ - 需要逐只基金、观察列表或完整度：用 `get_records(include_transactions=false)`。
++ - 只有审计单只/少量交易时才用 `get_transactions(code=...)` 或分页 `get_transaction_ledger`。
++ - 判断 App 数据是否已同步：先用 `get_sync_meta`，不要为检查时间下载完整主数据。
++ - 完整主数据迁移或审计：使用 `huahua export portfolio`，不要把 `get_raw_sync_data(include_json_text=true)` 的大包放进模型上下文。
++ - 分组、标签和策略偏好使用对应读取工具；core 优先 `get_portfolio_preferences`。
++ ## 新鲜度与完整度
++ - 组合新鲜度只看 `portfolioUpdatedAt`；payload 内的 `timestamp` 可能是客户端谱系或迁移元数据。
++ - `summary.estimateCompleteness.complete=false` 时，不把不可用帧产生的 0 元当成真实零涨跌。
++ - `timeoutCount`、`staleCount`、`partialCount` 或 unavailable codes 非空时披露不完整。
++ - `marketValue` 使用官方净值锚点；`estimatedMarketValue` 是独立估算，不能混为官方市值。
++ - 最新 QDII 收益没有可靠 G 日时保持未归属，不回退到 D 日。
++ ## 数据最小化
++ - 默认不带原始 transactions；只有复盘、核账或用户明确要求时开启。
++ - 用户只问汇总时不要拉完整持仓和历史。
++ - 账本已有 cursor/limit，连续读取时遵循 `nextCursor`，不要一次请求最大值作为默认。
+
+### references/quant.md  [docs]
++ # 量化、回放与快照
++ ## 策略上下文
++ - 默认调用 `get_quant_strategy_context(view="compact")`。
++ - 先检查 `readyForAnalysis`、`readyForAction`、`blockingReasons` 和 `dataQuality`，再生成结论。
++ - full view 只在 compact 缺少当前分析所需证据时使用。
++ ## 历史与组合
++ - 交易账本使用分页和过滤条件。
++ - 组合净值、回撤与交易复盘必须使用后端统一 G 日口径。
++ - 批量基金净值是官方 D 日原始数据；进入组合收益或信号前使用后端返回的归属语义。
++ - 长区间完整净值导出走 `huahua export nav-history`。
++ ## 回测
++ - 回测信号只能使用当时已可获得的数据；不能同日使用未来公布净值成交。
++ - 检查完整度、覆盖率、基准和方法版本，不把零费率或非严格 point-in-time 结果描述成真实可实现收益。
++ - `client_run_id` 在同一次回测重试中保持稳定。
++ ## 快照
++ - 快照只归档观察和证据，不直接交易，也不保存建议金额。
++ - 写入前确认 data cutoff、策略 ID/版本和 risk veto。
++ - 保存重试使用稳定 snapshot key；读取列表使用分页，详情按 ID 获取。
+
+### references/trade-import.md  [docs]
++ # 交易请求与批量导入
++ ## 单笔买卖
++ 调用 `request_transaction` 前确认：基金代码、标准名称、买卖方向、金额或份额、日期和分组。卖出必须区分按金额还是按份额。
++ 该工具只创建 App 待确认请求。调用成功后明确说明尚未成交，需要用户在 App 中确认。
++ ## 结构化批量导入
++ 用户已经提供文字、表格或 JSON 时：
++ 1. 整理为结构化 `items`；
++ 2. 已知代码时核对标准基金名；有歧义则轻确认；
++ 3. 直接调用 `request_import_review`；
++ 4. `source_kind` 按实际来源填写 `text`、`table` 或 `json`。
++ 不要调用截图识别工具。`request_import_review` 使用独立结构化接口和 `import:request` scope。
++ `items` 的字段由 MCP schema 给出，三类最小有效记录为：
++ - `HOLDINGS`：`code`、`amount`，可选 `name`、`total_return`；`0 < amount <= 100000000`，`total_return < amount` 且绝对值不超过 `100000000`。
++ - `WATCHLIST`：`code`，可选 `name`。
++ - `TRANSACTIONS`：`type`、`fund_name`、`matched`、`date`；`matched=true` 时还必须提供 `fund_code` 和 `fund_real_name`。买入 `amount` 必须在 `(0, 100000000]`，卖出 `shares` 必须在 `(0, 1000000000]`，批量卖出不支持按金额。`time_mode` 由 `time` 自动推导，15:00 起为 `POST_MARKET`。
++ 已匹配基金代码必须是非 `000000` 的 6 位代码。确实无法匹配的条目可保留 `code/fund_code="000000"`：持仓/自选同时标记 `match_quality="none"`，交易明确标记 `matched=false`，让用户在 App 确认页修正；不得猜测代码。后端会再次核对基金身份和标准名称。
++ ## 图片导入
++ 本地截图或图片读取 [cli-artifacts.md](cli-artifacts.md)，使用 `huahua import screenshots`。不要生成 Base64。
++ CLI 识别结果写入带类型标记的文件；只检查未匹配、歧义、缺日期、缺金额/份额的条目。确认后用 `huahua import review` 创建 App 待确认请求，提交类型必须与结果文件一致。
++ ## 幂等与待处理请求
++ - 同一意图重试复用 `client_request_id`；7 天窗口内不得用同一 ID 提交不同内容。
++ - `get_agent_requests` 查看最近待处理请求。
++ - 只有用户明确撤销时才调用 `update_agent_request(..., status="DISMISSED")`。
++ - 不尝试设置 `PROCESSED`；该状态由 App 成功落账后管理。

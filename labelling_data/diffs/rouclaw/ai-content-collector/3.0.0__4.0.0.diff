@@ -1,0 +1,395 @@
+rouclaw/ai-content-collector  3.0.0 -> 4.0.0
+change_type: instructions+docs   changelog: v4.0.0: 集成XCrawl双引擎搜索 - xcrawl-search为主力搜索(绕过反爬+中文优化+位置语言控制); xcrawl-scrape替代web_fetch(解决知乎/微博/微信403问题); web_search(Brave)作为补充搜索(时间过滤精确); 新增XCrawl环境配置指南; 新增不同站点抓取策略; 优化搜索来源建议; 积分管理指导
+
+### SKILL.md  [instructions]
+- 1. **禁止抓取官网页面**：不要用 web_fetch 逐个抓取厂商官网，成功率极低（SPA、403、502）
+- 2. **禁止编造日期**：发布时间必须是文章中明确标注的日期
+- 3. **禁止使用模糊日期**：发布时间必须是 `YYYY-MM-DD` 格式，不接受 `YYYY-MM` 或 `YYYY`
+- 4. **禁止收录旧数据**：严格按用户指定时间范围过滤
+- 5. **禁止收录产品介绍页**：只收录新闻/事件/报告发布，不收录常驻产品页面
+- 6. **禁止自行推测内容**：无法核实的内容直接丢弃
+- ## ✅ 核心策略：使用 web_search 原生参数精确搜索
+- ### 关键发现：web_search 支持 freshness 和 date_after/date_before 参数
+- OpenClaw 的 `web_search` 工具原生支持时间过滤参数，**必须使用这些参数**而不是在搜索词中写日期：
+- | 参数 | 值 | 说明 |
+- |------|-----|------|
+- | `freshness` | `"day"` / `"week"` / `"month"` | 限制结果时间范围 |
+- | `date_after` | `"2026-04-16"` | 只返回此日期之后的结果（Brave/Perplexity） |
+- | `date_before` | `"2026-04-23"` | 只返回此日期之前的结果（Brave/Perplexity） |
+- | `count` | `10` | 返回结果数 |
+- | `country` | `"CN"` | 优先返回中国相关结果 |
+- | `language` | `"zh"` | 中文结果 |
+- **正确用法**：
+- web_search({ query: "OpenAI 大模型 发布", freshness: "week", count: 10, country: "CN", language: "zh" })
+- **错误用法**（不要在query中写日期，效果差）：
+- web_search({ query: "OpenAI 大模型 发布 2026年4月16日 17日 18日" })
+- ### 搜索引擎 Provider 选择
+- 不同 provider 的搜索质量和过滤能力不同：
+- | Provider | 时间过滤 | 中文支持 | 结果质量 | 推荐度 |
+- |----------|----------|----------|----------|--------|
+- | **Brave** | ✅ freshness + date_after/before | ✅ | ⭐⭐⭐⭐ | 首选 |
+- | **Perplexity** | ✅ freshness + date_after/before | ✅ | ⭐⭐⭐⭐ | 次选 |
+- | **Kimi** | ❌ 无时间过滤 | ✅✅ | ⭐⭐⭐ | 中文好但无法过滤时间 |
+- | **Gemini** | ❌ 无时间过滤 | ✅ | ⭐⭐⭐ | AI合成答案 |
+- | **DuckDuckGo** | ❌ 无时间过滤 | ⚠️ | ⭐⭐ | 兜底方案 |
+- **如果当前 provider 不支持时间过滤**（如 Kimi/Gemini/DuckDuckGo）：
+- - 搜索词中必须写明精确日期范围作为补充（如 `"2026年4月16日至4月23日"`）
+- - 搜索后必须对每条结果手动验证日期
+- 步骤2: 批量 web_search 搜索（必须使用 freshness/date_after/date_before 参数）
+- 步骤3: 对重点文章用 web_fetch 获取详情核实
+- ## 步骤2: 批量搜索（核心步骤，必须执行11次）
+- ### ⚠️ 搜索调用规范（极其重要）
+- 每次搜索**必须**包含以下参数：
+- ```javascript
+- ```javascript
+- web_search({
+-   freshness: "week",                    // 限制为最近一周（或根据需求调整）
+-   date_after: "2026-04-16",             // DATE_START
+-   date_before: "2026-04-23",            // DATE_END
+- })
+- **如果搜索 provider 是 Kimi/Gemini/DuckDuckGo（不支持时间过滤参数）**，则在 query 中加入日期：
+-   query: "搜索关键词 2026年4月16日至4月23日 最新",
+-   count: 10
+- ### 11次搜索模板
+- web_search({ query: "OpenAI Anthropic Google 大模型 发布 最新", freshness: "week", date_after: DATE_START, date_before: DATE_END, count: 10, country: "CN", language: "zh" })
+- web_search({ query: "阿里千问 字节豆包 智谱 腾讯混元 月之暗面Kimi 大模型 发布", freshness: "week", date_after: DATE_START, date_before: DATE_END, count: 10, country: "CN", language: "zh" })
+- web_search({ query: "DeepSeek Meta Llama 开源模型 发布", freshness: "week", date_after: DATE_START, date_before: DATE_END, count: 10, country: "CN", language: "zh" })
+- web_search({ query: "AI Agent 智能体 开发平台 框架 MCP 最新", freshness: "week", date_after: DATE_START, date_before: DATE_END, count: 10, country: "CN", language: "zh" })
+- 搜索结果质量与搜索词直接相关。在搜索词中**优先包含高质量来源名称**，提升搜索精度：
+- **示例**：`"大模型 发布 ithome 36kr thepaper"` 比纯 `"大模型 发布"` 结果质量高得多。
+- **❌ 避免的搜索词**：纯品牌词如 `"DeepSeek"`、`"比亚迪"` 会返回官网和产品页，应改为 `"DeepSeek V3 发布 最新新闻"`、`"比亚迪 技术 发布 合作 最新"`
+- ## 步骤3: 获取详情并核实
+- 对搜索结果中**信息量不足的重要条目**，用 `web_fetch` 获取原文详情：
+- web_fetch({ url: "文章URL", extractMode: "markdown", maxChars: 30000 })
+- **核实规则**：
+- - fetch 失败且无法确认日期 → **丢弃**（宁可少一条，不要错误一条）
+- - 不要反复重试失败的 fetch，最多重试1次
+- - 知乎、微博等站点经常返回403 → fetch 失败时直接丢弃，不要浪费时间重试
+- ## ⚠️ 网络环境要求与配置指南
+- 本技能依赖 OpenClaw 的 `web_search` 工具。如果搜索结果质量差或无法获取信息，请检查以下配置：
+- ### 1. 确认 web_search 已启用
+- openclaw configure --section web
+- openclaw configure --section web
+- 确保 `tools.web.search.enabled` 为 `true`。
+- ### 2. 推荐的搜索引擎 Provider
+- | 优先级 | Provider | 环境变量 | 特点 |
+- |--------|----------|----------|------|
+- | 🥇 | **Brave** | `BRAVE_API_KEY` | 支持时间过滤+中文，结果质量最佳 |
+- | 🥈 | **Perplexity** | `PERPLEXITY_API_KEY` | 支持时间过滤+域名过滤 |
+- | 🥉 | **Kimi** | `KIMI_API_KEY` | 中文理解好，但无时间过滤 |
+- | 兜底 | **DuckDuckGo** | 无需密钥 | 免配置但结果质量一般 |
+- **强烈建议配置 Brave 或 Perplexity**，它们是唯二支持 `freshness`、`date_after`、`date_before` 参数的 provider，直接影响时间过滤效果。
+- ### 3. 配置 Brave Search（推荐）
+- # 获取 API Key（免费2000次/月）
+- # https://brave.com/search/api/
+- # 配置环境变量
+- export BRAVE_API_KEY="your_key_here"
+- # 或写入 OpenClaw 配置
+- # 选择 provider: brave，输入 API Key
+- ### 4. 如果只能用无时间过滤的 Provider
+- 当使用 Kimi/Gemini/DuckDuckGo 时：
+- - 在搜索 query 中加入 `"YYYY年MM月DD日至MM月DD日"` 格式的日期
+- - 搜索后必须逐条手动验证日期
+- - 建议增加搜索次数至15-20次，提高有效结果命中率
+- ### 5. web_fetch 403 问题
+- 知乎、微博、微信公众号等站点会返回403，这是正常的：
+- - 遇到403时直接丢弃该条目，不要浪费时间重试
+- - 优先搜索新闻媒体（IT之家、腾讯新闻、澎湃等），这些站点web_fetch成功率更高
+- - 如果需要获取被403阻止的内容，可配置 Firecrawl 作为 web_fetch 的 fallback provider
+- 1. **使用 web_search 原生参数**：freshness/date_after/date_before 比在搜索词中写日期有效100倍
+- 2. **日期验证不可跳过**：每条记录必须 YYYY-MM-DD 且在范围内
+- 3. **事实核查**：重大事件2源交叉验证
+- 4. **宁缺毋滥**：无法确认日期或事实的条目直接丢弃
+- 5. **必须有链接**：文档/链接列不能为空
+- 6. **必须生成Excel**：步骤5不能跳过
+- 7. **并行搜索**：所有搜索并行执行
+- 8. **降级方案**：openpyxl 不可用时生成 CSV
+- 9. **搜索词优化**：加入新闻来源名称（ithome/36kr等）提升质量
+- 10. **避免纯品牌词**：不要只搜"DeepSeek"，要搜"DeepSeek 发布 最新新闻"
++ ---
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ 1. **禁止编造日期**：发布时间必须是文章中明确标注的日期
++ 2. **禁止使用模糊日期**：发布时间必须是 `YYYY-MM-DD` 格式，不接受 `YYYY-MM` 或 `YYYY`
++ 3. **禁止收录旧数据**：严格按用户指定时间范围过滤
++ 4. **禁止收录产品介绍页**：只收录新闻/事件/报告发布，不收录常驻产品页面
++ 5. **禁止自行推测内容**：无法核实的内容直接丢弃
++ 6. **禁止用 web_fetch 抓知乎/微博/微信**：这些站点100%返回403，用 xcrawl-scrape 替代
++ ## ✅ 核心策略：XCrawl Search + web_search 双引擎搜索
++ ### 为什么需要 XCrawl？
++ | 问题 | web_search 现状 | XCrawl 解决方案 |
++ |------|----------------|-----------------|
++ | 403反爬 | 知乎/微博/微信等无法 fetch | **xcrawl-scrape 绕过99%反爬** |
++ | 时间过滤 | 仅 Brave/Perplexity 支持 | **xcrawl-search 位置+语言控制** |
++ | 搜索结果 | 依赖 Provider，质量波动 | **独立搜索引擎，稳定可靠** |
++ | 内容抓取 | web_fetch 对 SPA 站点无效 | **xcrawl-scrape 支持 JS 渲染** |
++ ### 搜索优先级
++ 1️⃣ xcrawl-search  — 主力搜索（绕过反爬，中文优化）
++ 2️⃣ web_search     — 补充搜索（Brave 支持 freshness 时间过滤）
++ 3️⃣ xcrawl-scrape  — 详情抓取（替代 web_fetch，绕过403）
++ 4️⃣ web_fetch      — 兜底抓取（仅对允许访问的站点）
++ ## 🔧 XCrawl 环境配置（使用前必须检查）
++ ### 检查 XCrawl 是否可用
++ # 检查配置文件是否存在
++ test -f ~/.xcrawl/config.json && echo "XCRAWL_OK" || echo "XCRAWL_NOT_CONFIGURED"
++ # 检查 xcrawl-search 技能是否安装
++ test -d ~/.openclaw/skills/xcrawl-search && echo "SKILL_INSTALLED" || echo "SKILL_NOT_INSTALLED"
++ ### 如果 XCrawl 未配置
++ **步骤1：注册获取 API Key**
++ - 访问 https://dash.xcrawl.com/signup/
++ - 注册账号，免费获得 **1000 积分**
++ - 获取 API Key（格式：`xc-xxxxxx`）
++ **步骤2：配置 API Key**
++ mkdir -p ~/.xcrawl
++ cat > ~/.xcrawl/config.json <<'EOF'
++ {
++   "XCRAWL_API_KEY": "你的API_Key"
++ }
++ EOF
++ chmod 600 ~/.xcrawl/config.json
++ **步骤3：安装 XCrawl Skills**
++ # 全局安装（推荐）
++ git clone https://github.com/xcrawl-api/xcrawl-skills.git
++ mkdir -p ~/.openclaw/skills
++ cp -R xcrawl-skills/skills/xcrawl-* ~/.openclaw/skills/
++ # 或通过 ClawHub 安装
++ openclaw skills install xcrawl-search
++ openclaw skills install xcrawl-scrape
++ **步骤4：重启 OpenClaw**
++ # 重启会话以加载新 Skills
++ ### 如果 XCrawl 不可用
++ 降级为纯 web_search 模式（搜索质量会下降，403站点无法抓取）：
++ - 配置 Brave API Key：https://brave.com/search/api/ （免费2000次/月）
++ - 在搜索 query 中加入精确日期范围
++ - 搜索后逐条手动验证日期
++ 步骤2: 双引擎搜索（xcrawl-search 为主 + web_search 补充）
++ 步骤3: 对重点文章用 xcrawl-scrape 获取详情（替代 web_fetch）
++ ## 步骤2: 双引擎搜索（核心步骤）
++ ### 搜索A：xcrawl-search 主力搜索（优先执行）
++ **调用方式**：使用 xcrawl-search 技能，通过 curl 或 node 调用 API
++ API_KEY="$(node -e "const fs=require('fs');const p=process.env.HOME+'/.xcrawl/config.json';const k=JSON.parse(fs.readFileSync(p,'utf8')).XCRAWL_API_KEY||'';process.stdout.write(k)")"
++ API_KEY="$(node -e "const fs=require('fs');const p=process.env.HOME+'/.xcrawl/config.json';const k=JSON.parse(fs.readFileSync(p,'utf8')).XCRAWL_API_KEY||'';process.stdout.write(k)")"
++ curl -sS -X POST "https://run.xcrawl.com/v1/search" \
++   -H "Content-Type: application/json" \
++   -H "Content-Type: application/json" \
++   -H "Authorization: Bearer ${API_KEY}" \
++   -H "Authorization: Bearer ${API_KEY}" \
++   -d '{"query":"搜索关键词","location":"CN","language":"zh","limit":10}'
++ **xcrawl-search API 参数**：
++ | 参数 | 类型 | 必填 | 默认值 | 说明 |
++ |------|------|------|--------|------|
++ | `query` | string | ✅ | - | 搜索查询词 |
++ | `location` | string | ❌ | `US` | 位置（设为 `CN` 优先返回中国结果） |
++ | `language` | string | ❌ | `en` | 语言（设为 `zh` 返回中文结果） |
++ | `limit` | integer | ❌ | `10` | 最大结果数（1-100） |
++ **响应中的关键字段**：
++ - `data.data[].title` — 结果标题
++ - `data.data[].description` — 结果摘要
++ - `data.data[].url` — 结果链接
++ - `data.data[].position` — 排名位置
++ ### 搜索B：web_search 补充搜索（使用原生时间过滤参数）
++   freshness: "week",
++   date_after: DATE_START,
++   date_before: DATE_END,
++ > ⚠️ web_search 的 `freshness`/`date_after`/`date_before` 仅 Brave 和 Perplexity 支持。
++ > 如果当前 provider 不支持时间过滤，在 query 中加入日期：`"搜索关键词 2026年4月16日至4月23日 最新"`
++ ### 11次搜索模板（双引擎各执行）
++ **xcrawl-search：**
++ **xcrawl-search：**
++ **xcrawl-search：**
++ **xcrawl-search：**
++ **xcrawl-search：**
++ curl -sS -X POST "https://run.xcrawl.com/v1/search" -H "Content-Type: application/json" -H "Authorization: Bearer ${API_KEY}" -d '{"query":"OpenAI GPT Anthropic Claude Google Gemini 大模型 发布 最新新闻 2026年4月","location":"CN","language":"zh","limit":10}'
++ curl -sS -X POST "https://run.xcrawl.com/v1/search" -H "Content-Type: application/json" -H "Authorization: Bearer ${API_KEY}" -d '{"query":"阿里千问 字节豆包 智谱 腾讯混元 月之暗面Kimi 大模型 发布 最新 2026年4月","location":"CN","language":"zh","limit":10}'
++ curl -sS -X POST "https://run.xcrawl.com/v1/search" -H "Content-Type: application/json" -H "Authorization: Bearer ${API_KEY}" -d '{"query":"DeepSeek Meta Llama 开源模型 发布 最新新闻 2026年4月","location":"CN","language":"zh","limit":10}'
++ **web_search 补充：**
++ **web_search 补充：**
++ **web_search 补充：**
++ **web_search 补充：**
++ **web_search 补充：**
++ web_search({ query: "OpenAI GPT Anthropic Claude Google Gemini 大模型 发布 最新", freshness: "week", date_after: DATE_START, date_before: DATE_END, count: 10, country: "CN", language: "zh" })
++ web_search({ query: "阿里千问 字节豆包 智谱 腾讯混元 Kimi 大模型 发布", freshness: "week", date_after: DATE_START, date_before: DATE_END, count: 10, country: "CN", language: "zh" })
++ web_search({ query: "DeepSeek Meta Llama 开源模型 发布 最新", freshness: "week", date_after: DATE_START, date_before: DATE_END, count: 10, country: "CN", language: "zh" })
++ curl -sS -X POST "https://run.xcrawl.com/v1/search" -H "Content-Type: application/json" -H "Authorization: Bearer ${API_KEY}" -d '{"query":"AI算力 芯片 GPU TPU 数据中心 英伟达 最新动态 2026年4月","location":"CN","language":"zh","limit":10}'
++ curl -sS -X POST "https://run.xcrawl.com/v1/search" -H "Content-Type: application/json" -H "Authorization: Bearer ${API_KEY}" -d '{"query":"AI Agent 智能体 开发平台 MCP 框架 最新动态 2026年4月","location":"CN","language":"zh","limit":10}'
++ web_search({ query: "AI Agent 智能体 开发平台 MCP 框架 最新", freshness: "week", date_after: DATE_START, date_before: DATE_END, count: 10, country: "CN", language: "zh" })
++ curl -sS -X POST "https://run.xcrawl.com/v1/search" -H "Content-Type: application/json" -H "Authorization: Bearer ${API_KEY}" -d '{"query":"AI安全 合规 治理 监管 政策 法规 最新 2026年4月","location":"CN","language":"zh","limit":10}'
++ curl -sS -X POST "https://run.xcrawl.com/v1/search" -H "Content-Type: application/json" -H "Authorization: Bearer ${API_KEY}" -d '{"query":"工信部 国务院 人工智能 政策 法规 最新 2026年4月","location":"CN","language":"zh","limit":10}'
++ curl -sS -X POST "https://run.xcrawl.com/v1/search" -H "Content-Type: application/json" -H "Authorization: Bearer ${API_KEY}" -d '{"query":"汽车行业 研发 智驾 产销 最新动态 2026年4月","location":"CN","language":"zh","limit":10}'
++ curl -sS -X POST "https://run.xcrawl.com/v1/search" -H "Content-Type: application/json" -H "Authorization: Bearer ${API_KEY}" -d '{"query":"比亚迪 吉利 上汽 美的 三一 AI 智能制造 最新 2026年4月","location":"CN","language":"zh","limit":10}'
++ curl -sS -X POST "https://run.xcrawl.com/v1/search" -H "Content-Type: application/json" -H "Authorization: Bearer ${API_KEY}" -d '{"query":"人形机器人 量产 特斯拉 宇树 优必选 动态 2026年4月","location":"CN","language":"zh","limit":10}'
++ curl -sS -X POST "https://run.xcrawl.com/v1/search" -H "Content-Type: application/json" -H "Authorization: Bearer ${API_KEY}" -d '{"query":"麦肯锡 德勤 Gartner IDC 行业报告 AI 2026年4月","location":"CN","language":"zh","limit":10}'
++ 在搜索词中加入高质量新闻来源名称可提升结果精度：
++ | 机器之心 | `jiqizhixin` |
++ | 机器之心 | `jiqizhixin` |
++ **示例**：`"大模型 发布 最新 ithome 36kr thepaper"` 比纯 `"大模型 发布"` 结果质量高得多。
++ **❌ 避免的搜索词**：纯品牌词如 `"DeepSeek"`、`"比亚迪"` 会返回官网和产品页，应改为 `"DeepSeek 发布 最新新闻"`、`"比亚迪 技术 发布 合作 最新"`
++ ## 步骤3: 获取详情并核实（关键改进：用 xcrawl-scrape 替代 web_fetch）
++ ### 抓取优先级
++ 1️⃣ xcrawl-scrape  — 主力抓取（绕过99%反爬，支持JS渲染）
++ 2️⃣ web_fetch      — 兜底抓取（仅对允许访问的站点）
++ ### xcrawl-scrape 调用方式
++ # 抓取单页面，返回 Markdown + 链接
++ curl -sS -X POST "https://run.xcrawl.com/v1/scrape" \
++   -d '{"url":"文章URL","formats":["markdown","links"]}'
++ ### 不同站点的抓取策略
++ | 站点类型 | 抓取方式 | 说明 |
++ |----------|----------|------|
++ | 知乎、微博、微信 | **xcrawl-scrape** | web_fetch 必定403，xcrawl可绕过 |
++ | IT之家、36氪、澎湃 | **web_fetch** 或 xcrawl-scrape | 两者均可，web_fetch更快 |
++ | SPA/JS重度站点 | **xcrawl-scrape** | web_fetch 拿不到内容 |
++ | 官方博客/新闻稿 | **web_fetch** | 通常允许访问 |
++ ### 核实规则
++ - fetch/scrape 失败且无法确认日期 → **丢弃**（宁可少一条，不要错误一条）
++ - 不要反复重试失败的抓取，最多重试1次
++ - 使用 xcrawl-scrape 时，每次调用消耗积分，避免对同一URL重复调用
++ |------|------|
++ |------|------|
++ ## ⚠️ 网络环境与工具配置指南
++ ### 方案一：XCrawl（推荐，解决403问题）
++ | 项目 | 说明 |
++ | 项目 | 说明 |
++ | 注册 | https://dash.xcrawl.com/signup/ |
++ | 免费额度 | 1000 积分 |
++ | API Key 配置 | `~/.xcrawl/config.json` |
++ | Skills 安装 | `xcrawl-search` + `xcrawl-scrape` |
++ | 搜索积分消耗 | 基础2积分/次 + 流量费 |
++ | 抓取积分消耗 | 根据页面复杂度计费 |
++ **核心优势**：
++ - ✅ 绕过99%反爬机制（知乎/微博/微信均可抓取）
++ - ✅ 支持 JS 渲染（SPA站点不再返回空内容）
++ - ✅ 位置+语言控制（`location:"CN"`, `language:"zh"`）
++ - ✅ 与 OpenClaw 深度集成（官方4个 Skill）
++ ### 方案二：Brave Search（web_search 时间过滤）
++ | 注册 | https://brave.com/search/api/ |
++ | 免费额度 | 2000次/月 |
++ | 环境变量 | `BRAVE_API_KEY` |
++ | 时间过滤 | ✅ `freshness` + `date_after`/`date_before` |
++ ### 方案三：双引擎组合（最佳效果）
++ xcrawl-search  →  主力搜索（中文优化，绕过反爬）
++      +
++      +
++ web_search(Brave) →  补充搜索（时间过滤精确）
++ xcrawl-scrape  →  详情抓取（替代 web_fetch）
++ ### web_fetch 403 问题
++ **xcrawl-scrape 是终极解决方案**：
++ - 知乎、微博、微信公众号 → xcrawl-scrape 可正常抓取
++ - IT之家、36氪、澎湃 → web_fetch 即可，无需消耗 xcrawl 积分
++ - SPA/JS 站点 → xcrawl-scrape 支持 JS 渲染
++ 1. **XCrawl 优先**：xcrawl-search 绕过反爬，xcrawl-scrape 替代 web_fetch
++ 2. **web_search 时间过滤**：freshness/date_after/date_before 比 query 中写日期有效100倍
++ 3. **日期验证不可跳过**：每条记录必须 YYYY-MM-DD 且在范围内
++ 4. **事实核查**：重大事件2源交叉验证
++ 5. **宁缺毋滥**：无法确认日期或事实的条目直接丢弃
++ 6. **必须有链接**：文档/链接列不能为空
++ 7. **必须生成Excel**：步骤5不能跳过
++ 8. **并行搜索**：所有搜索并行执行
++ 9. **降级方案**：XCrawl 不可用时降级为纯 web_search
++ 10. **搜索词优化**：加入新闻来源名称（ithome/36kr等）提升质量
++ 11. **避免纯品牌词**：不要只搜"DeepSeek"，要搜"DeepSeek 发布 最新新闻"
++ 12. **积分管理**：xcrawl 每次搜索消耗积分，合理设置 limit 参数（默认10）
+
+### references/channels.md  [docs]
+- > ⚠️ **重要提醒**：不要用 web_fetch 逐个抓取以下URL！这些URL仅供搜索时构造关键词参考。
+- > 所有信息收集必须通过 web_search 完成。
+- # 一、高效搜索来源
+- ## 1.1 中文科技媒体（搜索优先引用）
+- | 来源 | 搜索关键词示例 | 内容特点 |
+- |------|----------------|----------|
+- | IT之家 | `site:ithome.com AI 大模型 发布` | 时效性高，覆盖全面 |
+- | 腾讯新闻 | `site:new.qq.com AI 芯片 动态` | 深度报道多 |
+- | 新华网 | `site:xinhuanet.com 人工智能 政策` | 官方政策权威 |
+- | 澎湃新闻 | `site:thepaper.cn AI 机器人` | 深度调查 |
+- | 36氪 | `site:36kr.com AI 创业 融资` | 行业融资信息 |
+- | 新浪财经 | `site:finance.sina.com.cn 汽车 产销` | 财经数据 |
+- | 每日经济新闻 | `site:nbd.com.cn AI 大模型` | 财经+科技 |
+- | 机器之心 | `site:jiqizhixin.com 大模型` | AI专业媒体 |
+- | 第一财经 | `site:yicai.com AI 产业` | 财经+产业 |
+- ## 1.2 英文科技媒体
+- ## 1.3 官方来源（搜索时引用，不直接抓取）
+- # 二、扫描对象
+- ## 2.1 国家机构
+- ## 2.2 咨询公司
+- ## 2.3 模型厂商
+- ## 2.4 机器人厂商
+- ## 2.5 头部企业
+- ## 2.6 上市公司信息
+- # 三、模型能力评估渠道
+- # 四、材料分类
+- # 五、注意事项
+- 1. **本文件是搜索参考，不是抓取目标**：不要用 web_fetch 逐个访问以上URL
+- 2. **搜索优先**：所有信息通过 web_search 搜索获取
+- 3. **来源可信度**：官方来源 > 权威媒体 > 行业媒体 > 个人博客
+- 4. **交叉验证**：重大事件需从2个不同来源确认
+- 5. **日期核实**：搜索结果中的日期必须与原文一致
++ > ⚠️ **重要提醒**：不要用 web_fetch 逐个抓取以下URL！
++ > - 搜索阶段：使用 **xcrawl-search** 或 **web_search** 搜索获取信息
++ > - 抓取阶段：使用 **xcrawl-scrape** 获取详情（替代 web_fetch，可绕过403反爬）
++ ---
++ # 一、搜索工具选择
++ ## 1.1 搜索引擎
++ | 工具 | 调用方式 | 优势 | 适用场景 |
++ | 工具 | 调用方式 | 优势 | 适用场景 |
++ |------|----------|------|----------|
++ |------|----------|------|----------|
++ | **xcrawl-search** | `POST https://run.xcrawl.com/v1/search` | 绕过反爬，中文优化，位置+语言控制 | 主力搜索 |
++ | **web_search (Brave)** | `web_search({query, freshness, ...})` | 支持 freshness 时间过滤 | 补充搜索 |
++ ## 1.2 内容抓取
++ | **xcrawl-scrape** | `POST https://run.xcrawl.com/v1/scrape` | 绕过99%反爬，支持JS渲染 | 知乎/微博/微信等403站点 |
++ | **web_fetch** | `web_fetch({url, ...})` | 免费，速度快 | IT之家/36kr等允许访问的站点 |
++ # 二、高效搜索来源
++ ## 2.1 中文科技媒体（搜索优先引用）
++ | 来源 | 搜索关键词示例 | 内容特点 | web_fetch可用性 |
++ |------|----------------|----------|----------------|
++ | IT之家 | `site:ithome.com AI 大模型 发布` | 时效性高，覆盖全面 | ✅ 可用 |
++ | 腾讯新闻 | `site:new.qq.com AI 芯片 动态` | 深度报道多 | ✅ 可用 |
++ | 新华网 | `site:xinhuanet.com 人工智能 政策` | 官方政策权威 | ✅ 可用 |
++ | 澎湃新闻 | `site:thepaper.cn AI 机器人` | 深度调查 | ✅ 可用 |
++ | 36氪 | `site:36kr.com AI 创业 融资` | 行业融资信息 | ✅ 可用 |
++ | 新浪财经 | `site:finance.sina.com.cn 汽车 产销` | 财经数据 | ✅ 可用 |
++ | 每日经济新闻 | `site:nbd.com.cn AI 大模型` | 财经+科技 | ✅ 可用 |
++ | 机器之心 | `site:jiqizhixin.com 大模型` | AI专业媒体 | ⚠️ 部分需xcrawl |
++ | 第一财经 | `site:yicai.com AI 产业` | 财经+产业 | ✅ 可用 |
++ ## 2.2 需要 xcrawl-scrape 抓取的来源
++ | 来源 | 搜索关键词示例 | web_fetch状态 | xcrawl-scrape |
++ |------|----------------|---------------|---------------|
++ | 知乎 | `site:zhihu.com AI 大模型` | ❌ 403 | ✅ 可抓取 |
++ | 微博 | `site:weibo.com AI 新闻` | ❌ 403 | ✅ 可抓取 |
++ | 微信公众号 | `site:mp.weixin.qq.com AI` | ❌ 403 | ✅ 可抓取 |
++ | 雪球 | `site:xueqiu.com AI 股票` | ❌ 403 | ✅ 可抓取 |
++ | 少数派 | `site:sspai.com AI 工具` | ⚠️ 不稳定 | ✅ 可抓取 |
++ ## 2.3 英文科技媒体
++ ## 2.4 官方来源（搜索时引用，不直接抓取）
++ # 三、扫描对象
++ ## 3.1 国家机构
++ ## 3.2 咨询公司
++ ## 3.3 模型厂商
++ ## 3.4 机器人厂商
++ ## 3.5 头部企业
++ ## 3.6 上市公司信息
++ # 四、模型能力评估渠道
++ # 五、材料分类
++ # 六、注意事项
++ 1. **xcrawl-search 优先搜索**：主力搜索工具，中文优化+绕过反爬
++ 2. **xcrawl-scrape 替代 web_fetch**：403站点统一用 xcrawl-scrape
++ 3. **web_search 补充搜索**：Brave Provider 支持时间过滤
++ 4. **来源可信度**：官方来源 > 权威媒体 > 行业媒体 > 个人博客
++ 5. **交叉验证**：重大事件需从2个不同来源确认
++ 6. **日期核实**：搜索结果中的日期必须与原文一致
++ 7. **积分管理**：xcrawl 每次调用消耗积分，合理设置 limit 参数

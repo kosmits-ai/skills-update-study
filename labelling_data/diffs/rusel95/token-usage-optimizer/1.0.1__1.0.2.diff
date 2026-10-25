@@ -1,0 +1,110 @@
+rusel95/token-usage-optimizer  1.0.1 -> 1.0.2
+change_type: code   changelog: Fixed auto-refresh on Linux: now uses Claude CLI for reliable OAuth token refresh. No more manual updates needed!
+
+### scripts/auto-refresh-cron.sh  [code]
+- # Auto-refresh Claude Code OAuth token every 5 hours
+- if [ ! -f "$TOKEN_FILE" ]; then
+-   echo "ERROR: No tokens configured" >&2
+-   exit 1
+- source "$TOKEN_FILE"
+- if [ -z "$REFRESH_TOKEN" ]; then
+-   echo "ERROR: No refresh token found" >&2
+- # Try multiple potential endpoints
+- for endpoint in \
+-   "https://api.anthropic.com/v1/oauth/refresh" \
+-   "https://api.anthropic.com/oauth/refresh" \
+-   "https://platform.claude.com/oauth/refresh"; do
+-   echo "Trying: $endpoint"
+-   REFRESH_RESP=$(curl -sf -X POST "$endpoint" \
+-     -H "Content-Type: application/json" \
+-     -d "{\"grant_type\":\"refresh_token\",\"refresh_token\":\"$REFRESH_TOKEN\"}" 2>&1)
+-   # Extract new token
+-   NEW_ACCESS=$(echo "$REFRESH_RESP" | grep -o '"access_token":"[^"]*"' | sed 's/"access_token":"//;s/"//')
+-   NEW_REFRESH=$(echo "$REFRESH_RESP" | grep -o '"refresh_token":"[^"]*"' | sed 's/"refresh_token":"//;s/"//')
+-   if [ -n "$NEW_ACCESS" ]; then
+-     echo "✅ Token refreshed successfully!"
+-     # Update tokens in file
+-     sed -i.bak "s|ACCESS_TOKEN=.*|ACCESS_TOKEN=\"$NEW_ACCESS\"|" "$TOKEN_FILE"
+-     # Update refresh token if new one provided
+-     if [ -n "$NEW_REFRESH" ]; then
+-       sed -i.bak "s|REFRESH_TOKEN=.*|REFRESH_TOKEN=\"$NEW_REFRESH\"|" "$TOKEN_FILE"
+-     echo "📝 Updated tokens in $TOKEN_FILE"
+-     exit 0
+- done
+- echo "⚠️  All refresh endpoints failed."
+- echo "📋 Manual refresh needed: run 'claude auth login' and update .tokens"
++ # Auto-refresh Claude Code OAuth token using Claude CLI
++ # Check if claude CLI is available
++ if ! command -v claude >/dev/null 2>&1; then
++   echo "⚠️  Claude CLI not found. Install it or run manual refresh." >&2
++ # Trigger a simple query to force token refresh if needed
++ # Claude CLI automatically refreshes expired tokens
++ echo "ping" | claude --quiet >/dev/null 2>&1
++ # Check if refresh was successful
++ if [ -f ~/.claude/.credentials.json ]; then
++   # Extract fresh tokens
++   NEW_ACCESS=$(python3 -c "import json; d=json.load(open('$HOME/.claude/.credentials.json')); print(d.get('claudeAiOauth', {}).get('accessToken', ''))" 2>/dev/null)
++   NEW_REFRESH=$(python3 -c "import json; d=json.load(open('$HOME/.claude/.credentials.json')); print(d.get('claudeAiOauth', {}).get('refreshToken', ''))" 2>/dev/null)
++   if [ -n "$NEW_ACCESS" ] && [ -n "$NEW_REFRESH" ]; then
++     # Update .tokens file for consistency
++     if [ -f "$TOKEN_FILE" ]; then
++       cat > "$TOKEN_FILE" <<EOF
++ # Claude Code OAuth Tokens
++ # Auto-refreshed: $(date -u +"%Y-%m-%d %H:%M UTC")
++ ACCESS_TOKEN="$NEW_ACCESS"
++ REFRESH_TOKEN="$NEW_REFRESH"
++ EOF
++       chmod 600 "$TOKEN_FILE"
++       echo "✅ Token refreshed successfully via Claude CLI!"
++       echo "📝 Updated $TOKEN_FILE"
++       exit 0
++ echo "⚠️  Token refresh failed or Claude CLI not authenticated."
++ echo "📋 Run: claude auth login"
+
+### scripts/check-usage.sh  [code]
+-   else
+- # Try to fetch with current token
+- # Check if token expired (401 error)
+- if echo "$RESP" | grep -q "token_expired\|authentication_error"; then
+-   # Try to refresh token
+-   REFRESH_RESP=$(curl -sf -X POST "https://api.anthropic.com/v1/oauth/refresh" \
+-     -H "Content-Type: application/json" \
+-     -d "{\"refresh_token\":\"$REFRESH_TOKEN\"}" 2>&1)
+-   # Check if refresh worked
+-   NEW_TOKEN=$(echo "$REFRESH_RESP" | grep -o '"access_token":"[^"]*"' | sed 's/"access_token":"//;s/"//')
+-   if [ -n "$NEW_TOKEN" ]; then
+-     # Update token in file
+-     sed -i.bak "s|ACCESS_TOKEN=.*|ACCESS_TOKEN=\"$NEW_TOKEN\"|" "$TOKEN_FILE"
+-     ACCESS_TOKEN="$NEW_TOKEN"
+-     # Retry with new token
+-     RESP=$(curl -sf "https://api.anthropic.com/api/oauth/usage" \
+-       -H "Authorization: Bearer $ACCESS_TOKEN" \
+-       -H "anthropic-beta: oauth-2025-04-20") || {
+-       echo "ERROR: API request failed after refresh" >&2
+-       exit 1
+-     }
+-     echo "ERROR: Token expired and refresh failed. Please run setup.sh to get new tokens." >&2
+-     echo "Hint: Run 'claude auth login' on your Mac, then copy new tokens." >&2
+-     exit 1
+- # Final check
+- if [ -z "$RESP" ]; then
+-   echo "ERROR: API request failed" >&2
++ # Check if claude CLI is available (handles auto-refresh automatically)
++ if command -v claude >/dev/null 2>&1; then
++   # Claude CLI available - use it to get fresh token
++   # It will auto-refresh if needed and update ~/.claude/.credentials.json
++   # Trigger a simple query to ensure token is fresh
++   echo "ping" | claude --quiet >/dev/null 2>&1 || true
++   # Extract fresh token from credentials file
++   if [ -f ~/.claude/.credentials.json ]; then
++     FRESH_TOKEN=$(python3 -c "import json; d=json.load(open('$HOME/.claude/.credentials.json')); print(d.get('claudeAiOauth', {}).get('accessToken', ''))" 2>/dev/null)
++     if [ -n "$FRESH_TOKEN" ]; then
++       ACCESS_TOKEN="$FRESH_TOKEN"
++       # Update .tokens file for consistency
++       sed -i.bak "s|ACCESS_TOKEN=.*|ACCESS_TOKEN=\"$ACCESS_TOKEN\"|" "$TOKEN_FILE" 2>/dev/null || true
++     fi
++ # Fetch fresh data
++ # Check if failed
++ if [ -z "$RESP" ] || echo "$RESP" | grep -q "token_expired\|authentication_error"; then
++   echo "ERROR: API request failed. Token may be expired." >&2
++   echo "Hint: Run 'claude auth login' to refresh tokens." >&2

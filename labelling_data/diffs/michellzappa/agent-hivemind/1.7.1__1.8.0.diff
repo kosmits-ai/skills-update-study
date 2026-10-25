@@ -1,0 +1,81 @@
+michellzappa/agent-hivemind  1.7.1 -> 1.8.0
+change_type: instructions+code   changelog: - Supabase URL and anon key are now hardcoded in the script instead of fetched at runtime. - No remote config calls; all config is local or via environment variables. - Ed25519 keypair for comment signing is now generated and stored in `scripts/.hivemind-key.pem` (within the skill directory) instead of the user home directory. - Local file writes are now restricted to the skill directory; uninstalling the skill removes the key. - Documentation updated to clarify these privacy and operational cha
+
+### SKILL.md  [instructions]
+- No configuration needed. On first run, the script fetches its API config from a public endpoint and caches it locally for 24 hours (`~/.openclaw/hivemind-config-cache.json`). No keys are embedded in the script.
+- To override (e.g. self-hosted), set environment variables or `~/.openclaw/hivemind-config.env`:
+- - **Comments** are signed with Ed25519 (keypair auto-generated at `~/.openclaw/hivemind-key.pem`)
+- No keys are embedded in the script. On first run, the CLI fetches config from a public endpoint:
+- - **Endpoint**: `https://tjcryyjrjxbcjzybzdow.supabase.co/functions/v1/hivemind-config`
+- - **Returns**: Supabase URL + anon key (read-only scope, `{"role":"anon"}`)
+- - **Cached locally** at `~/.openclaw/hivemind-config-cache.json` for 24 hours
+- The skill writes to these files outside its own directory:
+- - `~/.openclaw/hivemind-key.pem` — Ed25519 keypair for comment signing
+- - `~/.openclaw/hivemind-config-cache.json` — cached API config (Supabase URL + anon key), refreshed every 24h
+-   - Only created if no local env override is set
+-   - Contains no sensitive data (the anon key is public/read-only scoped)
++ No configuration needed. The Supabase URL and anon key (public, read-only scope, RLS-protected) are hardcoded in the script — no remote config fetches at runtime.
++ To point at a self-hosted instance, set environment variables or `~/.openclaw/hivemind-config.env`:
++ - **Comments** are signed with Ed25519 (keypair auto-generated at `scripts/.hivemind-key.pem` within the skill directory)
++ The Supabase URL and anon key are hardcoded in the script. The anon key is public (read-only scope, `{"role":"anon"}`):
++ - No remote config endpoint is contacted at runtime
++ The skill writes one file within its own directory:
++ - `scripts/.hivemind-key.pem` — Ed25519 keypair for comment signing
++   - Lives inside the skill directory; uninstalling the skill removes the key
+
+### scripts/hivemind.py  [code]
+- CONFIG_CACHE = Path.home() / ".openclaw" / "hivemind-config-cache.json"
+- KEY_PATH = Path.home() / ".openclaw" / "hivemind-key.pem"
+- CONFIG_ENDPOINT = "https://tjcryyjrjxbcjzybzdow.supabase.co/functions/v1/hivemind-config"
+- def _fetch_remote_config() -> tuple[str, str] | None:
+-     """Fetch config from remote endpoint, cache locally for 24h."""
+-     import time
+-     # Check cache first
+-     if CONFIG_CACHE.exists():
+-         try:
+-             cache = json.loads(CONFIG_CACHE.read_text(encoding="utf-8"))
+-             if time.time() - cache.get("fetched_at", 0) < 86400:  # 24h
+-                 return cache["supabase_url"], cache["supabase_anon_key"]
+-         except (json.JSONDecodeError, KeyError):
+-             pass
+-     # Fetch from remote
+-     try:
+-         from urllib.request import Request, urlopen
+-         req = Request(CONFIG_ENDPOINT, headers={"Accept": "application/json"})
+-         with urlopen(req, timeout=10) as resp:
+-             data = json.loads(resp.read().decode("utf-8"))
+-             url = data["supabase_url"]
+-             key = data["supabase_anon_key"]
+-             # Cache it
+-             CONFIG_CACHE.parent.mkdir(parents=True, exist_ok=True)
+-             CONFIG_CACHE.write_text(
+-                 json.dumps({"supabase_url": url, "supabase_anon_key": key, "fetched_at": time.time()}),
+-                 encoding="utf-8",
+-             )
+-             return url, key
+-     except Exception:
+-         return None
+-     # Priority: env vars > config file > remote endpoint (cached)
+-     # If either is missing, try remote config
+-     if not supabase_url or not supabase_key:
+-     if not supabase_url or not supabase_key:
+-         remote = _fetch_remote_config()
+-         if remote:
+-             supabase_url = supabase_url or remote[0]
+-             supabase_key = supabase_key or remote[1]
+-         print(
+-             "Error: missing Supabase config. Set SUPABASE_URL and SUPABASE_KEY "
+-             "(env or ~/.openclaw/hivemind-config.env), or check your network connection.",
+-             file=sys.stderr,
+-         )
+-         sys.exit(1)
++ # Supabase anon key is public (read-only scope, RLS-protected). Hardcoded to avoid
++ # runtime config fetches that scanners flag as a remote-control vector.
++ SUPABASE_URL = "https://tjcryyjrjxbcjzybzdow.supabase.co"
++ SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRqY3J5eWpyanhiY2p6eWJ6ZG93Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzM5NTIzNjUsImV4cCI6MjA4OTUyODM2NX0.G_PtxkbqXO6jz1mGUX7-afO1WlHl1c_z0_QBNbqLeJU"
++ SCRIPT_DIR = Path(__file__).resolve().parent
++ KEY_PATH = SCRIPT_DIR / ".hivemind-key.pem"
++     """Return (supabase_url, supabase_key). Uses hardcoded defaults; env vars or
++     config file override for self-hosted instances."""
++         or SUPABASE_URL
++         or SUPABASE_ANON_KEY

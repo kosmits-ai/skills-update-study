@@ -1,0 +1,2279 @@
+cookfish1979/a-stock-report  2.0.8 -> 3.2.0
+change_type: instructions+docs+code   changelog: v3.2.0 — Changelog 段瘦身 + F 段护栏  【问题】SKILL.md Changelog 段自由膨胀到 488 行（占 48.8%），单条最大 86 行（v3.0.0）。改 changelog 拖慢加载，挡住关键信息（架构图 / 4 端护栏规则 / 数据源表）。  【改动】 1. Changelog 14 条历史版本精简到 3-8 行/条 2. 完整细节外置到 knowledge/changelog/vX.Y.Z.md（15 个文件 + README 索引） 3. SKILL.md: 1001 → 622 行（-38%），35KB → 32KB 4. 新增 check_consistency.py F 段：机械锁 Changelog 单条 ≤ 25 行 5. v3.1.6 E 段补丁：扫黑名单 3 类（cron 嵌入 / .env 路径 / source+send 一行命令）  【护栏】check_consistency.py 6 段全过（templates↔mirror / mirror↔jobs.json / SKILL.md 引用 / dispatcher 任
+
+### SKILL.md  [instructions]
+- ---
+- description: "A股数据驱动型报告自动生成与推送系统，支持晨报 / 收盘小结 / 晚报 / 盘中预警 / IPO周报 / 财经周末要闻。内置投资者情绪打分（6维度，满分100）与AI后市展望。"
+- version: 2.0.8
+- > A股数据驱动型报告自动生成与推送系统，支持晨报 / 收盘小结 / 晚报 / 盘中预警 / IPO周报 / 财经周末要闻
+- ### v2.0.8 — IPO 周报"排队情况"段补回 queue_detail 字段（2026-06-06）
+- **问题现象：** 6/6 10:02 cron 跑出的 IPO 周报（`IPO周报_20260605.md`）第一段「排队情况」显示「数据获取失败 ⚠️ 数据暂缺」，但同一份报告的二/三/四/五/六段都正常。其他 7 份历史报告（5/29、5/22、5/15、5/8、5/4、5/1、4/24）的"排队情况"段都正常（合计 248-378 家）。
+- **问题根因：** `_collect_ipo_data()` 函数（`send_ipo_report.py`）的 return dict **缺少** `queue_detail`、`queue_status_detail`、`source_date` 这 3 个 key，但 `build_report_lines()` 期望这 3 个 key 来填"排队情况"段：
+- ```python
+- ```python
+- ```python
+- # build_report_lines 行 288-290
+- qd = data.get('queue_detail', {})        # ← 期望的 key
+- sd = data.get('queue_status_detail', {}) # ← 期望的 key
+- source_date = data.get('source_date', 'N/A')
+- # 走到 if qd: 分支才输出"排队情况"，否则走 else 分支 → "数据获取失败"
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- `data.get('queue_detail', {})` 永远返回 `{}`（因为 `_collect_ipo_data` 没 return 这个 key），所以 `qd` 为空 → 走 `else` 分支 → "数据获取失败"。
+- **次因：** `_fetch_queue_from_web()` 函数（行 190-282）是**已实现的正确逻辑**（5 板块拉取 + pivot + 状态细项），但 **main 调的是 `_collect_ipo_data()` 而不是 `_fetch_queue_from_web()`**，且 `_fetch_queue_from_web()` 的 docstring 写「不返回值」但函数末尾实际**没 return 语句**——**典型"重构一半"的死代码**。
+- **修复：**
+- **修复：**
+- 1. **`_collect_ipo_data()` 末尾补 5 板块拉取**：`ak.stock_register_kcb/cyb/bj/sh/sz` 5 个接口的合并 + 180 天 cutoff + pivot 算 `queue_detail` + value_counts 算 `queue_status_detail` + max 日期算 `source_date`
+- 2. **修时区 bug**：东方财富返回的"更新日期"是 tz-aware（带 +08:00），但 `period_end_dt` 是 tz-naive，PASSED_CUTOFF 比较时报 `Invalid comparison between dtype=datetime64[s] and Timestamp` —— **两边都加 `.dt.tz_localize(None)` 归一为 naive**
+- 3. **`build_report_lines()` 不动**（最小修复，build_report_lines 是历史稳定代码）
+- **验证：**
+- - 6/6 10:51 重跑：排队段正常输出「全市场共379家：问询145家 | 已过会待发行11家 | 提交注册31家」+ 5 板块明细
+- - 文件大小：1524 字节 → 1946 字节（+422 字节正好是排队段差异）
+- - 推送 + 状态记录正常：`✅ 已推送` + `[去重] 已记录 20260606|20260605`
+- **mtime 异常说明：** 脚本和周报的 inode `Birth` 时间都是 6/6 10:02 左右，但 `send_ipo_report.py` 在 `/.gitignore` 第 43 行被排除（`# Skills (managed separately via ClawHub)` + `skills/`），**根本不在 git 跟踪范围内**。所以 mtime 异常是**沙箱文件系统事件**（快照恢复/容器重挂载/镜像重建），**不是有人改了代码没 commit**。**没有 git 提交记录**进一步佐证这点（`git log` 找不到任何 send_ipo_report.py 的痕迹）。
+- **教训沉淀（未来避免）：**
+- - 任何"重构接口"（改 return dict 的字段）必须**同步改**所有调用方（grep 搜 key 名找 caller）
+- - "死代码"（写了但没接入的函数）是**高危信号**——要么删，要么接入
+- - `data.get(key, {})` 这种"缺失则跳过"模式在用户场景下**静默失败**——应加 `assert` 或显式 `raise`
+- **下次跑：** 6/13（周六）10:00 cron 正常 schedule
+- ### v2.0.7 — 晚报 ai.txt 写入指令 + 完整 bug 链条修复（2026-06-05）
+- **问题根因：** v2.0.5 修复（send 脚本加 ai.txt 日期头校验）的**副作用**——send 脚本只读 `ai.txt`，**但 dispatcher prompt 只让 LLM 写 `content.txt`**。LLM 不知道要写 `ai.txt`，于是 `ai.txt` 永远是 6/4 22:36 的 v2.0.4 旧版（v2.0.5 加的日期头校验意外保护了旧文件不被覆盖）。结果：v2.0.6 patch（"绝对禁止要闻列指数"）其实生效了，**但被旧 ai.txt 截胡推送**，**用户收到的还是 v2.0.4 旧版**（**6/7 违反 v2.0.6 约束**）。
+- **症状链：**
+- 1. v2.0.6 patch 加了 "⚠️ 财经要闻约束：绝对禁止..." 到 dispatcher prompt
+- 2. v2.0.5 send 脚本只读 `ai.txt`（**v2.0.5 修复逻辑**）
+- 3. dispatcher prompt 没让 LLM 写 `ai.txt`（**只让写 `content.txt`**）
+- 4. LLM 跑了 N 次，**每次都更新 `content.txt`**（**v2.0.6 约束生效**），**但 `ai.txt` 永远是 6/4 22:36 旧版**
+- 5. send 脚本读 `ai.txt` 旧版 → 推送旧版 → 用户收到 6/7 违反版本
+- **修复内容：**
+- **修复内容：**
+- 1. **dispatcher prompt 晚报第 3 步后新增指令**：明确要求 LLM 同步将 [财经要闻] 和 [操作建议] 两段精简写入 `/tmp/evening_report_ai.txt`，第一行 `## 日期：YYYYMMDD`，格式与 send 脚本解析严格对齐
+- 2. **frontmatter version**：`2.0.4` → `2.0.7`（**跳过 v2.0.5/v2.0.6**——那两版当时没改 frontmatter，本版次补登记）
+- 3. **验证**：手动 cron run（2026-06-05 23:47），LLM 主动写了 `ai.txt`（**2640 字节**，**7 条要闻全合规**），send 脚本推送完整版（**3803 字节**），微信收到 7/7 合规晚报
+- **核心教训：**
+- - **架构对称原则**：每个"读取文件"的脚本，都必须有对应的"写入文件"的 prompt 指令（**LLM 不会猜**）
+- - **修复副作用审计**：v2.0.5 修旧 bug 引入新依赖（ai.txt），但没同步改 dispatcher prompt，应该在 v2.0.5 当天就 patch
+- - **版本号管理**：v2.0.5/v2.0.6 当时没 bump frontmatter，造成"脚本版本"和"skill 版本"脱节，本版次补登
+- ### v2.0.6 — 财经要闻约束加严（2026-06-05 凌晨，**未登记于 frontmatter**）
+- **问题根因：** 用户反馈 5/29 晚报要闻含 "沪指失守 4015"、"亚太普跌 1.7%" 等指数数字——晚报要闻本应聚焦宏观政策/公司事件/监管动态，不应重复 A 股收盘段已包含的指数数据。
+- **修复内容：** dispatcher prompt 晚报第 2 步加 ⚠️ 约束："绝对禁止在要闻中列出任何指数/大宗商品/板块的点位或涨跌幅数字"（**但本版未 bump frontmatter，v2.0.7 补登**）
+- **遗留 bug：** 修复其实生效了（content.txt 7/7 合规），但 v2.0.5 修复的 ai.txt 中间文件问题导致 send 推送的还是旧版——本以为是修复失败，实际是 v2.0.7 根因。**v2.0.7 彻底闭环**。
+- ### v2.0.5 — send_evening_report.py 加 ai.txt 日期头校验（2026-06-04，**未登记于 frontmatter**）
+- **问题根因：** ai.txt 是 LLM 写的中间文件，可能残留旧日期的内容（如周末写的 ai.txt 推到周一）。send 脚本无脑读取会推错日期。
+- **修复内容：** send_evening_report.py 第 _read_ai_file() 函数加日期校验：第一行必须是 `## 日期：YYYYMMDD`，与推送目标日期不匹配则删除该文件，要闻/操作建议为空兜底。
+- **副作用（本版没发现，v2.0.7 暴露）：** send 脚本只读 ai.txt，但 dispatcher prompt 没让 LLM 写 ai.txt。修复后 send 一直读旧 ai.txt 推送。**v2.0.7 同步加 dispatcher prompt 写 ai.txt 指令后修复**。
+- **问题根因：** hermes 注册表目录与 SKILL.md / cron 配置的 skill 名**大小写不一致** —— 4 个层面互相冲突：
+- | 位置 | 名字 | 大小写 |
+- |------|------|--------|
+- | hermes 注册表目录 | `a-stock-report` | 小写 ❌ |
+- | SKILL.md frontmatter `name` | `A-stock-report` | 大写 ❌ |
+- | 3 个 cron 任务的 `skills` 字段 | `['A-stock-report']` | 大写 ❌ |
+- | 3 个 cron 任务的 prompt 指令 | `加载 A-stock-report skill` | 大写 ❌ |
+- **症状：** hermes 加载 skill 时按目录名匹配，目录小写与配置大写不一致 → **hermes 自动加载失败**；prompt 中"加载 X skill"指令本应兜底，但因同样大小写问题，LLM 调 `skill_view("A-stock-report")` 也会失败（找不到大小写不匹配的资源）→ 任务以"无 skill 状态"运行。
+- 1. **目录重命名**：`/root/.hermes/skills/a-stock-report/` → `/root/.hermes/skills/A-stock-report/`
+- 2. **SKILL.md `version` 字段**：`2.0.3` → `2.0.4`（patch 版本，bug 修复）
+- 3. **删除 v1.10.2 旧备份目录** `a-stock-report-v1.10.2.bak/`（完整内容保留在 `/workspace/archive/a-stock-report-v1.10.2.bak_pre_delete_20260604_182313`，可恢复）
+- 4. **cron 任务的 3 个 `skills` 字段**保持 `['A-stock-report']`（无需改，原本就大写）
+- 5. **cron 任务的 3 个 prompt 指令**保持 `加载 A-stock-report skill`（无需改，原本就大写；双重保险保留）
+- **修复后 4 层完全统一为 `A-stock-report`（首字母大写）** —— hermes 自动加载和 LLM 兜底加载都指向同一目标。
+- **安全措施：**
+- - 重命名前已完整备份 v2.0.3 到 `/workspace/archive/a-stock-report-v2.0.3_pre_rename_20260604_182754`（16 文件，239,162 bytes）
+- - 删除 v1.10.2 前已备份到 `/workspace/archive/a-stock-report-v1.10.2.bak_pre_delete_20260604_182313`（17 文件，332,491 bytes）
+- **影响范围：** 3 个 cron 任务（早报 / 晚报 / 周末要闻）将于下次运行时生效。盘中预警 / IPO / 收盘小结未改动（其 `skills` 字段未配置或已正确）。
+- **问题根因：** 6 个脚本（close_summary / evening / intraday / ipo / weekend / collect_evening）的锁实现**不一致**，且都缺关键能力：
+- - 5 个脚本用 `open(f, 'w').close()` 创空锁，**只比 mtime 跨日**——同一天内残留就锁死
+- - 1 个脚本（ipo）用 `O_CREAT|O_EXCL` 原子创建，**但没有 stale 检测**——死了或被 kill -9 后锁永远留着
+- - **全部无 PID** —— 无法判断持有者是否还活着
+- - **全部无 TTL** —— 进程死了锁不过期
+- **解决方案：** 新增 `scripts/_lock.py` 统一锁模块（85 行），6 个脚本全改用：
+- import sys as _sys
+- _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+- from _lock import lock as _smart_lock, unlock as _smart_unlock
+- def _acquire_lock():
+-     if not _smart_lock(_LOCK_FILE, owner=__file__):
+-         _sys.exit(0)
+- def _unlock():
+-     _smart_unlock(_LOCK_FILE)
+- **`_lock.py` 智能锁三大能力：**
+- 1. **PID 检测**：`os.kill(pid, 0)` 判断持有者是否还活着
+- 2. **TTL 过期**：默认 3600s（1 小时）后自动视为 stale
+- 3. **stale 抢占**：锁住的人死了 / 锁超时 → 自动清理并抢占
+- **锁文件格式**：`{pid}\n{owner}\n{created_at_timestamp}`（3 行结构化）
+- **行为矩阵：**
+- | 锁状态 | 持有者 PID | TTL | 行为 |
+- |--------|------------|-----|------|
+- | 无锁 | - | - | 创建并占用 ✅ |
+- | 有锁 | 存活 | 未超 | 拒绝，返回 False ❌ |
+- | 有锁 | 死亡 | - | 清理 + 抢占 ✅ |
+- | 有锁 | 存活 | 已超 | 清理 + 抢占 ✅ |
+- **验证（6 项单测全过）：**
+- - 无锁 → True
+- - 活锁（PID 在）→ False
+- - 死锁（PID 99999）→ 自动清理并抢占
+- - 超时锁（2h 前 TTL=1h）→ 自动清理并抢占
+- - unlock 幂等
+- - 锁文件格式正确（pid/owner/timestamp 三行）
+- **未改：`send_morning_report.py` 的 `read_lock/write_lock` 是业务级"当日是否已推送"去重，不是进程锁，保留原状。**
+- **测试结果：** 集成测试模拟 cron 重启后死锁场景，新进程自动清理 + 抢占成功：
+- [LOCK] 持有者已退出 (pid=88888)，自动清理并抢占。
+- ✅ 锁内容: pid=257001 (当前进程)
+- 在 v2.0.1 基础上，补全两个小问题：
+- - **单行无"全A股"前缀直接采纳**：`send_close_summary.py` 144-170 行，单行数据不再误报"降级"提示
+- - **主力净流入日期比较归一化**：`send_close_summary.py` 261-267 行，比较前把 `20260601` 归一为 `2026-06-01`，消除多余"日期不匹配" warning
+- **6/1 重跑验证**：涨停 166 跌停 23 炸板 48 炸板率 22.4%，主力 -609.56 亿，零 warning。
+- **问题现象：**
+- - 5/1 收盘报告生成后，复盘发现 `炸板率=0 分` 异常分支被命中
+- - 6/1 重跑时，相同 query 问财 API 在不同时刻返回**不同字段名**：`炸板家数`（旧）/ `涨停开板家数`（新，同义词）
+- - 根因：问财 OpenAPI 在 query 包含 `炸板家数` 时，nlp 翻译结果不稳，命中不同 cache 段
+- - `send_close_summary.py` 167 行兼容两个字段名：
+-   ```python
+-   zb_key = next((k for k in item if '炸板家数' in k or '涨停开板家数' in k), None)
+-   ```
+- - **6/1 报告验证**：涨停=166 跌停=23 炸板=48 炸板率=22.4%，炸板率得分 59 分 ✅
+- **锁残留：**
+- - 5/1 脚本跑通后，锁文件 `/tmp/a_stock_close_summary.lock` 残留（推测：推送阶段异常退出导致 `finally: _unlock()` 未跑到）
+- - 6/1 重跑时**仍能正常释放**（正常退出路径）
+- - 锁已自愈，**下次出现时**优先排查推送阶段异常日志
+- **重大变化：脚本角色重新划分为「采集」与「发送」两层**
+- | 变化 | 说明 |
+- |------|------|
+- | 晚报双脚本拆分为采集+推送 | `collect_evening_data.py`（采集+写JSON/MD） + `send_evening_report.py`（读文件+推送），原来晚报PE等数据在send里直接调问财，现改为采集脚本统一用akshare获取 |
+- | 晨报/周末要闻数据采集独立 | `collect_morning_data.py` 独立采集外围市场数据，不再依赖 send 脚本内部逻辑 |
+- | 问财接口权限精确化 | 白名单原则落地：仅实际调用的脚本才加载 `IWENCAI_API_KEY`；无需问财的脚本（如 `send_morning_report.py`、`collect_evening_data.py`）不加载 |
+- | 数据源更新 | 全市场成交额/流通市值来源从「同花顺问财」改为 `akshare stock_zh_a_spot_em()` 实时行情 |
+- | 白名单表去重修正 | 原 SKILL.md 有重复行+错误脚本名（`TUSHARE_API_KEY` 应为 `TUSHARE_TOKEN`），已全部对齐实际脚本 |
+- **v1.x 历史版本功能未变，仅文档同步。**
+- #收盘小结（独立脚本，直接推送，无需LLM生成内容）
+- source /workspace/.env && python3 /workspace/skills/A-stock-report/scripts/send_close_summary.py
+- source /workspace/.env && python3 /workspace/skills/A-stock-report/scripts/send_close_summary.py --date2026-04-13
+- #晚报（统一采集脚本，直接采集 +推送）
+- source /workspace/.env && python3 /workspace/skills/A-stock-report/scripts/collect_evening_data.py
+- source /workspace/.env && python3 /workspace/skills/A-stock-report/scripts/collect_evening_data.py --date2026-04-13
+- source /workspace/.env && python3 /workspace/skills/A-stock-report/scripts/collect_evening_data.py --dry-run
+- #晚报（兼容旧脚本，独立推送）
+- source /workspace/.env && python3 /workspace/skills/A-stock-report/scripts/send_evening_report.py
+- #晨报（需LLM先生成内容，写入 /tmp/morning_report_content.txt）
+- source /workspace/.env && python3 /workspace/skills/A-stock-report/scripts/send_morning_report.py
+- #财经周末要闻（需LLM先生成内容，写入 /tmp/weekend_news_content.txt）
+- source /workspace/.env && python3 /workspace/skills/A-stock-report/scripts/send_weekend_news.py
+- source /workspace/.env && python3 /workspace/skills/A-stock-report/scripts/send_weekend_news.py --extract-only # 仅提取情绪数据
+- # IPO周报
+- source /workspace/.env && python3 /workspace/skills/A-stock-report/scripts/send_ipo_report.py
+- #盘中预警
+- source /workspace/.env && python3 /workspace/skills/A-stock-report/scripts/send_intraday_alert.py
+- ### 财经周末要闻（cron 触发后 LLM 生成）
+- 📰 【财经周末要闻】过去48小时
+- ━━━ 六条重要财经要闻 ━━━
+- 【1】（标题）→ ✅利好/❌利空
+-   逻辑：...  交易风险提示：...
+- ━━━ 一周情绪轨迹 ━━━
+- • 涨停家数趋势：周一X家 → 周二X家 → ... → 周五X家
+- • 两融余额/A股流通市值：周一X.XX% → ... → 周五X.XX%
+- • 两融交易额占比：周一X.X% → ... → 周五X.X%
+- • 量化情绪打分：周一XX分 → ... → 周五XX分
+- • 整体趋势：[升温/降温/震荡]
+- | 任务 | cron 表达式 | 触发时间（北京时间） | 说明 |
+- |------|-----------|-------------------|------|
+- | A股晨报生成并推送 | `0 8 * * 1-5` | 周一至五 08:00 | AI内容生成 → 推送（单cron） |
+- | A股晚报生成并推送 | `0 20 * * 1-5` | 周一至五 20:00 | AI内容生成 → 推送（单cron） |
+- | A股收盘小结 | `30 15 * * 1-5` | 周一至五 15:30 | 数据采集 → 推送 |
+- | A股盘中预警 | `*/5 9,10,11,13,14 * * 1-5` | 周一至五 09:00-11:55 / 13:00-14:55 | 实时监控 → 推送 |
+- | A股周末要闻生成并推送 | `0 20 * * 0` | 周日 20:00 | AI内容生成 → 推送（单cron） |
+- | 每周 Skill 复盘 | `0 18 * * 0` | 周日 18:00 | skill 自审 |
+- | A股IPO周报 | `0 10 * * 6` | 周六 10:00 | 数据采集 → 推送 |
+- | 报告类型 | 必需密钥 | 最低权限 | 检查命令 |
+- |---------|---------|---------|---------|
+- | 收盘小结 | `WECOM_WEBHOOK_KEY` | 仅发送 | `grep WECOM_WEBHOOK_KEY /workspace/.env` |
+- | 晚报 | `WECOM_WEBHOOK_KEY` | 发送 | `grep WECOM_WEBHOOK_KEY /workspace/.env` |
+- | 晨报 | 同晚报 | 同上 | 同上 |
+- | 财经周末要闻 | 同晚报 | 同上 | 同上 |
+- | IPO周报 | `TUSHARE_TOKEN` + `WECOM_WEBHOOK_KEY` | 查询+发送 | `grep TUSHARE_TOKEN /workspace/.env` |
+- | 盘中预警 | 无外部依赖 | — | 无需检查 |
+- 运行 `mcp_cronjob list` 确认已配置的 cron 与计划运行的任务一致：
+- | 应存在 | 当前状态 |
+- |--------|---------|
+- | A股晨报生成并推送（08:00） | ✅ |
+- | A股晚报生成并推送（20:00） | ✅ |
+- | A股收盘小结（15:30） | ✅ |
+- | A股盘中预警（交易时段） | ✅ |
+- | A股周末要闻生成并推送（周日 20:00） | ✅ |
+- | 每周 Skill 复盘（周日 10:00） | ✅ |
+- | A股IPO周报（周六 10:00） | ✅ |
+- 所有 LLM 驱动型报告采用**单 cron 模式**：prompt 中先由 LLM 生成内容写入文件，再在同一 session 内调用脚本落地推送。
+- > **为什么用文件中转？** cron prompt 在独立 session 运行，无法直接将变量传给后续脚本。通过写入约定路径的文件，脚本读取后注入报告模板，实现解耦。
+- ### 1. 晨报（周一至五 08:00 北京时间）
+- ```json
+- ```json
+- ```json
+- ```json
+- ```json
+- ```json
+- {
+- {
+- {
+- {
+- {
+- {
+-   "name": "A股晨报生成并推送",
+-   "schedule": "0 8 * * 1-5",
+-   "repeat": "forever",
+-   "repeat": "forever",
+-   "repeat": "forever",
+-   "repeat": "forever",
+-   "repeat": "forever",
+-   "repeat": "forever",
+-   "deliver": "local",
+-   "deliver": "local",
+-   "deliver": "local",
+-   "deliver": "local",
+-   "deliver": "local",
+-   "deliver": "local",
+-   "skills": [
+-   "skills": [
+-   "skills": [
+-   "skills": [
+-     "a-stock-report"
+-     "a-stock-report"
+-     "a-stock-report"
+-   ],
+-   ],
+-   ],
+-   ],
+-   "prompt": "请加载 a-stock-report skill，然后执行以下任务：\n\n1. 调用晨报数据采集脚本获取结构化数据：\n   source /workspace/.env && python3 /workspace/skills/A-stock-report/scripts/collect_morning_data.py\n   \n   采集内容：道琼斯/标普500/纳斯达克/VIX点位涨跌幅、恒生指数/A50期货、WTI原油/现货黄金价格\n\n2. 读取采集结果 /tmp/morning_data.json，结合今日财经要闻，用 batch_web_search 搜索（6-10条）：\n   - \"A股重要财经要闻 宏观政策 [今日日期]\"\n   - \"A股板块异动 热点题材 [今日日期]\"\n   \n   ⚠️ 关键要求：所有数据必须为精确数字，不得出现\"约\"、\"约XX\"、\"约XX%\"等模糊表述\n   ⚠️ **字数限制：全文不超过2000字，每条要闻点评控制在50字以内，不超过7条。**\n   ⚠️ **财经要闻约束：绝对禁止在要闻中列出任何指数/大宗商品/板块的点位或涨跌幅数字（包括 \"隔夜美股普涨X%\"、\"大宗商品走强X%\" 等定性带数字的表述）。如需引用市场反应只做定性描述（\"美股普涨\"、\"大宗走强\"），不写具体数字。聚焦宏观政策、公司事件、监管动态、板块题材、海外重大事件等。**\n\n3. 将结构化数据 + 财经要闻 合并渲染为完整晨报，写入 /tmp/morning_report_content.txt\n   格式严格遵循 SKILL.md 中晨报模板（含隔夜全球市场、财经要闻、操作建议三部分）\n4. 调用晨报推送脚本完成推送：\n   source /workspace/.env && python3 /workspace/skills/A-stock-report/scripts/send_morning_report.py\n\n5. 完成后打印\"✅ 晨报已完成：数据采集、内容生成并推送微信\""
+- }
+- }
+- }
+- }
+- }
+- }
+- ### 3. 晚报（周一至五 20:00 北京时间，12:00 UTC）
+-   "name": "A股晚报生成并推送",
+-   "schedule": "0 12 * * 1-5",
+-   "prompt": "请加载 a-stock-report skill，然后执行以下任务：\n\n1. 调用晚报数据采集脚本，将结果写入约定路径：\n   source /workspace/.env && python3 /workspace/skills/A-stock-report/scripts/collect_evening_data.py\n   \n   采集内容：六大指数、亚太股市、两融余额、两融比例、沪深300 PE分位数、股市风险溢价（ERP）等结构化数据，输出 JSON + 晚报 Markdown。\n\n2. 读取采集结果文件 /tmp/evening_data.json，结合采集的晚报 Markdown，用 batch_web_search 搜索今日收盘相关财经要闻（6-8条）：\n   - \"A股重要财经要闻 宏观政策 [今日日期]\"\n   - \"A股板块异动 热点题材 [今日日期]\"\n\n   **⚠️ 关键要求：搜索结果必须包含具体数字，所有数据不得出现\"约\"、\"约XX\"、\"约XX%\"等模糊表述，必须填入精确值。**\n   ⚠️ **字数限制：全文不超过2000字，每条要闻点评控制在50字以内，不超过7条。**\n   ⚠️ **财经要闻约束：绝对禁止在要闻中列出任何指数/大宗商品/板块的点位或涨跌幅数字（包括 \"亚太普跌X%\"、\"科技股集体杀跌X%\" 等定性带数字的表述）。如需引用市场反应只做定性描述（\"亚太普跌\"、\"板块杀跌\"），不写具体数字。聚焦宏观政策、公司事件、监管动态、板块题材、海外重大事件等。**\n\n3. 将结构化数据 + 财经要闻 合并渲染为完整晚报，写入 /tmp/evening_report_content.txt。\n   格式应严格遵循 SKILL.md 中晚报模板：\n   - 六大指数/亚太股市/两融数据 等结构化数据直接复用采集脚本输出\n   - [财经要闻] 区块由 LLM 搜索生成（≤7条）\n   - [今日操作建议] 区块由 LLM 综合分析生成\n\n   ⚠️ **同时**将 [财经要闻] 和 [操作建议] 两段单独精简写入 /tmp/evening_report_ai.txt：\n      - 第一行必须是 `## 日期：YYYYMMDD`（YYYYMMDD = 当天日期，北京时间）\n      - 紧接一行 `[财经要闻]` 标记，后跟要闻列表（每条含【N】标题｜标签 + 缩进 2 格的 点评：）\n      - 紧接一行 `[操作建议]` 标记，后跟大盘研判 + 3 条操作建议 + 风险提示\n      - 此文件供 send 脚本读取并推送微信，不写会导致推送内容缺要闻和操作建议！\n\n4. 调用晚报推送脚本完成推送：\n   source /workspace/.env && python3 /workspace/skills/A-stock-report/scripts/send_evening_report.py\n5. 完成后打印\"✅ 晚报已完成：数据采集、内容生成并推送微信\""
+- ### 4. 盘中预警（周一至五 09:30-11:35 / 13:00-14:55，每5分钟）
+-   "name": "A股盘中预警",
+-   "schedule": "*/5 1,2,3,5,6,7 * * 1-5",
+-     "A-stock-report"
+-   "prompt": "请加载 A-stock-report skill，然后执行以下任务：\n\n1. 采集最新行情数据（盘中行情每隔约5分钟检查一次）：\n   - 上证指数、创业板指 实时点位和涨跌幅（via hithink）\n   - 沪深300主力净流入（via datacenter.eastmoney）\n   - IF沪深300期货当月连续 实时数据（via baostock）\n   - 炸板率（via东方财富涨停板数据）\n\n2. 判断是否触发预警条件，**符合以下任一条件即推送预警消息**：\n\n   【预警触发条件】\n   a) IF当月连续涨幅 > 1.5%（期货大幅升水，可能预示指数大幅高开）\n   b) 主力净流入 > 200亿元（今日已流入规模，via东方财富）\n   c) 上证或创业板指 涨幅 > 2%（情绪过热预警）\n   d) 炸板率 > 40%（涨停炸板率异常高，短线情绪极度不稳定）\n\n3. 若触发预警，调用推送脚本发送预警消息：\n   source /workspace/.env && python3 /workspace/skills/A-stock-report/scripts/send_intraday_alert.py [预警类型] [当前涨跌幅]\n   同时打印\"✅ 盘中预警已推送：[预警类型] [数值]\"\n\n4. 若未触发预警，打印\"✅ 盘中预警检查完成，当前无异常\"（不推送消息）"
+- ### 5. 财经周末要闻（周日 20:00 北京时间）
+-   "name": "A股周末要闻生成并推送",
+-   "schedule": "0 12 * * 0",
+-   "prompt": "请加载 a-stock-report skill，然后执行以下任务：\\n\\n1. 用 batch_web_search 搜索以下内容：\\n   - \\\"A股周末要闻 政策动态 [本周末日期范围]\\\"（至少8条，来源权威媒体）\\n   - \\\"美股收盘 本周回顾 道琼斯 纳斯达克 标普500 [本周]\\\"（复盘本周美股走势）\\n   - \\\"A股本周回顾 上证指数 创业板指 本周涨幅\\\"（复盘本周A股行情）\\n   - \\\"下周A股预期 下周展望 下周策略 [YYYY年MM月]\\\"（如有券商展望）\\n   - \\\"美股期货盘前 纳斯达克期货 A50期货 [今日]\\\"（为下周一定调）\\n\\n   ⚠️ 关键要求：搜索结果必须包含精确数字，所有数据不得出现\"约\"、\"约XX\"、\"约XX%\"等模糊表述，必须填入精确值。\\n   ⚠️ **字数限制：全文不超过2000字，逻辑分析从简，每条要闻控制在2-3句以内。**\n   ⚠️ **财经要闻约束：绝对禁止在要闻中列出任何指数/大宗商品/板块的点位或涨跌幅数字（包括 \"美股本周累涨X%\"、\"黄金大涨X%\" 等定性带数字的表述）。如需引用市场反应只做定性描述（\"美股走强\"、\"大宗分化\"），不写具体数字。聚焦宏观政策、公司事件、监管动态、板块题材、海外重大事件等。**\\n\\n2. 按以下模板严格格式化内容，写入 /tmp/weekend_news_content.txt：\\n📰 【财经周末要闻】[YYYY年MM月DD日（周X）]\\n\\n━━━ 周末要闻摘要 ━━━\\n【1】（标题）｜✅利好/❌利空/⚠️中性 对A股影响\\n  摘要：（2-3句，概括事件并分析影响）\\n  来源：XX媒体\\n【2】（标题）｜...\\n（8-12条，顺序编号，每条格式固定）\\n\\n━━━ 本周复盘 ━━━\\n【美股本周】（道琼斯：XXXXX点，本周+X.XX%；纳斯达克：XXXXX点，本周+X.XX%；标普500：XXXXX点，本周+X.XX%）\\n【A股本周】（上证：XXXX.XX点，本周+X.XX%；创业板：XXXX.XX点，本周+X.XX%）\\n【大宗商品】（黄金：XXXX美元/盎司，本周+X.XX%；原油：XXX美元/桶，本周+X.XX%）\\n\\n━━━ 下周展望 ━━━\\n【外围市场】美股期货（A50/纳指期货）当前表现预判下周基调\\n【A股预判】综合周末消息面，展望下周A股可能走势\\n【关注板块】（2-3个板块+逻辑简述）\\n\\n⚠️ 仅供参考，不构成投资建议。股市有风险，投资需谨慎。\\n\\n3. 调用周末要闻推送脚本：source /workspace/.env && python3 /workspace/skills/A-stock-report/scripts/send_weekend_news.py\\n4. 完成后打印\"✅ 周末要闻已完成：内容生成并推送微信\""
+- 应严格遵循 SKILL.md 中对应模板的 `[财经要闻]` / `[操作建议]` 分段标记。
+- ### 6. 收盘小结（周一至五 15:30 北京时间）
+- > 收盘小结为**独立脚本模式**，无需 skill 和 LLM 生成内容，直接调用脚本即可。
+-   "name": "A股收盘小结",
+-   "schedule": "30 7 * * 1-5",
+-   "prompt": "source /workspace/.env && python3 /workspace/skills/A-stock-report/scripts/send_close_summary.py"
+- ### 7. IPO周报（周六 10:00 北京时间）
+- > IPO周报为**独立脚本模式**，无需 skill 和 LLM 生成内容，直接调用脚本即可。
+-   "name": "A股IPO周报",
+-   "schedule": "0 2 * * 6",
+-   "prompt": "source /workspace/.env && python3 /workspace/skills/A-stock-report/scripts/send_ipo_report.py"
+- **Q9：IPO 周报显示"排队情况（数据获取失败）"怎么排查？**
+- A：先确认是数据源问题还是脚本问题（v2.0.8 修复了脚本问题）。
+- **第一步：手动测试 5 个数据源接口**：
+- import akshare as ak
+- for fn_name in ['stock_register_kcb', 'stock_register_cyb', 'stock_register_bj', 'stock_register_sh', 'stock_register_sz']:
+-     fn = getattr(ak, fn_name, None)
+-     if fn is None:
+-         print(f'❌ {fn_name}: 接口不存在（akshare 版本问题）')
+-     else:
+-         df = fn()
+-         print(f'✅ {fn_name}: {len(df)}行')
+- - 如果任何接口返回空或抛异常 → **数据源问题**（东方财富接口临时不可用），**等会儿再跑**或查 akshare 更新
+- - 如果 5 个接口都正常 → **脚本问题**（v2.0.8 已修复，见 Changelog）
+- **第二步：如果接口都正常但报告仍说"数据获取失败"**：
+- - 检查 `_collect_ipo_data()` 的 return dict 是否包含 `queue_detail`、`queue_status_detail`、`source_date` 这 3 个 key（v2.0.7 之前的版本可能漏掉）
+- - 这 3 个 key 是 `build_report_lines()` 期望的（`data.get('queue_detail', {})` 取值），缺失会走 "数据获取失败" 分支
+- - **数据返回但 key 名为 `queue`**（IPO 获批数据）也是常见 bug
+- **第三步：看脚本输出日志**（重跑时加 `2>&1 | grep 排队`）：
+- [排队] 数据更新日期: 2026年06月05日     ← 5 板块拉取成功
+- [排队] queue_detail: {...}              ← pivot 计算成功
+- [排队] queue_status_detail: {...}       ← 状态细项计算成功
+- - 如果 3 行都在但报告仍坏 → `build_report_lines()` 读到错的 key
+- - 如果报错 `Invalid comparison between dtype=datetime64[s] and Timestamp` → 时区 bug（v2.0.8 已修）
++ description: "A股数据驱动型报告自动生成与推送系统，支持晨报 / 收盘小结 / 晚报 / 盘中预警 / IPO周报 / 财经周末版。内置投资者情绪打分（6维度，满分100）与AI后市展望。"
++ version: 3.2.0
++ > A股数据驱动型报告自动生成与推送系统，支持晨报 / 收盘小结 / 晚报 / 盘中预警 / IPO周报 / 财经周末版
++ > **精简规则（v3.2.0+）**：每条 ≤ 18 行（硬上限 25 行），细节外置到 `knowledge/changelog/vX.Y.Z.md`。护栏脚本 F 段机械强制。
++ ### v3.2.0 — Changelog 段瘦身 + F 段护栏：机械防膨胀（2026-06-09 晚）
++ **问题：** Changelog 段自由膨胀到 488 行（占 SKILL.md 48.8%），单条最大 86 行（v3.0.0），改 changelog 拖慢加载、挡住关键信息（架构图、护栏规则）。
++ **结论：** 14 条历史版本精简（每条 3-8 行）+ 完整细节外置到 `knowledge/changelog/vX.Y.Z.md`（15 个文件含本条 + README 索引）。SKILL.md 1001 → 622 行（-38%），35KB → 32KB。新增 `check_consistency.py` F 段，**机械强制** Changelog 单条 ≤ 25 行（软目标 18）。
++ 详见 `knowledge/changelog/v3.2.0.md`（含 4 步实施流程、C+A 组合方案论证、F 段自验证 3 场景、风险评估）。
++ ### v3.1.6 — 4 端一致性护栏补 E 段：SKILL.md 主体禁止硬编码 cron 表达式 / .env 路径 / source+send 一行命令（2026-06-09 晚）
++ **问题：** v3.1.5 护栏覆盖 4 端真相，但漏了 SKILL.md 自身硬编码残留（cron 表达式 / .env 路径 / source+send 一行命令散落主体）。
++ **结论：** `check_consistency.py` 新增 E 段，扫黑名单 3 类（cron 嵌入行内、.env 路径、source+send 一行命令）。白名单：Changelog 段（动态识别 `### vX.Y.Z —`）+ 任务清单段。
++ 详见 `knowledge/changelog/v3.1.6.md`（含 3 处正则 bug 修复细节、3 个自验证测试、影响范围）。
++ ### v3.1.5 — 4 端一致性护栏脚本：把"漏改"变成机械可锁（2026-06-09 晚）
++ **问题：** A 股报告系统有 4 端真相（templates/ / cron_mirror.json / jobs.json / SKILL.md），靠"人来跑验证命令"防不住，v3.1.3/v3.1.4 反复暴露 4 端不一致。
++ **结论：** 新建 `scripts/check_consistency.py`（177 行纯 stdlib），4 段检查：templates↔mirror 任务集、mirror↔jobs.json prompt 一字不差、SKILL.md 引用真实存在、dispatcher 任务不进 mirror。退出码 0/1/2。
++ 详见 `knowledge/changelog/v3.1.5.md`（含 4 个测试场景、退出码语义、cron_jobs/README 修订说明）。
++ ### v3.1.4 — cron_jobs/ 三合一：强制一致 + 修订 README + 修技能注释残留（2026-06-09 晚）
++ **问题：** v3.1.3 新建 `cron_jobs/intraday.json` 后，目录变 3 个独立 json，3 处 prompt 改一处忘改两处的纪律性负担 + 跟 jobs.json 单文件多任务结构不对称。
++ **结论：** 合 3 文件 → `cron_jobs/cron_mirror.json`（含 `_meta` + 3 tasks 键），旧 3 文件 mv 到 `/workspace/archive/cron_jobs_3split_20260609_1952.bak/`。修订 SKILL.md 任务清单 3 处引用 + `skill_dispatcher.py` L16 残留注释。
++ 详见 `knowledge/changelog/v3.1.4.md`。
++ ### v3.1.3 — 盘中预警归档清理：删除幽灵 LLM 模板 + 补齐独立脚本配置（2026-06-09）
++ **问题：** 之前误把盘中预警当成 LLM 驱动型任务，在 `templates/intraday.json` 留了幽灵模板 + 在 SKILL.md 任务清单里把 intraday 写错为 dispatcher 任务。
++ **结论：** 删除 `templates/intraday.json`（盘中预警实为独立脚本型，每 5 分钟高频跑，无 LLM 介入），cron_mirror 加 intraday 任务。**教训：dispatcher 任务 vs cron 独立脚本任务**角色必须严格隔离。
++ 详见 `knowledge/changelog/v3.1.3.md`（含 dispatcher vs 独立脚本对比表、4 端一致性起源）。
++ ### v3.1.2 — 退出码可观测性收尾：collect_evening + close_summary 修复（2026-06-09 凌晨）
++ **问题：** `collect_evening.py` 和 `close_summary.sh` 在数据缺失/锁残留时静默 exit 0，cron 推送失败但日报无异常，难以及时发现。
++ **结论：** 两脚本在异常路径强制 `exit 1`，cron 任务可被 OpenClaw 标记失败。配套 v3.1.1 的 `wx()` 健壮性升级。
++ 详见 `knowledge/changelog/v3.1.2.md`（含具体错误码分类、collect_evening 的 3 类异常处理、close_summary 的锁自愈逻辑）。
++ ### v3.1.1 — 推送共用库 + wx() 健壮性 + 退出码待办（2026-06-08 深夜）
++ **问题：** 4 个 send 脚本（wecom / feishu / dingtalk / 邮件）各写一份 `requests.post` 调用，token 过期/网络抖动时行为不一致；退出码一律 exit 0 静默成功。
++ **结论：** 新建 `scripts/_notify.py` 共用库，统一 4 通道推送 + 重试 + 退出码语义（0/1/2）。`wx()` 函数单独抽出企业微信通道（最高频使用）。
++ 详见 `knowledge/changelog/v3.1.1.md`（含共用库 API 设计、wx() 边界条件处理、v3.1.2 退出码待办的衔接）。
++ ### v3.1.0 — IPO 周报支持回溯历史周期（2026-06-08）
++ **问题：** `ipo_report.py` 之前只能生成当周 IPO 周报，无法补生成历史缺失周（如节假日/服务宕机导致的缺口）。
++ **结论：** 新增 `--start-date` / `--end-date` 参数，回溯生成指定日期范围 IPO 周报。`cron_mirror.json#ipo_report` 同步更新。**回溯需谨慎**：单次回溯建议 ≤ 4 周（API 限速 + 报告生成耗时）。
++ 详见 `knowledge/changelog/v3.1.0.md`（含 5 个边界条件、回溯 vs 当周的差异、限速保护）。
++ ### v3.0.0 — 模板外置 + cron 任务配置中心重构（2026-06-08）
++ **问题：** SKILL.md 里塞 6 个 ```json``` 块（4 LLM prompt + 2 cron 配置，~6.5KB），改 prompt 易破坏 markdown 表格/标题，v2.0.5→v2.0.7 修复链反复触发"加了读文件脚本忘了写 prompt"。
++ **结论：** 两步重构——4 LLM prompt → `templates/{morning,evening,intraday,weekend}.json`；2 cron 配置 → `cron_jobs/{close_summary,ipo_report}.json`。SKILL.md 大小 40KB → 31KB，0 个 json 块。`dispatcher` 3 路径策略（templates 优先 / SKILL.md 兜底 / 清晰错误）。
++ 详见 `knowledge/changelog/v3.0.0.md`（含双职责正交原则、6/6 完整性审计、教训沉淀 → `template-externalization-workflow` skill）。
++ ### v2.0.10 — 财经周末版模板升级（2026-06-08）
++ **问题：** "财经周末要闻·一周情绪轨迹"段只有 4 个核心指标（涨停/两融/两融交易额/情绪打分），缺 IF 基差/PE/ERP/主力净流入 4 个关键指标。
++ **结论：** 升级 `templates/weekend.json` 加 4 指标 + 7 天趋势可视化。**教训**：用户反馈是"端到端体验"问题，不是单点 bug。
++ 详见 `knowledge/changelog/v2.0.10.md`。
++ **问题：** 报告生成脚本中 `Stockcode` / `stockCode` / `stockcode` 三种大小写并存，字段名 miss 经常静默失败（pandas 默认行为）。
++ **结论：** 统一下游读字段全部用小写 `stockcode`，所有 send 脚本同步对齐。
++ 详见 `knowledge/changelog/v2.0.4.md`。
++ **问题：** 多任务并发跑（如晨报 + 收盘小结同分钟触发）时，数据文件读写冲突，偶发报告残缺。
++ **结论：** 新建 `scripts/_lock.py` 共用库（fcntl 文件锁 + 残留锁自动清理 + 锁超时报警），所有跑数据/写报告的脚本统一接入。
++ 详见 `knowledge/changelog/v2.0.3.md`（含 5 类并发场景、锁粒度选择、残留锁自愈逻辑）。
++ **问题：** 6/1 收盘小结因 v2.0.1 的锁残留未自愈，导致报告生成期间数据采集失败。
++ **结论：** 补加锁残留自愈（v2.0.3 锁机制的前置补丁）。
++ **问题：** 问财 API 返回字段名变 `zwjc` → `stock_name`，老脚本读不到股票简称；锁文件偶发残留导致下次跑挂起。
++ **结论：** 兼容新旧字段名（try/except 双路径）+ 启动时检查 `/tmp/*_lock*` 存在时间 > 30min 自动清理。
++ 详见 `knowledge/changelog/v2.0.1.md`。
++ **结论：** 从单脚本生成报告升级为 dispatcher + send 共用库 + templates 三层架构。详见 `knowledge/changelog/v2.0.0.md`。
++ ```bash
++ ```bash
++ **手动跑一个报告（运维/补跑/测试用）：**
++ 所有 6 个任务的完整命令（`source .env` + `python3 脚本路径` + 可选参数）都集中在 **`cron_jobs/cron_mirror.json` 的 `tasks.<name>.prompt` 字段**。
++ - LLM 驱动型（晨报/晚报/财经周末版）→ `templates/<task>.json` 的 prompt 模板 + `cron_jobs/cron_mirror.json`（无对应节点，由 jobs.json 直接调 dispatcher 注入）
++ - 独立脚本型（收盘小结/盘中预警/IPO 周报）→ `cron_jobs/cron_mirror.json#<task>` 节点
++ **手动跑通用模式：**
++ # 1. 读 cron_mirror.json 看 prompt 字段拿到完整命令
++ python3 -c "import json; print(json.load(open('/root/.hermes/skills/A-stock-report/cron_jobs/cron_mirror.json'))['tasks']['close_summary']['prompt'])"
++ # 2. 复制粘贴该命令到终端跑（已含 source .env + python3 路径 + 默认参数）
++ **历史命令备查（v3.1.5 清理前）：** 见 git log / 备份 `/workspace/archive/SKILL_md_pre_4segs_clean_*`
++ |------|------|------|
++ ### 财经周末版（cron 触发后 LLM 生成）
++ 📰 【财经周末版】{周六日期} + {周日日期}
++ ━━━ 一周情绪轨迹（5 个交易日，来源：收盘小结 + 晚报）━━━
++ 【1. 市场短期情绪】
++ • 量化情绪打分：周一XX → 周二XX → 周三XX → 周四XX → 周五XX
++ • 整体走势：[升温 / 降温 / 震荡]
++ • 解读：{1 句}
++ • 解读：{1 句}
++ • 解读：{1 句}
++ • 解读：{1 句}
++ 【2. 杠杆率】
++ • 两融余额（亿元）：周一X → 周二X → ... → 周五X（周变动 ±X）
++ • 两融余额 / A股流通市值：周一X.XX% → ... → 周五X.XX%
++   阈值：<2.5%保守 | 2.5-3.5%中性 | >3.5%高危
++ 【3. 估值水平】
++ • 沪深300PE：周一X.XX → ... → 周五X.XX
++ • 近5年分位点：周一X.X% → ... → 周五X.X%
++ • 股市风险溢价（ERP）：周一X.XX% → ... → 周五X.XX%
++   阈值：<3%高估 | 3-6%中性 | >6%低估
++ 【4. 市场预期】
++ • IF基差：周一X点 → ... → 周五X点（贴水/升水/扩深/收窄）
++ ━━━ 数据规则（防错）━━━
++ 1. **两融比例单日跳变 >0.5%**（如 6/3 的 4.34% 异常）→ 标 ⚠️ 异常，沿用前日值，末尾风险提示单列说明
++ 2. **缺失数据**用 ❌ 占位（如 6/2 IF 基差），禁止用"未公布""暂缺"等模糊词
++ 3. **T-1 数据标注**：两融/PE/ERP 是前一交易日数据，模板已隐含（如周五的两融来自周四）
++ 4. **数字必须从历史报告 MD 读取**（/workspace/projects/A股报告系统/reports/ 下的 收盘小结_YYYYMMDD.md + 晚报_YYYYMMDD.md），禁止编造任何数字（含"约""大约"等模糊词）
++ 7 个 cron 任务（A 股 6 任务 + 每周 Skill 复盘 1 任务）的完整 schedule / repeat / deliver / prompt 字段集中在以下两处真相源：
++ - **生产配置（OpenClaw 读）**：`~/.hermes/cron/jobs.json`
++ - **人类可读镜像（git track）**：`cron_jobs/cron_mirror.json`
++ **SKILL.md 不再重复列 cron 表达式**（v3.1.5 清理）—— 一处变→多处忘改是 v3.0 之前的痛点。
++ **快速概览：**
++ | 任务 | 调度 | 类型 |
++ | A股晨报生成并推送 | 周一至五 08:00 | LLM 驱动型（template: `templates/morning.json`） |
++ | A股晚报生成并推送 | 周一至五 20:00 | LLM 驱动型（template: `templates/evening.json`） |
++ | A股收盘小结 | 周一至五 15:30 | 独立脚本（mirror: `close_summary`） |
++ | A股盘中预警 | 周一至五 09:00-14:55 每 5 分钟 | 独立脚本（mirror: `intraday`） |
++ | A股周末要闻生成并推送 | 周日 20:00 | LLM 驱动型（template: `templates/weekend.json`） |
++ | 每周 Skill 复盘 | 周日 18:00 | skill 自审 |
++ | A股IPO周报 | 周六 10:00 | 独立脚本（mirror: `ipo_report`） |
++ 权威密钥白名单表在 `## 密钥白名单原则` 段（每个脚本需哪些 env 变量）。
++ **快速检查 4 个全局 env 变量是否就位：**
++ # 应输出 4 行非空
++ for key in WECOM_WEBHOOK_KEY IWENCAI_API_KEY MX_APIKEY TUSHARE_TOKEN; do
++   grep "^${key}=" /workspace/.env && echo "  ✅ $key"
++ done
++ **未配齐会怎样：** 脚本在 except 块内捕获缺失，会 `notify_failure()` 发预警 + exit 1（v3.1.0 修复链），不会静默继续。
++ 跑护栏脚本一次性验证 4 端一致性（templates ↔ cron_mirror ↔ jobs.json ↔ SKILL.md）：
++ python3 /root/.hermes/skills/A-stock-report/scripts/check_consistency.py
++ # 预期：✅ 全部 4/4 项通过，exit=0
++ **不要再用"❌手对表"逐行核对**——v3.1.5 之前 SKILL.md 这里有 7 行"应存在 ✅"表，靠人记得跑 1 个命令 + 7 行眼睛对——v3.1.5 改用护栏脚本机械检查，杜绝漂移。
++ 6 个任务分两类：
++ - **LLM 驱动型（3 个）**：晨报 / 晚报 / 财经周末版 — prompt 外置于 `templates/`，由 `scripts/skill_dispatcher.py` 读取注入 LLM，LLM 解读后调脚本落地推送。
++ - **独立脚本型（3 个）**：收盘小结 / **盘中预警** / IPO 周报 — 无需 LLM，调度配置外置于 `cron_jobs/`，由 OpenClaw gateway 直接 `source .env && python3 ...` 跑脚本。盘中预警为每 5 分钟一次高频任务（必须无 LLM 介入）。
++ > **为什么用文件中转（LLM 型）？** cron prompt 在独立 session 运行，无法直接将变量传给后续脚本。通过写入约定路径的文件，脚本读取后注入报告模板，实现解耦。
++ > **🛡️ 4 端一致性护栏（v3.1.5+）**：本 skill 有 4 端真相 — `templates/`（LLM 调度模板，机器读） / `cron_jobs/cron_mirror.json`（生产 cron 镜像，人读） / `~/.hermes/cron/jobs.json`（生产 cron 真实配置，OpenClaw 读） / `SKILL.md`（文档）。改任何一端都可能造成幽灵模板（v3.1.3 的教训）。**修改以下任一文件后必须跑 `python3 scripts/check_consistency.py`**（exit 0=全过，exit 1=有错误）：
++ > - `templates/*.json`（3 个 LLM 任务 prompt）
++ > - `cron_jobs/cron_mirror.json`（3 个独立脚本任务）
++ > - `~/.hermes/cron/jobs.json` 中 3 个独立脚本任务的 prompt
++ > - SKILL.md 任务清单段（`### N. 任务名（详见 ...）` 格式）
++ >
++ | 报错时用 `--fix-hint` 看修复建议。脚本会检查 A) templates ↔ dispatcher 任务集、B) cron_mirror ↔ jobs.json prompt 字字一致、C) SKILL.md 引用真实存在、D) dispatcher 任务不在 mirror 出现、E) SKILL.md 主体无硬编码 cron 表达式 / .env 路径 / source+send 一行命令（v3.1.6+ E 段）。
++ ### 1. 晨报（详见 templates/morning.json）
++ > Prompt 模板外置于 `templates/morning.json`（v3.0 架构），由 `scripts/skill_dispatcher.py` 读取并注入。
++ ### 2. 收盘小结（详见 cron_jobs/cron_mirror.json#close_summary）
++ > 独立脚本模式 —— 无需 LLM，调度配置外置于 `cron_jobs/cron_mirror.json`（v3.0 架构；v3.1.4 起 3 任务合为单文件，close_summary 为 `tasks.close_summary` 节点），由 OpenClaw gateway 直接读取。脚本路径见 json 内 `prompt` 字段。
++ ### 3. 晚报（详见 templates/evening.json）
++ > Prompt 模板外置于 `templates/evening.json`（v3.0 架构），由 `scripts/skill_dispatcher.py` 读取并注入。
++ ### 4. 盘中预警（详见 cron_jobs/cron_mirror.json#intraday）
++ > 独立脚本模式 —— 无需 LLM，调度配置外置于 `cron_jobs/cron_mirror.json`（v3.0 架构；v3.1.4 起 3 任务合为单文件，intraday 为 `tasks.intraday` 节点），由 OpenClaw gateway 直接读取。脚本路径见 json 内 `prompt` 字段。**v3.1.3 之前该任务的模板曾错误地放在 `templates/intraday.json`（LLM 驱动型设计），但实际 cron 早已是独立脚本模式**；v3.1.3 已删除幽灵模板、归档到 cron_jobs/。
++ ### 5. 财经周末版（详见 templates/weekend.json）
++ > Prompt 模板外置于 `templates/weekend.json`（v3.0 架构），由 `scripts/skill_dispatcher.py` 读取并注入。
++ ### 6. IPO周报（详见 cron_jobs/cron_mirror.json#ipo_report）
++ > 独立脚本模式 —— 无需 LLM，调度配置外置于 `cron_jobs/cron_mirror.json`（v3.0 架构；v3.1.4 起 3 任务合为单文件，ipo_report 为 `tasks.ipo_report` 节点），由 OpenClaw gateway 直接读取。脚本路径见 json 内 `prompt` 字段。
+
+### cron_jobs/README.md  [docs]
++ # cron_jobs/ — 生产 cron 任务的人类可读镜像
++ ## ⚠️ 重要：本目录文件**不被任何代码读取**
++ `cron_jobs/cron_mirror.json` 是 `~/.hermes/cron/jobs.json` 里**独立脚本型 cron 任务的人类可读副本**。
++ - **不被 `skill_dispatcher.py` 读取**（dispatcher 只读 `templates/*.json`）
++ - **不被 OpenClaw cron 直接读取**（OpenClaw 只读 `~/.hermes/cron/jobs.json`）
++ - 作用是**给 AI / 用户审计**："A 股 3 个独立脚本任务在生产 cron 里到底是怎么配的"
++ ## 文件清单
++ | 文件 | 作用 |
++ |------|------|
++ | `cron_mirror.json` | **唯一镜像文件**，内含 3 任务（close_summary/intraday/ipo_report）|
++ | `README.md` | 本文件 |
++ v3.1.4 起 3 镜像合为单文件，强制一致，避免之前"改一处忘改别处"的纪律性 bug。
++ ## 4 端真相分布
++ | 维度 | 在哪里 | 角色 |
++ |------|--------|------|
++ | **LLM 调度模板** | `templates/{morning,evening,weekend}.json` | 被 `skill_dispatcher.py` 读取 |
++ | **生产 cron 真实配置** | `~/.hermes/cron/jobs.json` | 被 OpenClaw 读取并定时触发 |
++ | **本目录归档镜像** | `cron_jobs/cron_mirror.json` | **人类审计用**，内含 3 任务镜像，prompt 字段与 jobs.json 一字不差 |
++ | **SKILL.md 文档** | `SKILL.md` 任务清单段 | 文档层说明 |
++ ## 单文件结构
++ ```json
++ {
++   "_meta": { "purpose": "...", "mirror_of": "...", "version": "...", "history": "...", "see_also": "..." },
++   "tasks": {
++     "close_summary": { "name": "A股收盘小结", "schedule": "...", "prompt": "...", ... },
++     "intraday":      { "name": "A股盘中预警", "schedule": "...", "prompt": "...", ... },
++     "ipo_report":    { "name": "A股IPO周报", "schedule": "...", "prompt": "...", ... }
++   }
++ }
++ ```
++ ```
++ ```
++ 任务键名（close_summary/intraday/ipo_report）= 文件名时代的标识，跟历史档案一致。
++ ## 维护纪律
++ **修改 `jobs.json` 里的 prompt 时，必须同步修改 `cron_jobs/cron_mirror.json` 中对应任务**，保证镜像与生产一致。
++ **🛡️ v3.1.5+ 推荐用护栏脚本一次性检查 4 端一致性**（templates ↔ cron_mirror ↔ jobs.json ↔ SKILL.md）：
++ ```bash
++ ```bash
++ python3 /root/.hermes/skills/A-stock-report/scripts/check_consistency.py
++ # exit 0=全过，1=有错误
++ # 加 --verbose 看每条 ✅，加 --fix-hint 看修复建议
++ **legacy 一行命令**（仅检查镜像与 jobs.json 的 prompt 一致性，v3.1.4 时代的命令，v3.1.5 起推荐上面那个）：
++ python3 -c "
++ import json
++ jobs = json.load(open('/root/.hermes/cron/jobs.json'))
++ mirror = json.load(open('/root/.hermes/skills/A-stock-report/cron_jobs/cron_mirror.json'))
++ m = {'A股收盘小结':'close_summary','A股盘中预警':'intraday','A股IPO周报':'ipo_report'}
++ for j in jobs['jobs']:
++     if j['name'] in m:
++         mirror_prompt = mirror['tasks'][m[j['name']]]['prompt']
++         print(j['name'], j['prompt'] == mirror_prompt)
++ "
++ ## 历史
++ - **v3.1.4 (2026-06-09)**: 合井 3 文件为 `cron_mirror.json`（67 行 / 2.6KB），README 同步更新
++ - **v3.1.3 (2026-06-09)**: 新建 `cron_jobs/intraday.json` 镜像（v3.0~v3.1.2 期间已存在 close_summary/ipo_report 镜像）
++ - **备份位置**: `/workspace/archive/cron_jobs_3split_20260609_1952.bak/`（v3.1.4 前 3 文件的完整备份）
+
+### cron_jobs/cron_mirror.json  [code]
++ {
++   "_meta": {
++     "purpose": "生产 cron 任务的人类可读镜像（不被任何代码读取）",
++     "mirror_of": "~/.hermes/cron/jobs.json",
++     "version": "3.1.4",
++     "history": "v3.0~v3.1.3 期间以 3 个独立文件存在（close_summary/intraday/ipo_report），v3.1.4 合井为单文件以便强制一致。",
++     "see_also": "cron_jobs/README.md"
++   },
++   "tasks": {
++     "close_summary": {
++       "name": "A股收盘小结",
++       "schedule": "30 7 * * 1-5",
++       "repeat": "forever",
++       "repeat": "forever",
++       "repeat": "forever",
++       "deliver": "local",
++       "deliver": "local",
++       "deliver": "local",
++       "prompt": "source /workspace/.env && python3 /workspace/skills/A-stock-report/scripts/send_close_summary.py",
++       "_meta": {
++       "_meta": {
++       "_meta": {
++         "type": "independent_script",
++         "type": "independent_script",
++         "type": "independent_script",
++         "skill_version": "v3.0",
++         "description": "周一至五 15:30 北京时间触发，akshare 拉收盘数据，生成收盘小结推送到 local 通道",
++         "depends_on": [
++         "depends_on": [
++         "depends_on": [
++           "send_close_summary.py"
++         ]
++         ]
++       }
++       }
++       }
++     },
++     },
++     "intraday": {
++       "name": "A股盘中预警",
++       "schedule": "*/5 9,10,11,13,14 * * 1-5",
++       "prompt": "执行以下步骤:\n\n1. source /workspace/.env && python3 /workspace/skills/A-stock-report/scripts/send_intraday_alert.py 2>&1\n\n2. 根据脚本输出决定响应:\n   - 输出包含 \"已推送\" (带涨跌幅数字) → 汇报这条预警详情\n   - 输出包含 \"推送失败\" → 汇报失败详情\n   - 输出包含 \"获取指数数据失败\" → 汇报数据源问题\n   - 其他情况 (\"已推送过，跳过\" / \"非交易时段\" / \"检查盘中预警...\" 等) → 输出 [SILENT]",
++         "skill_version": "v3.1",
++         "skill_version": "v3.1",
++         "description": "周一至五交易时段每 5 分钟一次（9/10/11/13/14 点整点过 5 分），腾讯财经 qt.gtimg.cn 拉 6 大指数实时涨跌幅，任一指数 ±2% 触发预警；同指数同档位每天只推一次（状态文件去重）。无需 LLM 介入，LLM 仅负责「看输出关键词 → 汇报/[SILENT]」。",
++           "send_intraday_alert.py"
++         ],
++         "migrated_from": "templates/intraday.json（v3.1.3 归档清理：模板是 LLM 驱动型设计，但实际 cron 早已是独立脚本模式，模板从未被生产加载）",
++         "thresholds": {
++           "implemented": "1 个：6 大指数涨跌幅 ±2%",
++           "designed_but_unimplemented": [
++             "IF 当月连续涨幅 > 1.5%（期货升水）",
++             "主力净流入 > 200亿元（北向/主力）",
++             "炸板率 > 40%（短线情绪）"
++           ],
++           "data_source": "腾讯财经 qt.gtimg.cn（脚本内硬编码）"
++         },
++         "note": "templates/intraday.json 已删除；本档案（cron_jobs/intraday.json）是该任务在 v3.0 架构下的真实配置中心。LLM dispatcher 中 intraday 任务同步移除。"
++     "ipo_report": {
++       "name": "A股IPO周报",
++       "schedule": "0 2 * * 6",
++       "prompt": "source /workspace/.env && python3 /workspace/skills/A-stock-report/scripts/send_ipo_report.py",
++         "description": "周六 10:00 北京时间触发，akshare 拉 6 个 IPO 数据接口，生成 IPO 周报推送到 local 通道",
++           "send_ipo_report.py"
++     }
++   }
++ }
+
+### knowledge/changelog/README.md  [docs]
++ # A 股报告系统 Changelog 外置细节库
++ > **作用**：SKILL.md Changelog 段每条 ≤ 18 行（硬上限 25 行），超长细节外置到本目录。
++ > **生成方式**：v3.2.0 一次性从旧 SKILL.md 拆分（未来新版本仍写 SKILL.md，细节直接写本目录对应文件，并在精简版中"详见"引用）。
++ ## 索引（按版本倒序，共 15 条）
++ - [v3.2.0](v3.2.0.md)
++ - [v3.1.6](v3.1.6.md) — 4 端一致性护栏补 E 段：SKILL.md 主体禁止硬编码 cron 表达式 / .env 路径 / source+s（2026-06-09 晚，31 行原文）
++ - [v3.1.5](v3.1.5.md) — 4 端一致性护栏脚本：把"漏改"变成机械可锁（2026-06-09 晚，34 行原文）
++ - [v3.1.4](v3.1.4.md) — cron_jobs/ 三合一：强制一致 + 修订 README + 修技能注释残留（2026-06-09 晚，27 行原文）
++ - [v3.1.3](v3.1.3.md) — 盘中预警归档清理：删除幽灵 LLM 模板 + 补齐独立脚本配置（2026-06-09，32 行原文）
++ - [v3.1.2](v3.1.2.md) — 退出码可观测性收尾：collect_evening + close_summary 修复（2026-06-09 凌晨，32 行原文）
++ - [v3.1.1](v3.1.1.md) — 推送共用库 + wx() 健壮性 + 退出码待办（2026-06-08 深夜，22 行原文）
++ - [v3.1.0](v3.1.0.md) — IPO 周报支持回溯历史周期（2026-06-08，68 行原文）
++ - [v3.0.0](v3.0.0.md) — 模板外置 + cron 任务配置中心重构（2026-06-08，86 行原文）
++ - [v2.0.10](v2.0.10.md) — 财经周末版模板升级（2026-06-08，28 行原文）
++ - [v2.0.4](v2.0.4.md) — 大小写统一修复（2026-06-04，28 行原文）
++ - [v2.0.3](v2.0.3.md) — 锁机制系统化升级（2026-06-01，54 行原文）
++ - [v2.0.2](v2.0.2.md) — 6/1 报告修复补完（2026-06-01，9 行原文）
++ - [v2.0.1](v2.0.1.md) — 收盘小结问财字段名兼容 + 残留锁自愈（2026-06-01，19 行原文）
++ - [v2.0.0](v2.0.0.md)
+
+### knowledge/changelog/v2.0.0.md  [docs]
++ # v2.0.0 — 架构重构（未注明）
++ > 本文件是 SKILL.md Changelog 段 v2.0.0 条目的**完整外置细节**。SKILL.md 里只保留精简版（问题 + 结论 + 详见本文件），详细描述见下方原文。
++ ## 精简版（SKILL.md 同款）
++ 详见下方"原文"段。
++ ## 原文（16 行完整版）
++ ```markdown
++ ### v2.0.0 — 架构重构
++ **重大变化：脚本角色重新划分为「采集」与「发送」两层**
++ | 变化 | 说明 |
++ |------|------|
++ | 晚报双脚本拆分为采集+推送 | `collect_evening_data.py`（采集+写JSON/MD） + `send_evening_report.py`（读文件+推送），原来晚报PE等数据在send里直接调问财，现改为采集脚本统一用akshare获取 |
++ | 晨报/周末要闻数据采集独立 | `collect_morning_data.py` 独立采集外围市场数据，不再依赖 send 脚本内部逻辑 |
++ | 问财接口权限精确化 | 白名单原则落地：仅实际调用的脚本才加载 `IWENCAI_API_KEY`；无需问财的脚本（如 `send_morning_report.py`、`collect_evening_data.py`）不加载 |
++ | 数据源更新 | 全市场成交额/流通市值来源从「同花顺问财」改为 `akshare stock_zh_a_spot_em()` 实时行情 |
++ | 白名单表去重修正 | 原 SKILL.md 有重复行+错误脚本名（`TUSHARE_API_KEY` 应为 `TUSHARE_TOKEN`），已全部对齐实际脚本 |
++ **v1.x 历史版本功能未变，仅文档同步。**
++ ---
++ ---
++ ```
++ *本文件由 v3.2.0 护栏脚本自动从 SKILL.md Changelog 段拆分外置。原条目位置：L?（迁移前）。*
+
+### knowledge/changelog/v2.0.1.md  [docs]
++ # v2.0.1 — 收盘小结问财字段名兼容 + 残留锁自愈（2026-06-01）
++ > 本文件是 SKILL.md Changelog 段 v2.0.1 条目的**完整外置细节**。SKILL.md 里只保留精简版（问题 + 结论 + 详见本文件），详细描述见下方原文。
++ ## 精简版（SKILL.md 同款）
++ 详见下方"原文"段。
++ ## 原文（19 行完整版）
++ ```markdown
++ ### v2.0.1 — 收盘小结问财字段名兼容 + 残留锁自愈（2026-06-01）
++ **问题现象：**
++ - 5/1 收盘报告生成后，复盘发现 `炸板率=0 分` 异常分支被命中
++ - 6/1 重跑时，相同 query 问财 API 在不同时刻返回**不同字段名**：`炸板家数`（旧）/ `涨停开板家数`（新，同义词）
++ - 根因：问财 OpenAPI 在 query 包含 `炸板家数` 时，nlp 翻译结果不稳，命中不同 cache 段
++ **修复：**
++ - `send_close_summary.py` 167 行兼容两个字段名：
++   ```python
++   zb_key = next((k for k in item if '炸板家数' in k or '涨停开板家数' in k), None)
++   ```
++ - **6/1 报告验证**：涨停=166 跌停=23 炸板=48 炸板率=22.4%，炸板率得分 59 分 ✅
++ **锁残留：**
++ - 5/1 脚本跑通后，锁文件 `/tmp/a_stock_close_summary.lock` 残留（推测：推送阶段异常退出导致 `finally: _unlock()` 未跑到）
++ - 6/1 重跑时**仍能正常释放**（正常退出路径）
++ - 锁已自愈，**下次出现时**优先排查推送阶段异常日志
++ ```
++ ---
++ *本文件由 v3.2.0 护栏脚本自动从 SKILL.md Changelog 段拆分外置。原条目位置：L?（迁移前）。*
+
+### knowledge/changelog/v2.0.10.md  [docs]
++ # v2.0.10 — 财经周末版模板升级（2026-06-08）
++ > 本文件是 SKILL.md Changelog 段 v2.0.10 条目的**完整外置细节**。SKILL.md 里只保留精简版（问题 + 结论 + 详见本文件），详细描述见下方原文。
++ ## 精简版（SKILL.md 同款）
++ 详见下方"原文"段。
++ ## 原文（28 行完整版）
++ ```markdown
++ ### v2.0.10 — 财经周末版模板升级（2026-06-08）
++ **升级原因：** 用户反馈"财经周末要闻·一周情绪轨迹"段只有 4 个核心指标（涨停/两融/两融交易额/情绪打分），IF 基差、PE、ERP、主力净流入 4 个关键情绪指标全部缺失，导致一周情绪画像不完整。
++ **升级内容：**
++ 1. **标题重命名**："财经周末要闻" → "财经周末版"（SKILL.md 顶部 + frontmatter + 模板标题 + dispatcher 锚点 4 处统一）
++ 2. **"一周情绪轨迹"段重构**：从 4 个零散指标 → 4 大类结构化指标：
++    - 【1. 市场短期情绪】量化情绪打分 5 天趋势 + 整体走势判定
++    - 【2. 杠杆率】两融余额 + 两融余额/流通市值比例（含阈值）
++    - 【3. 估值水平】沪深300PE + 近5年分位点 + ERP（含阈值）
++    - 【4. 市场预期】IF 基差（含贴水/升水/扩深/收窄定性）
++ 3. **新增"数据规则（防错）"段** 4 条：
++    - 两融比例单日跳变 >0.5% 标 ⚠️ 沿用前日（防 6/3 的 4.34% 数据源 bug）
++    - 缺失数据用 ❌ 占位（禁止"未公布""暂缺"）
++    - 标注 T-1 数据时差（两融/PE/ERP 是 T-1）
++    - 数字必须从历史 MD 读取，禁止编造
++ 4. **dispatcher 锚点同步**：TASK_MARKERS 字典 `weekend` 字段从「旧标题」改为「新版标题」（1 行改动，scripts/skill_dispatcher.py:37）
++ **不动 send_weekend_news.py** —— 推送脚本读模板内容，与标题/字段无关。
++ **验证方法：**
++ ```
++ ```
++ ```
++ python3 /root/.hermes/skills/A-stock-report/scripts/skill_dispatcher.py --task weekend
++ 预期输出含 4 大类标题 + 数据规则段。
++ **影响范围：** cron "A股周末要闻生成并推送"（周日 20:00）下次运行时生效。
++ ---
++ *本文件由 v3.2.0 护栏脚本自动从 SKILL.md Changelog 段拆分外置。原条目位置：L?（迁移前）。*
+
+### knowledge/changelog/v2.0.2.md  [docs]
++ # v2.0.2 — 6/1 报告修复补完（2026-06-01）
++ > 本文件是 SKILL.md Changelog 段 v2.0.2 条目的**完整外置细节**。SKILL.md 里只保留精简版（问题 + 结论 + 详见本文件），详细描述见下方原文。
++ ## 精简版（SKILL.md 同款）
++ 详见下方"原文"段。
++ ## 原文（9 行完整版）
++ ```markdown
++ ### v2.0.2 — 6/1 报告修复补完（2026-06-01）
++ 在 v2.0.1 基础上，补全两个小问题：
++ - **单行无"全A股"前缀直接采纳**：`send_close_summary.py` 144-170 行，单行数据不再误报"降级"提示
++ - **主力净流入日期比较归一化**：`send_close_summary.py` 261-267 行，比较前把 `20260601` 归一为 `2026-06-01`，消除多余"日期不匹配" warning
++ **6/1 重跑验证**：涨停 166 跌停 23 炸板 48 炸板率 22.4%，主力 -609.56 亿，零 warning。
++ ```
++ ---
++ *本文件由 v3.2.0 护栏脚本自动从 SKILL.md Changelog 段拆分外置。原条目位置：L?（迁移前）。*
+
+### knowledge/changelog/v2.0.3.md  [docs]
++ # v2.0.3 — 锁机制系统化升级（2026-06-01）
++ > 本文件是 SKILL.md Changelog 段 v2.0.3 条目的**完整外置细节**。SKILL.md 里只保留精简版（问题 + 结论 + 详见本文件），详细描述见下方原文。
++ ## 精简版（SKILL.md 同款）
++ 详见下方"原文"段。
++ ## 原文（54 行完整版）
++ ```markdown
++ ### v2.0.3 — 锁机制系统化升级（2026-06-01）
++ **问题根因：** 6 个脚本（close_summary / evening / intraday / ipo / weekend / collect_evening）的锁实现**不一致**，且都缺关键能力：
++ - 5 个脚本用 `open(f, 'w').close()` 创空锁，**只比 mtime 跨日**——同一天内残留就锁死
++ - 1 个脚本（ipo）用 `O_CREAT|O_EXCL` 原子创建，**但没有 stale 检测**——死了或被 kill -9 后锁永远留着
++ - **全部无 PID** —— 无法判断持有者是否还活着
++ - **全部无 TTL** —— 进程死了锁不过期
++ **解决方案：** 新增 `scripts/_lock.py` 统一锁模块（85 行），6 个脚本全改用：
++ ```python
++ import sys as _sys
++ _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
++ from _lock import lock as _smart_lock, unlock as _smart_unlock
++ def _acquire_lock():
++     if not _smart_lock(_LOCK_FILE, owner=__file__):
++         _sys.exit(0)
++ def _unlock():
++     _smart_unlock(_LOCK_FILE)
++ ```
++ ```
++ ```
++ ```
++ **`_lock.py` 智能锁三大能力：**
++ 1. **PID 检测**：`os.kill(pid, 0)` 判断持有者是否还活着
++ 2. **TTL 过期**：默认 3600s（1 小时）后自动视为 stale
++ 3. **stale 抢占**：锁住的人死了 / 锁超时 → 自动清理并抢占
++ **锁文件格式**：`{pid}\n{owner}\n{created_at_timestamp}`（3 行结构化）
++ **行为矩阵：**
++ | 锁状态 | 持有者 PID | TTL | 行为 |
++ |--------|------------|-----|------|
++ | 无锁 | - | - | 创建并占用 ✅ |
++ | 有锁 | 存活 | 未超 | 拒绝，返回 False ❌ |
++ | 有锁 | 死亡 | - | 清理 + 抢占 ✅ |
++ | 有锁 | 存活 | 已超 | 清理 + 抢占 ✅ |
++ **验证（6 项单测全过）：**
++ - 无锁 → True
++ - 活锁（PID 在）→ False
++ - 死锁（PID 99999）→ 自动清理并抢占
++ - 超时锁（2h 前 TTL=1h）→ 自动清理并抢占
++ - unlock 幂等
++ - 锁文件格式正确（pid/owner/timestamp 三行）
++ **未改：`send_morning_report.py` 的 `read_lock/write_lock` 是业务级"当日是否已推送"去重，不是进程锁，保留原状。**
++ **测试结果：** 集成测试模拟 cron 重启后死锁场景，新进程自动清理 + 抢占成功：
++ [LOCK] 持有者已退出 (pid=88888)，自动清理并抢占。
++ ✅ 锁内容: pid=257001 (当前进程)
++ ---
++ *本文件由 v3.2.0 护栏脚本自动从 SKILL.md Changelog 段拆分外置。原条目位置：L?（迁移前）。*
+
+### knowledge/changelog/v2.0.4.md  [docs]
++ # v2.0.4 — 大小写统一修复（2026-06-04）
++ > 本文件是 SKILL.md Changelog 段 v2.0.4 条目的**完整外置细节**。SKILL.md 里只保留精简版（问题 + 结论 + 详见本文件），详细描述见下方原文。
++ ## 精简版（SKILL.md 同款）
++ 详见下方"原文"段。
++ ## 原文（28 行完整版）
++ ```markdown
++ ### v2.0.4 — 大小写统一修复（2026-06-04）
++ **问题根因：** hermes 注册表目录与 SKILL.md / cron 配置的 skill 名**大小写不一致** —— 4 个层面互相冲突：
++ | 位置 | 名字 | 大小写 |
++ |------|------|--------|
++ | hermes 注册表目录 | `a-stock-report` | 小写 ❌ |
++ | SKILL.md frontmatter `name` | `A-stock-report` | 大写 ❌ |
++ | 3 个 cron 任务的 `skills` 字段 | `['A-stock-report']` | 大写 ❌ |
++ | 3 个 cron 任务的 prompt 指令 | `加载 A-stock-report skill` | 大写 ❌ |
++ **症状：** hermes 加载 skill 时按目录名匹配，目录小写与配置大写不一致 → **hermes 自动加载失败**；prompt 中"加载 X skill"指令本应兜底，但因同样大小写问题，LLM 调 `skill_view("A-stock-report")` 也会失败（找不到大小写不匹配的资源）→ 任务以"无 skill 状态"运行。
++ **修复内容：**
++ 1. **目录重命名**：`/root/.hermes/skills/a-stock-report/` → `/root/.hermes/skills/A-stock-report/`
++ 2. **SKILL.md `version` 字段**：`2.0.3` → `2.0.4`（patch 版本，bug 修复）
++ 3. **删除 v1.10.2 旧备份目录** `a-stock-report-v1.10.2.bak/`（完整内容保留在 `/workspace/archive/a-stock-report-v1.10.2.bak_pre_delete_20260604_182313`，可恢复）
++ 4. **cron 任务的 3 个 `skills` 字段**保持 `['A-stock-report']`（无需改，原本就大写）
++ 5. **cron 任务的 3 个 prompt 指令**保持 `加载 A-stock-report skill`（无需改，原本就大写；双重保险保留）
++ **修复后 4 层完全统一为 `A-stock-report`（首字母大写）** —— hermes 自动加载和 LLM 兜底加载都指向同一目标。
++ **安全措施：**
++ - 重命名前已完整备份 v2.0.3 到 `/workspace/archive/a-stock-report-v2.0.3_pre_rename_20260604_182754`（16 文件，239,162 bytes）
++ - 删除 v1.10.2 前已备份到 `/workspace/archive/a-stock-report-v1.10.2.bak_pre_delete_20260604_182313`（17 文件，332,491 bytes）
++ **影响范围：** 3 个 cron 任务（早报 / 晚报 / 周末要闻）将于下次运行时生效。盘中预警 / IPO / 收盘小结未改动（其 `skills` 字段未配置或已正确）。
++ ```
++ ---
++ *本文件由 v3.2.0 护栏脚本自动从 SKILL.md Changelog 段拆分外置。原条目位置：L?（迁移前）。*
+
+### knowledge/changelog/v3.0.0.md  [docs]
++ # v3.0.0 — 模板外置 + cron 任务配置中心重构（2026-06-08）
++ > 本文件是 SKILL.md Changelog 段 v3.0.0 条目的**完整外置细节**。SKILL.md 里只保留精简版（问题 + 结论 + 详见本文件），详细描述见下方原文。
++ ## 精简版（SKILL.md 同款）
++ 详见下方"原文"段。
++ ## 原文（86 行完整版）
++ ```markdown
++ ### v3.0.0 — 模板外置 + cron 任务配置中心重构（2026-06-08）
++ **升级原因：** SKILL.md 里同时塞了 4 个 LLM prompt 模板 + 2 个 cron 调度配置（共 6 个 ```json``` 块，~6.5KB），导致两个长期问题：
++ 1. **维护难**：改一个 prompt 模板要小心避开 SKILL.md 的 markdown 表格、标题、注释（踩过 skill-md-edit-pitfalls）
++ 2. **职责混乱**："LLM 看到的 prompt"和"cron 调度的配置"混在同一个 SKILL.md，v2.0.5→v2.0.7 修复链反复触发"加了读文件脚本却忘了写 prompt"的 bug
++ **升级内容（两步重构）：**
++ #### 阶段 1：4 个 LLM prompt 模板外置到 `templates/`
++ 新增 `templates/{morning,evening,intraday,weekend}.json`，4 个 LLM 任务（晨报/晚报/盘中预警/财经周末版）的 prompt 模板从 SKILL.md 抠出独立成文件。`scripts/skill_dispatcher.py` 优先读 `templates/<task>.json`，缺失时报清晰错误（3 原因 + 3 修复方法）。
++ **dispatcher 三路径策略：**
++ 1. `templates/<task>.json` 存在 → 走 v3.0 外置模板
++ 2. `templates/<task>.json` 缺失 + SKILL.md 还有 json 块 → 走 v2.x fallback（过渡期兜底）
++ 3. `templates/<task>.json` 缺失 + SKILL.md 也没 json 块 → 抛 `FileNotFoundError` 带修复指引
++ #### 阶段 2：2 个独立脚本 cron 配置外置到 `cron_jobs/`
++ 新增 `cron_jobs/{close_summary,ipo_report}.json`，2 个独立脚本模式（收盘小结/IPO周报）的 cron 调度配置从 SKILL.md 抠出。**这两个 json 不是"LLM prompt 模板"而是"cron 任务配置"**（`prompt` 字段是 shell 命令而非 LLM 提示），由 OpenClaw gateway 直接读取。
++ #### 最终成果
++ | 指标 | v2.x | v3.0 |
++ |------|------|------|
++ | SKILL.md 大小 | 40002 bytes (40 KB) | **31661 bytes (31 KB)** |
++ | SKILL.md 内 ```json 块数 | 6 个 | **0 个** ✅ |
++ | 4 LLM 报告 prompt | SKILL.md 4 json 块 | `templates/` 4 json |
++ | 2 独立脚本 cron | SKILL.md 2 json 块 | `cron_jobs/` 2 json |
++ | 模板维护方式 | 改 SKILL.md（易破坏 markdown） | 改独立 json 文件 |
++ | 模板缺失时报错 | 静默回退（隐式） | 清晰错误（显式 + 修复指引） |
++ **目录结构（v3.0 完整）：**
++ ```
++ ```
++ ```
++ ```
++ ~/.hermes/skills/A-stock-report/
++ ├── SKILL.md                  (31 KB，纯文档)
++ ├── templates/                (v3.0 新增 —— 4 LLM prompt)
++ │   ├── morning.json
++ │   ├── evening.json
++ │   ├── intraday.json
++ │   └── weekend.json
++ ├── cron_jobs/                (v3.0 新增 —— 2 独立脚本 cron)
++ │   ├── close_summary.json
++ │   └── ipo_report.json
++ ├── scripts/
++ │   ├── skill_dispatcher.py   (3 路径策略)
++ │   ├── extract_data.py
++ │   └── send_*.py
++ └── references/
++ **双职责正交原则：**
++ - `templates/<task>.json` —— 管"**LLM 看到什么**"（prompt 模板 + 数据格式约束）
++ - `cron_jobs/<task>.json` —— 管"**什么时候跑、跑什么、推到哪**"（schedule/repeat/deliver/prompt 字段）
++ - `scripts/skill_dispatcher.py` —— 桥接两者（读 templates/ 拼装 LLM 输入）
++ **验证方法：**
++ ```bash
++ # 4 LLM 任务跑一遍（应该全走 templates/）
++ for t in morning evening intraday weekend; do
++   python3 scripts/skill_dispatcher.py --task $t | grep "📂"
++ done
++ # 预期：4 行"templates/<task>.json（v3.0 外置模板）"
++ # 模拟 templates 缺失
++ mv templates/morning.json /tmp/
++ python3 scripts/skill_dispatcher.py --task morning
++ # 预期：报清晰错误 + 3 修复方法
++ mv /tmp/morning.json templates/
++ **影响范围：**
++ - 4 LLM 报告的 cron：下次触发时走 `templates/`，行为不变
++ **v3.0 完整性审计（实施后核对）：**
++ | 检查项 | 方法 | 结果 |
++ |--------|------|------|
++ | 6/6 文件 JSON 合法 | `json.loads` 不抛错 | ✅ |
++ | hermes ↔ workspace 字节级一致 | `diff -q` 6 个文件 | ✅ |
++ | 4 LLM prompt 与旧 SKILL.md 字符级一致 | regex 抠旧版 + 字符串相等 | ✅ morning 709 / evening 848 / intraday 607 / weekend 1701 字符 |
++ | 2 cron 配置 5 关键字段与旧 SKILL.md 一致 | name/schedule/repeat/deliver/prompt 逐字段对比 | ✅ |
++ | SKILL.md 全文无 ```json 块 | `grep "^\`\`\`json"` | ✅ 0 个 |
++ - 2 独立脚本的 cron：行为完全不变（OpenClaw gateway 仍读原 SKILL.md 段的配置逻辑，只是这段现在变成文档引用 `cron_jobs/`，**真正的 cron 调度配置在 OpenClaw 自己的数据库**，本 SKILL.md 的 json 仅作备份/迁移用）
++ **教训沉淀：** 详见保存的 skill `template-externalization-workflow`（"v2.0.5→v2.0.7 修复链的根因" —— 改了读文件脚本必须同步改 dispatcher prompt；同理模板外置时必须 dispatcher + SKILL.md 同步改 + 双端同步 + 单元测试 3 场景）。
++ ---
++ *本文件由 v3.2.0 护栏脚本自动从 SKILL.md Changelog 段拆分外置。原条目位置：L?（迁移前）。*
+
+### knowledge/changelog/v3.1.0.md  [docs]
++ # v3.1.0 — IPO 周报支持回溯历史周期（2026-06-08）
++ > 本文件是 SKILL.md Changelog 段 v3.1.0 条目的**完整外置细节**。SKILL.md 里只保留精简版（问题 + 结论 + 详见本文件），详细描述见下方原文。
++ ## 精简版（SKILL.md 同款）
++ 详见下方"原文"段。
++ ## 原文（68 行完整版）
++ ```markdown
++ ### v3.1.0 — IPO 周报支持回溯历史周期（2026-06-08）
++ **升级原因：** v3.0 端到端测试时发现，IPO 周报脚本 `send_ipo_report.py` 只能跑"今天视角"（默认 cron 在 5/29 周五触发时跑的是 5/25-5/29 这周）。但生产场景经常需要补跑历史周报（如节假日/周末 cron 漏跑、想看 N 周前的数据），**v3.0 唯一办法是 monkey-patch 模块级 NOW 常量**——粗暴、不可重复、易污染。
++ **升级内容（一个 CLI 参数）：**
++ - `scripts/send_ipo_report.py` 新增 `--ref-date YYYY-MM-DD` CLI 参数
++ - 传入后自动覆盖 `NOW` 模块级变量 + 重新计算 `_period_start_dt` / `_period_end_dt` / `_PERIOD_KEY` / `PERIOD_START` / `PERIOD_END` / `THIS_WEEK_END` / `NEXT_WEEK_END` / `QUEUE_DATE` 等 8 个下游依赖
++ - 复用现有的 `_days_old > 21` 安全检查 + `_already_sent_for_period` 去重
++ - 与 v2.x 已有的 `send_close_summary.py --date` 保持一致的 CLI 风格
++ #### v3.1.0 补丁 — 晚报 AI 协议硬校验 + dry-run + argparse 反转（2026-06-08 晚）
++ **Bug 背景：** 6/8 22:22 晚报实跑出"✅ 已推送"但实际晚报是退化的（AI 内容缺失，只剩模板骨架），且 system exit 0 误导监控。诊断后定位 3 个连环 bug：
++ 1. **缺 AI 协议校验**：`/tmp/evening_report_ai.txt` 不存在 / 没 [财经要闻] 标签 / 没 [操作建议] 标签，脚本都"假装正常"走完 → 推送退化版晚报给用户
++ 2. **argparse 反转 bug**：原 CLI 是 `--ai-fill`（要加才加载），但 dispatcher prompt 写"AI 内容会自动从 /tmp/evening_report_ai.txt 加载"——LLM 不会主动加 flag，结果 ai.txt 永远被忽略
++ 3. **退出码双重信号错乱**：`err` 和 `_exit_code` 两个变量，最后用 `if _exit_code != 0 else (0 if err == 0 else 1)` 复合判断——失败路径只要忘设其中之一，SystemExit 1 会被静默吞成 0
++ **修复内容（4 项）：**
++ - 修复 1：协议硬校验。`main()` 末尾用 `SystemExit(1)` 替代 `return ""` 当 `lines` 为空 / 缺 [财经要闻] / 缺 [操作建议] 时。**含详细错误指引**打印到 stderr，让 dispatcher 知道是 LLM 没写还是 ai.txt 路径错
++ - 修复 2：argparse 反转。新 CLI 是 `--no-ai-fill`（默认加载，符合 dispatcher prompt 描述）。同步修改 `main(ai_fill: bool = True, ...)` 默认值
++ - 修复 3：退出码单一变量。删 `err`，只用 `_exit_code`；`finally` 直接 `sys.exit(_exit_code)`。失败路径必须显式 `_exit_code = 1`
++ - 修复 4：新增 `--dry-run` 模式。生成报告 + 保存到 `reports/晚报_YYYYMMDD.md` + 打印到 stdout，**跳过企业微信推送**。用于 dispatcher 测试和 prompt 调试
++ **受影响的脚本：** `scripts/send_evening_report.py`（only this file）
++ **受影响的脚本：** `scripts/send_evening_report.py`（only this file）
++ **架构对称原则（教训）：** send 脚本（读文件方）改 → 必须同步改 dispatcher prompt（写文件方）。v2.0.5→v2.0.7 修复链是同一个坑的第二次踩——每次给脚本加新协议/新依赖文件，都必须同时 bump dispatcher prompt 的写指令。详见 `~/.hermes/memory/AGENTS.md` 架构对称原则条款。
++ #### v3.1.0 补丁 2 — notify_failure 递归失败修复（2026-06-08 23:00）
++ **Bug 背景：** 23:00 真推晚报到企业微信时，**所有 4 个 v3.1.0 烟测**全过（都是 dry-run），但第一次真推时**仍然失败时 exit 0**。原因：v3.1.0 烟测全部用 `--dry-run`，没覆盖"非 dry-run 但 webhook 缺失"这种**环境配置错误**路径。
++ **根因：** `notify_failure()` 内部又调 `wx()` 发预警。`wx()` 在 `WECOM_WEBHOOK_KEY` 缺失时抛 `FileNotFoundError`。这个异常在**外层 `except Exception as e` 块内部**抛出，把还没执行的 `_exit_code = 1` 跳过了——整个 try/except 链条崩了，_exit_code 永远停在 0，最后 finally 里打印"✅ 已完成"+ sys.exit(0) → **监控收不到任何失败信号**。
++ **修复内容：**
++ - `notify_failure()` 内部加 `try/except Exception as _e`，自身 wx() 失败时仅打印到 stderr（让 cron 日志能捕获），**不再阻断主流程**
++ - 退化方案：webhook 缺失时无法发预警通知，但**至少脚本能正确 exit 1 让监控报警**
++ **烟测新增场景：** "webhook 缺失"——验证 exit code = 1 + 打印"❌ 失败(err=1)"
++ **架构教训（追加 MEMORY.md 核心原则 5）：** 任何**会抛异常的函数**在 except 块内被调用时，**调用方必须自己包裹 try/except**——Python 的 except 块里抛新异常会替换原异常冒泡，**外层的 `_exit_code = 1` 等清理代码会被跳过**。详见 `~/.hermes/memory/MEMORY.md` 核心原则 5 补充条款。
++ **典型用法：**
++ ```bash
++ # 跑"上周六 5/30 视角"的 IPO 周报（= 5/25-5/29 这周）
++ python3 send_ipo_report.py --ref-date 2026-05-30
++ # 跑"上周五 5/29 视角"（= 5/25-5/29 这周，与 5/30 视角周期相同）
++ python3 send_ipo_report.py --ref-date 2026-05-29
++ ```
++ ```
++ **实现细节：**
++ - 用 `datetime.fromisoformat().replace(tzinfo=timezone(_TZ))` 把字符串转成带北京时区的 datetime，**与 `now_bj()` 返回类型完全一致**
++ - 周期计算复用 `get_ipo_report_period(ref_date)`（v2.0.7 已支持的 ref_date 参数），无新增业务逻辑
++ - 锁和去重检查对"重算后"也生效（去重文件存的是"执行日期+周期末日期"，CLI override 后执行日期变了，自然会再跑一次）
++ **经验教训（记忆点）：**
++ - **CLI 参数化是脚本可测试性的基石**——v2.0.7 加了 `get_ipo_report_period(ref_date)` 但没在 `__main__` 暴露，导致这个能力"半成品"
++ - **每个"读文件"的脚本都要有对应的"写文件"prompt 指令**（v2.0.7 教训的延伸）——这次反过来说：**每个"接受参数"的内部函数，main 入口必须暴露 CLI**——否则就是"半成品能力"
++ ---
++ *本文件由 v3.2.0 护栏脚本自动从 SKILL.md Changelog 段拆分外置。原条目位置：L?（迁移前）。*
+
+### knowledge/changelog/v3.1.1.md  [docs]
++ # v3.1.1 — 推送共用库 + wx() 健壮性 + 退出码待办（2026-06-08 深夜）
++ > 本文件是 SKILL.md Changelog 段 v3.1.1 条目的**完整外置细节**。SKILL.md 里只保留精简版（问题 + 结论 + 详见本文件），详细描述见下方原文。
++ ## 精简版（SKILL.md 同款）
++ 详见下方"原文"段。
++ ## 原文（22 行完整版）
++ ```markdown
++ ### v3.1.1 — 推送共用库 + wx() 健壮性 + 退出码待办（2026-06-08 深夜）
++ **Bug 背景：** v3.1.0 修了 `send_evening_report.py` 的 notify_failure 包裹问题，但 4 个 send 脚本（morning/close_summary/intraday/weekend）仍然有相同结构脆弱点：本地重复的 `wx()` 定义 + 缺乏 v3.1.0 补丁 2 包裹的 `notify_failure`。同时 `wx()` 自身的 `get_webhook_url()` 调用未包裹 try/except，WECOM_WEBHOOK_KEY 缺失时直接抛 RuntimeError 冒泡。
++ **升级内容：**
++ 1. **新增 `scripts/_send_lib.py` 共用推送库**
++    - `get_webhook_url()` / `wx()` / `notify_failure(prefix, msg)`
++    - `wx()` 内部 try/except 包住 `get_webhook_url()`（v3.1.1 修复：WECOM_WEBHOOK_KEY 缺失返回 -1 而不抛）
++    - `notify_failure(prefix, msg)` 内部 try/except，自身失败仅打印 stderr 不阻断主流程（v3.1.0 教训强化版）
++ 2. **4 个 send 脚本迁移到共用库**
++    - `send_morning_report.py` / `send_intraday_alert.py` / `send_weekend_news.py` / `send_close_summary.py` 全部删除本地 `get_webhook_url`/`wx`/`notify_failure` 定义，改为 `from _send_lib import ...`
++    - 4 处 `notify_failure(msg)` 调用全部改为 `notify_failure("<类型>", msg)` 带 prefix 参数
++ **待办（未在本版本完成）：**
++ - **P1 退出码统一化**：5 个脚本（除 evening 外）失败时退出码不可控——weekend 永远 exit 0；collect_evening_data.py 的 except 块没设非 0；close_summary 没 try/except 包裹。**下一版本 v3.1.2 解决。**
++ **受影响的脚本：**
++ - 新增 `scripts/_send_lib.py`
++ - 修改 `scripts/send_morning_report.py` / `send_intraday_alert.py` / `send_weekend_news.py` / `send_close_summary.py`
++ ```
++ ---
++ *本文件由 v3.2.0 护栏脚本自动从 SKILL.md Changelog 段拆分外置。原条目位置：L?（迁移前）。*
+
+### knowledge/changelog/v3.1.2.md  [docs]
++ # v3.1.2 — 退出码可观测性收尾：collect_evening + close_summary 修复（2026-06-09 凌晨）
++ > 本文件是 SKILL.md Changelog 段 v3.1.2 条目的**完整外置细节**。SKILL.md 里只保留精简版（问题 + 结论 + 详见本文件），详细描述见下方原文。
++ ## 精简版（SKILL.md 同款）
++ 详见下方"原文"段。
++ ## 原文（32 行完整版）
++ ```markdown
++ ### v3.1.2 — 退出码可观测性收尾：collect_evening + close_summary 修复（2026-06-09 凌晨）
++ **Bug 背景：** v3.1.1 把 4 个 send 脚本迁移到 `_send_lib` 共用库，但**未做全量退出码审计**。6/8 23:30 留的"v3.1.1 退出码待办"实际有 2 个真 bug 未修：
++ 1. **`collect_evening_data.py`**：line 839 写死 `sys.exit(0)` 在 finally 里——即使 `except Exception` 块捕获到异常，最后仍 exit 0。**监控永远看不到采集失败**。
++ 2. **`send_close_summary.py`**：line 651 `wx()` 业务失败时只 print `❌ 推送失败`，**无 `_exit_code = 1`**——推送失败但 exit 0。同文件 line 594 / line 606 的早退 `sys.exit(0/1)` 跳过 finally 的锁释放，存在锁泄漏隐患。
++ **修复：**
++ 1. **collect_evening_data.py**：
++    - 新增 `_exit_code = 0` 单一变量（line 805）
++    - dry-run / 业务成功路径：`_exit_code = 0`
++    - except 块：`_exit_code = 1` + `try/except` 包裹 `notify_failure("晚报采集", ...)`（v3.1.0 教训）
++    - finally：`sys.exit(_exit_code)`
++    - finally：`sys.exit(_exit_code)`
++ 2. **send_close_summary.py**：
++    - 新增 `_exit_code = 0`（line 587）
++    - line 594 非交易日 / line 606 找不到交易日：移除 `sys.exit(0/1)`，改为设 `_exit_code` 让 finally 统一退出
++    - line 651 业务失败（wx err != 0）：`_exit_code = 1` + `try/except` 包裹 `notify_failure("收盘小结", ...)`
++    - 新增 except 块捕获意外异常：`_exit_code = 1` + notify_failure 包裹
++ **未改动文件（误判后撤销）：** 复审发现 `send_morning_report.py` / `send_intraday_alert.py` / `send_weekend_news.py` 退出码本身已正确（显式 `sys.exit(0/1)` 或 `err + sys.exit(0 if err==0 else 1)`）——Python 默认未捕获异常就是 exit 1，监控可识别，**保持原状**。
++ **烟测（runtime 验证）：**
++ - collect happy (--dry-run): exit 0 ✅
++ - collect except (main 抛错): exit 1 ✅ + v3.1.0 notify_failure 包裹生效
++ - close business fail (wx err=-1, WECOM_WEBHOOK_KEY 缺失): exit 1 ✅ + notify_failure 自身失败被内层 try/except 兜底
++ - close crash (is_workday 抛错): exit 1 ✅
++ **架构原则（教训）：** v3.1.0 补丁 2 教训是"notify_failure 失败会被外层 except 替换原异常"——v3.1.2 强化为"**任何 except 块内调用的可能失败函数（notify_failure / wx / requests）都必须被自己的 try/except 包裹**"。这条原则已写进 `~/.hermes/memory/AGENTS.md` 核心原则第 6 条（2026-06-08 教训）。
++ ```
++ ---
++ *本文件由 v3.2.0 护栏脚本自动从 SKILL.md Changelog 段拆分外置。原条目位置：L?（迁移前）。*
+
+### knowledge/changelog/v3.1.3.md  [docs]
++ # v3.1.3 — 盘中预警归档清理：删除幽灵 LLM 模板 + 补齐独立脚本配置（2026-06-09）
++ > 本文件是 SKILL.md Changelog 段 v3.1.3 条目的**完整外置细节**。SKILL.md 里只保留精简版（问题 + 结论 + 详见本文件），详细描述见下方原文。
++ ## 精简版（SKILL.md 同款）
++ 详见下方"原文"段。
++ ## 原文（32 行完整版）
++ ```markdown
++ ### v3.1.3 — 盘中预警归档清理：删除幽灵 LLM 模板 + 补齐独立脚本配置（2026-06-09）
++ **问题根因：** 历史遗留造成 **模板/架构/生产 cron 三方不一致**：
++ | 维度 | templates/intraday.json（被删） | cron_jobs/intraday.json（新建） | OpenClaw jobs.json（生产 cron）|
++ |------|------|------|------|
++ | 类型 | `LLM 驱动型` | `independent_script` | `independent_script`（skills=[]）|
++ | 触发方式 | LLM 调 4 数据源自己判断 | 脚本自采集自判断 | 调 send_intraday_alert.py |
++ | 预警条件数 | 4 个（IF升水/北向/涨跌幅/炸板率）| 1 个（6 大指数 ±2%）| 1 个 |
++ | 实际被生产使用 | ❌ **从未** | 替代 templates/ 成为真实档案 | ✅ 已跑 672 次 |
++ **清理内容：**
++ 1. **删除** `templates/intraday.json`（幽灵 LLM 模板，备份至 `/workspace/archive/intraday_json_ghost_20260609_1934.bak`）
++ 2. **新建** `cron_jobs/intraday.json`（参照 close_summary.json 同构，6 顶层字段对齐；`_meta` 含 `migrated_from` / `thresholds` / `note` 完整记录迁移历史）
++ 3. **更新 SKILL.md**：
++    - 引导段：LLM 驱动型 4→3，独立脚本型 2→3，盘中预警明确"每 5 分钟一次高频任务（必须无 LLM 介入）"
++    - 任务清单第 4 段：从 `templates/intraday.json` 改为 `cron_jobs/intraday.json`，描述从"LLM 注入"改为"独立脚本模式"
++ 4. **清理** `scripts/skill_dispatcher.py`：从 `TASK_MARKERS` / `TASK_ORDER` / argparse `choices` / docstring 移除 intraday（4 处）
++ 5. **bump version** `3.1.2` → `3.1.3`
++ 6. **新增** `cron_jobs/README.md` — 澄清目录角色（人类可读镜像，不是机器读的模板），含 4 端真相分布表 + 维护纪律 + 验证脚本
++ **验证（全部 ✅）：**
++ - `python3 skill_dispatcher.py --help` → choices={morning,evening,weekend}
++ - `python3 skill_dispatcher.py --task intraday` → exit 2 `invalid choice`（正常拦截）
++ - `grep -rn intraday templates/` → 干净
++ - `cron_jobs/` 目录：3 个独立脚本型 json 齐（close_summary/intraday/ipo_report）
++ **影响范围：**
++ - ✅ 生产 cron（OpenClaw jobs.json）未动，盘中预警照常每 5 分钟运行
++ - ✅ 早报/晚报/周末要闻的 3 个 templates/ 未动
++ - ✅ LLM 驱动型 dispatcher 不再支持 `--task intraday`（也从未被任何 cron 调用）
++ ```
++ ---
++ *本文件由 v3.2.0 护栏脚本自动从 SKILL.md Changelog 段拆分外置。原条目位置：L?（迁移前）。*
+
+### knowledge/changelog/v3.1.4.md  [docs]
++ # v3.1.4 — cron_jobs/ 三合一：强制一致 + 修订 README + 修技能注释残留（2026-06-09 晚）
++ > 本文件是 SKILL.md Changelog 段 v3.1.4 条目的**完整外置细节**。SKILL.md 里只保留精简版（问题 + 结论 + 详见本文件），详细描述见下方原文。
++ ## 精简版（SKILL.md 同款）
++ 详见下方"原文"段。
++ ## 原文（27 行完整版）
++ ```markdown
++ ### v3.1.4 — cron_jobs/ 三合一：强制一致 + 修订 README + 修技能注释残留（2026-06-09 晚）
++ **问题根因：** v3.1.3 新建 `cron_jobs/intraday.json` 时，目录里变成"3 个独立 json"形式，存在两个隐患：
++ 1. **纪律性负担**：3 任务的 prompt 跟 `~/.hermes/cron/jobs.json` 强相关，改一处容易忘改另两处（虽然有 README 验证命令兜底，但**靠纪律总不如靠结构强制**）。
++ 2. **与 jobs.json 结构不对称**：生产端 jobs.json 是单文件多任务，镜像却拆 3 文件，**镜像/源 不一致**。
++ **清理内容：**
++ 1. **合井 3 文件** → `cron_jobs/cron_mirror.json`（67 行 / 2.6KB），结构：`_meta` + `tasks.{close_summary,intraday,ipo_report}`
++ 2. **3 旧文件 mv 到备份** `/workspace/archive/cron_jobs_3split_20260609_1952.bak/`（可恢复，遵循 workspace 安全原则）
++ 3. **重写 README**：单文件结构、4 端真相分布、维护纪律、验证命令同步更新为 `mirror['tasks'][key]['prompt']`
++ 4. **修订 SKILL.md 任务清单 3 处**：引用从 `cron_jobs/{close_summary,intraday,ipo_report}.json` 改为 `cron_jobs/cron_mirror.json#{close_summary,intraday,ipo_report}`
++ 5. **修订 `skill_dispatcher.py` L16 docstring 注释残留**（v3.1.3 时漏改）
++ 6. **bump version** `3.1.3` → `3.1.4`
++ **验证（全部 ✅）：**
++ - `cron_mirror.json` 是有效 json，含 `_meta` + 3 tasks
++ - README 验证命令实跑：3 任务的 prompt 仍与 `jobs.json` 一字不差（True/True/True）
++ - `cron_jobs/` 目录现仅 `README.md` (2.9KB) + `cron_mirror.json` (3.5KB)
++ - `grep -E "cron_jobs/(close_summary|intraday|ipo_report)\\.json" scripts templates` → 干净（代码引用 0 残留）
++ - SKILL.md Changelog 历史段（v3.1.3 的 3 处历史引用）**保留**——历史就是历史
++ - cron_mirror.json `_meta.note` + README 历史段：保留迁移痕迹，可追溯
++ **影响范围：**
++ - ✅ 生产 cron `jobs.json` 未动，3 任务照常运行
++ - ✅ `templates/` 4 个 LLM 模板未动，dispatcher 行为不变
++ - ✅ 备份完整 → 回滚成本：1 个 `mv` 命令
++ ```
++ ---
++ *本文件由 v3.2.0 护栏脚本自动从 SKILL.md Changelog 段拆分外置。原条目位置：L?（迁移前）。*
+
+### knowledge/changelog/v3.1.5.md  [docs]
++ # v3.1.5 — 4 端一致性护栏脚本：把"漏改"变成机械可锁（2026-06-09 晚）
++ > 本文件是 SKILL.md Changelog 段 v3.1.5 条目的**完整外置细节**。SKILL.md 里只保留精简版（问题 + 结论 + 详见本文件），详细描述见下方原文。
++ ## 精简版（SKILL.md 同款）
++ 详见下方"原文"段。
++ ## 原文（34 行完整版）
++ ```markdown
++ ### v3.1.5 — 4 端一致性护栏脚本：把"漏改"变成机械可锁（2026-06-09 晚）
++ **问题根因：** A 股报告系统有 **4 端真相**——`templates/`（LLM 调度模板，机器读）/ `cron_jobs/cron_mirror.json`（生产 cron 镜像，人读）/ `~/.hermes/cron/jobs.json`（生产 cron 真实配置，OpenClaw 读）/ `SKILL.md`（文档）。v3.1.3 暴露的"幽灵模板"就是 4 端不一致的典型后果。
++ 之前所有版本靠 **README 验证命令 + 纪律** 防止不一致，但 v3.1.3/v3.1.4 都靠"人来跑那个一行命令"——一旦忘了跑，就可能再发。**靠纪律总不如靠结构强制**。
++ **新增内容：**
++ 1. **新建** `scripts/check_consistency.py`（177 行，纯 stdlib，3 个 flag：normal/verbose/fix-hint），检查 4 项：
++    - **A.** `templates/` ↔ `cron_mirror.tasks` 任务集一致性
++    - **B.** `cron_mirror` ↔ `jobs.json` 3 任务的 prompt 字段**一字不差**（最关键）
++    - **C.** SKILL.md 任务清单段引用（`templates/X.json` 或 `cron_mirror.json#X`）真实存在
++    - **D.** dispatcher 任务（morning/evening/weekend）**不**出现在 cron_mirror（角色隔离）
++ 2. **退出码**：0=全过，1=有错误，2=致命（路径错）
++ 3. **SKILL.md 任务清单段上方**加护栏警告段：明确"改哪 4 类文件后必须跑这个脚本"
++ 4. **cron_jobs/README.md** 维护纪律段加护栏脚本推荐，legacy 一行命令保留为备选
++ 5. **bump version** `3.1.4` → `3.1.5`
++ **自验证（4 个测试全过 ✅）：**
++ - 现状：4/4 项通过，exit=0
++ - 测 1：在 jobs.json 收盘小结 prompt 末尾加 `# TEST` 行 → B 段抓到（jobs.json 115 字符 vs mirror 96 字符），exit=1
++ - 测 2：把 SKILL.md 收盘小结引用改成不存在的 `xxx_does_not_exist` → C 段抓到，exit=1
++ - 测 3：在 cron_mirror.tasks 加 `morning`（角色混淆）→ D 段抓到，exit=1
++ - 恢复后：4/4 项通过，exit=0
++ **影响范围：**
++ - ✅ 4 端未动（只读 + 备份 + 恢复）
++ - ✅ dispatcher、生产 cron 行为不变
++ - ✅ 后续每次改 4 类文件**应**跑一次（文档已明确"必须"）
++ **已知未做（v3.1.5 不超范围）：**
++ - 跨 skill 引用一致性（如 hithink-market-query 的 API 变更）
++ - templates 内部 prompt 跟 dispatcher 注入逻辑的一致性
++ - CI 自动化（脚本可接入，但暂未配 GitHub Actions / pre-commit hook）
++ ```
++ ---
++ *本文件由 v3.2.0 护栏脚本自动从 SKILL.md Changelog 段拆分外置。原条目位置：L?（迁移前）。*
+
+### knowledge/changelog/v3.1.6.md  [docs]
++ # v3.1.6 — 4 端一致性护栏补 E 段：SKILL.md 主体禁止硬编码 cron 表达式 / .env 路径 / source+send 一行命令（2026-06-09 晚）
++ > 本文件是 SKILL.md Changelog 段 v3.1.6 条目的**完整外置细节**。SKILL.md 里只保留精简版（问题 + 结论 + 详见本文件），详细描述见下方原文。
++ ## 精简版（SKILL.md 同款）
++ 详见下方"原文"段。
++ ## 原文（31 行完整版）
++ ```markdown
++ ### v3.1.6 — 4 端一致性护栏补 E 段：SKILL.md 主体禁止硬编码 cron 表达式 / .env 路径 / source+send 一行命令（2026-06-09 晚）
++ **问题根因：** v3.1.5 的 4 段护栏覆盖了"代码/配置/镜像"三端不一致，但漏了**第 4 端（SKILL.md 文档）自身**的硬编码残留。具体两类隐患：
++ 1. **历史遗留 cron 表达式**散落在 SKILL.md 主体（任务清单段之外）——改 cron 表达式要改 4 处（jobs.json / cron_mirror.json / templates / SKILL.md），最容易忘改 SKILL.md 这处。
++ 2. **历史遗留 `.env 路径` + `source+send 一行命令`** 也散落 SKILL.md 主体——安全配置和推送共用库（v3.1.1）已统一收口，但旧文档残留靠人盯。
++ **新增内容：**
++ 1. **E 段** `check_consistency.py` 新增 section_e（37 行新增，补丁）：
++    - 扫 SKILL.md 主体（白名单：Changelog 段、任务清单段 L884~L906）
++    - 黑名单模式：
++      - `cron_pat = \`[\d\*/\,]+\s+[\d\*/\,]+\s+[\d\*/\,]+[^\`]*\``（≥3 段 cron 表达式，反引号包裹，整行或行内嵌入都抓）
++      - `env_pat = source /workspace/\.env`
++      - `send_inline_pat = source /workspace/\.env.*python3.*send_\w+\.py`
++    - 关键修复 3 处：① `[*0-9/,\-\s]+` 中 `*` 在字符类里不是字面量（被 Python 当"任意字符"），必须写成 `[\d\*\/\,\-]+`；② `match` 改成 `search`（cron 嵌入行内也命中）；③ 移除 `\s*$` 行尾约束（行内嵌入不在行尾）
++ 2. **退出码语义不变**：0/1/2（这次 E 段命中走已有失败路径，无需改 main()）
++ 3. **bump version** `3.1.5` → `3.1.6`
++ **自验证（3 个测试全过 ✅）：**
++ - 测 1：在 SKILL.md 主体注入 `\`0 9 * * 1-5\`` 嵌入行内 → E 段抓到 L517，exit=1
++ - 测 2/3：同时注入 `source /workspace/.env` 和 `source /workspace/.env && python3 send_wecom.py` → E 段抓到 3 处（.env 命中 2 行、send_inline 命中 1 行），exit=1
++ - 恢复后：5/5 项通过，exit=0
++ **影响范围：**
++ - ✅ 4 端未动（只读 + 备份 + 恢复 + 3 个临时测试已全部清掉）
++ - ✅ dispatcher、生产 cron 行为不变
++ - ✅ 后续每次改 SKILL.md **应**额外跑一次（4 类文件 → 5 类文件，已合并到护栏警告段）
++ **已知未做（v3.1.6 不超范围）：**
++ - 反引号包裹的"非 cron 数字组合"误伤防护（已用"≥3 段+空白分隔"降低误伤，但理论上 `\`1 2 3\`` 仍会命中；可接受）
++ - 自动修复（违规行不能机械删——人需要决定改成什么）
++ ```
++ ---
++ *本文件由 v3.2.0 护栏脚本自动从 SKILL.md Changelog 段拆分外置。原条目位置：L?（迁移前）。*
+
+### knowledge/changelog/v3.2.0.md  [docs]
++ # v3.2.0 — Changelog 段瘦身 + F 段护栏：机械防膨胀（2026-06-09 晚）
++ > 本文件是 SKILL.md Changelog 段 v3.2.0 条目的**完整外置细节**。
++ ## 精简版（SKILL.md 同款）
++ 详见下方"原文"段。
++ ## 原文（精简版同源，详见 SKILL.md 第 17~20 行）
++ 精简版在 SKILL.md 已有，下面写**实施细节**和**决策过程**。
++ ---
++ ## 实施细节
++ ### 问题诊断（执行前）
++ - SKILL.md 1001 行
++ - Changelog 段 L13~L500 = 488 行（48.8%）
++ - 单条最大 v3.0.0 = 86 行
++ - 单条最小 v2.0.2 = 9 行
++ - 14 个版本段共占 488 行
++ ### 方案选择（C + A 组合）
++ **用户确认**："Changelog 段长度限制具体指什么？" → 4 个选项中**用户超时未答**，综合"长度要有限制，不能太长"+"48.8% 占比过重"+"单条最大 86 行"三个信号，选 **C + A 组合**：
++ - **C（内容精简）**：每条只保留"问题+结论+影响"，细节外置到 `knowledge/changelog/` 或 git log
++ - **A（单条硬上限 25 行）**：机械可锁（E 段类护栏，~10 行新增）
++ - **B（整体上限）**：作为软目标（"最近 5 个版本总长 < 150 行"）
++ ### 4 步实施流程
++ 1. **解析**：用 `### vX.Y.Z — 标题（日期）` 正则定位 14 条版本段（v2.0.0 ~ v3.1.6）
++ 2. **外置**：每条原文 + 标题/日期包装 → `knowledge/changelog/vX.Y.Z.md`，含 README 索引
++ 3. **精简**：14 条摘要版写入 SKILL.md，每条 3-8 行（远低于 25 行硬上限）
++ 4. **护栏**：`check_consistency.py` 加 F 段（80 行），机械扫描 + 退出码 1
++ ### 文件结构变化
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ~/.hermes/skills/A-stock-report/
++ ├── SKILL.md                1001 → 622 行 (-38%)
++ ├── scripts/
++ │   └── check_consistency.py  5 段 → 6 段（+F 段）
++ └── knowledge/
++     └── changelog/           🆕 v3.2.0 新建
++         ├── README.md        索引
++         ├── v2.0.0.md        16 行原文
++         ├── v2.0.1.md        19 行原文
++         ├── v2.0.2.md        9 行原文
++         ├── v2.0.3.md        54 行原文
++         ├── v2.0.4.md        28 行原文
++         ├── v2.0.10.md       28 行原文
++         ├── v3.0.0.md        86 行原文
++         ├── v3.1.0.md        68 行原文
++         ├── v3.1.1.md        22 行原文
++         ├── v3.1.2.md        32 行原文
++         ├── v3.1.3.md        32 行原文
++         ├── v3.1.4.md        27 行原文
++         ├── v3.1.5.md        34 行原文
++         ├── v3.1.6.md        31 行原文
++         └── v3.2.0.md        本文件
++ ### F 段护栏工作原理
++ ```python
++ CHANGELOG_MAX_LINES = 25  # 硬上限
++ # 1. 找 ## 版本历史 段起止
++ # 2. 用 ^###\s+v\d+\.\d+\.\d+\s+— 正则找每条标题
++ # 3. 每条长度 = 下一条标题行号 - 当前标题行号
++ # 4. 任何一条 > 25 行 → exit 1
++ # 5. 通过 → 打印每条行数 + 统计
++ ### F 段自验证（实际跑）
++ === F. Changelog 段单条长度硬上限（≤ 25 行） ===
++   ✅ v3.2.0 (L17~L24): 8 行
++   ✅ v3.1.6 (L25~L32): 8 行
++   ✅ v3.1.5 (L33~L40): 8 行
++   ... (14 条全部通过)
++   📊 Changelog 段共 14 条，最长 8 行
++ ✅ 全部 6/6 项通过
++ ### 完整护栏跑分（v3.2.0 + 全部 6 段）
++ === A. templates/ 与 cron_mirror 任务交集 === ✅
++ === B. cron_mirror 与 jobs.json prompt 一致性 === ✅ (3/3)
++ === C. SKILL.md 任务清单段引用有效性 === ✅ (6/6)
++ === D. dispatcher ↔ templates/ 实际文件 === ✅
++ === E. SKILL.md 主体禁止硬编码 === ✅
++ === F. Changelog 段单条长度硬上限 === ✅ (14/14)
++ ## 风险评估
++ | 风险 | 缓解 |
++ |------|------|
++ | 旧 changelog 引用 "L486 之前" 行号失效 | 外置文件用版本号定位，git log 可追溯 |
++ | 未来维护者不知道有外置目录 | SKILL.md Changelog 段开头 + 索引 README 双提示 |
++ | F 段硬上限 25 行太严 | 软目标 18，违规时打印"详见外置目录"修复路径 |
++ | E 段和 F 段正则冲突 | F 段只读 `### vX.Y.Z` 标题前缀，E 段白名单已放行 Changelog 段 |
++ ## 教训沉淀
++ 1. **C+A 组合优于单一方案**：内容精简（治本）+ 机械上限（治标）双管齐下
++ 2. **外置细节而非删除**：保留可追溯性 + 减少 SKILL.md 体积
++ 3. **护栏要可执行**：F 段 ~80 行代码，CI 可跑 + 退出码 1，**比"君子协议"靠得住**
++ 4. **用户超时也要继续**：综合多信号做合理选择 + 明确说明决策依据
+
+### knowledge/risk-premium.md  [docs]
+- # 股市风险溢价（Stock Risk Premium）
+- > **指标定义**：股票盈利收益率 − 无风险利率 = 1/PE − 10年国债收益率
+- > **含义**：越大越低估（股票相对债券越便宜）
+- ## 1. 计算公式
+- ```
+- ```
+- 风险溢价 = (1 / 中证全指PE − 10年国债收益率%) × 100%
+- **数据源**（`collect_evening_data.py` line 329-422）：
+- | 数据 | 接口 | 备注 |
+- |------|------|------|
+- | 中证全指 PE | `ak.stock_zh_index_value_csindex('000985')` | **数据滞后**（中证指数公司发布有延迟） |
+- | 10年国债 | `ak.bond_china_yield()` 中债国债收益率曲线 | 当天数据 |
+- | 沪深300 PE | `ak.stock_index_pe_lg('沪深300')` | **仅展示**，不参与风险溢价 |
+- | 沪深300 5年分位 | 同上 + 历史 PE 计算 | **交叉验证** |
+- ## 2. 阈值（2026-06 调整）
+- | 风险溢价 | 判断 | 推送显示 |
+- |----------|------|----------|
+- | `< 3%` | **高估** | `<3%高估` |
+- | `3% ~ 5%` | **中性** | `3-5%中性` |
+- | `> 5%` | **低估** | `>5%低估` |
+- **调整时间**：2026-06-05
+- **调整原因**：旧阈值 `<3% / 3-6% / >6%` 的 `>6%` 太严，历史上只有 2008/2018/2022 三个大底才到 6%，漏判大部分低估机会。
+- **调整后**：`5%` 是 A 股历史中位偏低分位，对应 PE~20，能更早识别低估机会。
+- ## 3. 历史经验值（沪深300 + 中证全指平均）
+- | 时间段 | 风险溢价 | 历史事件 | 旧逻辑 | 新逻辑 |
+- |--------|----------|----------|--------|--------|
+- | 2007 大牛市顶部 | ~0% | 极度高估 | "高估" ✅ | "高估" ✅ |
+- | 2015 中 | ~0.5%~1% | 牛市顶部 | "高估" ✅ | "高估" ✅ |
+- | 2018 底 | ~5%~6% | 熊市底部 | "中性" ❌ | "低估" ✅ |
+- | 2022 底 | ~5%~6% | 熊市底部 | "中性" ❌ | "低估" ✅ |
+- | 2024-2026 区间 | ~2%~4% | 震荡 | "高估/中性" | 同左 |
+- ## 4. 阈值 ≠ 其他 skill 的 ERP 阈值
+- **注意**：`A-share-sentiment-thermometer` skill 里的 ERP 阈值是 `[0.5, 1.5, 2.5, 3.5, 4.5, 5.5]`，用的是**沪深300 PE**。
+- A-stock-report 这里的风险溢价用的是**中证全指 PE**。**两个指标不可混用**。
+- | 指标 | 数据源 | 阈值 | 含义 |
+- |------|--------|------|------|
+- | ERP（情绪温度计） | 沪深300 PE + 国债 | 0.5-5.5% | 越大越悲观 |
+- | 股市风险溢价（晚报） | 中证全指 PE + 国债 | 3%/5% | 越大越低估 |
+- ## 5. 代码位置
+- - 计算：`/workspace/skills/A-stock-report/scripts/collect_evening_data.py` line 329-422
+- - 推送文案：同上 line 618-630（line 619 判断、line 628 阈值注释）
+- ## 6. 注意事项
+- 1. **数据滞后**：中证全指 PE 数据有延迟（通常滞后数天），10年国债是当天。
+- 2. **推送日期**：使用 `effective_date`（用户指定日期），**不是 PE 实际数据日期**。
+- 3. **推送时建议**：在风险溢价旁**同时显示沪深300 PE 5年分位**作为交叉验证。
+
+### references/config.json  [code]
++ {
++   "_note": "配置参考 — 来自历史对话确认，2026-04-04 整理",
++   "_note_security": "所有外部密钥必须通过环境变量注入，禁止硬编码。详见 SKILL.md 安全配置章节。",
++   "_bug_fixes_required": [
++     {
++     {
++       "issue": "晚报、收盘小结的 delivery 残留 channel:wecom，导致 mode:none 时仍尝试推送 wecom 通道报错",
++       "affected_jobs": ["晚报-推送(AI版)", "收盘小结-推送"],
++       "fix": "patch cron job，删除 channel 字段（设为空或不传），仅保留 mode:none",
++       "patch_example": { "delivery": { "mode": "none" } }
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++       "issue": "晨报、晚报、IPO周报、工作区整理的 payload 中 Webhook URL 仍硬编码",
++       "affected_jobs": ["晨报-推送(AI版)", "晚报-推送(AI版)", "A股IPO周报", "工作区整理"],
++       "fix": "payload Python 代码改为 import keys_loader; get_webhook_url() 读取",
++       "old_pattern": "key=<已隐藏>",
++       "new_pattern": "sys.path.insert(0, '/workspace/keys'); from keys_loader import get_webhook_url"
++     }
++     }
++   ],
++   "cron_jobs": {
++     "晨报": {
++       "id": "fa939ac2-d674-4f0e-a793-393218435c6c",
++       "schedule": "0 8 * * 1-5",
++       "tz": "Asia/Shanghai",
++       "tz": "Asia/Shanghai",
++       "tz": "Asia/Shanghai",
++       "tz": "Asia/Shanghai",
++       "tz": "Asia/Shanghai",
++       "tz": "Asia/Shanghai",
++       "tz": "Asia/Shanghai",
++       "delivery": { "mode": "announce", "channel": "last" },
++       "delivery": { "mode": "announce", "channel": "last" },
++       "status": "ok",
++       "data_flow": "AI agent 生成报告 → Python 推送 Webhook",
++       "webhook_in_payload": true,
++       "webhook_in_payload": true,
++       "fix_note": "建议通过 WECOM_WEBHOOK_KEY 环境变量读取后直推企业微信"
++     "晚报": {
++       "id": "44882473-0229-4832-8e32-232159d38874",
++       "schedule": "0 20 * * 1-5",
++       "delivery": { "mode": "none", "channel": "wecom" },
++       "delivery": { "mode": "none", "channel": "wecom" },
++       "status": "error_delivery_conflict",
++       "status": "error_delivery_conflict",
++       "fix_needed": "删除 channel 字段，仅保留 mode:none"
++       "fix_needed": "删除 channel 字段，仅保留 mode:none"
++     "收盘小结": {
++       "id": "b93a83c0-1019-443a-9e16-09634ddc8eb8",
++       "schedule": "30 15 * * 1-5",
++     "盘中预警": {
++       "id": "d0553464-89f7-42e4-a759-0730b409eb12",
++       "schedule": "*/5 9-11,13-15 * * 1-5",
++       "delivery": { "mode": "none", "channel": "last" },
++       "delivery": { "mode": "none", "channel": "last" },
++       "status": "ok"
++       "status": "ok"
++     "IPO周报": {
++       "id": "7210fef6-4e6a-42e3-b52a-5b442dc4c90e",
++       "schedule": "0 9 * * 6",
++     "财经周末要闻": {
++       "_status": "已删除重建（webhook硬编码修复），新ID待记录",
++       "old_id": "ae7ac0ff-196f-4ef5-b3f9-cecb6e525bb0",
++       "schedule": "0 20 * * 0",
++       "delivery": { "mode": "none" },
++       "data_flow": "AI agent 搜索48h新闻 → 生成报告 → Python Webhook推送",
++       "fix_note": "建议通过 WECOM_WEBHOOK_KEY 环境变量读取后直推企业微信",
++       "prompt_in_skill": "SKILL.md 第4节",
++       "_重建命令": "cron add — name:财经周末要闻, schedule:0 20 * * 0, payload.agentTurn:见SKILL.md第4节, delivery.mode:none"
++     "工作区整理": {
++       "id": "36f572fc-eeb0-445a-b039-2d4ec66d6347",
++       "schedule": "0 2 * * *",
++       "status": "error",
++       "error": "Channel is required when multiple channels are configured"
++   },
++   },
++   "webhook": {
++     "storage": "/workspace/keys/wecom_webhook.ini",
++     "reader": "/workspace/keys/keys_loader.py",
++     "section": "wecom_webhook",
++     "key_option": "key"
++   "delivery_mode_guide": {
++     "announce_channel_last": "主会话 announce，推送结果回到当前会话 — 适合晨报",
++     "none": "脚本内 Webhook 直推，不依赖 OpenClaw 通道 — 适合所有日报任务",
++     "重要原则": "多通道配置时（同时有 wecom + weixin），所有 webhook 直推任务必须 mode:none 且不指定 channel"
++   }
++ }
+
+### scripts/_send_lib.py  [code]
++ #!/usr/bin/env python3
++ """
++ """
++ A-stock-report 推送共用库
++ 提供 4 个 send 脚本的共用能力：
++ - get_webhook_url()：从 env 读 webhook
++ - wx(text)：curl 风格推送 + 自动重试
++ - notify_failure(prefix, msg)：v3.1.0 补丁 2 修复版 — 内部 try/except，
++   wx() 自身失败时只打印 stderr，不再阻断主流程
++ 设计原则（2026-06-08 教训）：
++     except 块内调用的任何可能抛异常的函数，必须被调方内部包裹 try/except。
++     否则新异常会替换原异常冒泡，外层 _exit_code = 1 等清理代码被跳过。
++ 用法：
++     import sys, os
++     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
++     from _send_lib import get_webhook_url, wx, notify_failure
++ import json
++ import os
++ import subprocess
++ import sys
++ from datetime import datetime, timezone, timedelta
++ # 北京时区，统一时间戳
++ _BJ = timezone(timedelta(hours=8))
++ _ts = lambda: datetime.now(_BJ).strftime("%H:%M:%S")
++ def get_webhook_url() -> str:
++     """从 env 读 webhook URL，缺失时抛 RuntimeError"""
++     key = os.environ.get("WECOM_WEBHOOK_KEY", "")
++     if not key:
++         raise RuntimeError("WECOM_WEBHOOK_KEY environment variable not set")
++     return f"https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key={key.strip()}"
++ def wx(text: str, max_retries: int = 2) -> int:
++     """企业微信推送，curl 风格，带自动重试。
++     返回 0 = 成功，-1 = 失败。
++     v3.1.1 修复：内部 try/except 包住 get_webhook_url()。
++     若 WECOM_WEBHOOK_KEY 缺失（RuntimeError）则返回 -1 而不抛异常，
++     避免外层 `except Exception` 块中调用的 wx() 自身崩（与 v3.1.0 教训同源）。
++     """
++     """
++     payload = json.dumps({"msgtype": "text", "text": {"content": text}}, ensure_ascii=False)
++     for attempt in range(max_retries + 1):
++         try:
++         try:
++             url = get_webhook_url()
++         except RuntimeError as _e:
++             print(f"[{_ts()}] [WX] webhook URL 获取失败: {_e}")
++             return -1
++         r = subprocess.run(
++             ["curl", "-s", "-X", "POST", url,
++              "-H", "Content-Type: application/json", "-d", "@-"],
++             input=payload.encode("utf-8"), capture_output=True)
++             errcode = json.loads(r.stdout.decode()).get("errcode", -1)
++         except Exception:
++             errcode = -1
++         if errcode == 0:
++             return 0
++         if attempt < max_retries:
++             print(f"[{_ts()}] [WX] 发送失败，errcode={errcode}，重试中...")
++     return -1
++ def notify_failure(prefix: str, msg: str) -> None:
++     """推送失败时通过企业微信发预警通知（v3.1.0 补丁 2 修复版）。
++     关键修复：内部包裹 try/Exception，wx() 自身失败时（包括 WECOM_WEBHOOK_KEY
++     缺失导致的 RuntimeError、网络错误等）仅打印到 stderr，**不再阻断主流程**。
++     原 bug：notify_failure 自身 wx() 失败时抛异常，外层 `except Exception` 块
++     里 `_exit_code = 1` 还没执行就被新异常冒泡替换，导致脚本永远 exit 0 +
++     打印"✅ 已完成"误导监控。
++     prefix 示例：「晚报」「晨报」「收盘小结」「盘中预警」「周末要闻」「IPO周报」
++     try:
++         alert = f"⚠️ 【{prefix}推送失败】\n{msg}\n\n请及时检查 cron 任务状态。"
++         _err = wx(alert)
++         if _err == 0:
++             print(f"[{_ts()}] 失败通知已发送")
++         else:
++             print(f"[{_ts()}] 失败通知发送失败: err={_err}")
++     except Exception as _e:
++         # notify_failure 自身失败也不能让外层崩
++         # 退化方案：仅打印到 stderr，让 cron 日志能捕获
++         sys.stderr.write(f"[{_ts()}] notify_failure 失败: type={type(_e).__name__} msg={_e}\n")
++         sys.stderr.flush()
+
+### scripts/check_consistency.py  [code]
++ #!/usr/bin/env python3
++ """
++ """
++ check_consistency.py — A-stock-report 4 端一致性护栏脚本
++ 检查 SKILL.md / templates/ / cron_jobs/ / ~/.hermes/cron/jobs.json 4 端
++ 在"任务清单 / 文件路径 / prompt 内容"三方面是否一致。
++ 设计目标：
++ - 单文件、无外部依赖（stdlib only）
++ - 退出码：0=全过，1=有错误，2=致命（路径错）
++ - 输出清晰：每条错误单独一行，附修复建议
++ - 不修改任何文件（只读）
++ 用法：
++   python3 scripts/check_consistency.py            # CI 模式，只看退出码
++   python3 scripts/check_consistency.py --verbose  # 显示每条 ✅ 通过
++   python3 scripts/check_consistency.py --fix-hint # 错误时打印修复建议
++ 触发场景（v3.1.5+ 必须遵守）：
++ - 修改 templates/*.json 后：跑一次
++ - 修改 cron_jobs/cron_mirror.json 后：跑一次
++ - 修改 ~/.hermes/cron/jobs.json 中 3 个独立脚本任务后：跑一次
++ - 修改 SKILL.md 任务清单段后：跑一次
++ - release 前：跑一次
++ 历史：
++ - v3.1.5 新建（解决"担心漏改"动机，根除 templates/intraday.json 那种幽灵模板的再发）
++ - v3.1.6 加 E 段（SKILL.md 主体禁 cron/.env/source+send 残留）
++ - v3.2.0 加 F 段（Changelog 单条长度硬上限 25 行）
++ import json
++ import re
++ import sys
++ from pathlib import Path
++ SKILL_DIR = Path("/root/.hermes/skills/A-stock-report")
++ TEMPLATES_DIR = SKILL_DIR / "templates"
++ CRON_MIRROR = SKILL_DIR / "cron_jobs" / "cron_mirror.json"
++ SKILL_MD = SKILL_DIR / "SKILL.md"
++ JOBS_JSON = Path.home() / ".hermes" / "cron" / "jobs.json"
++ # dispatcher 支持的 3 个 LLM 任务（来源：scripts/skill_dispatcher.py argparse choices）
++ DISPATCHER_TASKS = {"morning", "evening", "weekend"}
++ # 任务名 ↔ 人类可读名（来自 jobs.json 习惯）
++ HUMAN_NAME = {
++     "close_summary": "A股收盘小结",
++     "intraday": "A股盘中预警",
++     "ipo_report": "A股IPO周报",
++ }
++ def header(s):
++     print(f"\n=== {s} ===")
++ def ok(msg, verbose=False):
++     if verbose:
++         print(f"  ✅ {msg}")
++ def fail(msg, fix_hint=None):
++     print(f"  ❌ {msg}")
++     if fix_hint:
++         print(f"     💡 修复：{fix_hint}")
++ def section_a(verbose=False):
++     """A. templates/ ↔ cron_mirror：3 个 LLM 任务 ⊆ cron_mirror.tasks"""
++     header("A. templates/ 与 cron_mirror 任务交集")
++     if not CRON_MIRROR.exists():
++     if not CRON_MIRROR.exists():
++         fail(f"{CRON_MIRROR} 不存在")
++         fail(f"{CRON_MIRROR} 不存在")
++         return False
++         return False
++         return False
++         return False
++         return False
++         return False
++         return False
++         return False
++         return False
++         return False
++         return False
++     mirror = json.loads(CRON_MIRROR.read_text())
++     mirror = json.loads(CRON_MIRROR.read_text())
++     mirror_keys = set(mirror.get("tasks", {}).keys())
++     templates_files = {f.stem for f in TEMPLATES_DIR.glob("*.json") if f.suffix == ".json"}
++     llm_in_templates = templates_files & DISPATCHER_TASKS
++     ok(f"templates/ 含 LLM 任务: {sorted(llm_in_templates)}", verbose)
++     # 全部 LLM 任务应在 cron_mirror 之外（它们不是独立脚本），所以此处只确认 templates 存在性
++     missing_in_templates = DISPATCHER_TASKS - templates_files
++     if missing_in_templates:
++         fail(f"dispatcher 期望的 LLM 任务 {missing_in_templates} 在 templates/ 缺失")
++     ok("dispatcher 3 任务 ↔ templates/ 一致", verbose)
++     return True
++     return True
++     return True
++ def section_b(verbose=False):
++     """B. cron_mirror ↔ jobs.json：3 任务的 prompt 字段一字不差"""
++     header("B. cron_mirror 与 jobs.json prompt 一致性")
++     if not JOBS_JSON.exists():
++         fail(f"{JOBS_JSON} 不存在")
++     jobs = json.loads(JOBS_JSON.read_text())
++     jobs_by_name = {j["name"]: j for j in jobs.get("jobs", [])}
++     all_ok = True
++     all_ok = True
++     all_ok = True
++     for task_key, human_name in HUMAN_NAME.items():
++         if task_key not in mirror["tasks"]:
++             fail(f"cron_mirror.tasks 缺 {task_key}（{human_name}）")
++             all_ok = False
++             all_ok = False
++             all_ok = False
++             all_ok = False
++             continue
++             continue
++             continue
++             continue
++             continue
++         if human_name not in jobs_by_name:
++             fail(f"jobs.json 缺 {human_name}（cron_mirror 里有 {task_key}）")
++         mirror_prompt = mirror["tasks"][task_key]["prompt"]
++         jobs_prompt = jobs_by_name[human_name]["prompt"]
++         if mirror_prompt == jobs_prompt:
++             ok(f"{human_name} prompt 一字不差", verbose)
++         else:
++         else:
++         else:
++         else:
++             fail(f"{human_name} prompt 不一致")
++             print(f"     jobs.json  ({len(jobs_prompt)} 字符): {jobs_prompt[:60]!r}...")
++             print(f"     mirror     ({len(mirror_prompt)} 字符): {mirror_prompt[:60]!r}...")
++             print(f"     💡 修复：改 jobs.json 或 mirror 中落后的那个")
++     return all_ok
++     return all_ok
++     return all_ok
++ def section_c(verbose=False):
++     """C. SKILL.md 任务清单段 ↔ 文件存在：3 模板 + 3 镜像引用都应真实存在"""
++     header("C. SKILL.md 任务清单段引用有效性")
++     if not SKILL_MD.exists():
++     if not SKILL_MD.exists():
++     if not SKILL_MD.exists():
++         fail(f"{SKILL_MD} 不存在")
++         fail(f"{SKILL_MD} 不存在")
++         fail(f"{SKILL_MD} 不存在")
++     skill_text = SKILL_MD.read_text()
++     # 找形如 "### N. 任务名（详见 path）" 的标题行
++     heading_re = re.compile(r"^### \d+\. (.+?)（详见 (.+?)）", re.MULTILINE)
++     headings = heading_re.findall(skill_text)
++     for task_name, ref in headings:
++         # 解析 ref
++         if ref.startswith("templates/") and ref.endswith(".json"):
++             # 模板路径
++             f = SKILL_DIR / ref
++             if not f.exists():
++                 fail(f"SKILL.md 任务 '{task_name}' 引用 {ref} 但文件不存在")
++                 all_ok = False
++                 all_ok = False
++                 all_ok = False
++             else:
++             else:
++                 ok(f"任务 '{task_name}' → {ref} 存在", verbose)
++                 ok(f"任务 '{task_name}' → {ref} 存在", verbose)
++         elif ref.startswith("cron_jobs/cron_mirror.json#"):
++             # 镜像路径，格式：cron_jobs/cron_mirror.json#task_key
++             task_key = ref.split("#", 1)[1]
++             if not CRON_MIRROR.exists():
++                 fail(f"SKILL.md 任务 '{task_name}' 引用 {ref} 但 mirror 不存在")
++                 continue
++             mirror = json.loads(CRON_MIRROR.read_text())
++             if task_key not in mirror.get("tasks", {}):
++                 fail(f"SKILL.md 任务 '{task_name}' 引用 {ref} 但 mirror.tasks 缺 {task_key}")
++             fail(f"SKILL.md 任务 '{task_name}' 引用 {ref} 格式无法识别（既不是 templates/ 也不是 cron_mirror.json#）")
++ def section_d(verbose=False):
++     """D. dispatcher 支持的 task ⊆ templates/ 实际文件"""
++     header("D. dispatcher ↔ templates/ 实际文件")
++     dispatcher_in_mirror_set = set()  # dispatcher 的 task 应不在 mirror（它们是 LLM 任务）
++     if CRON_MIRROR.exists():
++         mirror = json.loads(CRON_MIRROR.read_text())
++         dispatcher_in_mirror_set = set(mirror.get("tasks", {}).keys())
++     conflict = DISPATCHER_TASKS & dispatcher_in_mirror_set
++     if conflict:
++         fail(f"dispatcher 任务 {conflict} 不应出现在 cron_mirror（它们是 LLM 任务不是独立脚本）")
++     ok(f"dispatcher 任务 {DISPATCHER_TASKS} 与 cron_mirror 任务无重叠", verbose)
++ def section_e(verbose=False):
++     """E. SKILL.md 主体（任务清单段之外）禁止出现 cron 表达式和 source .env 命令
++     v3.1.5 清理动机：v3.0 外置了 templates/ 和 cron_jobs/，但 SKILL.md 主体里
++     仍残留「## 快速开始」11 条 source 命令、「## 定时任务」7 个 cron 表达式、
++     「## 安装与验证」Step 1/3 重复表——v3.1.5 清理后用 E 段护栏机械锁。
++     合法例外（不算违规）：
++     - 任务清单段「### N. 任务名（详见 path）」只引用路径不写具体表达式
++     - Changelog 段可追溯历史（v3.0 之前确实在 SKILL.md 里写过 cron）
++     - 4 端一致性警告段举的「反例」（脚本注释里允许解释）
++     实现：白名单段落放行，其余段落扫黑名单正则。
++     """
++     """
++     header("E. SKILL.md 主体禁止硬编码 cron 表达式和 .env 路径")
++     text = SKILL_MD.read_text()
++     text = SKILL_MD.read_text()
++     lines = text.split("\n")
++     lines = text.split("\n")
++     # 黑名单：v3.1.5 之前在 SKILL.md 主体里出现过的"残留模式"
++     # cron 表达式：用反引号包住 + 5 段 数字/*/,- 组合（嵌入行内或整行都算）
++     # 注：必须 ≥3 段才算 cron（避免误伤 `0.8` 这种带反引号的小数）
++     cron_pat = re.compile(r"`[\d\*\/\,\-]+\s+[\d\*\/\,\-]+\s+[\d\*\/\,\-]+[^`]*`")
++     env_pat = re.compile(r"source /workspace/\.env")
++     send_inline_pat = re.compile(r"source /workspace/\.env.*python3.*send_\w+\.py")
++     # 段落白名单：这些段落允许出现黑名单模式
++     # v3.1.6 修订：Changelog 段统一放行（任何版本号标题 + 任务清单段）
++     # 注：不允许 ## / ### 标号写死某个具体版本号，否则每次 bump 都要改这里
++     allowed_h2 = set()  # Changelog 已通过"## 版本历史（Changelog）"标志整体放行
++     # ### 标题里识别 Changelog 版本（格式：### vX.Y.Z — ...）
++     import re as _re
++     changelog_h3_pat = _re.compile(r"^###\s+v\d+\.\d+\.\d+\s+—")
++     # 标记当前段落是否在白名单内
++     in_allowed_section = False
++     current_section = None
++     violations = []
++     violations = []
++     for i, line in enumerate(lines, 1):
++         # 段落切换：检查 ## 或 ### 标题
++         if line.startswith("## ") and not line.startswith("####"):
++             current_section = line
++             # 白名单：Changelog 大段 (## 版本历史) + ## 任务清单段（如 "## Cron 任务配置指引"）
++             in_allowed_section = (
++                 current_section in allowed_h2
++                 or current_section.startswith("## 版本历史")
++             )
++         if line.startswith("### ") and not line.startswith("####"):
++             # Changelog 段内的版本号标题（### vX.Y.Z — ...）= 放行
++             in_allowed_section = changelog_h3_pat.match(line) is not None
++         if line.startswith("#### "):
++             # 4 级标题继承上一级 ### 的状态
++             pass
++         if in_allowed_section:
++         # 扫黑名单
++         if cron_pat.search(line):
++             violations.append((i, "cron 表达式", line.strip()[:80]))
++         if env_pat.search(line):
++             violations.append((i, ".env 路径", line.strip()[:80]))
++         if send_inline_pat.search(line):
++             violations.append((i, "source+send 一行命令", line.strip()[:80]))
++     if violations:
++     if violations:
++         for i, kind, snippet in violations:
++             fail(f"L{i} 命中 '{kind}': {snippet}")
++         print(f"     💡 修复：删掉 SKILL.md 主体里这些硬编码，改用「详见 cron_jobs/cron_mirror.json」的引用")
++         print(f"     💡 任务清单段（L884~L906）允许出现，因为只引用路径不写具体表达式")
++         print(f"     💡 Changelog 段允许出现，因为是历史追溯")
++         all_ok = False
++     else:
++     else:
++         ok("SKILL.md 主体（任务清单段 + Changelog 段之外）无 cron 表达式 / .env 路径 / source+send 残留", verbose)
++ # Changelog 单条硬上限（行数）—— v3.2.0 护栏
++ CHANGELOG_MAX_LINES = 25
++ def section_f(verbose=False):
++     """F. SKILL.md Changelog 段每条 ### vX.Y.Z — 标题之间行数 ≤ 25（v3.2.0+ 硬上限）
++     动机：v3.0 之前 Changelog 段自由膨胀，单条最大 86 行（v3.0.0 本身），整段
++     488 行占 SKILL.md 48.8%。v3.2.0 拆分：精简版（≤18 行软目标、≤25 行硬上限）
++     留 SKILL.md，完整细节外置到 knowledge/changelog/vX.Y.Z.md。
++     机械检测：从 `## 版本历史` 之后到下一个 `## ` 之前，每段 `### vX.Y.Z — ...`
++     标题起，到下一个 `### vX.Y.Z` 或段尾，计算总行数（含标题 + 空行 + 内容），
++     超过 CHANGELOG_MAX_LINES 视为违规。
++     header(f"F. Changelog 段单条长度硬上限（≤ {CHANGELOG_MAX_LINES} 行）")
++     # 找 Changelog 段起止
++     cl_start = None
++     cl_end = None
++     for i, line in enumerate(lines):
++         if line.startswith("## 版本历史"):
++             cl_start = i
++         elif cl_start is not None and line.startswith("## ") and not line.startswith("## 版本历史"):
++             cl_end = i
++             break
++     if cl_start is None or cl_end is None:
++         fail("未找到 Changelog 段（期望以「## 版本历史」开头）")
++     # 找每个 ### vX.Y.Z — 标题
++     ver_pat = re.compile(r"^###\s+v\d+\.\d+\.\d+\s+—")
++     starts = []  # [(行号 0-indexed, 版本号段标题)]
++     for i in range(cl_start + 1, cl_end):
++         m = ver_pat.match(lines[i])
++         if m:
++             starts.append(i)
++     if not starts:
++         fail("Changelog 段内未发现任何 ### vX.Y.Z — 条目")
++     # 计算每条行数（标题行 -> 下一条标题行 - 1；最后一条 -> 段尾 - 1）
++     for idx, start in enumerate(starts):
++         if idx + 1 < len(starts):
++             end = starts[idx + 1]
++             end = cl_end
++         # 标题里取版本号
++         m = re.search(r"v(\d+\.\d+\.\d+)", lines[start])
++         ver = m.group(1) if m else f"L{start+1}"
++         # 包含标题行、空行、内容
++         line_count = end - start
++         # 段尾空行不计（end 通常指向下一条标题；最后一条 end = cl_end，cl_end 是下个 ## 段首）
++         if line_count > CHANGELOG_MAX_LINES:
++             violations.append((ver, start + 1, end, line_count))
++             ok(f"v{ver} (L{start+1}~L{end}): {line_count} 行", verbose)
++         for ver, s, e, cnt in violations:
++             fail(f"v{ver} (L{s}~L{e}): {cnt} 行 > 硬上限 {CHANGELOG_MAX_LINES} 行")
++         print(f"     💡 修复：精简该条到 ≤ {CHANGELOG_MAX_LINES} 行（软目标 18 行）")
++         print(f"     💡 完整细节外置到 knowledge/changelog/{ver}.md（v3.2.0 新建）")
++         print(f"     💡 Changelog 段开头注释有精简规则和护栏说明")
++     print(f"  📊 Changelog 段共 {len(starts)} 条，最长 {max(end - s for s, end in zip(starts, starts[1:] + [cl_end]))} 行")
++ def main():
++     args = sys.argv[1:]
++     verbose = "--verbose" in args
++     fix_hint = "--fix-hint" in args
++     print("=" * 60)
++     print("=" * 60)
++     print("=" * 60)
++     print("A-stock-report 6 端一致性护栏（v3.2.0 — 含 F 段）")
++     print(f"SKILL_DIR     = {SKILL_DIR}")
++     print(f"TEMPLATES_DIR = {TEMPLATES_DIR}")
+
+### scripts/collect_evening_data.py  [code]
+-     融资买入额（亿元）。注意：函数返回的只是"融资买入额"（不含融券卖出额），
+-     原 docstring 写"两融交易额=融资买入额+融券卖出额"是错的，实际只取了融资买入额。
+-     历史原因：data 字段名 `rz_buy` 即融资买入额，与字段 `rz_turnover`（A 股成交额）配合
+-     计算 ratio2 = 融资买入额 / A股成交额。
+-     返回: (融资买入额_亿, 日期字符串)
+-         import time as _time
+-         # 深市：元 ÷ 1e8 = 亿元。深交所偶发超时，2 次重试（间隔 3s），仍失败才走 fallback
+-         df_sz = None
+-         for attempt in range(3):
+-             df_sz = _timeout_call(ak.stock_szse_summary, (effective_date,), None)
+-             if df_sz is not None:
+-                 break
+-             if attempt < 2:
+-                 print(f"  [成交额] SZSE 第{attempt+1}次超时，3s 后重试...")
+-                 _time.sleep(3)
+-         if df_sz is None: raise RuntimeError('SZSE timeout after 3 attempts')
+-         # Fallback：沪市×1.37 估算深市（标记为估算，ratio2 走宽阈值）
+-             print(f"  [成交额] ⚠️ SZSE超时重试3次均失败，估算: {ed}=沪{sh_turn:.0f}×1.37={est:.0f}亿（ratio2 仅供参考）")
+-         # ratio2 公式语义修正：实际是 融资买入额 / A股成交额（rz_turnover 字段名历史遗留）
+-         # 阈值（融资买入额占市场成交比）：<7%保守 | 7-11%中性 | >11%过热
+-             lines.append(f"• 融资买入额/A股成交额（{rz_ed}）：⚠️数据异常比{ratio2:.0f}%，已忽略")
+-                 f"• 融资买入额/A股成交额（{rz_to_ed_fmt}）= {ratio2:.1f}%",
+-         lines.append("• 融资买入额/A股成交额：⚠️数据暂缺")
+-         rp_judge = "高估" if pe['risk_premium'] < 3 else ("中性" if pe['risk_premium'] <= 5 else "低估")
+-             f"  阈值：<3%高估 | 3-5%中性 | >5%低估",
+-     # 注：data['rz_turnover'] 字段名是历史遗留，实际存的是"A股成交额（与两融同日期）"，
+-     # 而非"两融交易额"。ratio2 公式为 融资买入额 / A股成交额。
+-     # 不要把字段名改成 rz_buy_turnover（避免破坏历史 json 兼容），只在注释中说明。
+-     rz_date_turnover, rz_to_ed = get_turnover_effective(effective_date)
+-     data["rz_turnover"]       = rz_date_turnover
+-             _release_lock()
+-             sys.exit(0)
+-         # 保存 Markdown（推送由 send_evening_report.py 统一处理）
+-         print(f"\n[{ts()}] 第二步：保存 Markdown 报告...")
+-         os.makedirs(OUT_DIR, exist_ok=True)
+-         _saved_date = _target or TODAY_DATE
+-         _path = os.path.join(OUT_DIR, f"晚报_{_saved_date}.md")
+-         with open(_path, "w", encoding="utf-8") as f:
+-             f.write(report)
+-         print(f"  已保存: {_path}")
+-         print(f"\n[{ts()}] 完成")
+-         sys.exit(0)
++     两融交易额（亿元）= 融资买入额 + 融券卖出额。
++     返回: (交易额_亿, 日期字符串)
++         try:
++         # 深市：元 ÷ 1e8 = 亿元
++         df_sz = _timeout_call(ak.stock_szse_summary, (effective_date,), None)
++         if df_sz is None: raise RuntimeError('SZSE timeout')
++         # Fallback：沪市×1.37 估算深市
++             print(f"  [成交额] ⚠️ SZSE超时，估算: {ed}=沪{sh_turn:.0f}×1.37={est:.0f}亿")
++         else:
++             lines.append(f"• 两融交易额/A股成交额（{rz_ed}）：⚠️数据异常比{ratio2:.0f}%，已忽略")
++                 f"• 两融交易额/A股成交额（{rz_to_ed_fmt}）= {ratio2:.1f}%",
++         lines.append("• 两融交易额/A股成交额：⚠️数据暂缺")
++         rp_judge = "高估" if pe['risk_premium'] < 3 else ("中性" if pe['risk_premium'] <= 6 else "低估")
++             f"  阈值：<3%高估 | 3-6%中性 |>6%低估",
++     rz_turnover, rz_to_ed = get_turnover_effective(effective_date)
++     data["rz_turnover"]       = rz_turnover
++     _exit_code = 0  # v3.1.2 修复：单一变量，失败路径必须设非 0（v3.1.0 模板同形）
++             _exit_code = 0
++             # 保存 Markdown（推送由 send_evening_report.py 统一处理）
++             print(f"\n[{ts()}] 第二步：保存 Markdown 报告...")
++             os.makedirs(OUT_DIR, exist_ok=True)
++             _saved_date = _target or TODAY_DATE
++             _path = os.path.join(OUT_DIR, f"晚报_{_saved_date}.md")
++             with open(_path, "w", encoding="utf-8") as f:
++                 f.write(report)
++             print(f"  已保存: {_path}")
++         # v3.1.2 修复：采集失败必须让监控看到非 0 退出码
++         # notify_failure 自身 try/except 包裹（v3.1.0 教训），不会阻断主流程
++             from _send_lib import notify_failure
++             notify_failure("晚报采集", f"脚本执行异常: {e}")
++         except Exception as _ne:
++             print(f"  [notify_failure 调用失败] {_ne}")
++         _exit_code = 1
++         print(f"\n[{ts()}] {'✅ 已完成' if _exit_code == 0 else f'❌ 失败(err={_exit_code})'}")
++         sys.exit(_exit_code)
+
+### scripts/send_close_summary.py  [code]
+- ⚠️ 架构对称依赖：本脚本是单文件全自包含（不读 LLM 写的中间文件），无 LLM 写入依赖。
+-    教训来源：v2.0.5→v2.0.7 修复链（其他 send 脚本因 LLM 不写中间文件推旧版）。
+-    详见 SKILL.md Changelog v2.0.7。
+- # ── 微信推送 ────────────────────────────────────────────
+- def get_webhook_url():
+-     key = os.environ.get("WECOM_WEBHOOK_KEY", "")
+-     if not key:
+-         raise RuntimeError("WECOM_WEBHOOK_KEY environment variable not set")
+-     return f"https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key={key.strip()}"
+- def wx(text: str, max_retries: int = 2) -> int:
+-     """企业微信推送，curl 风格，带自动重试"""
+-     payload = _json.dumps({"msgtype": "text", "text": {"content": text}}, ensure_ascii=False)
+-     for attempt in range(max_retries + 1):
+-         r = subprocess.run(
+-             ["curl", "-s", "-X", "POST", get_webhook_url(),
+-              "-H", "Content-Type: application/json", "-d", "@-"],
+-             input=payload.encode("utf-8"), capture_output=True)
+-             errcode = _json.loads(r.stdout.decode()).get("errcode", -1)
+-         except Exception:
+-             errcode = -1
+-         if errcode == 0:
+-             return 0
+-         if attempt < max_retries:
+-             print(f"[WX] 发送失败，errcode={errcode}，重试中...")
+-     return -1
+-             sys.exit(0)
+-                 print("⚠️ 未找到最近交易日"); sys.exit(1)
+-         print(f"\n{'✅ 推送成功' if err == 0 else f'❌ 推送失败 (errcode={err})'}")
++     except Exception as e:
++             try:
++ # ── 共用推送库（v3.1.1 抽取）────────────────────────────────────
++ import sys as _sys_push
++ _sys_push.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
++ from _send_lib import get_webhook_url, wx, notify_failure  # noqa: E402
++ # ── 微信推送（占位：v3.1.1 起改用 _send_lib）────────────────────
++ # 原 get_webhook_url / wx 已删除，需要处见上面 import。
++         else:
++     _exit_code = 0  # v3.1.2 修复：单一变量，失败路径必须设非 0（v3.1.0 模板同形）
++             _exit_code = 0
++             # 直接走 finally 释放锁并退出
++                 print("⚠️ 未找到最近交易日")
++                 _exit_code = 1
++                 # 直接走 finally 释放锁并退出
++         if err == 0:
++             print(f"\n✅ 推送成功")
++             print(f"\n❌ 推送失败 (errcode={err})")
++             _exit_code = 1  # v3.1.2 修复：业务失败必须让监控看到非 0 退出码
++             # notify_failure 自身 try/except 包裹（v3.1.0 教训），不会阻断主流程
++                 from _send_lib import notify_failure
++                 notify_failure("收盘小结", f"webhook 返回错误: err={err}")
++             except Exception as _ne:
++                 print(f"  [notify_failure 调用失败] {_ne}")
++         print(f"  ❌ 执行异常（收盘小结崩溃）: {e}")
++         import traceback; traceback.print_exc()
++         _exit_code = 1
++             from _send_lib import notify_failure
++             notify_failure("收盘小结", f"脚本执行异常: {e}")
++         except Exception as _ne:
++             print(f"  [notify_failure 调用失败] {_ne}")
++         sys.exit(_exit_code)
+
+### scripts/send_evening_report.py  [code]
+- ⚠️ 架构对称依赖（本脚本为 v2.0.5/v2.0.6/v2.0.7 bug 链主角）：
+-   本脚本读 /tmp/evening_report_content.txt（LLM 写）+ /tmp/evening_report_ai.txt（LLM 写，
+-   内嵌 [财经要闻] + [操作建议] 精简段，日期头 ## 日期：YYYYMMDD）。**两个文件必须由
+-   dispatcher prompt 明确指示 LLM 写入**，否则会推空或推旧版（v2.0.5 修复前一直推旧版）。
+-   详见 SKILL.md Changelog v2.0.7。
+-     融资买入额（亿元）。注意：原 docstring 写"两融交易额=融资买入额+融券卖出额"是错的，
+-     实际只取了"融资买入额"（不含融券卖出额）。
+-             else:
+-                     try:
+-     else:
+-     # 注：rz_turnover 字段名是历史遗留，实际是 A 股成交额（与两融同日期），
+-     # 用于 ratio2 = 融资买入额 / A股成交额。
+-         # ratio2 公式语义修正：实际是 融资买入额 / A股成交额（rz_turnover 字段名历史遗留）
+-         # rz_buy 来自 akshare（已经是亿元），rz_turnover 来自 get_turnover_effective（已确认为亿元）
+-         # 阈值（融资买入额占市场成交比）：<7%保守 | 7-11%中性 | >11%过热
+-         # 合理性上限保护：融资买入额/成交额正常区间 0~20%，超限说明数据异常
+-             lines.append(f"• 融资买入额/A股成交额（{rz_ed}）：⚠️数据异常比{ratio2:.0f}%，已忽略")
+-                 f"• 融资买入额/A股成交额（{rz_to_ed_fmt}）= {ratio2:.1f}%",
+-         lines.append("• 融资买入额/A股成交额：⚠️数据暂缺")
+- def main(ai_fill: bool = False, target_date: str = None):
+-     # ── v2.0.5 修复：加文件日期头校验，避免旧日期 ai.txt 被误用 ──────────
+-     # 修复场景：LLM 步骤 web search 失败时未重写 /tmp/evening_report_ai.txt，
+-     # 导致旧文件残留（如 6/3 文件被 6/5 推送脚本读取，造成"指数跌+要闻说涨"错乱）
+-     # 协议：ai.txt 第一行必须为 `## 日期：YYYYMMDD`，日期不匹配视为过期，删除并跳过。
+-             # ── 新增：日期头校验 ──
+-             _first_line = _content.split('\n', 1)[0].strip()
+-             _m_date = re.search(r'日期[：:]\s*(\d{8})', _first_line)
+-             if _m_date:
+-                 _file_date = _m_date.group(1)
+-                 if _file_date != _target:
+-                     print(f"[AI内容] ⚠️ 文件日期({_file_date})与目标日期({_target})不符，视为过期删除")
+-                         os.remove(_ai_file)
+-                     except Exception as _e_rm:
+-                         print(f"[AI内容] 旧文件删除失败: {_e_rm}")
+-                     _ai_news_lines, _ai_action_lines = [], []
+-                     print(f"[AI内容] ✅ 日期校验通过（{_file_date}），继续解析内容")
+-                     _parts = re.split(r'\[(财经要闻|操作建议)\]', _content)
+-                     for i in range(1, len(_parts)-1, 2):
+-                         _section = _parts[i]
+-                         _text = (_parts[i+1] or "").strip()
+-                         _lines = [_l.rstrip() for _l in _text.splitlines() if _l.strip()
+-                                   and not (_l.strip().startswith('━━━') and _l.strip().endswith('━━━'))]
+-                         if _section == "财经要闻" and _text:
+-                             _ai_news_lines = _lines
+-                             print(f"[AI内容] 财经要闻已加载（{len(_ai_news_lines)}行）")
+-                         elif _section == "操作建议" and _text:
+-                             _ai_action_lines = _lines
+-                             print(f"[AI内容] 操作建议已加载（{len(_ai_action_lines)}行）")
+-                 # 旧协议文件（无日期头）→ 视为过期，删除并跳过
+-                 print(f"[AI内容] ⚠️ 文件无日期头（首行: {_first_line[:50]!r}），视为旧协议文件删除")
+-                 try:
+-                     os.remove(_ai_file)
+-                 except Exception as _e_rm:
+-                     print(f"[AI内容] 旧文件删除失败: {_e_rm}")
+-                 _ai_news_lines, _ai_action_lines = [], []
+-     """推送失败时，通过企业微信发预警通知"""
+-     alert = f"⚠️ 【晚报推送失败】\n{msg}\n\n请及时检查 cron 任务状态。"
+-     _err = wx(alert)
+-     if _err == 0:
+-         print(f"[{TS}] 失败通知已发送")
+-         print(f"[{TS}] 失败通知发送失败: err={_err}")
+-     err = 0
+-     _exit_code = 0  # 默认 0；若 main() 抛 SystemExit 非 0，外层 finally 尊重它
+-         _parser.add_argument('--ai-fill', action='store_true')
+-         print(f"[{TS}] 第一步：收集数据（目标日期={_target or '今天'}）...")
+-         report = main(ai_fill=_args.ai_fill, target_date=_target)
+-             print(f"[{TS}] 第三步：推送微信...")
+-             _push_err = wx(report)
+-             if _push_err == 0:
+-                 print(f"  ✅ 微信推送成功")
+-                 _msg = f"webhook 返回错误: err={_push_err}"
+-                 print(f"  ❌ {_msg}")
+-                 notify_failure(_msg)
+-                 err = _push_err
+-             err = -1
+-         # main() 主动退出（如 A0 改造的「数据缺失」场景）
+-         err = _exit_code
+-         err = -1
+-         # 优先用 main() 抛出的 exit code；若为 0 则按 err 决定
+-         _final_code = _exit_code if _exit_code != 0 else (0 if err == 0 else 1)
+-         print(f"\n[{TS}] {'✅ 已推送' if _final_code == 0 else f'❌ 失败(err={_final_code})'}")
+-         sys.exit(_final_code)
++     try:
++     """
++     两融交易额（亿元）= 融资买入额 + 融券卖出额。
++     # 与两融同日期的成交额，用于比率计算
++         else:
++         # rz_buy 来自 akshare（已经是亿元）
++         # rz_turnover 来自 get_turnover_effective（已确认为亿元）
++         # 两者单位相同，直接相比
++         # 合理性上限保护：两融交易额/成交额正常区间 0~20%，超限说明数据异常
++             lines.append(f"• 两融交易额/A股成交额（{rz_ed}）：⚠️数据异常比{ratio2:.0f}%，已忽略")
++                 f"• 两融交易额/A股成交额（{rz_to_ed_fmt}）= {ratio2:.1f}%",
++         lines.append("• 两融交易额/A股成交额：⚠️数据暂缺")
++ def main(ai_fill: bool = True, target_date: str = None, dry_run: bool = False):
++             _parts = re.split(r'\[(财经要闻|操作建议)\]', _content)
++             for i in range(1, len(_parts)-1, 2):
++                 _section = _parts[i]
++                 _text = (_parts[i+1] or "").strip()
++                 _lines = [_l.rstrip() for _l in _text.splitlines() if _l.strip()
++                           and not (_l.strip().startswith('━━━') and _l.strip().endswith('━━━'))]
++                 if _section == "财经要闻" and _text:
++                     _ai_news_lines = _lines
++                     print(f"[AI内容] 财经要闻已加载（{len(_ai_news_lines)}行）")
++                 elif _section == "操作建议" and _text:
++                     _ai_action_lines = _lines
++                     print(f"[AI内容] 操作建议已加载（{len(_ai_action_lines)}行）")
++     # ── 协议硬校验（v3.1.0 修复）：缺标记/内容为空 → 立即失败 ──
++     if not _ai_news_lines:
++         raise SystemExit(f"[{TS}] ❌ 协议错：{_ai_file} 缺 [财经要闻] 标记或内容为空")
++     if not _ai_action_lines:
++         raise SystemExit(f"[{TS}] ❌ 协议错：{_ai_file} 缺 [操作建议] 标记或内容为空")
++     """推送失败时，通过企业微信发预警通知。
++     v3.1.0 修复：包裹 try/except 防止 wx() 自身失败把外层 except 块吃掉。
++     原 bug：notify_failure 自身 wx() 失败时抛 FileNotFoundError，外层
++     `except Exception` 块里 `_exit_code = 1` 还没执行就被新异常冒泡替换，
++     导致脚本永远 exit 0 + 打印"✅ 已完成"误导监控。
++         alert = f"⚠️ 【晚报推送失败】\n{msg}\n\n请及时检查 cron 任务状态。"
++         _err = wx(alert)
++         if _err == 0:
++             print(f"[{TS}] 失败通知已发送")
++             print(f"[{TS}] 失败通知发送失败: err={_err}")
++     except Exception as _e:
++         # notify_failure 自身失败也不能让外层崩
++         # 退化方案：仅打印到 stderr，让 cron 日志能捕获
++         import sys as _s
++         _s.stderr.write(f"[{TS}] notify_failure 失败: type={type(_e).__name__} msg={_e}\n")
++         _s.stderr.flush()
++     _exit_code = 0  # v3.1.0 修复：单一变量，所有失败路径必须设非 0
++     _dry_run = False
++         # v3.1.0 修复：argparse 反转。默认加载 ai.txt；--no-ai-fill 才跳过
++         _parser.add_argument('--no-ai-fill', action='store_true',
++                             help='跳过加载 /tmp/evening_report_ai.txt（默认会加载）')
++         # v3.1.0 修复：--dry-run 模式。生成报告 + 保存到文件，但跳过企业微信推送
++         _parser.add_argument('--dry-run', action='store_true',
++                             help='dry-run 模式：生成报告 + 保存到文件，但跳过企业微信推送')
++         _ai_fill = not _args.no_ai_fill  # 默认 True（加载 ai.txt）
++         _dry_run = _args.dry_run
++         print(f"[{TS}] 第一步：收集数据（目标日期={_target or '今天'}，dry-run={_dry_run})...")
++         report = main(ai_fill=_ai_fill, target_date=_target, dry_run=_dry_run)
++             if _dry_run:
++                 print(f"[{TS}] 第三步：dry-run 模式，跳过微信推送")
++                 print(f"[{TS}] 第三步：推送微信...")
++                 _push_err = wx(report)
++                 if _push_err == 0:
++                     print(f"  ✅ 微信推送成功")
++                     _msg = f"webhook 返回错误: err={_push_err}"
++                     print(f"  ❌ {_msg}")
++                     notify_failure(_msg)
++                     _exit_code = 1
++             _exit_code = 1
++         # main() 主动退出（如 A0 改造的「数据缺失」场景、v3.1.0 协议错场景）
++         # v3.1.0 修复：notify_failure 自身已包裹 try/except，不会再抛异常打断这里
++         _exit_code = 1
++         print(f"\n[{TS}] {'✅ 已完成' if _exit_code == 0 else f'❌ 失败(err={_exit_code})'}")
++         sys.exit(_exit_code)
+
+### scripts/send_intraday_alert.py  [code]
+- ⚠️ 架构对称依赖：本脚本实时拉取行情数据推送，不读 LLM 写的中间文件，无 LLM 写入依赖。
+-    教训来源：v2.0.5→v2.0.7 修复链（其他 send 脚本因 LLM 不写中间文件推旧版）。
+-    详见 SKILL.md Changelog v2.0.7。
+- import os, json, subprocess, pandas as pd
+- def get_webhook_url() -> str:
+-     key = os.environ.get("WECOM_WEBHOOK_KEY", "")
+-     if not key:
+-         raise RuntimeError("WECOM_WEBHOOK_KEY environment variable not set")
+-     return f"https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key={key.strip()}"
+- def wx(text: str, max_retries: int = 2) -> int:
+-     """企业微信推送，curl 风格，带自动重试"""
+-     payload = json.dumps({"msgtype": "text", "text": {"content": text}}, ensure_ascii=False)
+-     for attempt in range(max_retries + 1):
+-         r = subprocess.run(
+-             ["curl", "-s", "-X", "POST", get_webhook_url(),
+-              "-H", "Content-Type: application/json", "-d", "@-"],
+-             input=payload.encode("utf-8"), capture_output=True)
+-         try:
+-             errcode = json.loads(r.stdout.decode()).get("errcode", -1)
+-         except Exception:
+-             errcode = -1
+-         if errcode == 0:
+-             return 0
+-         if attempt < max_retries:
+-             print(f"[WX] 发送失败，errcode={errcode}，重试中...")
+-     return -1
++ import os, json, pandas as pd
++ # ── 共用推送库（v3.1.1 抽取）────────────────────────────────────
++ from _send_lib import get_webhook_url, wx  # noqa: E402
+
+### scripts/send_ipo_report.py  [code]
++     import argparse as _argparse
++     # ── CLI 参数：--ref-date 用来回溯跑历史周报（默认今天） ──
++     _cli = _argparse.ArgumentParser(description="A股IPO周报")
++     _cli.add_argument('--ref-date', default=None,
++                      help='回溯日期 YYYY-MM-DD（默认今天）')
++     _cli_args = _cli.parse_args()
++     if _cli_args.ref_date:
++         # 覆盖 NOW + 重新计算周期变量（保持与 cron 触发时一致的逻辑）
++         from datetime import datetime as _dt, timezone as _tz
++         NOW = _dt.fromisoformat(_cli_args.ref_date).replace(tzinfo=_tz(_TZ))
++         _period_start_dt, _period_end_dt, REPORT_START, PERIOD_END_STR = get_ipo_report_period(NOW)
++         _PERIOD_KEY = _period_end_dt.strftime("%Y%m%d")
++         _days_old = (NOW.date() - _period_end_dt.date()).days
++         print(f"[IPO周报] [CLI] ref_date={_cli_args.ref_date} → 周期 {_period_start_dt.date()}～{_period_end_dt.date()}（距今 {_days_old} 天）")
++         if _days_old > 21:
++             print(f"[IPO周报] ⚠️ 周期距今 > 21 天，拒绝发送！")
++             _release_lock(); sys.exit(1)
++         if _already_sent_for_period(_PERIOD_KEY):
++             print(f"[IPO周报] 周期({_PERIOD_KEY})已发过，跳过")
++             _release_lock(); sys.exit(0)
++         # 同步更新所有下游用到的模块级变量
++         PERIOD_START = _period_start_dt
++         PERIOD_END   = _period_end_dt
++         THIS_WEEK_END = (_period_end_dt + timedelta(days=3)).strftime("%m/%d")
++         NEXT_WEEK_END = (_period_end_dt + timedelta(days=7)).strftime("%m/%d")
++         QUEUE_DATE    = _period_end_dt.strftime("%Y年%m月%d日")
+
+### scripts/send_morning_report.py  [code]
+- ⚠️ 架构对称依赖：本脚本读取 /tmp/morning_report_content.txt，**必须由 dispatcher prompt
+-    明确指示 LLM 写入该文件**，否则会推送空内容。教训：v2.0.5→v2.0.7 修复链（send 只读
+-    ai.txt 但 dispatcher 没让 LLM 写 ai.txt，导致 6/5 之前晚报一直推旧版）。详见
+-    SKILL.md Changelog v2.0.7。
+- import sys, os, json, subprocess
+- def get_webhook_url():
+-     key = os.environ.get("WECOM_WEBHOOK_KEY", "")
+-     if not key:
+-         raise RuntimeError("WECOM_WEBHOOK_KEY environment variable not set")
+-     return f"https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key={key.strip()}"
+- def wx(text: str, max_retries: int = 2) -> int:
+-     """企业微信推送，curl 风格，带自动重试"""
+-     payload = json.dumps({"msgtype": "text", "text": {"content": text}}, ensure_ascii=False)
+-     for attempt in range(max_retries + 1):
+-         r = subprocess.run(
+-             ["curl", "-s", "-X", "POST", get_webhook_url(),
+-              "-H", "Content-Type: application/json", "-d", "@-"],
+-             input=payload.encode("utf-8"), capture_output=True)
+-         try:
+-             errcode = json.loads(r.stdout.decode()).get("errcode", -1)
+-         except Exception:
+-             errcode = -1
+-         if errcode == 0:
+-             return 0
+-         if attempt < max_retries:
+-             print(f"[WX] 发送失败，errcode={errcode}，重试中...")
+-     return -1
+- def notify_failure(msg: str):
+-     """推送失败时，通过 message 工具发预警通知"""
+-     alert = f"⚠️ 【晨报推送失败】\n{msg}\n\n请及时检查 cron 任务状态。"
+-     err = wx(alert)
+-     if err == 0:
+-         print(f"[{TS()}] 失败通知已发送")
+-     else:
+-         print(f"[{TS()}] 失败通知发送失败: err={err}")
+-         notify_failure(msg)
+-         notify_failure(msg)
+-         notify_failure(msg)
++ import sys, os, json
++ # ── 共用推送库（v3.1.1 抽取）────────────────────────────────────
++ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
++ from _send_lib import get_webhook_url, wx, notify_failure  # noqa: E402
++         notify_failure("晨报", msg)
++         notify_failure("晨报", msg)
++         notify_failure("晨报", msg)
+
+### scripts/send_weekend_news.py  [code]
+- ⚠️ 架构对称依赖：本脚本读取 /tmp/weekend_news_content.txt，**必须由 dispatcher prompt
+-    明确指示 LLM 写入该文件**，否则会推送空内容。教训：v2.0.5→v2.0.7 修复链（send 只读
+-    ai.txt 但 dispatcher 没让 LLM 写 ai.txt，导致 6/5 之前晚报一直推旧版）。详见
+-    SKILL.md Changelog v2.0.7。
+- def get_webhook_url():
+-     key = os.environ.get("WECOM_WEBHOOK_KEY", "")
+-     if not key:
+-         raise RuntimeError("WECOM_WEBHOOK_KEY environment variable not set")
+-     return f"https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key={key.strip()}"
+- def wx(text: str, max_retries: int = 2) -> int:
+-     """企业微信推送，curl 风格，带自动重试"""
+-     payload = json.dumps({"msgtype": "text", "text": {"content": text}}, ensure_ascii=False)
+-     for attempt in range(max_retries + 1):
+-         r = subprocess.run(
+-             ["curl", "-s", "-X", "POST", get_webhook_url(),
+-              "-H", "Content-Type: application/json", "-d", "@-"],
+-             input=payload.encode("utf-8"), capture_output=True)
+-         try:
+-             errcode = json.loads(r.stdout.decode()).get("errcode", -1)
+-         except Exception:
+-             errcode = -1
+-         if errcode == 0:
+-             return 0
+-         if attempt < max_retries:
+-             print(f"[WX] 发送失败，errcode={errcode}，重试中...")
+-     return -1
+-     # 融资买入额/A股成交额（兼容旧文案"两融交易额/A股成交额"）：兼容两种格式
+-     m = re.search(r'(?:融资买入额|两融交易额)/A股成交额.*?[=＝]\s*(?:[\d.]+亿\s*/\s*([\d.]+)亿\s*=\s*)?([\d.]+)%', text)
+-     else:
+- def notify_failure(msg: str):
+-     """推送失败时，通过企业微信发预警通知"""
+-     alert = f"⚠️ 【周末要闻推送失败】\n{msg}\n\n请及时检查 cron 任务状态。"
+-     _err = wx(alert)
+-     if _err == 0:
+-         print(f"[{TS}] 失败通知已发送")
+-         print(f"[{TS}] 失败通知发送失败: err={_err}")
+-         notify_failure(msg)
+-         notify_failure(msg)
+-         notify_failure(msg)
+-         notify_failure(f"周末要闻脚本执行异常: {e}")
++ # ── 共用推送库（v3.1.1 抽取）────────────────────────────────────
++ from _send_lib import get_webhook_url, wx, notify_failure  # noqa: E402
++     # 两融交易额/A股成交额：兼容两种格式
++     m = re.search(r'两融交易额/A股成交额.*?[=＝]\s*(?:[\d.]+亿\s*/\s*([\d.]+)亿\s*=\s*)?([\d.]+)%', text)
++         notify_failure("周末要闻", msg)
++         notify_failure("周末要闻", msg)
++         notify_failure("周末要闻", msg)
++         notify_failure("周末要闻", f"脚本执行异常: {e}")
+
+### scripts/skill_dispatcher.py  [code]
+-   python3 skill_dispatcher.py --task intraday
+-     "intraday":  "### 4. 盘中预警",
+-     "weekend":   "### 5. 财经周末要闻",
+- TASK_ORDER = ["morning", "evening", "intraday", "weekend"]
+-     # 在块中找第一个 ```json ... ``` 块
+-     m = re.search(r'```json\n(.*?)\n```', block, re.DOTALL)
+-     json_text = m.group(1)
+-         choices=["morning", "evening", "intraday", "weekend"],
+-     skill_md = read_skill_md()
+-     template = extract_prompt_template(skill_md, args.task)
++ 注意：盘中预警已迁移为独立脚本模式（见 cron_jobs/cron_mirror.json#intraday），不再支持 --task intraday。
++ TEMPLATES_DIR = os.path.join(SKILL_DIR, "templates")  # v3.0 模板外置目录
++     "weekend":   "### 5. 财经周末版",
++ TASK_ORDER = ["morning", "evening", "weekend"]
++ def load_template_from_file(task: str):
++     """
++     """
++     v3.0 优先：尝试从 templates/<task>.json 读取 prompt。
++     返回 (prompt, source_tag) 或 (None, None) 表示未找到。
++     path = os.path.join(TEMPLATES_DIR, f"{task}.json")
++     path = os.path.join(TEMPLATES_DIR, f"{task}.json")
++     if not os.path.isfile(path):
++         return None, None
++         return None, None
++     try:
++     try:
++         with open(path, "r", encoding="utf-8") as f:
++             obj = json.load(f)
++         if "prompt" not in obj:
++             print(f"⚠️ templates/{task}.json 缺少 prompt 字段，回退 SKILL.md")
++             return None, None
++         return obj["prompt"], f"templates/{task}.json"
++     except (json.JSONDecodeError, OSError) as e:
++         print(f"⚠️ templates/{task}.json 读取失败 ({e})，回退 SKILL.md")
++ def skill_md_has_template(task: str) -> bool:
++     """v3.0 探测：SKILL.md 中此任务的 json 块是否还在（用于决定 fallback 行为）"""
++         skill_md = read_skill_md()
++         skill_md = read_skill_md()
++     except OSError:
++         return False
++         return False
++         return False
++     marker = TASK_MARKERS.get(task)
++     if not marker:
++     idx = skill_md.find(marker)
++     if idx == -1:
++     task_idx = TASK_ORDER.index(task)
++     next_task = TASK_ORDER[task_idx + 1] if task_idx + 1 < len(TASK_ORDER) else None
++     next_marker = TASK_MARKERS.get(next_task)
++     next_idx = skill_md.find(next_marker, idx + 1) if next_marker else len(skill_md)
++     block = skill_md[idx:next_idx]
++     return re.search(r"```json\s*\{.*?\}\s*```", block, re.DOTALL) is not None
++ def raise_template_missing_error(task: str):
++     """v3.0 方案 B：templates/ 缺失 + SKILL.md 也无 json 块时，抛清晰错误 + 修复指引"""
++     raise FileNotFoundError(
++         f"\n❌ 模板缺失：{path}\n"
++         f"\n"
++         f"\n"
++         f"该 task 的 prompt 模板未找到。可能原因：\n"
++         f"  1. templates/{task}.json 文件丢失（最常见 —— 误删/同步失败）\n"
++         f"  2. dispatcher 跑在错误的 skill 目录（SKILL_DIR={SKILL_DIR}）\n"
++         f"  3. v3.0 迁移未完成 —— 该 task 还没建 templates/{task}.json\n"
++         f"修复方法：\n"
++         f"  · 从备份恢复：cp /tmp/astock_v3.0_phase2/templates/{task}.json {path}\n"
++         f"  · 重新生成：用 SKILL.md 里对应段落的 ```json 块（如果还在）抠出 prompt 字段写入该文件\n"
++         f"  · 紧急绕过：把 prompt 临时粘到 SKILL.md 该 task 段落下作为 ```json 块（dispatcher 会自动回退）\n"
++     )
++     # 在块中找第一个 ```json ... ``` 块（容错：json 必是 {...} 对象，最少空白匹配）
++     m = re.search(r'```json\s*(\{.*?\})\s*```', block, re.DOTALL)
++     json_text = m.group(1).strip()
++         choices=["morning", "evening", "weekend"],
++     # v3.0 双轨制：先试 templates/<task>.json，回退到 SKILL.md（如果 SKILL.md 也有 json 块）
++     template, source = load_template_from_file(args.task)
++     if template is not None:
++         print(f"📂 模板来源: {source}（v3.0 外置模板）")
++     elif skill_md_has_template(args.task):
++         # 老路径兜底：SKILL.md 还在用 v2.x 内嵌模板
++         template = extract_prompt_template(skill_md, args.task)
++         source = "SKILL.md（v2.x 内嵌模板，fallback）"
++         print(f"📂 模板来源: {source}")
++     else:
++         # v3.0 已完成（SKILL.md 不再含内嵌模板）但 templates/ 缺失 —— 报清晰错误
++         raise_template_missing_error(args.task)
+
+### templates/evening.json  [code]
++ {
++   "prompt": "请加载 a-stock-report skill，然后执行以下任务：\n\n1. 调用晚报数据采集脚本，将结果写入约定路径：\n   source /workspace/.env && python3 /root/.hermes/skills/A-stock-report/scripts/collect_evening_data.py\n\n   采集内容：六大指数、亚太股市、两融余额、两融比例、沪深300 PE分位数、股市风险溢价（ERP）等结构化数据，输出 JSON + 晚报 Markdown。\n\n2. 读取采集结果文件 /tmp/evening_data.json，结合采集的晚报 Markdown，用 batch_web_search 搜索今日收盘相关财经要闻（6-8条）：\n   - \"A股重要财经要闻 宏观政策 [今日日期]\"\n   - \"A股板块异动 热点题材 [今日日期]\"\n\n   **⚠️ 关键要求：搜索结果必须包含具体数字，所有数据不得出现\"约\"、\"约XX\"、\"约XX%\"等模糊表述，必须填入精确值。**\n   ⚠️ **字数限制：全文不超过2000字，每条要闻点评控制在50字以内，不超过7条。**\n\n3. **【v3.1.0 协议】将 AI 生成的内容写入 /tmp/evening_report_ai.txt（注意：不是 _content.txt！）。**\n   文件必须包含两个区块，**用 [财经要闻] / [操作建议] 标记严格分割**，否则 send 脚本会硬失败（exit 1）：\n\n   ```\n   ## 日期：YYYYMMDD\n   [财经要闻]\n   【1】要闻标题｜利好/利空/中性\n     点评：50字内具体数据点评\n   【2】...\n   ...\n\n   [操作建议]\n   ① 顺势而为：✅/❌/⚠️具体策略\n     依据：数据支撑\n   ② 超跌博弈：✅/❌/⚠️具体策略\n     依据：数据支撑\n   ③ 控制仓位：✅/❌/⚠️具体策略\n     依据：数据支撑\n   ```\n\n   **协议硬约束（v3.1.0 强制）：**\n   - 必须有 [财经要闻] 标记 + 至少 1 条要闻\n   - 必须有 [操作建议] 标记 + 至少 1 条建议\n   - 缺任一标记或对应内容为空 → send 脚本立即 SystemExit 1，晚报不会推送\n\n   【v3.1.3 协议】\"操作建议\"内容硬约束（防 LLM 幻觉）：\n   晚报比早报数据丰富得多，\"操作建议\"必须严格基于 /tmp/evening_data.json 实际字段：\n\n   ✅ 可引用字段（必须读取真实数字）：\n     · indices：6 大指数（上证/深成/创业板/科创50/沪深300/中证500）的 close + pct\n     · rz_bal / rz_delta：两融余额及日变化（亿元）\n     · rz_buy：两融交易额（亿元）—— 反映场内杠杆情绪\n     · turnover：全市场成交额（亿元）—— 反映市场活跃度\n     · pe_data.risk_premium：股市风险溢价% —— <3%高估/3-6%中性/>6%低估\n     · pe_data.hs300_pe + hs300_pct5y：沪深300 PE 及近5年分位点\n     · asia_pacific：亚太股市收盘数据\n     · trade_date / trade_date_fmt：日期上下文\n\n   ❌ 禁止编造（晚报采集脚本不输出下列数据）：\n     · 任何具体股票名称 + 涨跌幅（如\"贵州茅台 +3.2%\"）—— 未接入个股/持仓数据源\n     · 任何具体板块涨跌幅及龙头股（如\"半导体板块 +5%，中芯国际涨停\"）—— 未接入板块行情\n     · 任何涨停/跌停家数、封板率、炸板率、连板股等情绪指标 —— 未接入打板数据\n     · 任何龙虎榜/北向资金/融资融券个股数据\n     · 任何明日具体操作点位（如\"沪指压力位 3200 / 支撑位 3150\"）—— 纯 LLM 推断\n     · 任何美股盘中数据 —— 晚报采集时美股未开盘或未收盘\n\n   ⚠️ 可引用但必须 cite 来源：\n     · 财经日历（节假日/央行政策/重大会议）—— 用 batch_web_search 当日搜索\n     · 美股盘前/盘后期货（纳指期货、A50 期货夜盘）—— 需当日搜索结果支撑\n     · 重大地缘政治事件 —— 需当日搜索结果支撑\n\n   风险提示策略（v3.1.3 建议）：\n   - 两融交易额/A股成交额 < 7%：杠杆保守，情绪偏弱 → 风险提示侧重\"控制仓位\"\n   - 两融交易额/A股成交额 7-11%：中性 → 风险提示侧重\"结构性机会\"\n   - 两融交易额/A股成交额 > 11%：过热 → 风险提示侧重\"杠杆风险\"\n   - 股市风险溢价 < 3%：高估 → 风险提示侧重\"估值压力\"\n   - 股市风险溢价 > 6%：低估 → 风险提示侧重\"长线机会\"\n   （以上比例可由 LLM 用 rz_buy / turnover / pe_data 字段计算，公式：(rz_buy / turnover * 100)%）\n\n   数据缺失处理：若某字段采集失败，标注\"❌ 数据缺失\"，禁止用\"约\"/\"大约\"等模糊词，禁止凭模型知识编造数字补全。\n\n4. 调用晚报推送脚本完成推送：\n   source /workspace/.env && python3 /root/.hermes/skills/A-stock-report/scripts/send_evening_report.py\n   \n   **CLI flag 说明（v3.1.0）：**\n   - 默认自动加载 /tmp/evening_report_ai.txt（不需要加 flag）\n   - --no-ai-fill：跳过加载 AI 内容（仅用于测试脚本本身，正常流程不要加）\n   - --dry-run：生成报告 + 保存到 reports/ 目录 + 打印 stdout，**跳过企业微信推送**（用于调试 dispatcher 协议是否正确）\n   - --date YYYY-MM-DD：指定报告目标日期（默认当天）\n\n5. 完成后打印\"✅ 晚报已完成：数据采集、内容生成并推送微信\""
++ }
+
+### templates/morning.json  [code]
++ {
++   "prompt": "请加载 a-stock-report skill，然后执行以下任务：\n\n1. 调用晨报数据采集脚本获取结构化数据：\n   source /workspace/.env && python3 /workspace/skills/A-stock-report/scripts/collect_morning_data.py\n   \n   采集内容：道琼斯/标普500/纳斯达克/VIX点位涨跌幅、恒生指数/A50期货、WTI原油/现货黄金价格\n\n2. 读取采集结果 /tmp/morning_data.json，结合今日财经要闻，用 batch_web_search 搜索（6-10条）：\n   - \"A股重要财经要闻 宏观政策 [今日日期]\"\n   - \"A股板块异动 热点题材 [今日日期]\"\n   \n   ⚠️ 关键要求：所有数据必须为精确数字，不得出现\"约\"、\"约XX\"、\"约XX%\"等模糊表述\n   ⚠️ **字数限制：全文不超过2000字，每条要闻点评控制在50字以内，不超过7条。**\n\n3. 将结构化数据 + 财经要闻 合并渲染为完整晨报，写入 /tmp/morning_report_content.txt\n   格式严格遵循 SKILL.md 中晨报模板（含隔夜全球市场、财经要闻、操作建议三部分）\n\n   【v3.1.3 协议】\"今日操作建议\"和\"风险提示\"硬约束（防 LLM 幻觉）：\n   - ✅ 可引用字段（必须从 /tmp/morning_data.json 读取真实数字）：\n     · us_indices：道琼斯/标普500/纳斯达克 的 price + pct\n     · vix：value + level\n     · hk_a50：富时A50期货、恒生指数 的 price + pct\n     · commodities：现货黄金、WTI原油 的 price + pct\n     · report_date / trade_date：日期上下文\n   - ❌ 禁止编造（晨报采集脚本不输出下列数据，LLM 不得自行生成）：\n     · 任何具体股票名称 + 涨跌幅（如\"洛阳钼业-15.19%\"）—— 未接入个股/持仓数据源\n     · 任何具体板块涨跌幅（如\"半导体板块-3.5%\"）—— 未接入板块行情数据源\n     · 任何 A 股指数当日点位/涨跌幅（沪指/深成指/创业板/沪深300 等）—— 采集脚本不输出\n     · 任何成交量/成交额数字\n     · 任何 PE/PB/风险溢价/两融数据 —— 采集脚本不输出\n   - ⚠️ 可引用但必须 cite 来源：\n     · 财经日历（节假日/交易日）—— 用 batch_web_search 当日搜索，不许凭记忆\n     · 地缘政治事件（中东/俄乌/贸易战）—— 必须有当天日期的搜索结果支撑\n\n   \"风险提示\"段（1-3条）只能从以下模板选（不得自由发挥）：\n   ① 节假日效应（如\"端午假期前 X 个交易日，历史资金面偏谨慎\"）\n   ② 隔夜外盘异动（引用 us_indices/vix 真实数字）\n   ③ 大宗商品异动（引用 commodities 真实数字）\n   ④ 财经日历事件（必须有 batch_web_search 当日搜索结果支撑）\n   ⑤ A50 期货 + 港股预判（引用 hk_a50 真实数字）\n\n   数据缺失处理：若某字段采集失败，标注\"❌ 数据缺失\"，禁止用\"约\"/\"大约\"等模糊词，禁止凭模型知识编造数字补全。\n4. 调用晨报推送脚本完成推送：\n   source /workspace/.env && python3 /workspace/skills/A-stock-report/scripts/send_morning_report.py\n\n5. 完成后打印\"✅ 晨报已完成：数据采集、内容生成并推送微信\""
++ }
+
+### templates/weekend.json  [code]
++ {
++   "prompt": "请加载 a-stock-report skill，然后执行以下任务：\n\n【v3.1.3 协议】\"周末要闻\"和\"下周展望\"内容硬约束（防 LLM 幻觉）：\n\n   ✅ 可引用字段（必须从真实数据源读取）：\n     · 周末要闻：batch_web_search 搜索结果（8-12 条，每条带\"✅利好/❌利空/⚠️中性\"标签）\n     · 本周美股/港股/A股/大宗商品收盘价：batch_web_search 搜索结果（道指/纳指/标普/恒指/A50/黄金/原油 的精确点位+本周涨跌幅）\n     · 一周情绪轨迹：从 5 份历史晚报/收盘小结 MD 解析（涨停/跌停/北向/炸板率/综合评分/沪深300涨跌/两融余额/两融占比/沪深300PE/PE近5年分位/ERP/IF基差）\n     · 日期上下文：report_date / trade_date_fmt\n\n   ❌ 禁止编造（采集/搜索脚本不输出下列数据，LLM 不得自行生成）：\n     · 任何具体股票名称 + 涨跌幅（\"贵州茅台本周+5.2%\"）—— 未接入个股/持仓数据源\n     · 任何具体板块涨跌幅及龙头股（\"半导体板块+3.5%，中芯国际涨停\"）—— 未接入板块行情\n     · 任何\"下周具体操作点位\"（\"沪指压力位 3200 / 支撑位 3150\"）—— 纯 LLM 推断\n     · 任何未在 batch_web_search 搜索结果中出现的\"券商分析师\"具体姓名/具体预测数字\n     · 任何\"涨停家数/跌停家数\"的实时数字 —— 只能引用历史 5 日的解析值\n     · 任何\"美股/港股/A股\"具体点位 —— 必须来自 batch_web_search 当日结果\n\n   ⚠️ 可引用但必须 cite 来源（每条数据后面必须有出处）：\n     · 周末要闻：必须标注\"来源：XX媒体\"（新华社/财联社/证券时报/第一财经 等）\n     · 券商展望：必须标注\"来源：XX券商 XX 报告\"（如搜索不到，删掉不写）\n     · 地缘政治事件：必须标注\"来源：XX媒体 日期\"\n\n   数据缺失处理：若某字段无数据，标注\"❌ 数据缺失\"，禁止用\"约\"/\"大约\"等模糊词，禁止凭模型知识编造数字补全。\n\n\n\n1. 用 batch_web_search 搜索以下内容：\n   - \"A股周末要闻 政策动态 [本周末日期范围]\"（至少8条，来源权威媒体）\n   - \"美股收盘 本周回顾 道琼斯 纳斯达克 标普500 [本周]\"（复盘本周美股走势）\n   - \"A股本周回顾 上证指数 创业板指 本周涨幅\"（复盘本周A股行情）\n   - \"下周A股预期 下周展望 下周策略 [YYYY年MM月]\"（如有券商展望）\n   - \"美股期货盘前 纳斯达克期货 A50期货 [今日]\"（为下周一定调）\n\n   ⚠️ 关键要求：搜索结果必须包含精确数字，所有数据不得出现\"约\"、\"约XX\"、\"约XX%\"等模糊表述，必须填入精确值。\n   ⚠️ **字数限制：全文不超过2000字，逻辑分析从简，每条要闻控制在2-3句以内。**\n\n2. 从 /workspace/projects/A股报告系统/reports/ 读取过去5个交易日的报告：\n   - 收盘小结_YYYYMMDD.md（5份，周一到周五）\n   - 晚报_YYYYMMDD.md（5份，周一到周五）\n   从中提取：量化情绪打分、两融余额、两融余额/流通市值、沪深300PE、近5年分位点、ERP、IF基差\n   缺失数据用 ❌ 占位，异常跳变（如单日两融比例跳变 >0.5%）标 ⚠️ 并沿用前日值\n\n3. 按以下模板严格格式化内容，写入 /tmp/weekend_news_content.txt：\n📰 【财经周末版】[YYYY年MM月DD日（周X）]\n\n━━━ 周末要闻摘要 ━━━\n【1】（标题）｜✅利好/❌利空/⚠️中性 对A股影响\n  摘要：（2-3句，概括事件并分析影响）\n  来源：XX媒体\n【2】（标题）｜...\n（8-12条，顺序编号，每条格式固定）\n\n━━━ 一周情绪轨迹（5 个交易日）━━━\n【1. 市场短期情绪】\n• 量化情绪打分：周一XX → 周二XX → 周三XX → 周四XX → 周五XX\n• 整体走势：[升温 / 降温 / 震荡]\n• 解读：{1 句}\n\n【2. 杠杆率】\n• 两融余额（亿元）：周一X → 周二X → ... → 周五X（周变动 ±X）\n• 两融余额 / A股流通市值：周一X.XX% → ... → 周五X.XX%\n  阈值：<2.5%保守 | 2.5-3.5%中性 | >3.5%高危\n• 解读：{1 句}\n\n【3. 估值水平】\n• 沪深300PE：周一X.XX → ... → 周五X.XX\n• 近5年分位点：周一X.X% → ... → 周五X.X%\n• 股市风险溢价（ERP）：周一X.XX% → ... → 周五X.XX%\n  阈值：<3%高估 | 3-6%中性 | >6%低估\n• 解读：{1 句}\n\n【4. 市场预期】\n• IF基差：周一X点 → ... → 周五X点（贴水/升水/扩深/收窄）\n• 解读：{1 句}\n\n━━━ 本周复盘 ━━━\n【美股本周】（道琼斯：XXXXX点，本周+X.XX%；纳斯达克：XXXXX点，本周+X.XX%；标普500：XXXXX点，本周+X.XX%）\n【A股本周】（上证：XXXX.XX点，本周+X.XX%；创业板：XXXX.XX点，本周+X.XX%）\n【大宗商品】（黄金：XXXX美元/盎司，本周+X.XX%；原油：XXX美元/桶，本周+X.XX%）\n\n━━━ 下周展望 ━━━\n【外围市场】美股期货（A50/纳指期货）当前表现预判下周基调\n【A股预判】综合周末消息面，展望下周A股可能走势\n【关注板块】（2-3个板块+逻辑简述）\n\n⚠️ 仅供参考，不构成投资建议。股市有风险，投资需谨慎。\n\n4. 调用周末要闻推送脚本：source /workspace/.env && python3 /workspace/skills/A-stock-report/scripts/send_weekend_news.py\n5. 完成后打印\"✅ 财经周末版已完成：内容生成并推送微信\""
++ }
