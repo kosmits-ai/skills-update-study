@@ -1,0 +1,547 @@
+yiming1001/web-collection  1.1.8 -> 1.1.9
+change_type: instructions+code   changelog: Refine first-run orchestration: choose local/cloud first, require cloud credentials before common defaults; add cloud dispatch path and related preferences.
+
+### SKILL.md  [instructions]
+- description: Browser plugin data collection via a local bridge, in strict synchronous closed-loop mode. Use for Douyin, TikTok, Xiaohongshu, Amazon, and Bilibili collection tasks.
+- 2. Prefer the local bridge + plugin flow over generic browser tooling.
+- 5. Use the same base URL for collect, status, and stop.
+- 1. Briefly explain the four required defaults:
+- 2. Ask only one question first:
+- 3. If the user chooses `推荐配置`, run:
+- 4. If the user chooses `自己配置`, ask for all four values in one message, not one by one.
+- 5. Only continue when `check` passes.
+- Preferred quick-reply prompt:
+- 第一次使用网页采集，需要先完成默认配置。
+- - prefers the connector repo's real bridge loop when available
+- - falls back to the bundled loop only if needed
+- The loop must:
+- 1. If export mode is `bitable` and `export.tableUrl` exists, include the table link first.
+- 2. If export mode is `csv`, explicitly say export mode is CSV.
+- 3. Then include:
+-   - ensure collect, status, and stop all use the same base URL
++ description: Browser plugin data collection via a local bridge or cloud dispatch to a connected local connector, in strict synchronous closed-loop mode. Use for Douyin, TikTok, Xiaohongshu, Amazon, and Bilibili collection tasks.
++ 2. Prefer the connector flow over generic browser tooling.
++ 5. Choose one execution mode first:
++    - `local`: talk to the local bridge directly
++    - `cloud`: call the cloud connector dispatch API, which forwards to the user's connected local connector
++ 6. In `cloud` mode, do not rewrite the collection payload. Only wrap it in:
++    - `device_id`
++    - `action`
++    - `payload`
++ ```bash
++ {baseDir}/scripts/export_preference.sh set-key defaultConnectionMode cloud
++ {baseDir}/scripts/export_preference.sh set-key defaultCloudBaseUrl http://127.0.0.1:8016
++ {baseDir}/scripts/export_preference.sh set-key defaultCloudDeviceId desktop-local-smoke-fix
++ {baseDir}/scripts/export_preference.sh set-key defaultCloudToken <user_api_key>
++ ```
++ ```
++ ```
++ Mode-specific defaults:
++ - `local`
++   - no extra required key if the default local bridge URL works
++ - `cloud`
++   - `defaultCloudBaseUrl`
++   - `defaultCloudDeviceId`
++   - `defaultCloudToken`
++ 1. Determine the execution mode first:
++    - `local`
++    - `cloud`
++ 2. If the mode is `cloud`, collect these three values first:
++    - `defaultCloudBaseUrl`
++    - `defaultCloudDeviceId`
++    - `defaultCloudToken`
++ 3. Then handle the common defaults:
++ 4. Ask only one question for the common defaults:
++ 5. If the user chooses `推荐配置`, run:
++ 6. If the user chooses `自己配置`, ask for all four values in one message, not one by one.
++ 7. Only continue when `check` passes.
++ Preferred mode prompt:
++ ```text
++ ```text
++ 第一次使用网页采集，需要先确认运行环境。
++ 请选择：
++ - 本地
++ - 云端
++ [[quick_replies: 本地, 云端]]
++ Preferred cloud prompt:
++ 检测到你要走云端分发，还需要这三个配置：
++ - 云端地址
++ - device_id
++ - API token
++ 请一次性发给我。
++ Preferred quick-reply prompt for common defaults:
++ 常用配置还需要确认一次。
++ - 运行位置：`local`
++ ## Cloud Mode
++ Use `cloud` mode when the collection request should be sent to the platform backend first, and then dispatched to the user's connected local connector.
++ Cloud responsibilities:
++ - call `/api/v1/connector/cloud/dispatch`
++ - authenticate with `Authorization: Bearer <user_api_key>`
++ - include `device_id`
++ - keep the collection body unchanged inside `payload`
++ - poll `/api/v1/connector/cloud/commands` for the final status
++ Do not:
++ - call the user's local `19820` port from the cloud path
++ - rewrite `payload` semantics
++ - mix local admin token logic into cloud requests
++ - runs either local bridge mode or cloud dispatch mode
++ - prefers the connector repo's real local bridge loop when available
++ - falls back to the bundled local loop only if needed
++ bash {baseDir}/scripts/run.sh \
++   --platform douyin \
++ Douyin keyword search via cloud dispatch:
++   --connection-mode cloud \
++   --cloud-base-url http://127.0.0.1:8016 \
++   --cloud-device-id desktop-local-smoke-fix \
++   --cloud-token '<user_api_key>' \
++   --keyword "AI员工"
++ `local` mode:
++ `cloud` mode:
++ 1. query `/api/v1/connector/cloud/status?device_id=...`
++ 2. dispatch `action=collect` to `/api/v1/connector/cloud/dispatch`
++ 3. poll `/api/v1/connector/cloud/commands?device_id=...`
++ 4. wait for command status `completed` or terminal error state
++ 5. if the command exposes task/export summary fields, include them in the final reply
++ 1. Mention whether the run used `local` or `cloud` mode.
++ 2. If `cloud` mode was used, include the command status.
++ 3. If export mode is `bitable` and `export.tableUrl` exists, include the table link first.
++ 4. If export mode is `csv`, explicitly say export mode is CSV.
++ 5. Then include:
++   - in `local` mode, ensure collect, status, and stop all use the same local base URL
++ - cloud dispatch auth failed
++   - check `defaultCloudToken`
++ - cloud dispatch could not reach device
++   - check `defaultCloudDeviceId` and whether the local connector is online
+
+### scripts/cloud_dispatch_loop.sh  [code]
++ #!/usr/bin/env bash
++ set -euo pipefail
++ usage() {
++   cat <<'USAGE'
++ Usage:
++   cloud_dispatch_loop.sh --payload <json> --base-url <url> --device-id <id> --token <token>
++ Options:
++   --payload <json>          Full collect payload JSON
++   --payload-file <path>     Read payload JSON from file
++   --base-url <url>          Cloud API base URL, e.g. http://127.0.0.1:8016
++   --device-id <id>          Target connector device_id
++   --token <token>           User API key used as Bearer token
++   --action <name>           default: collect
++   --poll-sec <n>            default: 3
++   --timeout-sec <n>         default: 1200
++   -h, --help
++ USAGE
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ log() {
++   printf '[web-collection] %s\n' "$*" >&2
++ die() {
++   printf '[web-collection] error: %s\n' "$*" >&2
++   exit 1
++ require_bin() {
++   local name="$1"
++   if ! command -v "$name" >/dev/null 2>&1; then
++     die "missing required binary: $name"
++   fi
++   fi
++   fi
++ urlencode() {
++   node -e 'process.stdout.write(encodeURIComponent(process.argv[1] || ""));' "$1"
++ json_get_string() {
++   local json="$1"
++   local json="$1"
++   local json="$1"
++   local expr="$2"
++   node -e "
++ const data = JSON.parse(process.argv[1]);
++ const data = JSON.parse(process.argv[1]);
++ const data = JSON.parse(process.argv[1]);
++ const value = (${expr});
++ if (value === undefined || value === null) process.exit(0);
++ if (typeof value === 'object') process.stdout.write(JSON.stringify(value));
++ else process.stdout.write(String(value));
++ " "$json"
++ api_get() {
++   local path="$1"
++   local path="$1"
++   curl -fsS \
++     -H "Authorization: Bearer $TOKEN" \
++     -H "Authorization: Bearer $TOKEN" \
++     "$BASE_URL$path"
++     "$BASE_URL$path"
++ api_post_json() {
++   local body="$2"
++   curl -fsS -X POST \
++     -H 'Content-Type: application/json' \
++     -d "$body" \
++ extract_command_id() {
++   node -e '
++   node -e '
++ const candidates = [
++   data.commandId,
++   data.command_id,
++   data.id,
++   data.data?.commandId,
++   data.data?.command_id,
++   data.data?.id,
++   data.command?.commandId,
++   data.command?.command_id,
++   data.command?.id,
++ ];
++ ];
++ const first = candidates.find((value) => typeof value === "string" && value.trim());
++ if (first) process.stdout.write(first.trim());
++ ' "$json"
++ find_command_state() {
++   local command_id="$2"
++ const commandId = process.argv[2];
++ const toArray = (value) => Array.isArray(value) ? value : [];
++ const roots = [
++   data,
++   data.data,
++   data.data?.commands,
++   data.commands,
++   data.items,
++   data.list,
++ let entries = [];
++ for (const root of roots) {
++   if (Array.isArray(root)) {
++     entries = entries.concat(root);
++   }
++ entries = entries.filter((entry) => entry && typeof entry === "object");
++ if (entries.length === 0 && data && typeof data === "object") {
++   entries = [data];
++ const match = entries.find((entry) => {
++   const ids = [
++     entry.commandId,
++     entry.command_id,
++     entry.id,
++     entry.command?.commandId,
++     entry.command?.command_id,
++     entry.command?.id,
++   ];
++   return ids.some((value) => typeof value === "string" && value.trim() === commandId);
++ });
++ if (!match) {
++   process.stdout.write(JSON.stringify({ found: false }));
++   process.exit(0);
++ const status = [
++   match.status,
++   match.state,
++   match.commandStatus,
++   match.result?.status,
++   match.command?.status,
++ ].find((value) => typeof value === "string" && value.trim());
++ const taskId = [
++   match.taskId,
++   match.task_id,
++   match.result?.taskId,
++   match.payload?.taskId,
++ ].find((value) => typeof value === "string" && value.trim()) || null;
++ const out = {
++   found: true,
++   status: status ? status.trim() : "",
++   taskId,
++   command: match,
++ };
++ process.stdout.write(JSON.stringify(out));
++ ' "$json" "$command_id"
++ PAYLOAD_JSON=""
++ PAYLOAD_FILE=""
++ BASE_URL=""
++ DEVICE_ID=""
++ TOKEN=""
++ ACTION="collect"
++ POLL_SEC="3"
++ TIMEOUT_SEC="1200"
++ while [[ $# -gt 0 ]]; do
++   case "$1" in
++     --payload)
++       PAYLOAD_JSON="${2:-}"
++       shift 2
++       shift 2
++       shift 2
++       shift 2
++       shift 2
++       shift 2
++       shift 2
++       shift 2
++       ;;
++       ;;
++       ;;
++       ;;
++       ;;
++       ;;
++       ;;
++       ;;
++       ;;
++       ;;
++     --payload-file)
++       PAYLOAD_FILE="${2:-}"
++     --base-url)
++       BASE_URL="${2:-}"
++     --device-id)
++       DEVICE_ID="${2:-}"
++     --token)
++       TOKEN="${2:-}"
++     --action)
++       ACTION="${2:-collect}"
++     --poll-sec)
++       POLL_SEC="${2:-3}"
++     --timeout-sec)
++       TIMEOUT_SEC="${2:-1200}"
++     -h|--help)
++       usage
++       exit 0
++     *)
++       die "unknown arg: $1"
++   esac
++ done
++ done
++ require_bin curl
++ require_bin node
++ [[ -n "$PAYLOAD_JSON" || -n "$PAYLOAD_FILE" ]] || die "--payload or --payload-file is required"
++ [[ -n "$BASE_URL" ]] || die "--base-url is required"
++ [[ -n "$DEVICE_ID" ]] || die "--device-id is required"
++ [[ -n "$TOKEN" ]] || die "--token is required"
++ if [[ -n "$PAYLOAD_FILE" ]]; then
++   [[ -f "$PAYLOAD_FILE" ]] || die "payload file not found: $PAYLOAD_FILE"
++   PAYLOAD_JSON="$(cat "$PAYLOAD_FILE")"
++ fi
++ fi
++ node -e 'JSON.parse(process.argv[1]);' "$PAYLOAD_JSON" >/dev/null
++ encoded_device_id="$(urlencode "$DEVICE_ID")"
++ status_json="$(api_get "/api/v1/connector/cloud/status?device_id=$encoded_device_id")"
++ online_hint="$(json_get_string "$status_json" 'data?.online ?? data?.connected ?? online ?? connected ?? status ?? data?.status ?? ""')"
++ if [[ -n "$online_hint" ]]; then
++   log "cloud status=$online_hint device=$DEVICE_ID"
++ else
++   log "cloud status fetched for device=$DEVICE_ID"
++ dispatch_body="$(node -e '
++ const deviceId = process.argv[1];
++ const action = process.argv[2];
++ const payload = JSON.parse(process.argv[3]);
++ process.stdout.write(JSON.stringify({ device_id: deviceId, action, payload }));
++ ' "$DEVICE_ID" "$ACTION" "$PAYLOAD_JSON")"
++ dispatch_json="$(api_post_json "/api/v1/connector/cloud/dispatch" "$dispatch_body")"
++ command_id="$(extract_command_id "$dispatch_json")"
++ [[ -n "$command_id" ]] || die "cloud dispatch succeeded but command id was missing in response"
++ log "cloud dispatch accepted commandId=$command_id device=$DEVICE_ID"
++ start_ts="$(date +%s)"
++ while :; do
++   commands_json="$(api_get "/api/v1/connector/cloud/commands?device_id=$encoded_device_id")"
++   command_state_json="$(find_command_state "$commands_json" "$command_id")"
++   found="$(json_get_string "$command_state_json" 'found')"
++   if [[ "$found" == "true" ]]; then
++     status="$(json_get_string "$command_state_json" 'status')"
++     case "$status" in
++       completed|success|succeeded)
++         log "cloud command completed commandId=$command_id"
++         json_get_string "$command_state_json" 'command'
++         json_get_string "$command_state_json" 'command'
++         printf '\n'
++         printf '\n'
++         exit 0
++         ;;
++         ;;
++         ;;
++         ;;
++       error|failed|failure|cancelled|canceled|stopped)
++         die "cloud command finished with terminal status=$status commandId=$command_id"
++       "")
++         log "cloud command found without explicit status yet commandId=$command_id"
++       *)
++         log "cloud command status=$status commandId=$command_id"
++     esac
++   else
++     log "cloud command pending visibility commandId=$command_id"
++   now_ts="$(date +%s)"
++   if (( now_ts - start_ts >= TIMEOUT_SEC )); then
++     die "timeout waiting cloud command completion after ${TIMEOUT_SEC}s"
++   sleep "$POLL_SEC"
+
+### scripts/export_preference.sh  [code]
+-     bridgeUrl|defaultBridgeUrl)
+-   read_preferences_json "$pref_path" "$legacy_path"
+-   preferences: data,
++ }
++ }
++ }
++     mode|connectionMode|defaultConnectionMode)
++       printf '%s\n' "defaultConnectionMode"
++       ;;
++       ;;
++       ;;
++       ;;
++       ;;
++       ;;
++       ;;
++       ;;
++     localBaseUrl|defaultLocalBaseUrl|bridgeUrl|defaultBridgeUrl)
++     cloudBaseUrl|defaultCloudBaseUrl)
++       printf '%s\n' "defaultCloudBaseUrl"
++     cloudDeviceId|defaultCloudDeviceId)
++       printf '%s\n' "defaultCloudDeviceId"
++     cloudToken|defaultCloudToken)
++       printf '%s\n' "defaultCloudToken"
++     defaultConnectionMode)
++       [[ "$value" == "local" || "$value" == "cloud" ]] || {
++         echo "invalid connection mode: $value (expected local or cloud)" >&2
++         exit 1
++         exit 1
++         exit 1
++         exit 1
++       }
++       }
++       }
++       }
++       [[ -n "$value" ]] || {
++       [[ -n "$value" ]] || {
++       [[ -n "$value" ]] || {
++     defaultCloudBaseUrl)
++         echo "invalid cloudBaseUrl: empty" >&2
++     defaultCloudDeviceId)
++         echo "invalid cloudDeviceId: empty" >&2
++     defaultCloudToken)
++         echo "invalid cloudToken: empty" >&2
++   node -e '
++ const fs = require("node:fs");
++ const prefPath = process.argv[1];
++ const legacyPath = process.argv[2];
++ const read = (filePath) => {
++   try {
++     return JSON.parse(fs.readFileSync(filePath, "utf8"));
++   } catch {
++     return null;
++   }
++ };
++ };
++ const data = read(prefPath) ?? read(legacyPath) ?? {};
++ const mask = (value) => {
++   if (typeof value !== "string" || value.length === 0) return value;
++   if (value.length <= 8) return "****";
++   return `${value.slice(0, 4)}...${value.slice(-4)}`;
++ if (typeof data.defaultCloudToken === "string" && data.defaultCloudToken) {
++   data.defaultCloudToken = mask(data.defaultCloudToken);
++ process.stdout.write(JSON.stringify(data, null, 2) + "\n");
++ ' "$pref_path" "$legacy_path"
++ const mode = typeof data.defaultConnectionMode === "string" && data.defaultConnectionMode
++   ? data.defaultConnectionMode
++   : "local";
++ const redactedPreferences = { ...data };
++ if (typeof redactedPreferences.defaultCloudToken === "string" && redactedPreferences.defaultCloudToken) {
++   const token = redactedPreferences.defaultCloudToken;
++   redactedPreferences.defaultCloudToken = token.length <= 8 ? "****" : `${token.slice(0, 4)}...${token.slice(-4)}`;
++ if (mode === "cloud") {
++   required.push("defaultCloudBaseUrl", "defaultCloudDeviceId", "defaultCloudToken");
++   mode,
++   preferences: redactedPreferences,
++   write_value "defaultConnectionMode" "local" "$pref_path" "$legacy_path"
++   defaultConnectionMode local | cloud
++   defaultCloudBaseUrl string
++   defaultCloudDeviceId string
++   defaultCloudToken   string
+
+### scripts/run.sh  [code]
+- # - remote: if WEB_COLLECTION_REMOTE_SSH is set, run on collector host via SSH
+-   local pref_platform pref_max_items pref_fetch_detail pref_detail_speed pref_bridge_url
+- if [[ -n "$REMOTE_SSH" ]]; then
++ # - cloud: dispatch through the cloud connector API to a connected local connector
++ # - remote: legacy path; if WEB_COLLECTION_REMOTE_SSH is set, run on collector host via SSH
++ CONNECTION_MODE="${WEB_COLLECTION_CONNECTION_MODE:-local}"
++ CLOUD_BASE_URL="${WEB_COLLECTION_CLOUD_BASE_URL:-}"
++ CLOUD_DEVICE_ID="${WEB_COLLECTION_CLOUD_DEVICE_ID:-}"
++ CLOUD_TOKEN="${WEB_COLLECTION_CLOUD_TOKEN:-}"
++ HAS_CONNECTION_MODE_ARG="false"
++ HAS_CLOUD_BASE_URL_ARG="false"
++ HAS_CLOUD_DEVICE_ID_ARG="false"
++ HAS_CLOUD_TOKEN_ARG="false"
++   run.sh --connection-mode cloud --cloud-base-url http://127.0.0.1:8016 --cloud-device-id desktop-local-smoke-fix --cloud-token '<user_api_key>' --keyword "AI员工"
++   --connection-mode <local|cloud> default: local
++   --cloud-base-url <url>         optional override, same as WEB_COLLECTION_CLOUD_BASE_URL
++   --cloud-device-id <id>         optional override, same as WEB_COLLECTION_CLOUD_DEVICE_ID
++   --cloud-token <token>          optional override, same as WEB_COLLECTION_CLOUD_TOKEN
++   WEB_COLLECTION_CONNECTION_MODE default: local
++   WEB_COLLECTION_CLOUD_BASE_URL   optional, e.g. http://127.0.0.1:8016
++   WEB_COLLECTION_CLOUD_DEVICE_ID  optional, target connector device_id
++   WEB_COLLECTION_CLOUD_TOKEN      optional, bearer token for cloud dispatch
++ }
++ }
++ }
++ }
++     --connection-mode)
++       CONNECTION_MODE="${2:-local}"
++       HAS_CONNECTION_MODE_ARG="true"
++       shift 2
++       shift 2
++       shift 2
++       shift 2
++       ;;
++       ;;
++       ;;
++       ;;
++       ;;
++       ;;
++     --cloud-base-url)
++       CLOUD_BASE_URL="${2:-}"
++       HAS_CLOUD_BASE_URL_ARG="true"
++     --cloud-device-id)
++       CLOUD_DEVICE_ID="${2:-}"
++       HAS_CLOUD_DEVICE_ID_ARG="true"
++     --cloud-token)
++       CLOUD_TOKEN="${2:-}"
++       HAS_CLOUD_TOKEN_ARG="true"
++     *)
++   esac
++   local lower
++   lower="$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]')"
++   case "$lower" in
++   local pref_connection_mode pref_platform pref_max_items pref_fetch_detail pref_detail_speed pref_bridge_url pref_cloud_base_url pref_cloud_device_id pref_cloud_token
++   pref_connection_mode="$(resolve_preference_value defaultConnectionMode)"
++   pref_cloud_base_url="$(resolve_preference_value defaultCloudBaseUrl)"
++   pref_cloud_device_id="$(resolve_preference_value defaultCloudDeviceId)"
++   pref_cloud_token="$(resolve_preference_value defaultCloudToken)"
++   [[ "$HAS_CONNECTION_MODE_ARG" == "true" || -z "$pref_connection_mode" ]] || CONNECTION_MODE="$pref_connection_mode"
++   [[ "$HAS_CLOUD_BASE_URL_ARG" == "true" || -z "$pref_cloud_base_url" ]] || CLOUD_BASE_URL="$pref_cloud_base_url"
++   [[ "$HAS_CLOUD_DEVICE_ID_ARG" == "true" || -z "$pref_cloud_device_id" ]] || CLOUD_DEVICE_ID="$pref_cloud_device_id"
++   [[ "$HAS_CLOUD_TOKEN_ARG" == "true" || -z "$pref_cloud_token" ]] || CLOUD_TOKEN="$pref_cloud_token"
++ normalize_connection_mode() {
++   local raw="${1:-local}"
++     local|cloud)
++       printf '%s\n' "$lower"
++       die "invalid connection mode: $raw (expected local or cloud)"
++ ensure_cloud_preferences() {
++   [[ -n "$CLOUD_BASE_URL" ]] || die "cloud mode requires cloud base URL (set defaultCloudBaseUrl or pass --cloud-base-url)"
++   [[ -n "$CLOUD_DEVICE_ID" ]] || die "cloud mode requires cloud device id (set defaultCloudDeviceId or pass --cloud-device-id)"
++   [[ -n "$CLOUD_TOKEN" ]] || die "cloud mode requires cloud token (set defaultCloudToken or pass --cloud-token)"
++ resolve_cloud_loop_script() {
++   printf '%s\n' "$SKILL_DIR/scripts/cloud_dispatch_loop.sh"
++ CONNECTION_MODE="$(normalize_connection_mode "$CONNECTION_MODE")"
++   local loop_script
++ run_collect_cloud() {
++   local cloud_base_url="$1"
++   local cloud_device_id="$2"
++   local cloud_token="$3"
++   local payload_json="$4"
++   loop_script="$(resolve_cloud_loop_script)"
++   bash "$loop_script" \
++     --payload "$payload_json" \
++     --base-url "$cloud_base_url" \
++     --device-id "$cloud_device_id" \
++     --token "$cloud_token"
++ if [[ "$CONNECTION_MODE" == "cloud" ]]; then
++   ensure_cloud_preferences
++   echo "[web-collection] mode=cloud base=$CLOUD_BASE_URL device=$CLOUD_DEVICE_ID" >&2
++   run_collect_cloud "$CLOUD_BASE_URL" "$CLOUD_DEVICE_ID" "$CLOUD_TOKEN" "$PAYLOAD_JSON"
++ elif [[ -n "$REMOTE_SSH" ]]; then

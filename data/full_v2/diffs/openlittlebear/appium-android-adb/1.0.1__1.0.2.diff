@@ -1,0 +1,465 @@
+openlittlebear/appium-android-adb  1.0.1 -> 1.0.2
+change_type: instructions+code   changelog: - Added support for using either Appium or uiautomator2 as the backend, with clear instructions for both. - Expanded SKILL.md with detailed usage guides, backend limitations, and critical notes for UC WebView (Alipay Nebula)-based apps. - New tap commands: tap_bounds and tap_coords provide more precise control. - Documented which backend to use for specific cases (native views vs. UC WebView virtual lists). - Enhanced troubleshooting and knowledge sections for improved reliability in complex hyb
+
+### .clawhub/origin.json  [code]
++ {
++   "version": 1,
++   "registry": "https://clawhub.ai",
++   "slug": "appium-android-adb",
++   "installedVersion": "1.0.0",
++   "installedAt": 1779896221918,
++   "fingerprint": "d6e25390ec2c11409a70c1dfd8f3315caf9370b2276622800fc89df79f1aaa8d"
++ }
+
+### SKILL.md  [instructions]
+- description: Read and control any Android app via Appium. Provides a persistent bridge daemon (bridge_daemon.py) with dump/tap/scroll/type/wait commands. Use when raw ADB taps don't work (WebView apps, UC WebView) or when you need structured screen reading. Start with start_bridge.sh once, then use bridge_daemon.py for all interactions at ~1-2s per call.
+- Generic Appium bridge for any Android app. Reads screens as structured JSON, executes taps/scrolling/typing via accessibility service clicks (bypasses WebView touch filtering).
+- # Once per session (28s, starts Appium + daemon):
+- # Then every action (~1-2s each):
+- python3 ~/.openclaw/workspace/skills/appium-android-adb/bridge_daemon.py dump
+- python3 ~/.openclaw/workspace/skills/appium-android-adb/bridge_daemon.py tap '{"text": "查询"}'
+- python3 ~/.openclaw/workspace/skills/appium-android-adb/bridge_daemon.py scroll '{"direction": "down"}'
+- ## Commands
+-   "package": "com.example.app",
+-   "activity": "...",
+-   "title": "...",
+-   "buttons": [{"text": "查询", "id": "btn_search", "bounds": "[99,750][981,882]"}],
+-   "trains": [{"text": "...", "bounds": "...", "clickable": true}],
+- - `buttons[]` — all clickable elements with text, id, bounds
+- - `alerts[]` — dialogs/popups needing dismissal
+- - `trains[]` — elements containing "次列车" (app-agnostic; rename for other apps)
+- - `title` — page title if present
+- ### tap — click an element
+- python3 bridge_daemon.py tap '{"text": "查询车票"}'       # by text (substring match)
+- python3 bridge_daemon.py tap '{"text": "预订", "index": 0}' # first match
+- python3 bridge_daemon.py tap '{"id": "btn_submit"}'         # by resource-id
+- python3 bridge_daemon.py scroll '{"direction": "down"}'               # normal
+- python3 bridge_daemon.py scroll '{"direction": "down", "distance": "short"}' # fine
+- python3 bridge_daemon.py scroll '{"direction": "up"}'                 # go back
+- Uses fast drag (100ms) — works best for WebView content.
+- ## When to Use This
+- Use `appium-android-adb` when:
+- - The app uses WebView (ADB taps are ignored)
+- - You need structured screen reading (not screenshot-based)
+- - You need reliable element clicking (accessibility service, not raw touch)
+- - You're automating a hybrid app (native + WebView)
+- Do NOT use for:
+- - Simple native-only apps where `adb shell input tap` works fine
+- - One-off screenshots (use `adb shell screencap`)
+- **Daemon died**: Run `start_bridge.sh` again to restart.
+- **Device not found**: Check USB connection: `adb devices`
+- **App not launching**: The daemon attaches to the running app. Cold-start the app manually if needed: `adb shell monkey -p <package> 1`
++ description: Read and control any Android app via Appium or uiautomator2. Provides a persistent bridge daemon (bridge_daemon.py) with dump/tap/scroll/type/wait commands AND direct uiautomator2 Python library support. For UC WebView (Alipay Nebula) apps like 12306, prefer uiautomator2 for scrolling and booking action clicks.
++ Generic Android bridge for any app. Reads screens as structured JSON, executes taps/scrolling/typing. Supports two backends:
++ | Backend | Best for | Limitations |
++ |---------|----------|-------------|
++ | **Appium** (bridge_daemon.py) | Native apps, structured dumps, `find`/`wait` | UC WebView virtual list taps fail on collapsed elements |
++ | **uiautomator2** (Python lib) | WebView content, scrolling, booking buttons | Conflicts with Appium (same session can't share AccessibilityService) |
++ ### Option A: bridge_daemon.py (Appium-based)
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ # Once per session (~28s):
++ # Then all interactions (~1-2s each):
++ python3 bridge_daemon.py dump
++ python3 bridge_daemon.py tap '{"text": "查询车票"}'
++ python3 bridge_daemon.py tap '{"text": "查询车票"}'
++ python3 bridge_daemon.py scroll '{"direction": "down"}'
++ python3 bridge_daemon.py scroll '{"direction": "down"}'
++ ```
++ ```
++ ```
++ ```
++ ```
++ ### Option B: uiautomator2 (direct Python)
++ pip3 install uiautomator2  # already installed
++ python3 -c "
++ import uiautomator2 as u2
++ d = u2.connect()
++ d.app_start('com.MobileTicket')
++ "
++ Use for WebView scroll + booking button clicks. **Cannot run simultaneously with Appium.**
++ ## Commands (bridge_daemon.py)
++   "package": "com.MobileTicket",
++   "activity": "com.alipay.mobile.nebulacore.ui.H5Activity",
++   "title": "上海 <> 苏州",
++   "buttons": [
++     {"text": "查询车票", "id": "", "bounds": "[99,970][981,1102]", "x": 540, "y": 1036},
++     {"text": "预订", "id": "", "bounds": "[870,1988][1008,2075]", "x": 939, "y": 2031}
++   ],
++   ],
++   "trains": [
++     {"text": "G 7 0 0 4次列车...", "bounds": "[66,1793][291,1919]", "clickable": true, "x": 178, "y": 1856}
++ ### tap — click element by text
++ python3 bridge_daemon.py tap '{"text": "预订", "index": 0}'
++ python3 bridge_daemon.py tap '{"id": "btn_submit"}'
++ ### tap_bounds — click using bounds from dump
++ python3 bridge_daemon.py tap_bounds '{"bounds": "[870,1988][1008,2075]"}'
++ ⚠️ Only works reliably if the element has **proper bounds** (h > 20px). Collapsed virtual list items (h=6px) will NOT respond.
++ ### tap_coords — click at exact coordinates
++ python3 bridge_daemon.py tap_coords '{"x": 540, "y": 1200}'
++ ### find — inspect element matches
++ python3 bridge_daemon.py find '{"text": "7004"}'
++ python3 bridge_daemon.py scroll '{"direction": "down", "distance": "micro"}'
++ ⚠️ **May not work on UC WebView** (used by 12306, Alipay apps). The WebView filters touch events. For UC WebView scrolling, use uiautomator2's `d.swipe_ext()` instead.
++ ### screenshot — take phone screenshot
++ python3 bridge_daemon.py screenshot
++ # Returns {"ok": true, "path": "/tmp/screen.png"}
++ ## When to Use Which
++ | Situation | Recommended Tool |
++ |-----------|-----------------|
++ | Native Android views (date tabs, search buttons, bottom nav) | Either — both work |
++ | App dump / text search / element inspection | bridge_daemon.py `dump` + `find` |
++ | UC WebView content (train list, booking pages) | **uiautomator2** |
++ | Clicking "预订" / "提交订单" / action buttons | uiautomator2 `d.text('预订').click()` |
++ | Scrolling UC WebView lists | uiautomator2 `d.swipe_ext('up', scale=0.3)` |
++ | OCR + coordinate tap | ADB `input tap` (works on visible content) |
++ | WebView text content (crashes UIAutomator2) | bridge_daemon.py `dump` (via Appium) |
++ ## ⚠️ UC WebView Virtual List — Critical Knowledge
++ Apps using UC WebView (12306, many Chinese apps) use **virtual lists** that collapse most items' accessibility bounds:
++ - **Visible items**: Have real bounds (h=60-130px), clickable via accessibility service
++ - **Off-screen items**: COLLAPSED to y=407 (top) or y=2255 (bottom), h=6px
++ - **Action buttons**: "预订" buttons ALWAYS have proper bounds (h=87px) even in virtual lists
++ ### What Works on UC WebView
++ 1. Clicking action buttons like "预订", "提交订单", "查询车票" — they have persistent proper bounds
++ 2. Scrolling via `d.swipe_ext()` in uiautomator2
++ 3. OCR + coordinate-based ADB tap (with good image preprocessing)
++ 4. Element `click()` via uiautomator2 when the element has h > 20px
++ ### What Does NOT Work on UC WebView
++ 1. Clicking collapsed text elements (train names, times, seat info) — h=6px bounds
++ 2. ADB `input tap` on WebView content — silently filtered by UC WebView
++ 3. `mobile: scrollGesture` via Appium — returns False
++ 4. W3C Actions swipe — touch events filtered
++ 5. JS injection (`execute_script`) — no WEBVIEW contexts exposed
++ **Daemon died**: Run `start_bridge.sh` again.
++ **uiautomator2 conflict**: "AccessibilityService already registered" means Appium is running. Kill Appium first.
++ **Appium session error / ANDROID_HOME**: Ensure `export ANDROID_HOME=/usr/lib/android-sdk` before starting Appium.
++ **G7004 text not found**: Search with spaces: `G 7 0 0 4`, not `G7004`.
++ **"预订" not found**: The list may not have loaded yet. Wait and re-dump.
++ **OCR not reading Chinese**: Use `lang='chi_sim+eng'` with `--psm 6` config.
+
+### bridge_daemon.py  [code]
+- PACKAGE = "com.MobileTicket"
+-     r = subprocess.run(["adb", "shell", "pidof", PACKAGE], capture_output=True, text=True, timeout=5)
+-               "alerts": [], "buttons": [], "trains": [], "webview_contexts": []}
+-                 result["trains"].append({"text": text[:300], "bounds": bounds, "clickable": clickable})
+-                 result["buttons"].append({"text": (text or cd or rid)[:200], "id": rid, "bounds": bounds})
+-     if dist == "short":
+-         y1, y2 = (1300, 900) if direction == "down" else (900, 1300)
+-         y1, y2 = (1800, 400) if direction == "down" else (400, 1800)
+-         y1, y2 = (1600, 600) if direction == "down" else (600, 1600)
+-     dur = args.get("duration", 100)
+-     driver.swipe(540, y1, 540, y2, dur)
+-     time.sleep(0.4)
+-     return {"ok": True, "direction": direction}
+-     "dump": cmd_dump, "tap": cmd_tap, "scroll": cmd_scroll,
++ PACKAGE = os.environ.get("BRIDGE_PACKAGE", "com.MobileTicket")
++     try:
++     try:
++     try:
++     try:
++     try:
++     except Exception:
++     except Exception:
++     except Exception:
++         try:
++         try:
++         try:
++         try:
++         try:
++         try:
++         except Exception:
++         except Exception:
++         except Exception:
++         except Exception:
++         except Exception:
++     import subprocess
++     r = subprocess.run(["adb", "shell", "pidof", PACKAGE], capture_output=True, text=True, timeout=15)
++     driver = _get_driver()
++     driver = _get_driver()
++     driver = _get_driver()
++     driver = _get_driver()
++               "alerts": [], "buttons": [], "trains": [], "book_buttons": [],
++               "webview_contexts": []}
++     except Exception as e:
++     except Exception as e:
++         return {"ok": False, "error": str(e)[:200]}
++         if text == "预订" and clickable:
++             entry = {"text": "预订", "bounds": bounds, "x": 0, "y": 0}
++             m = __import__('re').findall(r'\d+', bounds)
++             if len(m) >= 4:
++                 entry["x"] = (int(m[0]) + int(m[2])) // 2
++                 entry["y"] = (int(m[1]) + int(m[3])) // 2
++             result["book_buttons"].append(entry)
++                 entry = {"text": text[:300], "bounds": bounds, "clickable": clickable}
++                 # Add center coordinates for direct tap_coords use
++                 m = __import__('re').findall(r'\d+', bounds)
++                 m = __import__('re').findall(r'\d+', bounds)
++                 if len(m) >= 4:
++                 if len(m) >= 4:
++                     entry["x"] = (int(m[0]) + int(m[2])) // 2
++                     entry["x"] = (int(m[0]) + int(m[2])) // 2
++                     entry["y"] = (int(m[1]) + int(m[3])) // 2
++                     entry["y"] = (int(m[1]) + int(m[3])) // 2
++                 result["trains"].append(entry)
++                 entry = {"text": (text or cd or rid)[:200], "id": rid, "bounds": bounds}
++                 result["buttons"].append(entry)
++     text = args.get("text", "")
++             pass
++             pass
++             pass
++     if not el and text:
++     if not el and text:
++         escaped = text.replace('"', '\\"')
++         escaped = text.replace('"', '\\"')
++         # Strategy 1: exact text match on clickable elements
++             matches = driver.find_elements(
++             matches = driver.find_elements(
++                 "xpath", f'//*[@clickable="true" and contains(@text, "{escaped}")]')
++             if matches:
++             if matches:
++                 el = matches[min(idx, len(matches) - 1)]
++                 el = matches[min(idx, len(matches) - 1)]
++         # Strategy 2: any element containing the text (even non-clickable parent)
++                 # If the matched element isn't clickable, try its parent
++                 if el.get_attribute("clickable") != "true":
++                     try:
++                         parent = el.find_element("xpath", "..")
++                         if parent.get_attribute("clickable") == "true":
++                             el = parent
++                     except Exception:
++                         pass
++         # Strategy 3: try content-desc
++                 "xpath", f'//*[contains(@content-desc, "{escaped}")]')
++ def cmd_tap_bounds(args):
++     """Tap the center of a bounds rectangle like '[x1,y1][x2,y2]'."""
++     bounds = args.get("bounds", "")
++     if not bounds:
++         return {"ok": False, "error": "missing bounds"}
++     import re
++     nums = re.findall(r'\d+', bounds)
++     if len(nums) < 4:
++         return {"ok": False, "error": f"invalid bounds format: {bounds}"}
++     x = (int(nums[0]) + int(nums[2])) // 2
++     y = (int(nums[1]) + int(nums[3])) // 2
++         driver.execute_script("mobile: clickGesture", {"x": x, "y": y})
++         driver.execute_script("mobile: clickGesture", {"x": x, "y": y})
++         # Fallback: tap via ADB if gesture click fails
++         import subprocess
++         import subprocess
++         subprocess.run(["adb", "shell", "input", "tap", str(x), str(y)],
++         subprocess.run(["adb", "shell", "input", "tap", str(x), str(y)],
++                        capture_output=True, timeout=5)
++                        capture_output=True, timeout=5)
++     time.sleep(0.5)
++     time.sleep(0.5)
++     time.sleep(0.5)
++     return {"ok": True, "tapped": f"({x},{y})", "bounds": bounds}
++ def cmd_tap_coords(args):
++     """Tap at exact coordinates."""
++     x = args.get("x", 0)
++     y = args.get("y", 0)
++     if not x and not y:
++         return {"ok": False, "error": "missing x,y coordinates"}
++     return {"ok": True, "tapped": f"({x},{y})"}
++ def cmd_find(args):
++     """Find elements by text and return their details (text, bounds, clickable) for inspection."""
++     if not text:
++         return {"ok": False, "error": "missing text"}
++     escaped = text.replace('"', '\\"')
++     results = []
++         matches = driver.find_elements("xpath", f'//*[contains(@text, "{escaped}")]')
++         for el in matches[:20]:
++             try:
++             try:
++                 t = (el.get_attribute("text") or "")[:200]
++                 b = el.get_attribute("bounds") or ""
++                 clk = el.get_attribute("clickable") or ""
++                 rid = (el.get_attribute("resource-id") or "").split("/")[-1]
++                 results.append({"text": t, "bounds": b, "clickable": clk == "true", "id": rid})
++             except Exception:
++             except Exception:
++                 pass
++                 pass
++     # Annotate collapsed bounds
++     for r in results:
++         m = __import__('re').findall(r'\d+', r.get("bounds", ""))
++         if len(m) >= 4:
++             h = int(m[3]) - int(m[1])
++             r["height_px"] = h
++             r["collapsed"] = h <= 6
++     return {"ok": True, "matches": results}
++     direction = args.get("direction", "down")
++     dist = args.get("distance", "normal")
++     if dist == "micro":
++         pct = 0.15
++     elif dist == "short":
++         pct = 0.4
++         pct = 0.85
++         pct = 0.6
++     # UC WebView only responds to elementId-based scrollGesture.
++     # Find the WebView and scroll it directly.
++     # Let exceptions propagate so the daemon can recreate the driver on crash.
++     wv = driver.find_element("xpath", "//android.webkit.WebView")
++     # Snapshot the page source before scroll to verify it actually moved
++         before = driver.page_source
++         before_hash = hash(before)
++         before_hash = None
++     driver.execute_script("mobile: scrollGesture", {
++         "elementId": wv.id,
++         "direction": direction,
++         "percent": pct,
++         "speed": 3000,
++     })
++     time.sleep(0.8)
++     # Verify the scroll actually changed the page
++     if before_hash is not None:
++             after = driver.page_source
++             if hash(after) == before_hash:
++                 # Content didn't change — UIAutomator2 is probably dead.
++                 # Raise so the daemon recreates the session and retries.
++                 raise RuntimeError("scroll did not change page content — session may be stale")
++         except RuntimeError:
++             raise
++             pass  # Can't verify, assume ok
++     return {"ok": True, "direction": direction, "distance": dist,
++             "scrolled": True, "method": "elementId"}
++ def cmd_js_scroll(args):
++     """Scroll the WebView content using JavaScript injection.
++     This is the ONLY reliable way to scroll UC WebView (used by 12306 and many
++     Chinese apps). Touch-based gestures (swipe, scrollGesture, ADB input) are
++     all filtered out by UC WebView.
++     Args:
++     Args:
++     Args:
++         direction: "down" (scroll toward later content) or "up"
++         distance: "micro"|"short"|"normal"|"long" — pixels to scroll
++     """
++     """
++     """
++     dist_px = {"micro": 200, "short": 500, "normal": 1200, "long": 2500}.get(dist, 1200)
++     if direction == "up":
++         dist_px = -dist_px
++     saved = driver.context or "NATIVE_APP"
++     scrolled = False
++     # Try each WebView context
++     for ctx in (driver.contexts or []):
++         if "WEBVIEW" not in str(ctx).upper() and "CHROMIUM" not in str(ctx).upper():
++             continue
++             continue
++             continue
++             driver.switch_to.context(ctx)
++             # Scroll by injecting JS. Try multiple selectors for the scrollable container.
++             js = (
++                 f"(function(){{"
++                 f"var d=document.documentElement||document.body;"
++                 f"var s=d.querySelector('.train-list, .list, [class*=scroll], [class*=list], .content, #app, body');"
++                 f"if(!s)s=d;"
++                 f"s.scrollTop=(s.scrollTop||0)+{dist_px};"
++                 f"d.scrollTop=(d.scrollTop||0)+{dist_px};"
++                 f"return s.scrollTop||d.scrollTop;"
++                 f"}})()"
++             )
++             driver.execute_script(js)
++             scrolled = True
++             scrolled = True
++             break
++         finally:
++                 driver.switch_to.context(saved)
++     if not scrolled:
++         # Fallback: try JS in native context via mobile: command
++             driver.execute_script("mobile: executeScript", {
++                 "script": (
++                     f"(function(){{"
++                     f"var el=document.documentElement||document.body;"
++                     f"el.scrollTop=(el.scrollTop||0)+{dist_px};"
++                     f"return el.scrollTop;"
++                     f"}})()"
++                 )
++             })
++     return {"ok": scrolled, "direction": direction, "distance": dist,
++             "scrolled": scrolled, "method": "js"}
++ def cmd_screenshot(_args):
++     """Take a screenshot of the phone and save to /tmp/screen.png.
++     Returns the file path so the caller can read it for visual verification
++     or OCR-based position detection."""
++     path = "/tmp/screen.png"
++     subprocess.run(["adb", "shell", "screencap", "-p", "/sdcard/scr.png"],
++                    capture_output=True, timeout=10)
++                    capture_output=True, timeout=10)
++                    capture_output=True, timeout=10)
++                    capture_output=True, timeout=10)
++     subprocess.run(["adb", "pull", "/sdcard/scr.png", path],
++     return {"ok": True, "path": path}
++ def cmd_ocr_tap(args):
++     """Take screenshot, OCR for a target text, tap at its position.
++         text: Text to find via OCR (e.g. "08:00" or "G7004")
++         tap_offset_x: Optional x-offset from text center (default: 0)
++         tap_offset_y: Optional y-offset from text center (default: +30, below the text)
++         side: "left" to restrict search to left half of screen (x<300 for departure times)
++     import subprocess, re, pytesseract
++     from PIL import Image
++     target = args.get("text", "")
++     if not target:
++         return {"ok": False, "error": "missing text parameter"}
++     off_x = args.get("tap_offset_x", 0)
++     off_y = args.get("tap_offset_y", 30)
++     side = args.get("side", "")
++     # Take screenshot
++     subprocess.run(["adb", "shell", "screencap", "-p", "/sdcard/ocr_scr.png"],
++     subprocess.run(["adb", "pull", "/sdcard/ocr_scr.png", "/tmp/ocr_scr.png"],
++     img = Image.open("/tmp/ocr_scr.png")
++     data = pytesseract.image_to_data(img, lang="chi_sim+eng",
++                                      output_type=pytesseract.Output.DICT,
++                                      config="--psm 6 --oem 3")
++     for i in range(len(data["text"])):
++         text = data["text"][i].strip()
++         if not text:
++             conf = int(data["conf"][i])
++         except (ValueError, TypeError):
++             conf = 0
++         if target in text and conf > 40:
++             x = data["left"][i]
++             y = data["top"][i]
++             w = data["width"][i]
++             h = data["height"][i]
++             # Optional side filter
++             if side == "left" and x > 300:
++                 continue
++                 continue
++             if side == "right" and x < 300:
++             tap_x = x + w // 2 + off_x
++             tap_y = y + h // 2 + off_y
++             subprocess.run(["adb", "shell", "input", "tap", str(tap_x), str(tap_y)],
++                            capture_output=True, timeout=5)
++             return {"ok": True, "found": text, "position": {"x": x, "y": y},
++                     "tapped": {"x": tap_x, "y": tap_y}, "confidence": conf}
++     return {"ok": False, "error": f"text '{target}' not found in screenshot"}
++ def cmd_find_book_button(args):
++     """Find '预订' buttons and return their positions relative to a target train.
++     Uses uiautomator2 (not Appium) to avoid stale sessions. Run this when the
++     train list is visible and the target train's text is present in the DOM.
++         near_y: Optional y-coordinate to filter buttons near this position
++     import subprocess, json, re
++     near_y = args.get("near_y", 0)
++     # Use adb to call uiautomator2's dump and parse
++         import uiautomator2 as u2
++         d = u2.connect()
++         buttons = d(text="预订")
++         results = []
++         for btn in buttons:
++             info = btn.info
++             b = info.get("bounds", {})
++             top = b.get("top", 0)
++             bottom = b.get("bottom", 0)
++             left = b.get("left", 0)
+
+### start_bridge.sh  [code]
+- python3 ~/.openclaw/workspace/skills/12306-android-adb/bridge_daemon.py --daemon &
+- RESP=$(python3 ~/.openclaw/workspace/skills/12306-android-adb/bridge_daemon.py dump 2>/dev/null)
+- echo "[✓] Bridge is ready. Use bridge_daemon.py for all 12306 interactions."
++ python3 ~/.openclaw/workspace/skills/appium-android-adb/bridge_daemon.py --daemon &
++ RESP=$(python3 ~/.openclaw/workspace/skills/appium-android-adb/bridge_daemon.py dump 2>/dev/null)
++ echo "[✓] Bridge is ready. Use bridge_daemon.py for all interactions."

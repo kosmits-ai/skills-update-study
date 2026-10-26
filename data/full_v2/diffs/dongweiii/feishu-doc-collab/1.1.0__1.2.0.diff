@@ -1,0 +1,755 @@
+dongweiii/feishu-doc-collab  1.1.0 -> 1.2.0
+change_type: instructions+docs+code   changelog: v1.2.0: Support openclaw-lark extension (compiled .js), deliver:false for hook sessions, drive.file.read_v1 empty handler, OAuth permission docs, debounce improvements
+
+### SKILL.md  [instructions]
+- 2. **Feishu app event subscriptions enabled:**
+- 3. **Hooks enabled** in `openclaw.json`:
+- This patches `monitor.ts` in the Feishu extension to:
+- - Detect `drive.file.edit_v1` events
+- - Trigger an isolated agent session via `/hooks/agent`
+- - The agent reads the doc, checks for new messages, and responds
+- POST /hooks/agent with isolated session instructions
+- **⚠️ OpenClaw updates overwrite `monitor.ts`.** After any update:
+- OpenClaw updates overwrite `monitor.ts`. After any update:
+- - Requires patching OpenClaw source files (fragile across updates)
++ 2. **openclaw-lark extension installed** (v2026.3+) or built-in feishu extension
++ 3. **Feishu app event subscriptions enabled:**
++    - `drive.file.read_v1` — (optional, auto-ignored to suppress warnings)
++ 4. **Required Feishu app permissions** (enable in Open Platform console + user OAuth):
++    - `space:document:retrieve` — read documents
++    - `docx:document:readonly` — read docx content (app-level)
++    - `base:table:read` — read bitable table structure
++    - `base:record:read` — read bitable records
++    - `base:record:update` — update bitable records (for task board)
++    - `base:field:read` — read bitable field definitions
++    - `drive:drive:readonly` — read drive file info
++ 5. **Hooks enabled** in `openclaw.json`:
++ This patches the Feishu extension's `monitor.js` (or `monitor.ts` for older installs) to:
++ - Detect `drive.file.edit_v1` and `bitable_record_changed_v1` events
++ - Apply 30-second debounce per file to prevent event storms
++ - Skip bot's own edits (anti-loop)
++ - Trigger an isolated agent session via `/hooks/agent` with `deliver: false`
++ - Silently ignore `drive.file.read_v1` events (suppress warnings)
++         ↓ No
++ Debounce: same file triggered within 30s? → Yes: skip
++ POST /hooks/agent with deliver:false (isolated session)
++ **⚠️ OpenClaw or extension updates may overwrite `monitor.js`.** After any update:
++ **Note:** For the `openclaw-lark` extension (compiled `.js`), no jiti cache clearing is needed.
++ For older built-in `.ts` installs, also run: `rm -f /tmp/jiti/src-monitor.*.cjs`
++ OpenClaw or extension updates may overwrite `monitor.js`. After any update:
++ - Requires patching OpenClaw extension files (fragile across updates)
++ - Multiple OAuth scopes must be authorized (use batch auth for convenience)
++ - Isolated hook sessions reuse cached OAuth tokens from the main interactive session
+
+### references/manual-patch.md  [docs]
+- If the automatic patch script fails (e.g., after a major OpenClaw update that restructures `monitor.ts`),
+- follow these steps to apply the patch manually.
+- The patch adds code to the `drive.file.edit_v1` event handler in the Feishu extension's `monitor.ts`.
+- After the default system event is enqueued, it additionally:
+- 1. Reads `~/.openclaw/openclaw.json` to get the hooks token and gateway port
+- 2. POSTs to `http://127.0.0.1:{port}/hooks/agent` with an isolated agent turn
+- 3. The agent turn instructs the AI to read the document, check for new messages per the
+-    Doc Chat Protocol, and respond if appropriate
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- /usr/lib/node_modules/openclaw/extensions/feishu/src/monitor.ts
+- ## Where to Inject
+- Find the `drive.file.edit_v1` event handler. Look for the line:
+- ```typescript
+- log(`feishu[${accountId}]: injected drive.file.edit system event for file ${fileToken}`);
+- Insert the hooks trigger code **immediately after** this line.
+- ## Code to Insert
+- See `scripts/patch-monitor.sh` for the exact code block — it's the section between
+- `// [feishu-doc-collab] Trigger isolated agent turn` and the closing `catch` block.
+- ## Key Variables
+- - `fileToken` — the document token from the edit event
+- - `fileType` — document type (docx, sheet, etc.)
+- - `accountId` — Feishu account identifier
+- - `hooksToken` — from openclaw.json `hooks.token`
+- - `port` — from openclaw.json `gateway.port` (default 18789)
+- ## After Patching
+- Restart the gateway:
+- ```bash
+- openclaw gateway restart
+- Check the logs for:
+- feishu[default]: triggered /hooks/agent for doc edit on <fileToken>
+- If you see this after editing a Feishu doc, the patch is working.
++ If the automatic patch script fails, follow these steps to apply the patch manually.
++ The monitor file location depends on your OpenClaw installation:
++ - **openclaw-lark extension (v2026.3+):** `~/.openclaw/extensions/openclaw-lark/src/channel/monitor.js`
++ - **Built-in feishu extension (older):** `/usr/lib/node_modules/openclaw/extensions/feishu/src/monitor.ts`
++ 1. Adds a **debounce map** (30s per fileToken) to prevent event storms
++ 2. Adds a **`_handleDriveEditEvent`** function that:
++    - Checks for bot self-edits (anti-loop)
++    - Applies debounce (30s per file)
++    - Reads `~/.openclaw/openclaw.json` for hooks token and gateway port
++    - POSTs to `http://127.0.0.1:{port}/hooks/agent` with `deliver: false, name: "DocCollab"`
++ 3. Registers event handlers:
++    - `drive.file.edit_v1` -> `_handleDriveEditEvent`
++    - `drive.file.bitable_record_changed_v1` -> `_handleDriveEditEvent`
++    - `drive.file.read_v1` -> empty handler (suppress warnings)
++ ## Easiest Approach
++ Copy the reference file directly:
++ [35m[plugins][39m [36mfeishu_chat: Registered feishu_chat, feishu_chat_members[39m
++ [35m[plugins][39m [36mfeishu_im: Registered feishu_im_user_message, feishu_im_user_fetch_resource, feishu_im_user_get_messages, feishu_im_user_get_thread_messages, feishu_im_user_search_messages[39m
++ [35m[plugins][39m [36mfeishu_search: Registered feishu_search_doc_wiki[39m
++ [35m[plugins][39m [36mfeishu_drive: Registered feishu_drive_file, feishu_doc_comments, feishu_doc_media[39m
++ [35m[plugins][39m [36mfeishu_wiki: Registered feishu_wiki_space, feishu_wiki_space_node[39m
++ [35m[plugins][39m [36mfeishu_sheets: Registered feishu_sheet tool[39m
++ [35m[plugins][39m [36mfeishu_im_bot_image: Registered feishu_im_bot_image tool[39m
++ [35m[plugins][39m [36mfeishu_im: Registered feishu_im_bot_image[39m
++ [35m[plugins][39m [36mRegistered all OAPI tools (calendar, task, bitable, search, drive, wiki, sheets, im)[39m
++ [35m[plugins][39m [36mfeishu_doc: Registered feishu_fetch_doc, feishu_create_doc, feishu_update_doc[39m
++ [35m[plugins][39m [36mfeishu_oauth: Registered feishu_oauth tool[39m
++ [35m[plugins][39m [36mfeishu_oauth_batch_auth: Registered feishu_oauth_batch_auth tool[39m
++ Gateway service disabled.
++ Start with: openclaw gateway install
++ Start with: openclaw gateway
++ Start with: systemctl --user start openclaw-gateway.service
++ ## Key Details
++ - The `/hooks/agent` POST body must include `deliver: false` to prevent the isolated session
++   from trying to deliver results via IM (doc collab writes back to the document directly)
++ - The `name: "DocCollab"` field helps identify hook sessions in logs
++ - For .js files (openclaw-lark), no jiti cache clearing is needed
++ - For .ts files (older installs), clear jiti cache after patching:
++   `rm -f /tmp/jiti/src-monitor.*.cjs`
++ ## Required Feishu App Permissions
++ **User OAuth Scopes** (user must authorize via card):
++ - `space:document:retrieve` - read documents
++ - `base:table:read` - read bitable table structure
++ - `base:record:read` - read bitable records
++ - `base:record:update` - update bitable records
++ - `base:field:read` - read bitable field definitions
++ **App-level Permissions** (enable in Feishu Open Platform console):
++ - `docx:document:readonly` - read docx content
++ - `drive:drive:readonly` - read drive file info
++ After restarting, edit a Feishu doc and check logs for:
+
+### references/monitor-full-patched.js  [code]
++ "use strict";
++ /**
++ /**
++ /**
++  * Copyright (c) 2026 ByteDance Ltd. and/or its affiliates
++  * SPDX-License-Identifier: MIT
++  *
++  *
++  *
++  * WebSocket monitoring for the Lark/Feishu channel plugin.
++  * Manages per-account WSClient connections and routes inbound Feishu
++  * events (messages, bot membership changes, read receipts) to the
++  * appropriate handlers.
++  */
++  */
++  */
++ import { getLarkAccount, getEnabledLarkAccounts } from '../core/accounts';
++ import { LarkClient } from '../core/lark-client';
++ import { MessageDedup } from '../messaging/inbound/dedup';
++ import { larkLogger } from '../core/lark-logger';
++ import { drainShutdownHooks } from '../core/shutdown-hooks';
++ import { handleMessageEvent, handleReactionEvent, handleBotMembershipEvent, handleCardActionEvent, } from './event-handlers';
++ const mlog = larkLogger('channel/monitor');
++ // ---------------------------------------------------------------------------
++ // ---------------------------------------------------------------------------
++ // ---------------------------------------------------------------------------
++ // ---------------------------------------------------------------------------
++ // Single-account monitor
++  * Start monitoring a single Feishu account.
++  * Creates a LarkClient, probes bot identity, registers event handlers,
++  * and starts a WebSocket connection. Returns a Promise that resolves
++  * when the abort signal fires (or immediately if already aborted).
++ async function monitorSingleAccount(params) {
++     const { account, runtime, abortSignal } = params;
++     const { accountId } = account;
++     const log = runtime?.log ?? ((...args) => mlog.info(args.map(String).join(' ')));
++     const error = runtime?.error ?? ((...args) => mlog.error(args.map(String).join(' ')));
++     // Only websocket mode is supported in the monitor path.
++     const connectionMode = account.config.connectionMode ?? 'websocket';
++     if (connectionMode !== 'websocket') {
++         log(`feishu[${accountId}]: webhook mode not implemented in monitor`);
++         return;
++         return;
++     }
++     }
++     }
++     }
++     }
++     // Message dedup — filters duplicate deliveries from WebSocket reconnects.
++     const dedupCfg = account.config.dedup;
++     const messageDedup = new MessageDedup({
++         ttlMs: dedupCfg?.ttlMs,
++         maxEntries: dedupCfg?.maxEntries,
++     });
++     });
++     log(`feishu[${accountId}]: message dedup enabled (ttl=${messageDedup['ttlMs']}ms, max=${messageDedup['maxEntries']})`);
++     log(`feishu[${accountId}]: starting WebSocket connection...`);
++     // Create LarkClient instance — manages SDK client, WS, and bot identity.
++     const lark = LarkClient.fromAccount(account);
++     // Attach dedup instance so it is disposed together with the client.
++     lark.messageDedup = messageDedup;
++     /** Per-chat history maps (used for group-chat context window). */
++     const chatHistories = new Map();
++     const ctx = {
++         get cfg() {
++             return LarkClient.runtime.config.loadConfig();
++         },
++         },
++         lark,
++         accountId,
++         chatHistories,
++         messageDedup,
++         runtime,
++         log,
++         error,
++     };
++     // [feishu-doc-collab] Debounce map for drive edit events (30s per fileToken)
++     const _editDebounce = new Map();
++     const DEBOUNCE_MS = 30000;
++     async function _handleDriveEditEvent(data) {
++         try {
++             const fileToken = data?.file_token || data?.event?.file_token || '';
++             const fileType = data?.file_type || data?.event?.file_type || 'unknown';
++             const operatorId = data?.operator_id?.open_id || data?.event?.operator_id?.open_id || '';
++             // Anti-loop: skip bot's own edits
++             if (operatorId && operatorId === lark.botOpenId) {
++                 log(`feishu[${accountId}]: skipping own doc edit on ${fileToken}`);
++                 return;
++                 return;
++                 return;
++             }
++             }
++             }
++             }
++             // Debounce: skip if same file triggered within 30s
++             const now = Date.now();
++             const lastTrigger = _editDebounce.get(fileToken) || 0;
++             if (now - lastTrigger < DEBOUNCE_MS) {
++                 log(`feishu[${accountId}]: debounce skip doc edit on ${fileToken}`);
++             _editDebounce.set(fileToken, now);
++             // Trigger /hooks/agent
++             const fs2 = await import("fs");
++             const cfgRaw = fs2.readFileSync(`${process.env.HOME || "/root"}/.openclaw/openclaw.json`, "utf-8");
++             const cfgJson = JSON.parse(cfgRaw);
++             const hooksToken = cfgJson?.hooks?.token;
++             const port = cfgJson?.gateway?.port ?? 18789;
++             if (!hooksToken) {
++                 log(`feishu[${accountId}]: hooks.token not configured, cannot trigger agent`);
++             const agentMessage = `[Document Edit Event] Feishu document (token: ${fileToken}, type: ${fileType}) was edited.
++ INSTRUCTIONS — follow exactly:
++ 1. Read DOC_PROTOCOL.md from workspace for the message format specification.
++ 2. Read the document: feishu_fetch_doc(doc_id=${fileToken})
++ 3. Find the LAST message block (delimited by ---). Parse its header line: sender, receiver, status.
++ 4. Decision logic:
++    - If status is 🔴 (editing) or missing → do NOTHING, reply NO_REPLY
++    - If sender is yourself (MyBot) → do NOTHING, reply NO_REPLY
++    - If receiver is not your name (MyBot) and not "all" → do NOTHING, reply NO_REPLY
++    - If status is 🟢 (complete) AND receiver is you or "all" → process the message
++ 5. If processing: compose your reply in the protocol format and append it using feishu_update_doc
++ 6. If not processing: reply NO_REPLY`;
++             const resp = await fetch(`http://127.0.0.1:${port}/hooks/agent`, {
++                 method: "POST",
++                 headers: { "Content-Type": "application/json", "Authorization": `Bearer ${hooksToken}` },
++                 body: JSON.stringify({ message: agentMessage, deliver: false, name: "DocCollab" }),
++             });
++             if (resp.ok) {
++                 log(`feishu[${accountId}]: triggered /hooks/agent for doc edit on ${fileToken}`);
++             } else {
++                 const body = await resp.text().catch(() => "");
++                 log(`feishu[${accountId}]: /hooks/agent returned ${resp.status}: ${body.slice(0,200)}`);
++         } catch (err) {
++             log(`feishu[${accountId}]: doc edit handler error (non-fatal): ${String(err)}`);
++         }
++         }
++     await lark.startWS({
++         handlers: {
++             'im.message.receive_v1': (data) => handleMessageEvent(ctx, data),
++             'im.message.message_read_v1': async () => { },
++             'im.message.reaction.created_v1': (data) => handleReactionEvent(ctx, data),
++             'im.chat.member.bot.added_v1': (data) => handleBotMembershipEvent(ctx, data, 'added'),
++             'im.chat.member.bot.deleted_v1': (data) => handleBotMembershipEvent(ctx, data, 'removed'),
++             // [feishu-doc-collab] Document edit events
++             'drive.file.edit_v1': (data) => _handleDriveEditEvent(data),
++             'drive.file.bitable_record_changed_v1': (data) => _handleDriveEditEvent(data),
++             'drive.file.read_v1': () => { /* intentionally ignored – doc read events */ },
++             // 飞书 SDK EventDispatcher.register 不支持带返回值的处理器，此处 as any 是 SDK 类型限制的变通
++             'card.action.trigger': ((data) =>
++             // eslint-disable-next-line @typescript-eslint/no-explicit-any
++             handleCardActionEvent(ctx, data)),
++         abortSignal,
++     // startWS resolves when abortSignal fires — probe result is logged inside startWS.
++     log(`feishu[${accountId}]: bot open_id resolved: ${lark.botOpenId ?? 'unknown'}`);
++     log(`feishu[${accountId}]: WebSocket client started`);
++     mlog.info(`websocket started for account ${accountId}`);
++ }
++ }
++ // Public API
++  * Start monitoring for all enabled Feishu accounts (or a single
++  * account when `opts.accountId` is specified).
++ export async function monitorFeishuProvider(opts = {}) {
++     const cfg = opts.config;
++     if (!cfg) {
++         throw new Error('Config is required for Feishu monitor');
++     // Store the original global config so plugin commands (doctor, diagnose)
++     // can access cross-account information even when running inside an
++     // account-scoped config context.
++     LarkClient.setGlobalConfig(cfg);
++     const log = opts.runtime?.log ?? ((...args) => mlog.info(args.map(String).join(' ')));
++     // Single-account mode.
++     if (opts.accountId) {
++         const account = getLarkAccount(cfg, opts.accountId);
++         if (!account.enabled || !account.configured) {
++             throw new Error(`Feishu account "${opts.accountId}" not configured or disabled`);
++         await monitorSingleAccount({
++             cfg,
++             account,
++             runtime: opts.runtime,
++             abortSignal: opts.abortSignal,
++         });
++         await drainShutdownHooks({ log });
++     // Multi-account mode: start all enabled accounts in parallel.
++     const accounts = getEnabledLarkAccounts(cfg);
++     if (accounts.length === 0) {
++         throw new Error('No enabled Feishu accounts configured');
++     log(`feishu: starting ${accounts.length} account(s): ${accounts.map((a) => a.accountId).join(', ')}`);
++     await Promise.all(accounts.map((account) => monitorSingleAccount({
++         cfg,
++         account,
++         runtime: opts.runtime,
++         abortSignal: opts.abortSignal,
++     })));
++     await drainShutdownHooks({ log });
+
+### references/monitor-full-patched.ts  [code]
+- import type { ClawdbotConfig, RuntimeEnv, HistoryEntry } from "openclaw/plugin-sdk";
+- import * as Lark from "@larksuiteoapi/node-sdk";
+- import * as http from "http";
+- import type { ResolvedFeishuAccount } from "./types.js";
+- import { resolveFeishuAccount, listEnabledFeishuAccounts } from "./accounts.js";
+- import { handleFeishuMessage, type FeishuMessageEvent, type FeishuBotAddedEvent } from "./bot.js";
+- import { createFeishuWSClient, createEventDispatcher } from "./client.js";
+- import { probeFeishu } from "./probe.js";
+- import { getFeishuRuntime } from "./runtime.js";
+- export type MonitorFeishuOpts = {
+-   config?: ClawdbotConfig;
+-   runtime?: RuntimeEnv;
+-   runtime?: RuntimeEnv;
+-   abortSignal?: AbortSignal;
+-   abortSignal?: AbortSignal;
+-   accountId?: string;
+- };
+- };
+- };
+- // Per-account WebSocket clients, HTTP servers, and bot info
+- const wsClients = new Map<string, Lark.WSClient>();
+- const httpServers = new Map<string, http.Server>();
+- const botOpenIds = new Map<string, string>();
+- // [feishu-doc-collab] Debounce map: fileToken → last trigger timestamp (ms)
+- // Prevents rapid-fire hook triggers when a single edit causes multiple events
+- const _editDebounce = new Map<string, number>();
+- const EDIT_DEBOUNCE_MS = 30_000; // 30 seconds between triggers for the same file
+- async function fetchBotOpenId(account: ResolvedFeishuAccount): Promise<string | undefined> {
+-   try {
+-     const result = await probeFeishu(account);
+-     return result.ok ? result.botOpenId : undefined;
+-   } catch {
+-     return undefined;
+-   }
+-   }
+-   }
+-   }
+-   }
+-   }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- /**
+- /**
+- /**
+- /**
+-  * Register common event handlers on an EventDispatcher.
+-  * When fireAndForget is true (webhook mode), message handling is not awaited
+-  * to avoid blocking the HTTP response (Lark requires <3s response).
+-  */
+-  */
+-  */
+-  */
+- function registerEventHandlers(
+-   eventDispatcher: Lark.EventDispatcher,
+-   context: {
+-     cfg: ClawdbotConfig;
+-     accountId: string;
+-     runtime?: RuntimeEnv;
+-     chatHistories: Map<string, HistoryEntry[]>;
+-     fireAndForget?: boolean;
+-   },
+- ) {
+-   const { cfg, accountId, runtime, chatHistories, fireAndForget } = context;
+-   const log = runtime?.log ?? console.log;
+-   const log = runtime?.log ?? console.log;
+-   const log = runtime?.log ?? console.log;
+-   const log = runtime?.log ?? console.log;
+-   const error = runtime?.error ?? console.error;
+-   const error = runtime?.error ?? console.error;
+-   const error = runtime?.error ?? console.error;
+-   eventDispatcher.register({
+-     "im.message.receive_v1": async (data) => {
+-       try {
+-       try {
+-       try {
+-       try {
+-       try {
+-       try {
+-         const event = data as unknown as FeishuMessageEvent;
+-         const promise = handleFeishuMessage({
+-           cfg,
+-           event,
+-           botOpenId: botOpenIds.get(accountId),
+-           runtime,
+-           chatHistories,
+-           accountId,
+-         });
+-         if (fireAndForget) {
+-           promise.catch((err) => {
+-             error(`feishu[${accountId}]: error handling message: ${String(err)}`);
+-           });
+-           });
+-         } else {
+-           await promise;
+-         }
+-         }
+-         }
+-         }
+-         }
+-         }
+-         }
+-       } catch (err) {
+-       } catch (err) {
+-       } catch (err) {
+-       } catch (err) {
+-       } catch (err) {
+-       } catch (err) {
+-         error(`feishu[${accountId}]: error handling message: ${String(err)}`);
+-       }
+-       }
+-       }
+-       }
+-       }
+-       }
+-     },
+-     },
+-     },
+-     },
+-     },
+-     },
+-     },
+-     "im.message.message_read_v1": async () => {
+-       // Ignore read receipts
+-     "im.chat.member.bot.added_v1": async (data) => {
+-         const event = data as unknown as FeishuBotAddedEvent;
+-         log(`feishu[${accountId}]: bot added to chat ${event.chat_id}`);
+-         error(`feishu[${accountId}]: error handling bot added event: ${String(err)}`);
+-     "im.chat.member.bot.deleted_v1": async (data) => {
+-         const event = data as unknown as { chat_id: string };
+-         log(`feishu[${accountId}]: bot removed from chat ${event.chat_id}`);
+-         error(`feishu[${accountId}]: error handling bot removed event: ${String(err)}`);
+-     "drive.file.edit_v1": async (data) => {
+-         const fs = await import("fs");
+-         const fs = await import("fs");
+-         const fs = await import("fs");
+-         fs.appendFileSync("/tmp/feishu-events.log", `${new Date().toISOString()} drive.file.edit_v1 handler triggered! data=${JSON.stringify(data).slice(0,500)}\n`);
+-         const event = data as unknown as {
+-         const event = data as unknown as {
+-           file_token?: string;
+-           file_token?: string;
+-           file_type?: string;
+-           operator_id?: { open_id?: string; union_id?: string; user_id?: string };
+-           operator_id?: { open_id?: string; union_id?: string; user_id?: string };
+-         };
+-         };
+-         const fileToken = event.file_token ?? "unknown";
+-         const fileToken = event.file_token ?? "unknown";
+-         const fileType = event.file_type ?? "unknown";
+-         const operatorId = event.operator_id?.open_id ?? event.operator_id?.user_id ?? "unknown";
+-         log(`feishu[${accountId}]: drive.file.edit event: file=${fileToken}, type=${fileType}, operator=${operatorId}`);
+-         // Skip edits made by our own bot to avoid loops
+-         const myBotOpenId = botOpenIds.get(accountId);
+-         const myBotOpenId = botOpenIds.get(accountId);
+-         if (myBotOpenId && operatorId === myBotOpenId) {
+-         if (myBotOpenId && operatorId === myBotOpenId) {
+-           log(`feishu[${accountId}]: skipping own edit on file ${fileToken}`);
+-           return;
+-           return;
+-           return;
+-         // [feishu-doc-collab] Debounce: skip if same file was triggered within EDIT_DEBOUNCE_MS
+-         // [feishu-doc-collab] Debounce: skip if same file was triggered within EDIT_DEBOUNCE_MS
+-         const now = Date.now();
+-         const lastTrigger = _editDebounce.get(fileToken);
+-         if (lastTrigger && (now - lastTrigger) < EDIT_DEBOUNCE_MS) {
+-           log(`feishu[${accountId}]: debounce skip edit on ${fileToken} (${now - lastTrigger}ms since last trigger)`);
+-         _editDebounce.set(fileToken, now);
+-         // Inject as system event into main session so the agent can react
+-         try {
+-         try {
+-           const core = getFeishuRuntime();
+-           const eventText = `[Document Edit Event] Feishu document ${fileToken} was edited. (processed via /hooks/agent isolated session)`;
+-           core.system.enqueueSystemEvent(eventText, {
+-             sessionKey: `agent:main:main`,
+-             contextKey: `feishu:drive:edit:${fileToken}:${Date.now()}`,
+-           log(`feishu[${accountId}]: injected drive.file.edit system event for file ${fileToken}`);
+-           // Trigger isolated agent turn via /hooks/agent endpoint
+-           try {
+-             const fs2 = await import("fs");
+-             const cfgRaw = fs2.readFileSync(`${process.env.HOME || "/root"}/.openclaw/openclaw.json`, "utf-8");
+-             const cfgJson = JSON.parse(cfgRaw);
+-             const hooksToken = cfgJson?.hooks?.token;
+-             const port = cfgJson?.gateway?.port ?? 18789;
+-             if (hooksToken) {
+-               const agentMessage = `[Document Edit Event] Feishu document (token: ${fileToken}, type: ${fileType}) was edited.
+- INSTRUCTIONS — follow exactly:
+- 1. Read DOC_PROTOCOL.md from workspace for the message format specification.
+- 2. Read the document: feishu_doc(action=read, doc_token=${fileToken})
+- 3. Find the LAST message block (delimited by ---). Parse its header line: sender, receiver, status.
+- 4. Decision logic:
+-    - If status is 🔴 (editing) or missing → do NOTHING, reply NO_REPLY
+-    - If sender is yourself (妙妙) → do NOTHING, reply NO_REPLY
+-    - If receiver is not your name (妙妙) and not "all" → do NOTHING, reply NO_REPLY
+-    - If status is 🟢 (complete) AND receiver is you or "all" → process the message
+- 5. If processing: compose your reply in the protocol format and append it:
+-    feishu_doc(action=append, doc_token=${fileToken}, content="---\\n> **妙妙** → **{sender}** | 🟢 完成\\n\\n{your reply}\\n")
+- 6. If not processing: reply NO_REPLY`;
+-               const resp = await fetch(`http://127.0.0.1:${port}/hooks/agent`, {
+-                 method: "POST",
+-                 headers: { "Content-Type": "application/json", "Authorization": `Bearer ${hooksToken}` },
+-                 body: JSON.stringify({ message: agentMessage }),
+-               });
+-               if (resp.ok) {
+-                 log(`feishu[${accountId}]: triggered /hooks/agent for doc edit on ${fileToken}`);
+-               } else {
+-                 const body = await resp.text().catch(() => "");
+-                 log(`feishu[${accountId}]: /hooks/agent returned ${resp.status}: ${body.slice(0,200)}`);
+-               }
+-             } else {
+-             } else {
+-               log(`feishu[${accountId}]: hooks.token not configured, cannot trigger agent`);
+-             }
+-             }
+-           } catch (wakeErr) {
+-             log(`feishu[${accountId}]: agent trigger failed (non-fatal): ${String(wakeErr)}`);
+-           }
+-           }
+-           }
+-         } catch (err) {
+-           error(`feishu[${accountId}]: failed to inject drive.file.edit system event: ${String(err)}`);
+-         error(`feishu[${accountId}]: error handling drive.file.edit event: ${String(err)}`);
+-     "drive.file.bitable_record_changed_v1": async (data) => {
+-         fs.appendFileSync("/tmp/feishu-events.log", `${new Date().toISOString()} drive.file.bitable_record_changed_v1 data=${JSON.stringify(data).slice(0,800)}\n`);
+-           table_id?: string;
+-           action_list?: Array<{
+-             record_id: string;
+-             action: string;
+-             before_value?: Array<{ field_id: string; field_value: string }>;
+-             after_value?: Array<{ field_id: string; field_value: string }>;
+-           }>;
+-         const tableId = event.table_id ?? "unknown";
+-         const operatorId = event.operator_id?.open_id ?? "unknown";
+-         log(`feishu[${accountId}]: bitable record changed: file=${fileToken}, table=${tableId}, operator=${operatorId}`);
+-         // Skip changes made by our own bot
+-           log(`feishu[${accountId}]: skipping own bitable record change on ${fileToken}`);
+-         {
+-           const now = Date.now();
+-           const debounceKey = `bitable:${fileToken}:${tableId}`;
+-           const lastTrigger = _editDebounce.get(debounceKey);
+-           if (lastTrigger && (now - lastTrigger) < EDIT_DEBOUNCE_MS) {
+-             log(`feishu[${accountId}]: debounce skip bitable change on ${fileToken} (${now - lastTrigger}ms since last trigger)`);
+-             return;
+-           _editDebounce.set(debounceKey, now);
+-         // Trigger isolated agent turn via /hooks/agent
+-           const fs2 = await import("fs");
+-           const cfgRaw = fs2.readFileSync(`${process.env.HOME || "/root"}/.openclaw/openclaw.json`, "utf-8");
+-           const cfgJson = JSON.parse(cfgRaw);
+-           const hooksToken = cfgJson?.hooks?.token;
+-           const port = cfgJson?.gateway?.port ?? 18789;
+-           if (hooksToken) {
+-             const actionSummary = (event.action_list ?? []).map(a => `record=${a.record_id} action=${a.action}`).join("; ");
+-             const agentMessage = `[Bitable Record Changed] 多维表格记录变更事件:
+- - app_token: ${fileToken}
+- - table_id: ${tableId}
+- - operator: ${operatorId}
+- - changes: ${actionSummary}
+- 请检查协作任务看板 (app_token: N6k0bL1Cga8OExsKzAAcXTpEnHd, table_id: tblE8V0SjVQVKB3e) 的最新状态变更，如有需要处理的任务请执行。`;
+-             const resp = await fetch(`http://127.0.0.1:${port}/hooks/agent`, {
+-               method: "POST",
+-               headers: { "Content-Type": "application/json", "Authorization": `Bearer ${hooksToken}` },
+-               body: JSON.stringify({ message: agentMessage }),
+-             });
+-             if (resp.ok) {
+-               log(`feishu[${accountId}]: triggered /hooks/agent for bitable record change on ${fileToken}`);
+-               const body = await resp.text().catch(() => "");
+-               log(`feishu[${accountId}]: /hooks/agent returned ${resp.status}: ${body.slice(0,200)}`);
+-         } catch (wakeErr) {
+-           log(`feishu[${accountId}]: agent trigger for bitable change failed (non-fatal): ${String(wakeErr)}`);
+-         error(`feishu[${accountId}]: error handling bitable record changed event: ${String(err)}`);
+-     "drive.file.bitable_field_changed_v1": async (data) => {
+-         fs.appendFileSync("/tmp/feishu-events.log", `${new Date().toISOString()} drive.file.bitable_field_changed_v1 data=${JSON.stringify(data).slice(0,500)}\n`);
+-         log(`feishu[${accountId}]: bitable field changed event received`);
+-         // Field structure changes are less frequent, just log for now
+-         error(`feishu[${accountId}]: error handling bitable field changed event: ${String(err)}`);
+-   });
+-   });
+-   });
+-   });
+- type MonitorAccountParams = {
+-   cfg: ClawdbotConfig;
+-   account: ResolvedFeishuAccount;
+-  * Monitor a single Feishu account.
+- async function monitorSingleAccount(params: MonitorAccountParams): Promise<void> {
+-   const { cfg, account, runtime, abortSignal } = params;
+-   const { accountId } = account;
+-   // Fetch bot open_id
+-   const botOpenId = await fetchBotOpenId(account);
+-   botOpenIds.set(accountId, botOpenId ?? "");
+-   log(`feishu[${accountId}]: bot open_id resolved: ${botOpenId ?? "unknown"}`);
+-   const connectionMode = account.config.connectionMode ?? "websocket";
+-   const eventDispatcher = createEventDispatcher(account);
+-   const chatHistories = new Map<string, HistoryEntry[]>();
+-   registerEventHandlers(eventDispatcher, {
+-     cfg,
+-     accountId,
+-     runtime,
+
+### scripts/patch-monitor.sh  [code]
+- # Feishu Doc Collaboration — Monitor Patch Script
+- # Patches OpenClaw's Feishu monitor.ts to trigger /hooks/agent on document edit events.
+- #   1. hooks must be enabled in openclaw.json: "hooks": { "enabled": true, "token": "<token>" }
+- #   2. DOC_PROTOCOL.md must exist in workspace
+- #   3. config.json in this skill directory must have agent_name set
+- # Safe to re-run — idempotent.
+- MONITOR="/usr/lib/node_modules/openclaw/extensions/feishu/src/monitor.ts"
+- # Read agent config
+-   echo "Copy config.json.example and fill in your agent_name."
+- fi
+- AGENT_NAME=$(python3 -c "import json; print(json.load(open('$CONFIG'))['agent_name'])" 2>/dev/null)
+- AGENT_DISPLAY=$(python3 -c "import json; print(json.load(open('$CONFIG'))['agent_display_name'])" 2>/dev/null)
+- if [ -z "$AGENT_NAME" ] || [ "$AGENT_NAME" = "MyBot" ]; then
+-   echo "WARNING: agent_name is not configured (still 'MyBot'). Edit $CONFIG first."
+-   echo "Continuing with default name 'MyBot'..."
+- if [ ! -f "$MONITOR" ]; then
+-   echo "ERROR: monitor.ts not found at $MONITOR"
+-   echo "Is OpenClaw installed? Expected Feishu extension at:"
+-   echo "  /usr/lib/node_modules/openclaw/extensions/feishu/"
+-   echo "monitor.ts already patched (hooks + debounce) — no changes needed."
+- if grep -q "/hooks/agent" "$MONITOR" 2>/dev/null && ! grep -q "_editDebounce" "$MONITOR" 2>/dev/null; then
+-   echo "monitor.ts has hooks but missing debounce — will re-patch from backup or clean file..."
+-   if [ -f "$MONITOR.bak" ]; then
+-     cp "$MONITOR.bak" "$MONITOR"
+-     echo "Restored from backup, will apply full patch."
+-   else
+-     echo "WARNING: No backup found. Will attempt to patch debounce on top of existing hooks."
+-     echo "If this fails, manually restore monitor.ts from a clean OpenClaw install."
+- echo "Applying feishu-doc-collab patch to monitor.ts..."
+- echo "  Display name: $AGENT_DISPLAY"
+- python3 << PYEOF
+- import json, sys
+- with open("$MONITOR") as f:
+-     content = f.read()
+- if "/hooks/agent" in content:
+-     print("Already patched")
+-     sys.exit(0)
+- agent_name = "$AGENT_NAME"
+- agent_display = "$AGENT_DISPLAY"
+- # Find injection point: after the system event is enqueued
+- inject_after = 'log(\`feishu[\${accountId}]: injected drive.file.edit system event for file \${fileToken}\`);'
+- hooks_code = '''
+-           // [feishu-doc-collab] Trigger isolated agent turn via /hooks/agent endpoint
+-           try {
+-             const fs2 = await import("fs");
+-             const cfgRaw = fs2.readFileSync(\`\${process.env.HOME || "/root"}/.openclaw/openclaw.json\`, "utf-8");
+-             const cfgJson = JSON.parse(cfgRaw);
+-             const hooksToken = cfgJson?.hooks?.token;
+-             const port = cfgJson?.gateway?.port ?? 18789;
+-             if (hooksToken) {
+-               const agentMessage = \`[Document Edit Event] Feishu document (token: \${fileToken}, type: \${fileType}) was edited.
+- INSTRUCTIONS — follow exactly:
+- 1. Read DOC_PROTOCOL.md from workspace for the message format specification.
+- 2. Read the document: feishu_doc(action=read, doc_token=\${fileToken})
+- 3. Find the LAST message block (delimited by ---). Parse its header line: sender, receiver, status.
+- 4. Decision logic:
+-    - If status is 🔴 (editing) or missing → do NOTHING, reply NO_REPLY
+-    - If sender is yourself (''' + agent_name + ''') → do NOTHING, reply NO_REPLY
+-    - If receiver is not your name (''' + agent_name + ''') and not "all" → do NOTHING, reply NO_REPLY
+-    - If status is 🟢 (complete) AND receiver is you or "all" → process the message
+- 5. If processing: compose your reply in the protocol format and append it:
+-    feishu_doc(action=append, doc_token=\${fileToken}, content="---\\\\n> **''' + agent_display + '''** → **{sender}** | 🟢 完成\\\\n\\\\n{your reply}\\\\n")
+- 6. If not processing: reply NO_REPLY\`;
+-               const resp = await fetch(\`http://127.0.0.1:\${port}/hooks/agent\`, {
+-                 method: "POST",
+-                 headers: { "Content-Type": "application/json", "Authorization": \`Bearer \${hooksToken}\` },
+-                 body: JSON.stringify({ message: agentMessage }),
+-               });
+-               if (resp.ok) {
+-                 log(\`feishu[\${accountId}]: triggered /hooks/agent for doc edit on \${fileToken}\`);
+-               } else {
+-                 const body = await resp.text().catch(() => "");
+-                 log(\`feishu[\${accountId}]: /hooks/agent returned \${resp.status}: \${body.slice(0,200)}\`);
+-               }
+-             } else {
+-               log(\`feishu[\${accountId}]: hooks.token not configured, cannot trigger agent\`);
+-             }
+-           } catch (wakeErr) {
+-             log(\`feishu[\${accountId}]: agent trigger failed (non-fatal): \${String(wakeErr)}\`);
+-           }'''
+- if inject_after in content:
+-     content = content.replace(inject_after, inject_after + hooks_code)
+-     with open("$MONITOR", "w") as f:
+-         f.write(content)
+-     print("Patch applied successfully!")
+-     print(f"Agent configured as: {agent_name} ({agent_display})")
+- else:
+-     print("ERROR: Could not find injection point in monitor.ts")
+-     print("The file structure may have changed after an OpenClaw update.")
+-     print("Manual patching may be required. See references/manual-patch.md")
+-     sys.exit(1)
+- PYEOF
+- echo "✅ Patch applied. Restart the gateway to activate:"
+- echo "   openclaw gateway restart"
++ # Feishu Doc Collaboration - Monitor Patch Script (v1.1.0)
++ # Patches openclaw-lark monitor.js to trigger /hooks/agent on document edit events.
++ #   1. hooks must be enabled in openclaw.json
++ #   2. openclaw-lark extension must be installed
++ # Safe to re-run - idempotent.
++ # Try multiple known locations for monitor.js
++ MONITOR=""
++ for candidate in   "$HOME/.openclaw/extensions/openclaw-lark/src/channel/monitor.js"   "/usr/lib/node_modules/openclaw/extensions/feishu/src/monitor.ts"; do
++   if [ -f "$candidate" ]; then
++     MONITOR="$candidate"
++     break
++ done
++ if [ -z "$MONITOR" ]; then
++   echo "ERROR: monitor.js/ts not found in any known location."
++   echo "Checked:"
++   echo "  ~/.openclaw/extensions/openclaw-lark/src/channel/monitor.js"
++   echo "  /usr/lib/node_modules/openclaw/extensions/feishu/src/monitor.ts"
++   exit 1
++ echo "Found monitor at: $MONITOR"
++ AGENT_NAME=$(python3 -c "import json; print(json.load(open(chr(39)+str('''$CONFIG''')[:0]+'''$CONFIG'''+chr(39)))[chr(39)+'agent_name'+chr(39)])" 2>/dev/null || echo "MyBot")
++   echo "monitor already patched (hooks + debounce) - no changes needed."
++ echo "Applying feishu-doc-collab patch..."
++ echo "  Backup saved: $MONITOR.bak"
++ # Use the full patched reference file
++ REF="$SKILL_DIR/references/monitor-full-patched.js"
++ if [ -f "$REF" ]; then
++   cp "$REF" "$MONITOR"
++   echo "Applied from reference file: $REF"
++ else
++   echo "ERROR: Reference file not found: $REF"
++   echo "Manual patching required. See references/manual-patch.md"
++ echo "Patch applied. Restart the gateway to activate:"
++ echo "  openclaw gateway restart"

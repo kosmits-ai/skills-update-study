@@ -1,0 +1,201 @@
+simonpierreboucher02/quickbook  1.0.0 -> 1.0.1
+change_type: docs   changelog: - Added new documentation files: ai_and_mcp.md, authentication.md, queries_and_errors.md, and webhooks.md in the references directory. - Expanded reference coverage to include topics like AI/MCP integration, authentication workflows, robust query/error handling, and webhook processing. - No changes to the public API, environment variables, or core workflow logic.  - Improved internal documentation structure for easier onboarding and advanced QuickBooks API use cases.
+
+### ai_and_mcp.md  [docs]
++ # QuickBooks Online AI & MCP Server Integration Reference
++ ## Model Context Protocol (MCP) Server
++ The Model Context Protocol (MCP) enables LLMs to securely access external tools and data sources. Intuit maintains an official, open-source **QuickBooks Online MCP Server** that exposes standard accounting tools to compatible AI clients (e.g., Claude Code, Cursor, LangChain).
++ ### Deployment & Configuration
++ 1.  **Clone & Install:**
++     ```bash
++     git clone https://github.com/intuit/quickbooks-online-mcp-server.git
++     cd quickbooks-online-mcp-server
++     npm install
++     ```
++     ```
++ 2.  **Configuration (`mcp-config.json`):**
++     ```json
++     {
++       "mcpServers": {
++         "quickbooks": {
++           "command": "node",
++           "args": ["dist/index.js"],
++           "env": {
++             "QUICKBOOKS_CLIENT_ID": "YOUR_CLIENT_ID",
++             "QUICKBOOKS_CLIENT_SECRET": "YOUR_CLIENT_SECRET",
++             "QUICKBOOKS_REDIRECT_URI": "https://localhost:8000/callback",
++             "QUICKBOOKS_ENVIRONMENT": "sandbox"
++           }
++         }
++       }
++     }
++ ### Exposed Tools Schema
++ The MCP server exposes a rich set of tools to the LLM. Each tool includes a descriptive JSON schema defining required parameters:
++ *   `create_customer`: Arguments include `DisplayName`, `CompanyName`, `PrimaryEmailAddr`.
++ *   `get_profit_and_loss`: Arguments include `start_date`, `end_date`, `accounting_method`.
++ *   `create_invoice`: Arguments include `CustomerRef`, `Line` items array.
++ ---
++ ## AI Agentic Accounting Workflows (LangGraph)
++ When designing AI agents to automate bookkeeping or reconciliation, use state machines to model task flows safely. Below is a LangGraph state workflow for matching incoming bank transactions to pending bills:
++ ```
++ ```
++                    [State: Start]
++                          |
++                          |
++                          |
++                          v
++                          v
++                          v
++              [Action: Fetch Webhook]
++            [Action: Query Pending Bills]
++          [Decision: Match Found? (LLM)]
++                     /         \
++                   YES          NO
++                   /             \
++                  v               v
++      [Action: Pay Bill]     [Action: Flag for Review]
++                  \               /
++                   \             /
++                    v           v
++                     [State: End]
+
+### authentication.md  [docs]
++ # QuickBooks Online API Authentication & Authorization Reference
++ ## OAuth 2.0 Authorization Flow
++ QuickBooks Online uses OAuth 2.0 to secure all API endpoints. The authorization flow is a standard Authorization Code Grant with Refresh Tokens.
++ ### Step 1: Authorization Request
++ Redirect the user to the Intuit Authorization endpoint with the following query parameters:
++ *   `client_id`: Your app's Client ID.
++ *   `response_type`: Must be `code`.
++ *   `scope`: Space-separated list of scopes (e.g., `com.intuit.quickbooks.accounting`).
++ *   `redirect_uri`: Whitelisted callback URL.
++ *   `state`: Unique CSRF token.
++ ```
++ ```
++ https://appcenter.intuit.com/connect/oauth2?client_id=YOUR_CLIENT_ID&response_type=code&scope=com.intuit.quickbooks.accounting&redirect_uri=YOUR_REDIRECT_URI&state=YOUR_STATE
++ ### Step 2: Token Exchange
++ Exchange the authorization code for access and refresh tokens by making a POST request:
++ *   **Endpoint:** `https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer`
++ *   **Endpoint:** `https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer`
++ *   **Headers:**
++     *   `Authorization`: `Basic <Base64(client_id:client_secret)>`
++     *   `Content-Type`: `application/x-www-form-urlencoded`
++ *   **Body:**
++ *   **Body:**
++     ```
++     ```
++     ```
++     ```
++     grant_type=authorization_code&code=AUTHORIZATION_CODE&redirect_uri=YOUR_REDIRECT_URI
++ ### Step 3: Refreshing Tokens
++ Access tokens expire after **60 minutes**. Refresh tokens expire after **100 days**.
++     grant_type=refresh_token&refresh_token=YOUR_REFRESH_TOKEN
++ ## Token Storage Best Practices
++ *   **Encryption:** Encrypt both `access_token` and `refresh_token` at rest using AES-256-GCM.
++ *   **Locking:** Use a distributed lock (e.g., Redis Redlock) during token refresh to prevent concurrent workers from refreshing the same token simultaneously and causing race conditions.
++ *   **Overwriting:** Always overwrite the stored refresh token with the newly returned value, as Intuit may rotate refresh tokens dynamically.
+
+### queries_and_errors.md  [docs]
++ # QuickBooks Online Query Language & Error Handling Reference
++ ## Intuit Data Services (IDS) Query Language
++ ### Syntax & Pagination
++ To retrieve lists of entities, use the SQL-like IDS Query Language.
++ ```sql
++ SELECT * FROM Customer WHERE Active = true STARTPOSITION 1 MAXRESULTS 500
++ ```
++ ```
++ ```
++ *   **Pagination:** Use `STARTPOSITION` (1-indexed) and `MAXRESULTS` (maximum limit of **1000** records per request) to paginate through large datasets.
++ *   **Unsupported Operators:** `OR` operations are **not** supported by the IDS query engine. Split complex `OR` conditions into separate API queries or use `IN` clauses.
++ ### IDS-QL Injection Prevention
++ The QuickBooks API does not sanitize query inputs. Always escape single quotes (`'`) by replacing them with backslash-escaped single quotes (`\'`) or stripping them completely before interpolating variables into query strings:
++ ```python
++ ```python
++ def sanitize_input(user_input: str) -> str:
++     return user_input.replace("'", "\\'")
++ ---
++ ---
++ ## Change Data Capture (CDC)
++ Query all entities of specified types that have changed since a given timestamp.
++ *   **Endpoint:** `/v3/company/<realmId>/cdc?entities=<EntityList>&changedSince=<Timestamp>`
++ *   **Example Call:** `/v3/company/12345/cdc?entities=Customer,Invoice&changedSince=2026-05-31T00:00:00Z`
++ ## Error Handling & Resilience
++ ### Common Error Codes
++ | Error Code | HTTP Status | Common Cause | Mitigation Strategy |
++ | :--- | :--- | :--- | :--- |
++ | **`2030`** | `400 Bad Request` | Stale `SyncToken` during update. | Fetch the latest version of the entity, merge changes, and retry. |
++ | **`3100`** | `400 Bad Request` | Duplicate `DocNumber`. | Enable `allowduplicatedocnum` query parameter or let system auto-generate. |
++ | **`3200`** | `400 Bad Request` | Transaction is locked / reconciled. | Do not allow edits via API; prompt user to unlock inside QuickBooks UI. |
++ | **`100`** | `401 Unauthorized` | Invalid or expired Access Token. | Execute OAuth token refresh flow and retry the request. |
++ | **`429`** | `429 Too Many Requests`| API rate limit exceeded (100 req/min). | Implement exponential backoff with jitter. |
++ ### Exponential Backoff Implementation (Python)
++ import time
++ import random
++ import requests
++ def execute_with_retry(api_call_func, max_retries=5):
++     base_delay = 1.0  # start with 1 second
++     for attempt in range(max_retries):
++         try:
++             response = api_call_func()
++             if response.status_code == 200:
++                 return response
++             elif response.status_code == 429:
++                 # Rate limited - backoff and retry
++                 delay = base_delay * (2 ** attempt) + random.uniform(0, 0.5)
++                 time.sleep(delay)
++             else:
++                 response.raise_for_status()
++         except requests.exceptions.RequestException as e:
++             if attempt == max_retries - 1:
++                 raise e
++             delay = base_delay * (2 ** attempt) + random.uniform(0, 0.5)
++             time.sleep(delay)
+
+### webhooks.md  [docs]
++ # QuickBooks Online Webhooks Reference
++ ## Payload Format (CloudEvents v1.0)
++ Webhooks are delivered as an array of JSON objects following the CloudEvents specification:
++ ```json
++ [
++   {
++     "specversion": "1.0",
++     "id": "88cd52aa-33b6-4351-9aa4-47572edbd068",
++     "source": "intuit.dsnBgbseACLLRZNxo2dfc4evmEJdxde58xeeYcZliOU=",
++     "type": "qbo.invoice.created.v1",
++     "datacontenttype": "application/json",
++     "time": "2026-05-31T21:31:25.179Z",
++     "intuitentityid": "95",
++     "intuitaccountid": "310687",
++     "data": {}
++   }
++ ]
++ ```
++ ```
++ ## Signature Verification (Python)
++ Verify the cryptographic signature passed in the `intuit-signature` header using HMAC-SHA256 with your secure Verifier Token.
++ ```python
++ import hmac
++ import hashlib
++ import base64
++ def verify_webhook_signature(raw_payload: bytes, verifier_token: str, received_signature: str) -> bool:
++     """
++     """
++     Validates the HMAC-SHA256 signature of a QuickBooks Online webhook.
++     :param raw_payload: The raw, unparsed UTF-8 request body bytes.
++     :param verifier_token: The verifier token from the Intuit Developer Portal.
++     :param received_signature: The value of the 'intuit-signature' header.
++     :return: True if the signature is valid, False otherwise.
++     # Create HMAC-SHA256 hash using the verifier token as the key
++     hmac_hash = hmac.new(
++         verifier_token.encode('utf-8'),
++         raw_payload,
++         hashlib.sha256
++     ).digest()
++     # Base64 encode the resulting hash
++     calculated_signature = base64.b64encode(hmac_hash).decode('utf-8')
++     # Securely compare signatures to prevent timing attacks
++     return hmac.compare_digest(calculated_signature, received_signature)
++ ## Best Practices
++ 1.  **3-Second Timeout:** Your endpoint must respond with an `HTTP 200 OK` status code within **3 seconds** of receiving the payload.
++ 2.  **Asynchronous Processing:** Never perform database operations, API calls, or complex business logic synchronously within your webhook handler. Write the payload to a message queue (e.g., Redis, RabbitMQ, or AWS SQS) and return `200 OK` immediately.
++ 3.  **Idempotency:** Webhook notifications are guaranteed to be delivered *at least once*. Ensure your processing queue tracks the unique `id` of each CloudEvent to prevent duplicate processing.

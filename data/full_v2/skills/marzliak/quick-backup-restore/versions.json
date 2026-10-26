@@ -1,0 +1,132 @@
+{
+  "fetched_at": "2026-10-26T16:35:57.291149+00:00",
+  "status": 200,
+  "versions": [
+    {
+      "version": "3.2.3",
+      "createdAt": 1780344697115,
+      "changelog": "Scheduler cadence hotfix: systemd installs now preserve simple custom cron schedules like 0 */2 * * * as matching OnCalendar values, and unsupported cron expressions fall back to cron.d instead of hourly. Docs also clarify OpenClaw slug-only install.",
+      "changelogSource": "user"
+    },
+    {
+      "version": "3.2.2",
+      "createdAt": 1780343015297,
+      "changelog": "ClawHub publish compatibility: renamed marketplace copy from skill-card.md to MARKETPLACE.md because ClawHub generates skill-card.md internally.",
+      "changelogSource": "user"
+    },
+    {
+      "version": "3.2.1",
+      "createdAt": 1780342827180,
+      "changelog": "Metadata and positioning refresh: clearer Time Clawshine — OpenClaw Time Machine branding, restic/snapshot tags, and stronger discovery copy.",
+      "changelogSource": "user"
+    },
+    {
+      "version": "3.2.0",
+      "createdAt": 1780340304619,
+      "changelog": "Security audit response: explicit capabilities, local-only defaults, egress hardening, restore/prune safety gates, SECURITY.md and PRIVACY.md.",
+      "changelogSource": "user"
+    },
+    {
+      "version": "3.1.4",
+      "createdAt": 1779729042567,
+      "changelog": "### Documentation\n- Clarify intent of the restic password generation line in `setup.sh`. The\n  ClawHub static-analysis scanner flagged\n  `( set -C; openssl rand -base64 48 > \"$PASS_FILE\" )` as a potential\n  exfiltration (\"shell base64-encodes a local file and sends it over the\n  network\"). False positive: `openssl rand -base64 48` is *generating* 48\n  bytes of entropy and base64-encoding them so the password is printable\n  ASCII; the `>` redirect target is `$PASS_FILE` on local disk (the\n  restic encryption key file at `/etc/time-clawshine.pass`). No network\n  call, no file-to-base64 step. Added an inline comment explaining the\n  CSPRNG → ASCII encoding → local write sequence and the role of\n  `set -C` (race-condition guard against the outer `[[ -f ]]` check).\n  No behavior change.",
+      "changelogSource": "user"
+    },
+    {
+      "version": "3.1.3",
+      "createdAt": 1779727035122,
+      "changelog": "### Fixed\n- **Missing backup paths now warn-and-skip instead of failing the entire backup.**\n  `tc_validate_paths` used to abort (and fire a Telegram alert) on the first\n  missing path, then `restic` never ran. On clean OpenClaw installs the default\n  `config.yaml` lists optional dirs like `/root/.openclaw/cron` that only\n  materialize once the user creates a cron job, so the very first validation\n  backup after setup would fail with `Paths not found: /root/.openclaw/cron`\n  even though everything else was healthy. New behavior: missing paths log a\n  single `WARN` line and drop out of the backup set; `restic` still runs on the\n  remaining paths. We only fail loudly (and alert via Telegram) if *every*\n  configured path is missing — the genuine \"nothing to back up\" case.\n- **`setup.sh` no longer hides what it accomplished when the validation backup\n  fails.** Before: a failing first backup `exit 1`'d before the summary box,\n  leaving the user with `Initial backup FAILED — check config.yaml and retry`\n  and no idea whether the repo was initialized, the systemd timer wired up,\n  logrotate configured, etc. After: the summary box prints unconditionally with\n  a new `Validation` line showing `success`, `skipped (--skip-backup)`, or\n  `FAILED (exit N)`; the script still exits non-zero on validation failure, but\n  prints a short follow-up block pointing at the log and the retry command\n  first. The field label `Cron` was renamed to `Scheduler` so it makes sense\n  whether systemd timer or cron actually got installed.\n- **Robust systemd detection + cleanup of the loser scheduler.** The\n  systemd-presence check used `systemctl is-system-running`, which returns\n  non-zero whenever the system reports `degraded` (any unrelated unit failed).\n  On otherwise-healthy hosts with one degraded unit, setup would incorrectly\n  fall back to cron — and the cron path did *not* remove a pre-existing systemd\n  timer, so you could end up with BOTH cron and the legacy timer firing the\n  same backup back-to-back. Replaced with the canonical\n  `[ -d /run/systemd/system ]` check (present iff PID 1 is systemd, regardless\n  of other units' state), and the cron fallback path now disables and removes\n  any prior `/etc/systemd/system/time-clawshine.{timer,service}` before\n  installing the cron file.\n- **`apt-get update` no longer runs when no apt-managed dep is missing.** Setup\n  unconditionally called `apt-get update -qq` even when `restic`, `curl`, and\n  `jq` were all present. On hosts with flaky third-party repos (docker,\n  nodesource, tailscale, …) every re-run spammed a dozen `W: Failed to fetch`\n  warnings even though no install was going to happen. The apt index is now\n  refreshed only when at least one apt-managed dep is actually missing;\n  otherwise setup prints `Skipping apt-get update (all apt-managed deps\n  already present)` and finishes the dep-check section in a fraction of a\n  second.\n- **Update check surfaces *why* it failed instead of going silent.** Both\n  `backup.sh` (daily) and `status.sh` did the same blind `curl … | jq …` pipe\n  against the ClawHub API. On any failure (DNS, TLS, HTTP 5xx, missing\n  `.version` field, JSON shape change, …) `status.sh` just printed\n  `Update : could not reach ClawHub` and `backup.sh` said nothing at all —\n  operators had no signal whether the problem was network, the host, or the\n  API. Extracted a shared `tc_check_update` helper in `lib.sh` that captures\n  the curl exit code, the HTTP status, and the parsed `.version` separately\n  and sets `TC_UPDATE_STATE` (`uptodate` / `newer` / `error`) plus\n  `TC_UPDATE_ERROR` with a short reason. `status.sh` now renders e.g.\n  `Update : could not check — HTTP 307 from ClawHub`, and `backup.sh` logs\n  `WARN Update check skipped: network error (curl exit 6): …` once per day.\n  Failures stay non-blocking — never abort a backup, never spam Telegram.\n- **Summary box stays aligned.** The setup summary used `printf '%-Ns'` with\n  field values that could contain multi-byte UTF-8 (`✓`, em dash, long systemd\n  unit name) — `printf` pads bytes, not visual columns, so the right border\n  drifted and `Scheduler : systemd: time-clawshine.timer (*-*-* *:05:00)`\n  overflowed entirely. Replaced the box-internal special chars with ASCII\n  (`[OK]`, `--`), shortened the systemd label to `systemd timer @ <calendar>`\n  (full unit name is still discoverable via `systemctl status`), and added a\n  `_field_fit` helper that truncates oversized values to\n  `<first 33 chars>...` — keeps the right border vertical on any path length.",
+      "changelogSource": "user"
+    },
+    {
+      "version": "3.1.2",
+      "createdAt": 1778798965830,
+      "changelog": "Display name rebrand — was showing slug auto-title-cased (\"Quick Backup Restore\"). No code changes.",
+      "changelogSource": "user"
+    },
+    {
+      "version": "3.1.1",
+      "createdAt": 1778798444447,
+      "changelog": "test",
+      "changelogSource": "user"
+    },
+    {
+      "version": "3.0.0",
+      "createdAt": 1776042492835,
+      "changelog": "v3.0.0 — Breaking: system paths renamed to time-clawshine, binary now /usr/local/bin/time-clawshine. New: uninstall.sh, ARM64 support, v2 migration, SIGTERM trap, password validation, separated forget/prune, restore exit check, systemd timer detection, CI with shellcheck. Fixed: SIGPIPE in prune, set -e in customize.",
+      "changelogSource": "user"
+    },
+    {
+      "version": "2.0.2",
+      "createdAt": 1775766389094,
+      "changelog": "fix: Telegram messages now show Time Clawshine branding",
+      "changelogSource": "user"
+    },
+    {
+      "version": "2.0.1",
+      "createdAt": 1775766288986,
+      "changelog": "fix: yq checksum 404 (used bulk checksums file), missing chmod +x on scripts, test hash comparison",
+      "changelogSource": "user"
+    },
+    {
+      "version": "2.0.0",
+      "createdAt": 1775765451267,
+      "changelog": "Version 2.0.0 of quick-backup-restore introduces major new capabilities and improvements:\n\n- Added SETUP_GUIDE.md for interactive, guided configuration, supporting user walkthroughs.\n- Introduced bin/prune.sh for manual repository cleanup, including advanced retention and dry-run options.\n- Added bin/test.sh for automated backup→restore→verify self-testing.\n- Enhanced setup flow to recommend reading SETUP_GUIDE.md and customizing config before installation.\n- Added dry-run mode to backup.sh for backup validation without writing data.\n- Expanded restore.sh to support time-based restore arguments (e.g., \"2h ago\"), in addition to snapshot IDs.\n- Updated documentation (README.md, SKILL.md) for new features, improved clarity, and new usage examples.",
+      "changelogSource": "auto"
+    },
+    {
+      "version": "1.3.0",
+      "createdAt": 1775764038617,
+      "changelog": "- Major documentation redesign: SKILL.md rewritten with a friendlier, scenario-based introduction, feature table, and high-level overview as \"Time Clawshine.\"\n- Highlights new features in clear language: Telegram daily digest, disk guard, deduplication, update awareness, offline mode, and more.\n- Existing technical reference and all usage examples are preserved and reorganized for clarity.\n- No code or behavior changes—documentation only.",
+      "changelogSource": "auto"
+    },
+    {
+      "version": "1.2.4",
+      "createdAt": 1775763040986,
+      "changelog": "**Shortened description and streamlined skill documentation.**\n\n- Skill description and summary revised for brevity and clarity.\n- SKILL.md heavily condensed; redundant, long-winded explanations removed.\n- All critical commands and backup/restore instructions retained and reorganized for faster reference.\n- No changes to core functionality; documentation only.",
+      "changelogSource": "auto"
+    },
+    {
+      "version": "1.2.3",
+      "createdAt": 1775762811978,
+      "changelog": "# quick-backup-restore v1.2.3 changelog\n\n- Internal metadata updates in skill.json.\n- Updated CHANGELOG.md for release notes and documentation.\n- No changes to user-facing commands or functionality.",
+      "changelogSource": "auto"
+    },
+    {
+      "version": "1.2.2",
+      "createdAt": 1775762630135,
+      "changelog": "quick-backup-restore v1.2.2\n\n- Documentation cleanup: removed trailing whitespace from SKILL.md.\n- No functional or behavioral changes.",
+      "changelogSource": "auto"
+    },
+    {
+      "version": "1.2.1",
+      "createdAt": 1775762314283,
+      "changelog": "- Updated documentation in SKILL.md to remove references to session and credential backups.\n- Clarified that the backup covers memory, sessions, and config (not credentials).\n- No functional or command changes; documentation only.",
+      "changelogSource": "auto"
+    },
+    {
+      "version": "1.2.0",
+      "createdAt": 1775760421236,
+      "changelog": "- Adds a new status dashboard script (`bin/status.sh`) for easier backup status checks and update info.\n- Updates the skill description and documentation to include support for \"check for updates\" requests.\n- Documents `bin/status.sh` as the recommended way to check status, backup history, and updates.\n- Notes that `backup.sh` will automatically check for updates daily (configurable), logging a warning if a new version is available but never updating automatically.\n- Improves clarity and details in the usage instructions throughout the documentation.",
+      "changelogSource": "auto"
+    },
+    {
+      "version": "1.1.1",
+      "createdAt": 1775757983446,
+      "changelog": "Fixed SKILL.md metadata: declared full dependency list (bash, openssl, curl, jq + auto_install restic, yq)",
+      "changelogSource": "user"
+    },
+    {
+      "version": "1.1.0",
+      "createdAt": 1775757780578,
+      "changelog": "Security hardening: replaced openclaw agent ask with local bash analysis, added --no-system-install and --assume-yes flags to setup.sh, deleted unused prompt files",
+      "changelogSource": "user"
+    },
+    {
+      "version": "1.0.0",
+      "createdAt": 1772754574722,
+      "changelog": "Initial release.\n\nHourly incremental backup for OpenClaw instances — restic-powered, AES-256 encrypted, YAML-configured.\n\n- Automatic hourly cron via setup.sh\n- 72-snapshot retention (3 days) with content-based deduplication\n- Interactive restore with mandatory dry-run preview\n- Surgical file-level restore (--file flag)\n- Telegram notification on failure only — silent on success\n- AI-assisted path customization via bin/customize.sh\n- Zero hardcoded values — single config.yaml as source of truth",
+      "changelogSource": "user"
+    }
+  ]
+}

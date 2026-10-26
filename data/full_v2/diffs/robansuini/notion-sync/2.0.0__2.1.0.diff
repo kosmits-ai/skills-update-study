@@ -1,0 +1,131 @@
+robansuini/notion-sync  2.0.0 -> 2.1.0
+change_type: instructions+code   changelog: Add --token-file, --token-stdin, and NOTION_API_KEY env var as secure token input methods. --token still works. 109 tests. Addresses VirusTotal credential exposure concern.
+
+### SKILL.md  [instructions]
+- ## Upgrading from v1.x
+- v2.0 requires passing `--token` to all scripts. The `NOTION_API_KEY` environment variable is no longer read.
+- **Before (v1.x):**
+- ```bash
+- ```bash
+- export NOTION_API_KEY="ntn_..."
+- node scripts/search-notion.js "query"
+- ```
+- ```
+- **After (v2.0):**
+- node scripts/search-notion.js --token "ntn_..." "query"
+- If you use a wrapper script or agent that sets `NOTION_API_KEY`, update it to pass `--token` instead.
+- 4. Pass the token to scripts via `--token`:
+-    node scripts/search-notion.js "query" --token "ntn_your_token_here"
+- node scripts/watch-notion.js --token "<token>" "<page-id>" "<local-markdown-path>"
+- node scripts/watch-notion.js --token "ntn_..." \
++ ## Upgrading
++ **From v2.0:** v2.1 adds `--token-file`, `--token-stdin`, and `NOTION_API_KEY` env var as additional token sources. `--token` still works exactly as before. No breaking changes.
++ **From v1.x:** v2.0+ requires explicit token passing. See v2.0 changelog for migration details.
++ 4. Pass the token using one of these methods (in order of security):
++    **Option A — Token file (recommended for automation):**
++    ```bash
++    ```bash
++    ```bash
++    echo "ntn_your_token" > ~/.notion-token && chmod 600 ~/.notion-token
++    node scripts/search-notion.js "query" --token-file ~/.notion-token
++    ```
++    ```
++    ```
++    **Option B — Stdin pipe (recommended for scripts):**
++    echo "$NOTION_API_KEY" | node scripts/search-notion.js "query" --token-stdin
++    **Option C — Environment variable:**
++    export NOTION_API_KEY="ntn_your_token"
++    node scripts/search-notion.js "query"
++    **Option D — Direct argument (least secure):**
++    node scripts/search-notion.js "query" --token "ntn_your_token"
++    ⚠️ Token visible in `ps` output and shell history. Use for quick testing only.
++ node scripts/watch-notion.js --token-file ~/.notion-token "<page-id>" "<local-markdown-path>"
++ node scripts/watch-notion.js --token-file ~/.notion-token \
+
+### scripts/notion-utils.js  [code]
+-  * Parse --token <value> from process.argv
+- function parseTokenArg() {
+-       return args[i + 1];
+-  * Get the Notion API key from --token argument
+-   return parseTokenArg();
+-     console.error('Usage:');
+-     console.error('  node scripts/<script>.js --token "ntn_your_token_here" [args]');
+-  * Strip --token <value> from an args array so scripts don't parse it as their own args
+-     if (args[i] === '--token' && i + 1 < args.length) {
++ const fs = require('fs');
++ // Cached token (resolved once per process)
++ let _cachedToken = undefined;
++  * Resolve the Notion API token from multiple sources (in priority order):
++  *
++  *
++  * 1. --token <value>        Direct argument (convenient but visible in ps/history)
++  * 2. --token-file <path>    Read from a file (recommended for automation)
++  * 3. --token-stdin           Read from stdin (recommended for pipes)
++  * 4. NOTION_API_KEY env var  Environment variable fallback
++  * Security note: --token-file or piping via stdin are preferred over bare
++  * --token to avoid credentials appearing in process listings or shell history.
++ function resolveToken() {
++   if (_cachedToken !== undefined) return _cachedToken;
++     // --token <value> (direct, least secure)
++       _cachedToken = args[i + 1];
++       return _cachedToken;
++     }
++     }
++     // --token-file <path>
++     if (args[i] === '--token-file' && args[i + 1]) {
++       try {
++       try {
++         _cachedToken = fs.readFileSync(args[i + 1], 'utf8').trim();
++         return _cachedToken;
++         return _cachedToken;
++       } catch (err) {
++       } catch (err) {
++         console.error(`Error reading token file "${args[i + 1]}": ${err.message}`);
++         process.exit(1);
++         process.exit(1);
++       }
++       }
++     // --token-stdin
++     if (args[i] === '--token-stdin') {
++         _cachedToken = fs.readFileSync(0, 'utf8').trim(); // fd 0 = stdin
++         console.error(`Error reading token from stdin: ${err.message}`);
++   }
++   // Env var fallback
++   if (process.env.NOTION_API_KEY) {
++     _cachedToken = process.env.NOTION_API_KEY;
++     return _cachedToken;
++   _cachedToken = null;
++  * Get the Notion API key (resolves from all supported sources)
++   return resolveToken();
++     console.error('Usage (pick one):');
++     console.error('  node scripts/<script>.js --token-file ~/.notion-token [args]');
++     console.error('  echo "$NOTION_API_KEY" | node scripts/<script>.js --token-stdin [args]');
++     console.error('  NOTION_API_KEY=ntn_... node scripts/<script>.js [args]');
++     console.error('  node scripts/<script>.js --token "ntn_..." [args]');
++     console.error('Recommended: --token-file or --token-stdin (avoids credentials in process list)');
++  * Strip token-related flags from an args array so scripts don't parse them as their own args
++     if ((args[i] === '--token' || args[i] === '--token-file') && i + 1 < args.length) {
++     } else if (args[i] === '--token-stdin') {
++       // skip flag only (no value)
+
+### scripts/test-normalize.js  [code]
++ assertEqual(
++ assertEqual(
++ assertEqual(
++ assertEqual(
++ );
++ );
++ );
++ );
++   ['query'],
++   ['query', '--limit', '5'],
++   ['--filter', 'page', '--limit', '5'],
++   stripTokenArg(['--token-file', '/path/to/token', 'query']),
++   'Strips --token-file and its value'
++   stripTokenArg(['--token-stdin', 'query', '--limit', '5']),
++   'Strips --token-stdin flag (no value)'
++   stripTokenArg(['--filter', 'page', '--token-file', '~/.notion-token', '--limit', '5']),
++   'Strips --token-file from middle of args'
++   stripTokenArg(['--token-stdin', '--token-file', '/tmp/t', 'search']),
++   ['search'],
++   'Strips multiple token flags at once'

@@ -1,0 +1,72 @@
+cargo-ai/cargo-analytics  1.4.3 -> 1.5.0
+change_type: instructions+docs+code   changelog: cargo-analytics 1.5.0  - Updated the skill description and guidance to clarify scope and recommended usage patterns. - Added a "Bootstrap" section with step-by-step CLI install and login instructions. - Removed the redundant skill-card.md file from the repository. - Improved context around JSON response conventions, error handling, and prerequisites. - Refined command documentation for exporting data, downloading results, and measuring run metrics.
+
+### SKILL.md  [instructions]
+- description: Download workflow run results, export segment data, and monitor run metrics using the Cargo CLI. Use when the user wants run metrics, error rates, data export, or download results for their Cargo workspace. For billing and credit usage, use the cargo-billing skill instead. For explaining WHY a run failed or a batch has errors, use the cargo-diagnostics skill instead.
+- version: "1.4.3"
+- ## Prerequisites
+- See [`../cargo/references/prerequisites.md`](../cargo/references/prerequisites.md) for install, login (`--oauth` / `--token`), JSON output conventions, and error shapes. Verify the session with `cargo-ai whoami` before running any of the commands below.
+- ### `run download` — full run records (metadata + per-node `runContext`)
+- Returns each run as a JSON object with status, timing, executions, and `runContext.<nodeSlug>` containing per-node outputs. Best for debugging or when you need the full execution history.
+- # All finished runs
+- # Specific statuses
+- ### `run download-outputs` — output of a specific node (CSV/JSON via signed URL)
+- **This is the canonical way to get action results out of the platform.** Maps to API `POST /v1/orchestration/runs/download-outputs`. Returns `{"url": "..."}` — a signed URL to a CSV (default) or JSON file containing only the output node's data with input/output context. Faster and cheaper than downloading whole run records when you only need the result.
+- # Required: --workflow-uuid + --output-node-slug
+-   --output-node-slug <slug> \
+-   --is-finished
+- # Filter by batch + status
+-   --batch-uuid <uuid> \
+-   --statuses finished
+- To find the `output-node-slug`: `cargo-ai orchestration release get <release-uuid>` → look at `nodes[].slug`. The terminal output node is typically named `output` or `end`.
++ description: "Get data out of Cargo and measure what ran — download a run output, export a segment or model to CSV or JSON, and pull run and batch success and error counts. Triggers: \"download the results\", \"export this to CSV\", \"give me the file\", \"how many succeeded\", \"what is my error rate\", \"send me the enriched list\", \"get the output of that run\", \"how many records did it write\". Skip when: asking why something failed or where credits went — use cargo-diagnostics; asking about credits, plans, or invoices — use cargo-billing."
++ version: "1.5.0"
++ ## Bootstrap
++ Already signed in (`cargo-ai whoami` returns a workspace)? Skip to the next section.
++ ```bash
++ npm install -g @cargo-ai/cli            # no global install? prefix every command with `npx @cargo-ai/cli`
++ cargo-ai login --email you@company.com  # emailed code, no browser; creates the account on first use
++                                         # alternatives: --oauth (browser) · --token <api-token> (CI)
++ cargo-ai whoami                         # confirm the active workspace before any write
++ ```
++ Every command prints JSON to stdout; failures exit non-zero with `{"errorMessage": "..."}`. Anything that creates a run or a batch is async — pass `--wait-until-finished` or poll the matching `get`. When the full skill bundle is installed, [`../cargo/references/prerequisites.md`](../cargo/references/prerequisites.md) adds the CLI version pin, token scopes, and the admin-only surface.
++ ### `run download` — one row per run, one column per node (gzipped CSV)
++ Returns `{"url": "..."}` — a signed URL to a **gzipped CSV**. Each row is a run: `_uuid`, `_workspace_uuid`, `_workflow_uuid`, `_record_id`, `_record_title`, `_created_at`, `_finished_at`, `_status`, `_error_message`, followed by **one column per node slug**.
++ **Each node column holds that execution's `title` — a truncated human-readable summary, not the node's output.** There is no `runContext` and no `executions[]` in this file. Treat it as a status board across many runs (which node errored, on which record), never as evidence of what a node produced — the same rule `cargo-diagnostics` applies to `title` everywhere else.
++ # Every run of a workflow
++ cargo-ai orchestration run download --workflow-uuid <uuid>
++ # Specific statuses (run statuses: idle, pending, running, success, error,
++ # cancelling, cancelled, skipped — NOT "finished"/"failed")
++ # Every run that reached a terminal state. `--is-finished` is `finished_at IS
++ # NOT NULL`, which is wider than success+error: cancelled and skipped runs
++ # stamp finishedAt too, so don't substitute one for the other.
++ ### `run download-outputs` — per-run input + output (CSV/JSON via signed URL)
++ **This is the canonical way to get action results out of the platform.** Maps to API `POST /v1/orchestration/runs/download-outputs`. Returns `{"url": "..."}` — a signed URL to a CSV (default) or JSON file. One row per run: the same `_`-prefixed run metadata, plus `input` (the first node's resolved config) and `output` (the chosen node's context, defaulting to the **last executed node** when `--output-node-slug` is omitted).
++ # --workflow-uuid is the only required flag
++   --limit 20
++ # Pin the output node explicitly, and filter by batch
++   --batch-uuid <uuid>
++ To find the `output-node-slug`: `cargo-ai orchestration release get <release-uuid>` → look at `nodes[].slug`. The terminal output node is typically named `output` or `end`. Without `--limit`, the file covers **every** matching run of the workflow, so pass one when you only need a sample.
++ ### Getting the full `runContext` for several runs
++ You can't, in one call. The full per-node context is a **per-run S3 object**, and `orchestration run get <run-uuid>` is the only command that hydrates it — one run at a time. The two exports above are projections: `download` gives you node *titles* across many runs, `download-outputs` gives you first-node input + one node's output across many runs. For everything in between, loop `run get` over the UUIDs from the discovery ladder in [`../cargo-diagnostics/references/run-trace.md`](../cargo-diagnostics/references/run-trace.md) § 0.
++ Orchestration SQL is not an alternative here: `runs` and `spans` carry status, timing, and credits, but no node input/output columns.
+
+### references/response-shapes.md  [docs]
+- Returns the output data for the specified node as a downloadable payload. The response is streamed to stdout.
++ Returns `{"url": "..."}` — a signed URL to a file, **not** the data on stdout. Each row is a batch record joined to its run's output for the chosen node (defaulting to the last executed node), so a record whose run errored comes back with its input fields and no output.
++ ## cargo-ai orchestration run download
++ Returns `{"url": "..."}` — a signed URL to a **gzipped CSV**. One row per run: `_uuid`, `_workspace_uuid`, `_workflow_uuid`, `_record_id`, `_record_title`, `_created_at`, `_finished_at`, `_status`, `_error_message`, then one column per node slug holding that execution's `title` (a truncated summary, not the node's output). No `runContext`, no `executions[]`.
++ ## cargo-ai orchestration run download-outputs
++ Returns `{"url": "..."}` — a signed URL to CSV (default) or JSON. One row per run: the `_`-prefixed run metadata above, plus `input` (first node's resolved config) and `output` (chosen node's context, defaulting to the last executed node).
+
+### references/troubleshooting.md  [docs]
+- | `run download` returns empty | No runs match the filters | Loosen filters; try `--is-finished` without date or status constraints |
++ | `run download` returns empty | No runs match the filters | Loosen filters — drop the date and status constraints and pass `--workflow-uuid` alone |
++ | `run download` returns `500 Internal Server Error` | The workflow resolves to zero active nodes — all archived, or the UUID doesn't exist in this workspace. The export builds one column per node slug, so there is nothing to select | Confirm the UUID with `workflow list` / `play list`. Loosening filters won't help; the failure is about the workflow, not the runs |
++ | `400 unrecognized_keys: <flag>` on a run command | The CLI offers a flag the API's request schema doesn't accept | Drop the flag and express the filter another way — `--statuses success,error` covers "finished". Then report it: `workspaceManagement report create` |
+
+### skill-metadata.json  [code]
+-   "version": "1.4.3",
+-   "contentHash": "0fee7f50c2c485aef88d0eb2cced6c27d9af5e6acfccd5386fb424fd1b945fc6"
++   "version": "1.5.0",
++   "contentHash": "47b4bd3af2fbc699c1d92eaf2a7b5b98d83aa11f1591679563c2fb3ec8a0f0e9"

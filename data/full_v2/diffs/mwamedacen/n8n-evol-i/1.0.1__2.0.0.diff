@@ -1,0 +1,2950 @@
+mwamedacen/n8n-evol-i  1.0.1 -> 2.0.0
+change_type: instructions+docs+code   changelog: Queue primitives and lifecycle support added + breaking change on interpolation syntax   - Introduced primitives and helper scripts to support queue-based workflows (using Redis Streams). - Added lifecycle skills for queue creation, publishing, and consumption: `create-queue`, `add-queue-publish-to-workflow`, `add-queue-consumer-to-workflow`. - Added reference docs: patterns/queues and integrations/redis/queue-pattern. - Included primitive workflow templates for queue ack, publish, pop, sample p
+
+### README.md  [docs]
+- - **Build-time substitution.** Code, prompts, schemas, templates, and env values live in workspace files; `{{@:js|py|txt|json|html|env|uuid:...}}` placeholders are substituted at deploy time. Template-stable round-trips. See [`code-node-discipline.md`](skills/patterns/code-node-discipline.md).
+-     "name": "{{@:env:workflows.lead_enrichment.displayName}}{{@:env:envSuffix}}",
+-             { "role": "system", "content": "{{@:txt:n8n-prompts/prompts/score_lead.txt}}" }
+-           "jsCode": "{{@:js:n8n-functions/js/normalize_lead.js}}\n\nreturn normalize(items);"
+-           "workflowId": "{{@:env:workflows.lead_persister.id}}"
+- │   ├── js/                  # pure JS injected via {{@:js:...}}
+- │   └── py/                  # pure Python injected via {{@:py:...}}
+- │   ├── email-templates/     # *.html injected via {{@:html:...}}
++ - **Build-time substitution.** Code, prompts, schemas, templates, and env values live in workspace files; `{{@js|py|txt|json|html|env|uuid:...}}` placeholders are substituted at deploy time. Template-stable round-trips. See [`code-node-discipline.md`](skills/patterns/code-node-discipline.md).
++     "name": "{{@env:workflows.lead_enrichment.displayName}}{{@env:envSuffix}}",
++             { "role": "system", "content": "{{@txt:n8n-prompts/prompts/score_lead.txt}}" }
++           "jsCode": "{{@js:n8n-functions/js/normalize_lead.js}}\n\nreturn normalize(items);"
++           "workflowId": "{{@env:workflows.lead_persister.id}}"
++ │   ├── js/                  # pure JS injected via {{@js:...}}
++ │   └── py/                  # pure Python injected via {{@py:...}}
++ │   ├── email-templates/     # *.html injected via {{@html:...}}
+
+### SKILL.md  [instructions]
+- Templates use `{{@:type:path}}` (preferred form) or the canonical long form `{{INTERPOLATE:type:path}}`. The two are equivalent — `@` is an alias for `INTERPOLATE`. Examples below use the `@` form.
+- | `env` | `{{@:env:key.path}}` | YAML config value (dot notation) |
+- | `txt` | `{{@:txt:relative/path.txt}}` | Text file in workspace |
+- | `json` | `{{@:json:relative/path.json}}` | JSON file (stringified) |
+- | `html` | `{{@:html:relative/path.html}}` | HTML file |
+- | `js` | `{{@:js:relative/path.js}}` | JavaScript file |
+- | `py` | `{{@:py:relative/path.py}}` | Python file (Code-node `language: python`) |
+- | `uuid` | `{{@:uuid:identifier}}` | Fresh UUID v4 (consistent within one hydration) |
++ | [create-queue.md](skills/create-queue.md) | First-time setup for queue primitive (Redis Streams + atomic-INCR semaphore). |
++ | [add-queue-publish-to-workflow.md](skills/add-queue-publish-to-workflow.md) | Wrap a workflow with a producer-side XADD call. |
++ | [add-queue-consumer-to-workflow.md](skills/add-queue-consumer-to-workflow.md) | Turn a workflow into a schedule-polled queue consumer with bounded concurrency. |
++ | [manage-variables.md](skills/manage-variables.md) | Lifecycle for n8n Variables (`$vars.*` — non-credential runtime values, or secret fallback when `$env` is blocked). |
++ - [skills/patterns/queues.md](skills/patterns/queues.md)
++ Templates use `{{@type:path}}` (preferred form) or the canonical long form `{{INTERPOLATE_type:path}}`. The two are equivalent — `@` is an alias for `INTERPOLATE_`. Examples below use the `@` form.
++ | `env` | `{{@env:key.path}}` | YAML config value (dot notation) |
++ | `txt` | `{{@txt:relative/path.txt}}` | Text file in workspace |
++ | `json` | `{{@json:relative/path.json}}` | JSON file (stringified) |
++ | `html` | `{{@html:relative/path.html}}` | HTML file |
++ | `js` | `{{@js:relative/path.js}}` | JavaScript file |
++ | `py` | `{{@py:relative/path.py}}` | Python file (Code-node `language: python`) |
++ | `uuid` | `{{@uuid:identifier}}` | Fresh UUID v4 (consistent within one hydration) |
+
+### helpers/add_lock_to_workflow.py  [code]
+-         "id": "{{@:uuid:" + name.lower().replace(" ", "-") + "}}",
+-         "{{@:env:workflows.lock_acquisition.id}}",
+-         "{{@:env:workflows.lock_release.id}}",
++         "id": "{{@uuid:" + name.lower().replace(" ", "-") + "}}",
++         "{{@env:workflows.lock_acquisition.id}}",
++         "{{@env:workflows.lock_release.id}}",
+
+### helpers/add_queue_consumer_to_workflow.py  [code]
++ #!/usr/bin/env python3
++ """Turn a workflow into a polling queue consumer (Schedule + Queue Pop + Has Message? + Queue Ack)."""
++ import argparse
++ import json
++ import re
++ import sys
++ from pathlib import Path
++ sys.path.insert(0, str(Path(__file__).parent.parent))
++ from helpers.workspace import workspace_root
++ # Reuse the lock helper's expression normaliser + Execute Workflow factory.
++ from helpers.add_lock_to_workflow import (
++     _normalize_n8n_expression,
++     _extract_static_scope,
++     _make_execute_workflow_node,
++ )
++ )
++ _POP_NODE_NAME = "Queue Pop"
++ _ACK_NODE_NAME = "Queue Ack"
++ _IF_NODE_NAME = "Has Message?"
++ _SCHEDULE_NODE_NAME = "Schedule Trigger"
++ _SCHEDULE_TRIGGER_TYPE = "n8n-nodes-base.scheduleTrigger"
++ # ---------- copy of _auto_register from publish helper ----------
++ # Same logic as add_queue_publish_to_workflow._auto_register_queue_scopes;
++ # kept inline here so the consumer-wrap can stand alone.
++ def _auto_register_queue_scopes(workspace: Path, scope_expr: str) -> None:
++     static = _extract_static_scope(scope_expr)
++     if static is None:
++         print(
++             "  NOTE: --stream-expression is dynamic (depends on $json or runtime data). "
++             "Active error-handler cleanup requires manual queueScopes maintenance — "
++             "add the resolved stream names to <env>.yml.queueScopes by hand.",
++             file=sys.stderr,
++         )
++         )
++         return
++         return
++     config_dir = workspace / "n8n-config"
++     if not config_dir.is_dir():
++     import yaml as _yaml
++     for yml in sorted(config_dir.glob("*.yml")):
++         if yml.stem in ("common", "deployment_order"):
++             continue
++             continue
++             continue
++         try:
++             data = _yaml.safe_load(yml.read_text()) or {}
++         except Exception:
++         scopes = data.setdefault("queueScopes", [])
++         if not isinstance(scopes, list):
++             scopes = []
++             data["queueScopes"] = scopes
++         if static not in scopes:
++             scopes.append(static)
++             yml.write_text(_yaml.dump(data, default_flow_style=False, sort_keys=False))
++             print(f"  Registered queueScopes += {static!r} in {yml.name}")
++ def _parse_schedule_interval(expr: str) -> dict:
++     """Parse '30s' / '1m' / '5m' / '2h' / '1d' into a scheduleTrigger@1.3 interval[0] entry."""
++     m = re.match(r"^\s*(\d+)\s*([smhdw])?\s*$", expr or "")
++     if not m:
++         raise ValueError(
++             f"--schedule-interval must be like '30s', '5m', '1h', got {expr!r}"
++     n = int(m.group(1))
++     unit = m.group(2) or "m"
++     unit_map = {
++         "s": ("seconds", "secondsInterval"),
++         "m": ("minutes", "minutesInterval"),
++         "h": ("hours", "hoursInterval"),
++         "d": ("days", "daysInterval"),
++         "w": ("weeks", "weeksInterval"),
++     }
++     }
++     }
++     }
++     }
++     field, interval_key = unit_map[unit]
++     return {"field": field, interval_key: n}
++ def _make_schedule_trigger_node(name: str, position: list, interval_expr: str) -> dict:
++     """Build a scheduleTrigger@1.3 node with rule.interval[0] populated."""
++     interval = _parse_schedule_interval(interval_expr)
++     return {
++     return {
++         "id": "{{@uuid:" + name.lower().replace(" ", "-") + "}}",
++         "name": name,
++         "name": name,
++         "type": _SCHEDULE_TRIGGER_TYPE,
++         "typeVersion": 1.3,
++         "position": position,
++         "position": position,
++         "parameters": {
++         "parameters": {
++             "rule": {
++                 "interval": [interval],
++             },
++             },
++         },
++         },
++ def _make_if_has_message(name: str, position: list) -> dict:
++     """If gate: route on whether the Queue Pop returned a usable message."""
++     base_id = name.lower().replace(" ", "-").replace("?", "")
++         "id": "{{@uuid:" + base_id + "}}",
++         "type": "n8n-nodes-base.if",
++         "typeVersion": 2.2,
++             "conditions": {
++                 "options": {
++                     "caseSensitive": True,
++                     "leftValue": "",
++                     "typeValidation": "strict",
++                     "version": 2,
++                 },
++                 "conditions": [
++                     {
++                         "id": "{{@uuid:" + base_id + "-cond}}",
++                         "leftValue": "={{ $json.empty !== true && $json.at_capacity !== true && $json.dlq_routed !== true }}",
++                         "rightValue": True,
++                         "operator": {
++                             "type": "boolean",
++                             "operation": "true",
++                             "singleValue": True,
++                         },
++                     },
++                 ],
++                 "combinator": "and",
++             "options": {},
++ _TRIGGER_TYPE_HINTS = (
++     "trigger",  # any *Trigger / *trigger node type
++     "webhook",
++     "formtrigger",
++     "emailreadimap",
++     "rssfeedread",
++ def _is_trigger_node(node: dict) -> bool:
++     t = (node.get("type") or "").lower()
++     return any(hint in t for hint in _TRIGGER_TYPE_HINTS)
++ def _detect_trigger(template: dict) -> tuple[dict | None, str | None]:
++     """Find the (sole) trigger node — by type, not by graph-position.
++     A node is a trigger only if its type matches a known trigger shape
++     (anything with 'trigger' or 'webhook' in the type). This prevents a stray
++     main-flow node (e.g. an orphan Set with no inbound edges) from being
++     mistaken for a trigger and incorrectly treated as one.
++     """
++     nodes = template.get("nodes", [])
++     triggers = [n for n in nodes if _is_trigger_node(n)]
++     if not triggers:
++         return (None, None)
++     trigger = triggers[0]
++     return (trigger, trigger.get("name"))
++ def _insert_consumer(
++     template: dict,
++     *,
++     stream_expr: str,
++     group_expr: str | None,
++     consumer_expr: str | None,
++     max_concurrency: int,
++     max_retries: int,
++     dlq_enabled: bool,
++     batch_size: int,
++     claim_idle_ms: int,
++     schedule_interval: str,
++     ack_on_success_expression: str,
++     remove_existing_trigger: bool,
++ ) -> dict:
++     """Splice Schedule? + Queue Pop + Has Message? + (existing flow) + Queue Ack."""
++     nodes = template.setdefault("nodes", [])
++     connections = template.setdefault("connections", {})
++     if any(n.get("name") == _POP_NODE_NAME for n in nodes):
++         raise SystemExit(f"Workflow already has a '{_POP_NODE_NAME}' node; refusing to add again")
++     trigger, trigger_name = _detect_trigger(template)
++     # Capture the existing "main flow head" before any mutation: when we
++     # install/reuse a trigger, Pop+If's true-branch must route into whatever
++     # was downstream of the original trigger (or, if there was none, the
++     # left-most existing main-flow node).
++     pre_existing_first_branch: list[dict] = []
++     if trigger is not None and trigger_name in connections:
++         out = connections.get(trigger_name, {}).get("main", [[]])
++         pre_existing_first_branch = out[0] if out else []
++     elif trigger is None and nodes:
++         # No trigger — pick the orphan node with the smallest x as the head.
++         leftmost = min(nodes, key=lambda n: (n.get("position") or [0, 0])[0])
++         pre_existing_first_branch = [{"node": leftmost["name"], "type": "main", "index": 0}]
++     # Decide whether to insert a Schedule Trigger or reuse an existing one.
++     inserted_schedule = False
++     if trigger is not None and trigger.get("type") == _SCHEDULE_TRIGGER_TYPE:
++         # Reuse the existing schedule trigger.
++         schedule = trigger
++         schedule_name = trigger_name
++         anchor_x = (trigger.get("position") or [240, 300])[0]
++         anchor_y = (trigger.get("position") or [240, 300])[1]
++     else:
++     else:
++         # Need to install one. If a non-schedule trigger exists, refuse unless
++         # the caller explicitly opted into removing it.
++         if trigger is not None and not remove_existing_trigger:
++             raise SystemExit(
++                 f"Workflow already has a non-schedule trigger '{trigger_name}' "
++                 f"(type={trigger.get('type')}). Pass --remove-existing-trigger to "
++                 "replace it with a schedule trigger, or remove the trigger by hand first."
++             )
++             )
++         if trigger is not None and remove_existing_trigger:
++             # Drop the existing trigger and any connections from it.
++             nodes.remove(trigger)
++             if trigger_name in connections:
++                 del connections[trigger_name]
++             old_trigger_pos = trigger.get("position") or [240, 300]
++             anchor_x = old_trigger_pos[0]
++             anchor_y = old_trigger_pos[1]
++         else:
++             # No trigger at all (or just user-flow nodes); place the schedule
++             # at a default position and right-shift downstream.
++             anchor_x = 240
++             anchor_y = 300
++         schedule_pos = [anchor_x, anchor_y]
++         schedule = _make_schedule_trigger_node(_SCHEDULE_NODE_NAME, schedule_pos, schedule_interval)
++         schedule_name = _SCHEDULE_NODE_NAME
++         nodes.append(schedule)
++         inserted_schedule = True
++     # Compute right-shift: schedule (220 if inserted) + pop (220) + if (220) = up to 660.
++     # If schedule was reused, shift starts after schedule's x; we still add 660
++     # to make room for Pop + If + Ack downstream of schedule. Actually simpler:
++     # always shift original non-schedule nodes by 660 px (Pop + If + Ack
++     # occupy three slots). When a schedule was inserted, those nodes also need
++     # to make room for the schedule trigger itself, but the schedule sits at
++     # the original trigger position so existing nodes keep their relative
++     # offset — the +660 covers Pop + If + Ack only.
++     shift_amount = 3 * 220  # 660
++     pop_x = anchor_x + 220
++     if_x = anchor_x + 440
++     ack_x = anchor_x + 660 + 220  # leave room for the user's main flow between If-true and Ack
++     # Right-shift every existing node except schedule by shift_amount; if no
++     # schedule was inserted, also leave the schedule node alone.
++     for n in nodes:
++         if n is schedule:
++         pos = n.get("position") or [0, 0]
++         n["position"] = [pos[0] + shift_amount, pos[1]]
++     # The "main flow head" — what should run after Pop returns a usable
++     # message. Captured before mutation above; falls back to current schedule
++     # outbound if nothing pre-existed.
++     first_branch = pre_existing_first_branch or (
++         connections.get(schedule_name, {}).get("main", [[]])[0]
++         if connections.get(schedule_name, {}).get("main") else []
++     )
++     )
++     )
++     )
++     )
++     )
++     # Build Pop + If + Ack nodes.
++     norm_stream, _ = _normalize_n8n_expression(stream_expr)
++     norm_group = _normalize_n8n_expression(group_expr)[0] if group_expr else None
++     norm_consumer = _normalize_n8n_expression(consumer_expr)[0] if consumer_expr else None
++     norm_ack_success = _normalize_n8n_expression(ack_on_success_expression)[0]
++     pop_inputs = {
++         "stream": norm_stream,
++         "group": norm_group if norm_group is not None else norm_stream,  # reasonable default
++         "consumer": norm_consumer if norm_consumer is not None else "={{ $workflow.name + '-' + $execution.id }}",
++         "max_concurrency": max_concurrency,
++         "max_retries": max_retries,
++         "dlq_enabled": dlq_enabled,
++         "batch_size": batch_size,
++         "claim_idle_ms": claim_idle_ms,
++         # Pass the caller's execution id through so queue_pop's permit sidecar
++         # records the PARENT consumer execution, not the queue_pop sub-workflow
++         # execution. Without this, error_handler_queue_cleanup's ownership filter
++         # never matches and orphan permits leak forever (DEFECT-3).
++         "caller_execution_id": "={{ $execution.id }}",
++     pop_node = _make_execute_workflow_node(
++         _POP_NODE_NAME,
++         "{{@env:workflows.queue_pop.id}}",
++         [pop_x, anchor_y],
++         pop_inputs,
++     if_node = _make_if_has_message(_IF_NODE_NAME, [if_x, anchor_y])
++     ack_inputs = {
++         "stream": "={{ $('Queue Pop').first().json.stream }}",
++         "group": "={{ $('Queue Pop').first().json.group }}",
++         "message_id": "={{ $('Queue Pop').first().json.message_id }}",
++         "success": norm_ack_success,
++     ack_node = _make_execute_workflow_node(
++         _ACK_NODE_NAME,
++         "{{@env:workflows.queue_ack.id}}",
++         [ack_x + (shift_amount if not inserted_schedule else 0), anchor_y],
++         ack_inputs,
++     nodes.append(pop_node)
++     nodes.append(if_node)
++     nodes.append(ack_node)
++     # Wire: schedule → Pop → If
++     connections[schedule_name] = {"main": [[{"node": _POP_NODE_NAME, "type": "main", "index": 0}]]}
++     connections[_POP_NODE_NAME] = {"main": [[{"node": _IF_NODE_NAME, "type": "main", "index": 0}]]}
++     # If has a message, route into the original first-downstream of the
++     # original trigger; the no-message branch is a no-op (terminate iter).
++     # Find terminal nodes of the user's flow (those with no outbound) and
++     # route them all into Queue Ack.
++     if first_branch:
++         connections[_IF_NODE_NAME] = {"main": [first_branch, []]}
++         # No existing main flow — wire If-true straight to Queue Ack.
++         connections[_IF_NODE_NAME] = {"main": [[{"node": _ACK_NODE_NAME, "type": "main", "index": 0}], []]}
++     outbound_names = set(connections.keys())
++     skip = {schedule_name, _POP_NODE_NAME, _IF_NODE_NAME, _ACK_NODE_NAME}
++     terminals = [n["name"] for n in nodes if n["name"] not in outbound_names and n["name"] not in skip]
++     for t in terminals:
++         connections[t] = {"main": [[{"node": _ACK_NODE_NAME, "type": "main", "index": 0}]]}
++     return template
+
+### helpers/add_queue_publish_to_workflow.py  [code]
++ #!/usr/bin/env python3
++ """Insert a Queue Publish Execute Workflow node into a workflow's flow (XADD producer)."""
++ import argparse
++ import json
++ import sys
++ from pathlib import Path
++ sys.path.insert(0, str(Path(__file__).parent.parent))
++ from helpers.workspace import workspace_root
++ # Reuse the lock helper's expression normaliser, static-scope extractor, and
++ # Execute Workflow node factory — they're key-agnostic. See note in
++ # create_queue.py about the future shared-helper extraction.
++ from helpers.add_lock_to_workflow import (
++     _normalize_n8n_expression,
++     _extract_static_scope,
++     _make_execute_workflow_node,
++ )
++ _PUBLISH_NODE_NAME = "Queue Publish"
++ _DEFAULT_INSERTION_POINT = "auto"  # = after-trigger
++ def _auto_register_queue_scopes(workspace: Path, scope_expr: str) -> None:
++     """Append the static literal stream name to every <env>.yml.queueScopes (idempotent).
++     Parallel implementation of `_auto_register_lock_scopes` in
++     `helpers/add_lock_to_workflow.py` — same logic, different YAML key. Flagged
++     for refactor into a shared `_auto_register_scopes(workspace, expr, scope_key)`
++     once we have a third caller.
++     """
++     """
++     """
++     static = _extract_static_scope(scope_expr)
++     if static is None:
++         print(
++         print(
++         print(
++             "  NOTE: --stream-expression is dynamic (depends on $json or runtime data). "
++             "Active error-handler cleanup requires manual queueScopes maintenance — "
++             "add the resolved stream names to <env>.yml.queueScopes by hand.",
++             file=sys.stderr,
++             file=sys.stderr,
++             file=sys.stderr,
++         )
++         )
++         )
++         )
++         )
++         )
++         return
++         return
++     config_dir = workspace / "n8n-config"
++     if not config_dir.is_dir():
++     import yaml as _yaml
++     for yml in sorted(config_dir.glob("*.yml")):
++         if yml.stem in ("common", "deployment_order"):
++             continue
++             continue
++         try:
++             data = _yaml.safe_load(yml.read_text()) or {}
++         except Exception:
++         scopes = data.setdefault("queueScopes", [])
++         if not isinstance(scopes, list):
++             scopes = []
++             data["queueScopes"] = scopes
++         if static not in scopes:
++             scopes.append(static)
++             yml.write_text(_yaml.dump(data, default_flow_style=False, sort_keys=False))
++             print(f"  Registered queueScopes += {static!r} in {yml.name}")
++ def _detect_trigger(nodes: list, connections: dict) -> dict:
++     """Return the trigger node (the one node with no inbound connections)."""
++     referenced: set[str] = set()
++     for by_type in connections.values():
++         for type_branches in by_type.values():
++             for branch in type_branches:
++                 for c in branch:
++                     referenced.add(c.get("node"))
++     triggers = [n for n in nodes if n.get("name") not in referenced]
++     if not triggers:
++         raise SystemExit("Could not detect a trigger node (no node lacks inbound connections)")
++     return triggers[0]
++ def _find_node_by_name(nodes: list, name: str) -> dict:
++     """Return the node with the given name, or raise SystemExit."""
++     matches = [n for n in nodes if n.get("name") == name]
++     if not matches:
++         existing = ", ".join(sorted(n.get("name", "") for n in nodes))
++         raise SystemExit(f"Node '{name}' not found in workflow. Existing nodes: {existing}")
++     if len(matches) > 1:
++         # n8n normally enforces unique node names, but defend anyway.
++         raise SystemExit(f"Ambiguous: {len(matches)} nodes named '{name}' in workflow")
++     return matches[0]
++ def _find_terminals(nodes: list, connections: dict) -> list:
++     """Return nodes with no outbound main connections (terminal nodes)."""
++     terminals = []
++     for n in nodes:
++         name = n.get("name")
++         out = connections.get(name, {}).get("main", [])
++         # Has at least one non-empty branch?
++         if not any(branch for branch in out):
++             terminals.append(n)
++     return terminals
++ def _downstream_names(connections: dict, start_name: str) -> set[str]:
++     """BFS all node names reachable downstream from start_name (exclusive)."""
++     seen: set[str] = set()
++     queue = [start_name]
++     while queue:
++         cur = queue.pop(0)
++         for branch in connections.get(cur, {}).get("main", []):
++             for c in branch or []:
++                 nxt = c.get("node")
++                 if nxt and nxt not in seen:
++                     seen.add(nxt)
++                     queue.append(nxt)
++     return seen
++ def _parse_insertion_point(insertion_point: str) -> tuple[str, str | None]:
++     """Parse insertion-point arg into (mode, optional name).
++     Modes: 'auto', 'after-trigger', 'before-terminal', 'after-named-node',
++     'before-named-node'. The two named-node modes carry the target name after ':'.
++     if ":" in insertion_point:
++         mode, _, name = insertion_point.partition(":")
++         if mode not in ("after-named-node", "before-named-node"):
++             raise SystemExit(
++             raise SystemExit(
++                 f"--insertion-point '{insertion_point}': only after-named-node and "
++                 f"before-named-node accept a ':<node-name>' suffix"
++             )
++             )
++             )
++         if not name:
++             raise SystemExit(f"--insertion-point '{insertion_point}' is missing the node name after ':'")
++         return mode, name
++     if insertion_point not in ("auto", "after-trigger", "before-terminal",
++                                 "after-named-node", "before-named-node"):
++         raise SystemExit(f"--insertion-point '{insertion_point}' is not a recognised mode")
++     if insertion_point in ("after-named-node", "before-named-node"):
++         raise SystemExit(
++             f"--insertion-point '{insertion_point}' requires a target: "
++             f"pass '{insertion_point}:<node-name>' instead"
++     return insertion_point if insertion_point != "auto" else "after-trigger", None
++ def _insert_publish(
++     template: dict,
++     stream_expr: str,
++     max_len: int | None = None,
++     approximate: bool = True,
++     insertion_point: str = _DEFAULT_INSERTION_POINT,
++ ) -> dict:
++     """Splice a single Queue Publish Execute Workflow node at the chosen point.
++     Wiring is mode-dependent; position math is intentionally simple — the user
++     can re-tidy with tidy-workflow afterward. Correctness over canvas aesthetics.
++     nodes = template.setdefault("nodes", [])
++     connections = template.setdefault("connections", {})
++     if any(n.get("name") == _PUBLISH_NODE_NAME for n in nodes):
++         raise SystemExit(f"Workflow already has a '{_PUBLISH_NODE_NAME}' node; refusing to add again")
++     mode, target_name = _parse_insertion_point(insertion_point)
++     # Resolve the anchor node (the node we're inserting after/before) per mode.
++     if mode == "after-trigger":
++         anchor = _detect_trigger(nodes, connections)
++         place_after = True
++         place_after = True
++     elif mode == "before-terminal":
++         terminals = _find_terminals(nodes, connections)
++         if not terminals:
++             raise SystemExit("--insertion-point before-terminal: no terminal node found "
++                              "(every node has outbound connections — is this a complete workflow?)")
++         if len(terminals) > 1:
++             names = ", ".join(t.get("name") for t in terminals)
++                 f"--insertion-point before-terminal: {len(terminals)} terminal nodes found "
++                 f"({names}). Disambiguate with --insertion-point before-named-node:<name>."
++         anchor = terminals[0]
++         place_after = False
++         place_after = False
++     elif mode == "after-named-node":
++         anchor = _find_node_by_name(nodes, target_name)
++         anchor = _find_node_by_name(nodes, target_name)
++     elif mode == "before-named-node":
++     else:
++     else:
++         raise SystemExit(f"Internal: unhandled insertion mode {mode!r}")
++     anchor_name = anchor["name"]
++     anchor_pos = anchor.get("position") or [240, 300]
++     normalized_stream, was_normalized = _normalize_n8n_expression(stream_expr)
++     if was_normalized:
++             f"WARNING: --stream-expression normalized to canonical form: {normalized_stream!r}. "
++             "Bare '=<expr>' or literal streams are auto-wrapped to '={{{{ <expr> }}}}'. "
++             "Update calls to pass the canonical form directly to silence this warning.",
++     publish_inputs: dict = {
++         "stream": normalized_stream,
++         "payload": "={{ $json }}",
++         "max_len": max_len if max_len is not None else None,
++         "approximate": approximate,
++     }
++     if place_after:
++         # Insert AFTER anchor: splice between anchor and its current downstream.
++         publish_pos = [anchor_pos[0] + 220, anchor_pos[1]]
++         # Shift downstream of anchor right by 220 to make room.
++         downstream = _downstream_names(connections, anchor_name)
++         for n in nodes:
++         for n in nodes:
++             if n.get("name") in downstream:
++             if n.get("name") in downstream:
++                 pos = n.get("position") or [0, 0]
++                 pos = n.get("position") or [0, 0]
++                 n["position"] = [pos[0] + 220, pos[1]]
++                 n["position"] = [pos[0] + 220, pos[1]]
++         publish = _make_execute_workflow_node(
++         publish = _make_execute_workflow_node(
++             _PUBLISH_NODE_NAME,
++             _PUBLISH_NODE_NAME,
++             "{{@env:workflows.queue_publish.id}}",
++             "{{@env:workflows.queue_publish.id}}",
++             publish_pos,
++             publish_pos,
++             publish_inputs,
++             publish_inputs,
++         nodes.append(publish)
++         nodes.append(publish)
++         # Re-wire: anchor's old main[0] outputs flow through Publish.
++         anchor_out = connections.get(anchor_name, {}).get("main", [[]])
++         first_branch = anchor_out[0] if anchor_out else []
++         connections[anchor_name] = {"main": [[{"node": _PUBLISH_NODE_NAME, "type": "main", "index": 0}]]}
++         connections[_PUBLISH_NODE_NAME] = {"main": [first_branch]} if first_branch else {"main": [[]]}
++         # Insert BEFORE anchor: redirect anchor's inbound edges through Publish.
++         publish_pos = [anchor_pos[0], anchor_pos[1]]
++         # Shift anchor and its downstream right by 220.
++         downstream = _downstream_names(connections, anchor_name) | {anchor_name}
++         # Find every inbound edge pointing at anchor, redirect to Publish.
++         inbound_count = 0
++         for src_name, by_type in connections.items():
++             if src_name == _PUBLISH_NODE_NAME:
++                 continue
++             for branches in by_type.values():
++                 for branch in branches:
++                     for c in branch or []:
++                         if c.get("node") == anchor_name:
++                             c["node"] = _PUBLISH_NODE_NAME
++                             inbound_count += 1
++         # Wire Publish → anchor
++         connections[_PUBLISH_NODE_NAME] = {
++             "main": [[{"node": anchor_name, "type": "main", "index": 0}]]
++         }
++         if inbound_count == 0 and mode == "before-named-node":
++             # Anchor had no inbound edges — it's effectively a trigger. Warn.
++             print(
++                 f"WARNING: '{anchor_name}' has no inbound connections — Queue Publish was "
++                 "inserted but has no upstream. Did you mean --insertion-point after-trigger?",
++                 file=sys.stderr,
++     return template
++ def main() -> None:
++     parser = argparse.ArgumentParser(description=__doc__)
++     parser.add_argument("--workspace", default=None)
++     parser.add_argument("--workflow-key", required=True, dest="workflow_key")
++     parser.add_argument("--stream-expression", required=True, dest="stream_expression")
++     parser.add_argument("--max-len", type=int, default=None, dest="max_len")
++     parser.add_argument(
++     parser.add_argument(
++     parser.add_argument(
++         "--approximate", action="store_true", dest="approximate", default=True,
++         help="Use 'MAXLEN ~' (approximate trimming, default)",
++     )
++     )
++     )
++     )
++         "--no-approximate", action="store_false", dest="approximate",
++         help="Use exact MAXLEN trimming (more expensive)",
++         "--insertion-point", default=_DEFAULT_INSERTION_POINT, dest="insertion_point",
++         help="Where to splice the publish node. Accepted values: "
++              "'auto' (= after-trigger), 'after-trigger', 'before-terminal' (errors if multiple terminals), "
++              "'after-named-node:<node-name>', 'before-named-node:<node-name>'.",
++     args = parser.parse_args()
++     ws = workspace_root(args.workspace)
++     if not (ws / "n8n-workflows-template" / "queue_publish.template.json").exists():
++             "ERROR: primitive 'queue_publish' not found in workspace. Run create-queue first.",
++         sys.exit(1)
++         sys.exit(1)
++     template_path = ws / "n8n-workflows-template" / f"{args.workflow_key}.template.json"
++     if not template_path.exists():
++         print(f"ERROR: workflow template not found: {template_path}", file=sys.stderr)
++     template = json.loads(template_path.read_text())
++     template = _insert_publish(
++         template,
++         args.stream_expression,
++         max_len=args.max_len,
++         approximate=args.approximate,
++         insertion_point=args.insertion_point,
++     template_path.write_text(json.dumps(template, indent=2))
++     print(f"  Inserted Queue Publish in {template_path}")
++     _auto_register_queue_scopes(ws, args.stream_expression)
++     print("add-queue-publish-to-workflow complete.")
++ if __name__ == "__main__":
++     main()
+
+### helpers/add_rate_limit_to_workflow.py  [code]
+-         "id": "{{@:uuid:" + name.lower().replace(" ", "-") + "}}",
+-         "id": "{{@:uuid:" + name.lower().replace(" ", "-") + "}}",
+-         "id": "{{@:uuid:" + name.lower().replace(" ", "-") + "}}",
+-         "id": "{{@:uuid:" + name.lower().replace(" ", "-").replace("?", "") + "}}",
+-                         "id": "{{@:uuid:" + name.lower().replace(" ", "-").replace("?", "") + "-cond}}",
+-                         "id": "{{@:uuid:" + name.lower().replace(" ", "-") + "-allowed}}",
+-                         "id": "{{@:uuid:" + name.lower().replace(" ", "-") + "-scope}}",
+-                         "id": "{{@:uuid:" + name.lower().replace(" ", "-") + "-count}}",
+-                         "id": "{{@:uuid:" + name.lower().replace(" ", "-") + "-limit}}",
+-         "{{@:env:workflows.rate_limit_check.id}}",
++         "id": "{{@uuid:" + name.lower().replace(" ", "-") + "}}",
++         "id": "{{@uuid:" + name.lower().replace(" ", "-") + "}}",
++         "id": "{{@uuid:" + name.lower().replace(" ", "-") + "}}",
++         "id": "{{@uuid:" + name.lower().replace(" ", "-").replace("?", "") + "}}",
++                         "id": "{{@uuid:" + name.lower().replace(" ", "-").replace("?", "") + "-cond}}",
++                         "id": "{{@uuid:" + name.lower().replace(" ", "-") + "-allowed}}",
++                         "id": "{{@uuid:" + name.lower().replace(" ", "-") + "-scope}}",
++                         "id": "{{@uuid:" + name.lower().replace(" ", "-") + "-count}}",
++                         "id": "{{@uuid:" + name.lower().replace(" ", "-") + "-limit}}",
++         "{{@env:workflows.rate_limit_check.id}}",
+
+### helpers/cleanup_queue_state.py  [code]
++ #!/usr/bin/env python3
++ """Wipe a queue's Redis state (semaphore counter, permit sidecars, consumer
++ group, main stream, DLQ stream). Operator script for debugging, draining a
++ deprecated queue, or post-incident reset.
++ Dry-run by default — shows current state and the commands that would be issued.
++ Pass --force to actually mutate.
++ Usage:
++     python3 helpers/cleanup_queue_state.py --env <env> --stream <name> [--group <name>] [--keep-dlq] [--force]
++ Reads UPSTASH_REDIS_REST_URL + UPSTASH_REDIS_REST_TOKEN from <workspace>/n8n-config/.env.<env>.
++ """
++ import argparse
++ import json
++ import os
++ import sys
++ from pathlib import Path
++ import requests
++ sys.path.insert(0, str(Path(__file__).parent.parent))
++ from helpers.workspace import workspace_root
++ from helpers.config import load_env
++ def _upstash_call(base_url: str, token: str, cmd: list) -> dict:
++     resp = requests.post(
++         base_url.rstrip("/") + "/",
++         headers={"Authorization": f"Bearer {token}"},
++         json=cmd,
++     )
++     resp.raise_for_status()
++     return resp.json()
++ def _probe_state(base_url: str, token: str, stream: str, group: str, dlq_stream: str) -> dict:
++     """Best-effort snapshot of current state. Tolerates errors per-command."""
++     state = {"stream": stream, "group": group, "dlq_stream": dlq_stream}
++     def safe(cmd):
++         try:
++         try:
++             return _upstash_call(base_url, token, cmd).get("result")
++         except Exception as e:
++         except Exception as e:
++             return f"<error: {e}>"
++     state["inflight"] = safe(["GET", f"q:{stream}:inflight"])
++     state["permit_keys"] = safe(["KEYS", f"q:{stream}:permits:*"])
++     state["xlen_main"] = safe(["XLEN", stream])
++     state["xlen_dlq"] = safe(["XLEN", dlq_stream])
++     # XINFO GROUPS — may return error if stream/group doesn't exist
++     state["xinfo_groups"] = safe(["XINFO", "GROUPS", stream])
++     return state
++ def main() -> None:
++     parser = argparse.ArgumentParser(description=__doc__,
++                                      formatter_class=argparse.RawDescriptionHelpFormatter)
++     parser.add_argument("--workspace", default=None)
++     parser.add_argument("--env", required=True, help="Env name (e.g. dev, prod, dod)")
++     parser.add_argument("--stream", required=True, help="Stream name (e.g. orders, test-stream)")
++     parser.add_argument("--group", default=None,
++                         help="Consumer group name. Defaults to '<stream>-cg' (the queue_pop default).")
++     parser.add_argument("--keep-dlq", action="store_true",
++                         help="Do not delete the DLQ stream (<stream>-dlq). Use when you want to preserve "
++                              "forensic data for inspection after cleanup.")
++     parser.add_argument("--force", action="store_true",
++                         help="Actually mutate. Without --force, prints the snapshot + planned commands and exits.")
++     args = parser.parse_args()
++     ws = workspace_root(args.workspace)
++     load_env(args.env, ws)
++     base_url = os.environ.get("UPSTASH_REDIS_REST_URL")
++     token = os.environ.get("UPSTASH_REDIS_REST_TOKEN")
++     if not base_url or not token:
++         raise SystemExit(
++             f"UPSTASH_REDIS_REST_URL or UPSTASH_REDIS_REST_TOKEN missing from "
++             f".env.{args.env}. Set both before running."
++         )
++     stream = args.stream
++     group = args.group or f"{stream}-cg"
++     dlq_stream = f"{stream}-dlq"
++     print(f"Probing current state for stream='{stream}' (group='{group}')…")
++     snapshot = _probe_state(base_url, token, stream, group, dlq_stream)
++     print(json.dumps(snapshot, indent=2))
++     permit_keys = snapshot.get("permit_keys") or []
++     if not isinstance(permit_keys, list):
++         permit_keys = []
++     planned = [
++         ["DEL", f"q:{stream}:inflight"],
++         *[["DEL", k] for k in permit_keys],
++         ["XGROUP", "DESTROY", stream, group],
++         ["DEL", stream],
++     ]
++     if not args.keep_dlq:
++         planned.append(["DEL", dlq_stream])
++     print(f"\nPlanned commands ({len(planned)}):")
++     for cmd in planned:
++     for cmd in planned:
++         print(f"  {' '.join(cmd)}")
++     if not args.force:
++         print("\nDRY-RUN. Rerun with --force to execute.")
++         return
++     print("\nExecuting…")
++     results = []
++             r = _upstash_call(base_url, token, cmd)
++             results.append({"cmd": cmd, "result": r.get("result"), "error": r.get("error")})
++             results.append({"cmd": cmd, "result": None, "error": str(e)})
++     print(json.dumps(results, indent=2))
++     n_ok = sum(1 for r in results if not r.get("error"))
++     print(f"\nDone. {n_ok}/{len(results)} commands succeeded.")
++     if n_ok != len(results):
++         sys.exit(1)
++ if __name__ == "__main__":
++     main()
+
+### helpers/create_queue.py  [code]
++ #!/usr/bin/env python3
++ """Copy queue primitive templates from harness/primitives into the workspace and register them."""
++ import argparse
++ import sys
++ from pathlib import Path
++ sys.path.insert(0, str(Path(__file__).parent.parent))
++ from helpers.workspace import workspace_root
++ # Import the lock helpers' generic primitive-copy + create-workflow registration
++ # functions directly. They are key-agnostic (each takes a `key` argument), so
++ # duplicating them into a queue-specific module would buy nothing. Marked as
++ # leading-underscore for cohesion within create_lock.py's module, but Python
++ # doesn't enforce privacy and these are the canonical implementations.
++ # Refactor target: extract `_copy_primitive` + `_register_via_create_workflow`
++ # into `helpers/_primitive_install.py` so create_lock + create_queue both import
++ # from a shared module instead of one importing from the other.
++ from helpers.create_lock import _copy_primitive, _register_via_create_workflow
++ _PRIMITIVES = {
++     "queue_publish": "Queue Publish",
++     "queue_pop": "Queue Pop",
++     "queue_ack": "Queue Ack",
++ }
++ }
++ _ERROR_HANDLER = ("error_handler_queue_cleanup", "Error Handler Queue Cleanup")
++ # Sample-test pair: a webhook-triggered producer that publishes 5 tagged messages
++ # (3 happy / 1 transient_fail_once / 1 poison) and a schedule-polled consumer
++ # that simulates per-tag behaviour. Together they exercise XAUTOCLAIM retry,
++ # the semaphore cap, and DLQ routing — without the operator hand-writing test
++ # scaffolding. Tier 1 (callers) since they invoke the queue primitives.
++ _SAMPLE_TEST = {
++     "queue_sample_producer": "Queue Sample Producer",
++     "queue_sample_consumer": "Queue Sample Consumer",
++ def main() -> None:
++     parser = argparse.ArgumentParser(description=__doc__)
++     parser.add_argument("--workspace", default=None)
++     parser.add_argument("--include-error-handler", action="store_true", dest="include_error_handler")
++     parser.add_argument("--with-sample-test", action="store_true", dest="with_sample_test",
++                         help="Also copy a paired producer+consumer test that exercises happy / "
++                              "transient-retry / poison-DLQ paths against a 'test-stream'. Useful for "
++                              "first-time end-to-end validation after install.")
++     parser.add_argument("--force-overwrite", action="store_true", dest="force_overwrite")
++     args = parser.parse_args()
++     ws = workspace_root(args.workspace)
++     primitives = dict(_PRIMITIVES)
++     if args.include_error_handler:
++         key, name = _ERROR_HANDLER
++         primitives[key] = name
++     # Sample-test workflows register at Tier 1 (callers) not Tier 0a, since
++     # they depend on the queue primitives being deployed first.
++     sample_test = dict(_SAMPLE_TEST) if args.with_sample_test else {}
++     # Two-pass copy → register, mirroring create_lock.py. If a registration
++     # fails (transient n8n API hiccup, expired key) the workspace still has
++     # all template files on disk so a retry can resume cleanly.
++     for key in (*primitives.keys(), *sample_test.keys()):
++         _copy_primitive(ws, key, force_overwrite=args.force_overwrite)
++     failures: list[tuple[str, Exception]] = []
++     for key, name in primitives.items():
++         try:
++         try:
++             _register_via_create_workflow(ws, key, name, "Tier 0a: leaves")
++         except SystemExit as e:
++         except SystemExit as e:
++             failures.append((key, e))
++             failures.append((key, e))
++             print(f"  WARNING: registration failed for '{key}'; continuing.", file=sys.stderr)
++             print(f"  WARNING: registration failed for '{key}'; continuing.", file=sys.stderr)
++     for key, name in sample_test.items():
++             _register_via_create_workflow(ws, key, name, "Tier 1")
++     total = len(primitives) + len(sample_test)
++     if failures:
++         print(
++         print(
++             f"create-queue partial: {total - len(failures)}/{total} registered. "
++             f"Re-run after fixing the underlying issue (commonly: invalid N8N_API_KEY).",
++             file=sys.stderr,
++         )
++         )
++         sys.exit(1)
++     if args.with_sample_test:
++             "create-queue complete. Sample-test workflows installed:\n"
++             "  - queue_sample_producer (webhook /queue-sample-producer; publishes 5 tagged messages)\n"
++             "  - queue_sample_consumer (schedule 10s; pops + simulates per-tag behaviour)\n"
++             "Deploy with deploy_all, then POST to the producer's webhook and watch the consumer drain."
++     else:
++         print("create-queue complete.")
++ if __name__ == "__main__":
++     main()
+
+### helpers/create_workflow.py  [code]
+-     parser.add_argument("--tier", default=None, help="Tier name in deployment_order.yml (e.g. 'Tier 1')")
+-     # Step 3: deployment order
+-     if args.tier:
++     parser.add_argument("--tier", default="Tier 1",
++                         help="Tier name in deployment_order.yml. Defaults to 'Tier 1' so deploy_all.py "
++                              "picks the workflow up out of the box. Pass an explicit tier name "
++                              "('Tier 0a: leaves' for primitives, 'Tier 2' for downstream callers, etc.) "
++                              "or 'none' to skip deployment_order registration entirely.")
++     # Step 3: deployment order. `--tier none` opts out (e.g. workflows you
++     # deploy manually outside deploy_all.py); any other value registers.
++     if args.tier and args.tier.lower() != "none":
+
+### helpers/dehydrate.py  [code]
+-     uuid_pattern = re.compile(r"\{\{(?:HYDRATE|INTERPOLATE|@):uuid:[^}]+\}\}")
+-     """Reverse-substitute env values back into {{@:env:...}} placeholders.
+-         placeholder = "{{@:env:" + key + "}}"
++     uuid_pattern = re.compile(r"\{\{(?:INTERPOLATE_|@)uuid:[^}]+\}\}")
++     """Reverse-substitute env values back into {{@env:...}} placeholders.
++         placeholder = "{{@env:" + key + "}}"
+
+### helpers/dependency_graph.py  [code]
+- _PLACEHOLDER_RE = re.compile(r"^\{\{(?:HYDRATE|INTERPOLATE|@):env:workflows\.([A-Za-z0-9_\-]+)\.id\}\}$")
++ _PLACEHOLDER_RE = re.compile(r"^\{\{(?:INTERPOLATE_|@)env:workflows\.([A-Za-z0-9_\-]+)\.id\}\}$")
+
+### helpers/hydrate.py  [code]
+- """Resolve all {{INTERPOLATE:...}} / {{@:...}} placeholders in a workflow template for one env."""
++ """Resolve all {{INTERPOLATE_...}} / {{@...}} placeholders in a workflow template for one env."""
+
+### helpers/init.py  [code]
+- │   ├── js/                 # pure JS functions injected via {{@:js:...}}
+- │   └── py/                 # pure Python functions injected via {{@:py:...}}
+- │   ├── email-templates/    # *.html injected via {{@:html:...}}
++ │   ├── js/                 # pure JS functions injected via {{@js:...}}
++ │   └── py/                 # pure Python functions injected via {{@py:...}}
++ │   ├── email-templates/    # *.html injected via {{@html:...}}
+
+### helpers/placeholder/env_resolver.py  [code]
+- """Resolve {{INTERPOLATE:env:key.path}} (alias `{{@:env:key.path}}`) placeholders against loaded YAML config."""
+- PATTERN = re.compile(r"\{\{(?:INTERPOLATE|@):env:([^}]+)\}\}")
+-     """Replace all {{INTERPOLATE:env:...}} / {{@:env:...}} tokens in text with config values."""
+-             raise ValueError(f"Placeholder {{{{@:env:{dot_path}}}}} not found in {env_name}.yml")
+-                 f"Sentinel value '{sval}' resolved for {{{{@:env:{dot_path}}}}} in {env_name}.yml. "
++ """Resolve {{INTERPOLATE_env:key.path}} (alias `{{@env:key.path}}`) placeholders against loaded YAML config."""
++ PATTERN = re.compile(r"\{\{(?:INTERPOLATE_|@)env:([^}]+)\}\}")
++     """Replace all {{INTERPOLATE_env:...}} / {{@env:...}} tokens in text with config values."""
++             raise ValueError(f"Placeholder {{{{@env:{dot_path}}}}} not found in {env_name}.yml")
++                 f"Sentinel value '{sval}' resolved for {{{{@env:{dot_path}}}}} in {env_name}.yml. "
+
+### helpers/placeholder/file_resolver.py  [code]
+- """Resolve {{INTERPOLATE:txt|json|html:path}} (alias `{{@:...}}`) placeholders against workspace files."""
+- PATTERN = re.compile(r"\{\{(?:INTERPOLATE|@):(txt|json|html):([^}]+)\}\}")
+-     """Replace all {{INTERPOLATE:txt|json|html:...}} / {{@:...}} tokens with file contents."""
+-                 f"Absolute paths in placeholders are forbidden: {{{{@:{kind}:{rel_path}}}}}"
+-             placeholder = "{{@:" + kind + ":" + rel_path + "}}"
++ """Resolve {{INTERPOLATE_txt|json|html:path}} (alias `{{@...}}`) placeholders against workspace files."""
++ PATTERN = re.compile(r"\{\{(?:INTERPOLATE_|@)(txt|json|html):([^}]+)\}\}")
++     """Replace all {{INTERPOLATE_txt|json|html:...}} / {{@...}} tokens with file contents."""
++                 f"Absolute paths in placeholders are forbidden: {{{{@{kind}:{rel_path}}}}}"
++             placeholder = "{{@" + kind + ":" + rel_path + "}}"
+
+### helpers/placeholder/js_resolver.py  [code]
+- """Resolve {{INTERPOLATE:js:path}} (alias `{{@:js:path}}`) placeholders; emit `#` markers for round-trip.
+- PATTERN = re.compile(r"\{\{(?:INTERPOLATE|@):js:([^}]+)\}\}")
+-     """Replace {{INTERPOLATE:js:path}} / {{@:js:path}} with JSON-escaped file content wrapped in `#` markers."""
+-                 f"Absolute paths in placeholders are forbidden: {{{{@:js:{rel_path}}}}}"
+-     """Collapse `#` / `MATCH` / `DEHYDRATE`-wrapped JS blocks back to `{{@:js:...}}` placeholders. JSON-aware."""
+-             lambda m: "{{@:js:" + m.group(2).strip() + "}}", s
++ """Resolve {{INTERPOLATE_js:path}} (alias `{{@js:path}}`) placeholders; emit `#` markers for round-trip.
++ PATTERN = re.compile(r"\{\{(?:INTERPOLATE_|@)js:([^}]+)\}\}")
++     """Replace {{INTERPOLATE_js:path}} / {{@js:path}} with JSON-escaped file content wrapped in `#` markers."""
++                 f"Absolute paths in placeholders are forbidden: {{{{@js:{rel_path}}}}}"
++     """Collapse `#` / `MATCH` / `DEHYDRATE`-wrapped JS blocks back to `{{@js:...}}` placeholders. JSON-aware."""
++             lambda m: "{{@js:" + m.group(2).strip() + "}}", s
+
+### helpers/placeholder/py_resolver.py  [code]
+- """Resolve {{INTERPOLATE:py:path}} (alias `{{@:py:path}}`) placeholders; emit `MATCH` markers for round-trip.
+- PATTERN = re.compile(r"\{\{(?:INTERPOLATE|@):py:([^}]+)\}\}")
+-     """Replace {{INTERPOLATE:py:path}} / {{@:py:path}} with JSON-escaped Python content wrapped in `MATCH` markers."""
+-                 f"Absolute paths in placeholders are forbidden: {{{{@:py:{rel_path}}}}}"
+-     """Collapse `MATCH`/`DEHYDRATE`-wrapped Python blocks back to `{{@:py:...}}` placeholders. JSON-aware."""
+-             lambda m: "{{@:py:" + m.group(2).strip() + "}}", s
++ """Resolve {{INTERPOLATE_py:path}} (alias `{{@py:path}}`) placeholders; emit `MATCH` markers for round-trip.
++ PATTERN = re.compile(r"\{\{(?:INTERPOLATE_|@)py:([^}]+)\}\}")
++     """Replace {{INTERPOLATE_py:path}} / {{@py:path}} with JSON-escaped Python content wrapped in `MATCH` markers."""
++                 f"Absolute paths in placeholders are forbidden: {{{{@py:{rel_path}}}}}"
++     """Collapse `MATCH`/`DEHYDRATE`-wrapped Python blocks back to `{{@py:...}}` placeholders. JSON-aware."""
++             lambda m: "{{@py:" + m.group(2).strip() + "}}", s
+
+### helpers/placeholder/uuid_resolver.py  [code]
+- """Resolve {{INTERPOLATE:uuid:identifier}} (alias `{{@:uuid:identifier}}`) placeholders with fresh UUIDs."""
+- PATTERN = re.compile(r"\{\{(?:INTERPOLATE|@):uuid:([^}]+)\}\}")
+-     """Replace each {{INTERPOLATE:uuid:identifier}} / {{@:uuid:identifier}} with a fresh UUID v4.
++ """Resolve {{INTERPOLATE_uuid:identifier}} (alias `{{@uuid:identifier}}`) placeholders with fresh UUIDs."""
++ PATTERN = re.compile(r"\{\{(?:INTERPOLATE_|@)uuid:([^}]+)\}\}")
++     """Replace each {{INTERPOLATE_uuid:identifier}} / {{@uuid:identifier}} with a fresh UUID v4.
+
+### helpers/placeholder/validator.py  [code]
+- Catches all three placeholder forms (`HYDRATE`, `INTERPOLATE`, `@`) so partial
+- migrations from the old `HYDRATE` syntax fail loudly. Resolvers only substitute
+- `INTERPOLATE` / `@` — any leftover `HYDRATE` form means the template still uses
+- the old syntax and should be migrated via `helpers/migrate_syntax.py`.
+- RESIDUAL_PATTERN = re.compile(r"\{\{(?:HYDRATE|INTERPOLATE|@):[^}]+\}\}")
+-     absolutes = re.findall(r"\{\{(?:HYDRATE|INTERPOLATE|@):\w+:(/[^}]+)\}\}", text)
++ Recognises the canonical long form (`INTERPOLATE_<type>:...`) and short alias
++ (`@<type>:...`). Any leftover token after hydration is treated as a residual —
++ including stale older-syntax forms (`{{@:type:...}}`, `{{INTERPOLATE:type:...}}`,
++ `{{HYDRATE:type:...}}`), which won't match the new patterns and will therefore
++ surface as residuals if a template hasn't been migrated yet.
++ # Match the canonical new forms (`INTERPOLATE_<type>:...`, `@<type>:...`) AND the
++ # stale older syntaxes (`{{INTERPOLATE:type:...}}`, `{{@:type:...}}`, legacy
++ # `{{HYDRATE:type:...}}`) so a forgotten template surfaces loudly post-hydrate
++ # rather than silently shipping literal placeholder text into n8n.
++ RESIDUAL_PATTERN = re.compile(r"\{\{(?:HYDRATE:|INTERPOLATE_|INTERPOLATE:|@:|@)[^}\s][^}]*\}\}")
++     absolutes = re.findall(r"\{\{(?:INTERPOLATE_|@)\w+:(/[^}]+)\}\}", text)
+
+### helpers/register_error_handler.py  [code]
+-     placeholder = "{{@:env:workflows." + args.handler_key + ".id}}"
++     placeholder = "{{@env:workflows." + args.handler_key + ".id}}"
+
+### helpers/validate.py  [code]
+- _JS_PLACEHOLDER_RE = re.compile(r"\{\{(?:INTERPOLATE|@):js:([^}]+)\}\}")
+- _PY_PLACEHOLDER_RE = re.compile(r"\{\{(?:INTERPOLATE|@):py:([^}]+)\}\}")
+-             f"node '{name}': no {{{{@:{ext}:...}}}} placeholder found in {code_field_name}. "
++ _JS_PLACEHOLDER_RE = re.compile(r"\{\{(?:INTERPOLATE_|@)js:([^}]+)\}\}")
++ _PY_PLACEHOLDER_RE = re.compile(r"\{\{(?:INTERPOLATE_|@)py:([^}]+)\}\}")
++             f"node '{name}': no {{{{@{ext}:...}}}} placeholder found in {code_field_name}. "
+
+### primitives/workflows/_minimal.template.json  [code]
+-   "name": "{{@:env:displayName}} __NAME__{{@:env:workflowNamePostfix}}",
+-       "id": "{{@:uuid:webhook}}",
+-       "webhookId": "{{@:uuid:webhook-public}}"
+-       "id": "{{@:uuid:set}}",
+-               "id": "{{@:uuid:assign}}",
++   "name": "{{@env:displayName}} __NAME__{{@env:workflowNamePostfix}}",
++       "id": "{{@uuid:webhook}}",
++       "webhookId": "{{@uuid:webhook-public}}"
++       "id": "{{@uuid:set}}",
++               "id": "{{@uuid:assign}}",
+
+### primitives/workflows/error_handler_lock_cleanup.template.json  [code]
+-   "name": "{{@:env:displayName}} Error Handler Lock Cleanup{{@:env:workflowNamePostfix}}",
+-       "id": "{{@:uuid:err-trigger}}",
+-       "id": "{{@:uuid:err-prep-scopes}}",
+-         "jsCode": "// @n8n-evol-I:primitive — exempt from pure-function discipline\n// Active cleanup: iterate every scope the env has registered, GET its :meta\n// sidecar, and DEL the pair only when the meta's execution_id matches the\n// failed execution.\n//\n// `lockScopes` is read from <env>.yml and is expected to be an array of scope\n// strings (the post-prefix portion — e.g. ['excel-sharepoint', 'cms-row']).\n// add_lock_to_workflow.py auto-registers static --scope-expression values\n// here; dynamic scopes are skipped and require manual lockScopes entries.\nlet LOCK_SCOPES;\ntry {\n  LOCK_SCOPES = {{@:env:lockScopes}};\n} catch (e) {\n  LOCK_SCOPES = [];\n}\nif (!Array.isArray(LOCK_SCOPES)) LOCK_SCOPES = [];\n\nconst errorData = $('Error Trigger').first().json || {};\nconst failed_execution_id = errorData.execution?.id || errorData.executionId || $execution.id || 'unknown';\nconst failed_workflow_id = errorData.workflow?.id || 'unknown';\nconst failed_workflow_name = errorData.workflow?.name || 'unknown';\nconst failed_error_message = errorData.execution?.error?.message || errorData.error?.message || 'unknown';\n\nif (LOCK_SCOPES.length === 0) {\n  // Graceful no-op: no scopes registered → nothing to clean. Avoids errors\n  // and surfaces the configuration gap to the operator via the log entry.\n  return [{\n    json: {\n      cleaned: false,\n      reason: 'no lockScopes registered in env yaml — add to lockScopes list to enable active cleanup',\n      failed_execution_id,\n      failed_workflow_id,\n      failed_workflow_name,\n      failed_error_message,\n      cleanup_terminal: true,\n    },\n  }];\n}\n\nreturn LOCK_SCOPES.map(scope => ({\n  json: {\n    scope,\n    key: `n8n-lock-${scope}`,\n    meta_key: `n8n-lock-${scope}:meta`,\n    failed_execution_id,\n    failed_workflow_id,\n    failed_workflow_name,\n    failed_error_message,\n    cleanup_terminal: false,\n  },\n}));\n"
+-       "id": "{{@:uuid:err-if-empty}}",
+-               "id": "{{@:uuid:err-cond-empty}}",
+-       "id": "{{@:uuid:err-get-meta}}",
+-           "id": "{{@:env:credentials.redis.id}}",
+-           "id": "{{@:env:credentials.redis.id}}",
+-           "id": "{{@:env:credentials.redis.id}}",
+-           "name": "{{@:env:credentials.redis.name}}"
+-           "name": "{{@:env:credentials.redis.name}}"
+-           "name": "{{@:env:credentials.redis.name}}"
+-       "id": "{{@:uuid:err-filter}}",
+-       "id": "{{@:uuid:err-if-found}}",
+-               "id": "{{@:uuid:err-cond-found}}",
+-       "id": "{{@:uuid:err-del-counter}}",
+-       "id": "{{@:uuid:err-del-meta}}",
+-       "id": "{{@:uuid:err-log}}",
++   "name": "{{@env:displayName}} Error Handler Lock Cleanup{{@env:workflowNamePostfix}}",
++       "id": "{{@uuid:err-trigger}}",
++       "id": "{{@uuid:err-prep-scopes}}",
++         "jsCode": "// @n8n-evol-I:primitive — exempt from pure-function discipline\n// Active cleanup: iterate every scope the env has registered, GET its :meta\n// sidecar, and DEL the pair only when the meta's execution_id matches the\n// failed execution.\n//\n// `lockScopes` is read from <env>.yml and is expected to be an array of scope\n// strings (the post-prefix portion — e.g. ['excel-sharepoint', 'cms-row']).\n// add_lock_to_workflow.py auto-registers static --scope-expression values\n// here; dynamic scopes are skipped and require manual lockScopes entries.\nlet LOCK_SCOPES;\ntry {\n  LOCK_SCOPES = {{@env:lockScopes}};\n} catch (e) {\n  LOCK_SCOPES = [];\n}\nif (!Array.isArray(LOCK_SCOPES)) LOCK_SCOPES = [];\n\nconst errorData = $('Error Trigger').first().json || {};\nconst failed_execution_id = errorData.execution?.id || errorData.executionId || $execution.id || 'unknown';\nconst failed_workflow_id = errorData.workflow?.id || 'unknown';\nconst failed_workflow_name = errorData.workflow?.name || 'unknown';\nconst failed_error_message = errorData.execution?.error?.message || errorData.error?.message || 'unknown';\n\nif (LOCK_SCOPES.length === 0) {\n  // Graceful no-op: no scopes registered → nothing to clean. Avoids errors\n  // and surfaces the configuration gap to the operator via the log entry.\n  return [{\n    json: {\n      cleaned: false,\n      reason: 'no lockScopes registered in env yaml — add to lockScopes list to enable active cleanup',\n      failed_execution_id,\n      failed_workflow_id,\n      failed_workflow_name,\n      failed_error_message,\n      cleanup_terminal: true,\n    },\n  }];\n}\n\nreturn LOCK_SCOPES.map(scope => ({\n  json: {\n    scope,\n    key: `n8n-lock-${scope}`,\n    meta_key: `n8n-lock-${scope}:meta`,\n    failed_execution_id,\n    failed_workflow_id,\n    failed_workflow_name,\n    failed_error_message,\n    cleanup_terminal: false,\n  },\n}));\n"
++       "id": "{{@uuid:err-if-empty}}",
++               "id": "{{@uuid:err-cond-empty}}",
++       "id": "{{@uuid:err-get-meta}}",
++           "id": "{{@env:credentials.redis.id}}",
++           "id": "{{@env:credentials.redis.id}}",
++           "id": "{{@env:credentials.redis.id}}",
++           "name": "{{@env:credentials.redis.name}}"
++           "name": "{{@env:credentials.redis.name}}"
++           "name": "{{@env:credentials.redis.name}}"
++       "id": "{{@uuid:err-filter}}",
++       "id": "{{@uuid:err-if-found}}",
++               "id": "{{@uuid:err-cond-found}}",
++       "id": "{{@uuid:err-del-counter}}",
++       "id": "{{@uuid:err-del-meta}}",
++       "id": "{{@uuid:err-log}}",
+
+### primitives/workflows/error_handler_queue_cleanup.template.json  [code]
++ {
++   "name": "{{@env:displayName}} Error Handler Queue Cleanup{{@env:workflowNamePostfix}}",
++   "nodes": [
++     {
++     {
++     {
++     {
++     {
++     {
++     {
++     {
++     {
++     {
++     {
++     {
++       "id": "{{@uuid:eqc-trigger}}",
++       "name": "Error Trigger",
++       "type": "n8n-nodes-base.errorTrigger",
++       "typeVersion": 1,
++       "position": [-16, 0],
++       "parameters": {}
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++       "id": "{{@uuid:eqc-prep}}",
++       "name": "Prepare Stream List",
++       "type": "n8n-nodes-base.code",
++       "type": "n8n-nodes-base.code",
++       "type": "n8n-nodes-base.code",
++       "type": "n8n-nodes-base.code",
++       "typeVersion": 2,
++       "typeVersion": 2,
++       "typeVersion": 2,
++       "typeVersion": 2,
++       "position": [208, 0],
++       "parameters": {
++       "parameters": {
++       "parameters": {
++       "parameters": {
++       "parameters": {
++       "parameters": {
++       "parameters": {
++       "parameters": {
++       "parameters": {
++       "parameters": {
++       "parameters": {
++         "language": "javaScript",
++         "language": "javaScript",
++         "language": "javaScript",
++         "language": "javaScript",
++         "jsCode": "// @n8n-evol-I:primitive — exempt from pure-function discipline\n// Active cleanup: iterate every queue stream the env has registered, KEYS\n// the q:<stream>:permits:* glob, then GET each sidecar and DECR inflight +\n// DEL the permit only when sidecar.execution_id matches the failed run.\n// We deliberately do NOT XACK — the message stays in the PEL and is\n// redelivered by the next XAUTOCLAIM. The failed run's work was\n// incomplete; let the redelivery decide whether to retry or DLQ.\nlet QUEUE_SCOPES;\ntry {\n  QUEUE_SCOPES = {{@env:queueScopes}};\n} catch (e) {\n  QUEUE_SCOPES = [];\n}\nif (!Array.isArray(QUEUE_SCOPES)) QUEUE_SCOPES = [];\n\nconst errorData = $('Error Trigger').first().json || {};\nconst failed_execution_id = errorData.execution?.id || errorData.executionId || $execution.id || 'unknown';\nconst failed_workflow_id = errorData.workflow?.id || 'unknown';\nconst failed_workflow_name = errorData.workflow?.name || 'unknown';\nconst failed_error_message = errorData.execution?.error?.message || errorData.error?.message || 'unknown';\n\nif (QUEUE_SCOPES.length === 0) {\n  return [{\n    json: {\n      cleaned: false,\n      reason: 'no queueScopes registered in env yaml — add to queueScopes list to enable active cleanup',\n      failed_execution_id,\n      failed_workflow_id,\n      failed_workflow_name,\n      failed_error_message,\n      cleanup_terminal: true,\n    },\n  }];\n}\n\nreturn QUEUE_SCOPES.map(stream => ({\n  json: {\n    stream,\n    permits_glob: `q:${stream}:permits:*`,\n    inflight_key: `q:${stream}:inflight`,\n    failed_execution_id,\n    failed_workflow_id,\n    failed_workflow_name,\n    failed_error_message,\n    cleanup_terminal: false,\n  },\n}));\n"
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       "id": "{{@uuid:eqc-if-empty}}",
++       "name": "Has Streams?",
++       "type": "n8n-nodes-base.if",
++       "type": "n8n-nodes-base.if",
++       "type": "n8n-nodes-base.if",
++       "typeVersion": 2.2,
++       "typeVersion": 2.2,
++       "typeVersion": 2.2,
++       "position": [432, 0],
++         "conditions": {
++         "conditions": {
++         "conditions": {
++           "options": {
++           "options": {
++           "options": {
++             "caseSensitive": true,
++             "caseSensitive": true,
++             "caseSensitive": true,
++             "leftValue": "",
++             "leftValue": "",
++             "leftValue": "",
++             "typeValidation": "strict",
++             "typeValidation": "strict",
++             "typeValidation": "strict",
++             "version": 2
++             "version": 2
++             "version": 2
++           },
++           },
++           },
++           "conditions": [
++           "conditions": [
++           "conditions": [
++             {
++             {
++             {
++               "id": "{{@uuid:eqc-cond-empty}}",
++               "leftValue": "={{ $json.cleanup_terminal !== true }}",
++               "leftValue": "={{ $json.cleanup_terminal !== true }}",
++               "rightValue": true,
++               "rightValue": true,
++               "rightValue": true,
++               "operator": {
++               "operator": {
++               "operator": {
++                 "type": "boolean",
++                 "type": "boolean",
++                 "type": "boolean",
++                 "operation": "true",
++                 "operation": "true",
++                 "operation": "true",
++                 "singleValue": true
++                 "singleValue": true
++                 "singleValue": true
++               }
++               }
++               }
++             }
++             }
++             }
++           ],
++           ],
++           ],
++           "combinator": "and"
++           "combinator": "and"
++           "combinator": "and"
++         },
++         },
++         },
++         "options": {}
++         "options": {}
++         "options": {}
++         "options": {}
++         "options": {}
++         "options": {}
++         "options": {}
++       "id": "{{@uuid:eqc-keys}}",
++       "name": "KEYS Permits",
++       "type": "n8n-nodes-base.httpRequest",
++       "type": "n8n-nodes-base.httpRequest",
++       "type": "n8n-nodes-base.httpRequest",
++       "type": "n8n-nodes-base.httpRequest",
++       "typeVersion": 4.2,
++       "typeVersion": 4.2,
++       "typeVersion": 4.2,
++       "typeVersion": 4.2,
++       "position": [656, 0],
++         "method": "POST",
++         "method": "POST",
++         "method": "POST",
++         "method": "POST",
++         "url": "={{ $env.UPSTASH_REDIS_REST_URL }}",
++         "url": "={{ $env.UPSTASH_REDIS_REST_URL }}",
++         "url": "={{ $env.UPSTASH_REDIS_REST_URL }}",
++         "url": "={{ $env.UPSTASH_REDIS_REST_URL }}",
++         "authentication": "genericCredentialType",
++         "authentication": "genericCredentialType",
++         "authentication": "genericCredentialType",
++         "authentication": "genericCredentialType",
++         "genericAuthType": "httpHeaderAuth",
++         "genericAuthType": "httpHeaderAuth",
++         "genericAuthType": "httpHeaderAuth",
++         "genericAuthType": "httpHeaderAuth",
++         "sendBody": true,
++         "sendBody": true,
++         "sendBody": true,
++         "sendBody": true,
++         "contentType": "json",
++         "contentType": "json",
++         "contentType": "json",
++         "contentType": "json",
++         "specifyBody": "json",
++         "specifyBody": "json",
++         "specifyBody": "json",
++         "specifyBody": "json",
++         "jsonBody": "={{ JSON.stringify(['KEYS', $json.permits_glob]) }}",
++       },
++       },
++       },
++       },
++       "credentials": {
++       "credentials": {
++       "credentials": {
++       "credentials": {
++         "httpHeaderAuth": {
++         "httpHeaderAuth": {
++         "httpHeaderAuth": {
++         "httpHeaderAuth": {
++           "id": "{{@env:credentials.redis_rest.id}}",
++           "id": "{{@env:credentials.redis_rest.id}}",
++           "id": "{{@env:credentials.redis_rest.id}}",
++           "id": "{{@env:credentials.redis_rest.id}}",
++           "name": "{{@env:credentials.redis_rest.name}}"
++           "name": "{{@env:credentials.redis_rest.name}}"
++           "name": "{{@env:credentials.redis_rest.name}}"
++           "name": "{{@env:credentials.redis_rest.name}}"
++         }
++         }
++         }
++         }
++       "id": "{{@uuid:eqc-fan-out}}",
++       "name": "Fan Out Permit Keys",
++       "position": [880, 0],
++         "jsCode": "// @n8n-evol-I:primitive — exempt from pure-function discipline\n// For each per-stream KEYS result, fan the returned permit keys back into\n// individual items, propagating per-stream context (inflight_key,\n// failed_execution_id, etc.) onto each.\nconst items = $input.all();\nconst streamCtx = $('Prepare Stream List').all();\nconst out = [];\nfor (let i = 0; i < items.length; i++) {\n  const keysResp = items[i].json;\n  const ctx = streamCtx[i] && streamCtx[i].json;\n  if (!ctx) continue;\n  const keysArr = Array.isArray(keysResp.result) ? keysResp.result : [];\n  for (const permit_key of keysArr) {\n    out.push({\n      json: {\n        permit_key,\n        stream: ctx.stream,\n        inflight_key: ctx.inflight_key,\n        failed_execution_id: ctx.failed_execution_id,\n        failed_workflow_id: ctx.failed_workflow_id,\n        failed_workflow_name: ctx.failed_workflow_name,\n        failed_error_message: ctx.failed_error_message,\n      },\n    });\n  }\n}\nif (out.length === 0) {\n  return [{ json: { cleaned: false, reason: 'no permits found for any registered stream', cleanup_terminal: true } }];\n}\nreturn out;\n"
++       "id": "{{@uuid:eqc-if-keys}}",
++       "name": "Has Permit Keys?",
++       "position": [992, 0],
++               "id": "{{@uuid:eqc-cond-keys}}",
++       "id": "{{@uuid:eqc-get-permit}}",
++       "name": "GET Permit Body",
++       "position": [1104, 0],
++         "jsonBody": "={{ JSON.stringify(['GET', $json.permit_key]) }}",
++       "id": "{{@uuid:eqc-filter}}",
++       "name": "Filter Owned Permits",
++       "position": [1328, 0],
++         "jsCode": "// @n8n-evol-I:primitive — exempt from pure-function discipline\n// Parse each sidecar JSON; keep entries where parsed.execution_id matches\n// the failed run.\nconst items = $input.all();\nconst fanOut = $('Fan Out Permit Keys').all();\nconst owned = [];\nfor (let i = 0; i < items.length; i++) {\n  const resp = items[i].json;\n  const ctx = fanOut[i] && fanOut[i].json;\n  if (!ctx || !resp || !resp.result) continue;\n  let parsed;\n  try {\n    parsed = JSON.parse(resp.result);\n  } catch (e) {\n    continue;\n  }\n  if (parsed && parsed.execution_id === ctx.failed_execution_id) {\n    owned.push({\n      json: {\n        should_release: true,\n        permit_key: ctx.permit_key,\n        inflight_key: ctx.inflight_key,\n        stream: ctx.stream,\n        message_id: parsed.message_id,\n        failed_execution_id: ctx.failed_execution_id,\n        failed_workflow_id: ctx.failed_workflow_id,\n        failed_workflow_name: ctx.failed_workflow_name,\n        failed_error_message: ctx.failed_error_message,\n      },\n    });\n  }\n}\nif (owned.length === 0) {\n  return [{ json: { cleaned: false, reason: 'no permits owned by failed execution', cleanup_terminal: true } }];\n}\nreturn owned;\n"
++       "id": "{{@uuid:eqc-if-owned}}",
++       "name": "Owned?",
++       "position": [1552, 0],
++               "id": "{{@uuid:eqc-cond-owned}}",
++               "leftValue": "={{ $json.should_release === true }}",
++       "id": "{{@uuid:eqc-decr}}",
++       "name": "DECR Inflight",
++       "position": [1776, -100],
++         "jsonBody": "={{ JSON.stringify(['DECR', $json.inflight_key]) }}",
++       "id": "{{@uuid:eqc-del}}",
++       "name": "DEL Owned Permit",
++       "position": [2000, -100],
++         "jsonBody": "={{ JSON.stringify(['DEL', $('Filter Owned Permits').itemMatching($itemIndex).json.permit_key]) }}",
++       "id": "{{@uuid:eqc-log}}",
++       "name": "Log Cleanup",
++       "position": [2224, 0],
++         "jsCode": "// @n8n-evol-I:primitive — exempt from pure-function discipline\nconst items = $input.all();\nconst cleaned = items.length > 0 && items.some(i => i.json.should_release === true || i.json.result !== undefined);\nconst streams = Array.from(new Set(items.map(i => i.json.stream).filter(Boolean)));\nreturn [{\n  json: {\n    cleaned,\n    cleaned_count: items.filter(i => i.json.should_release === true).length,\n    streams,\n  },\n}];\n"
++     }
++     }
++   ],
++   "connections": {
++     "Error Trigger": {
++       "main": [[{ "node": "Prepare Stream List", "type": "main", "index": 0 }]]
++     "Prepare Stream List": {
++       "main": [[{ "node": "Has Streams?", "type": "main", "index": 0 }]]
++     "Has Streams?": {
++       "main": [
++       "main": [
++       "main": [
++         [{ "node": "KEYS Permits", "type": "main", "index": 0 }],
++         [{ "node": "Log Cleanup", "type": "main", "index": 0 }]
++         [{ "node": "Log Cleanup", "type": "main", "index": 0 }]
++         [{ "node": "Log Cleanup", "type": "main", "index": 0 }]
++       ]
++       ]
++       ]
++     "KEYS Permits": {
++       "main": [[{ "node": "Fan Out Permit Keys", "type": "main", "index": 0 }]]
++     "Fan Out Permit Keys": {
++       "main": [[{ "node": "Has Permit Keys?", "type": "main", "index": 0 }]]
++     "Has Permit Keys?": {
++         [{ "node": "GET Permit Body", "type": "main", "index": 0 }],
++     "GET Permit Body": {
++       "main": [[{ "node": "Filter Owned Permits", "type": "main", "index": 0 }]]
++     "Filter Owned Permits": {
++       "main": [[{ "node": "Owned?", "type": "main", "index": 0 }]]
++     "Owned?": {
++         [{ "node": "DECR Inflight", "type": "main", "index": 0 }],
++     "DECR Inflight": {
++       "main": [[{ "node": "DEL Owned Permit", "type": "main", "index": 0 }]]
++     "DEL Owned Permit": {
++       "main": [[{ "node": "Log Cleanup", "type": "main", "index": 0 }]]
++   },
++   "settings": {
++     "executionOrder": "v1"
++   }
++ }
+
+### primitives/workflows/lock_acquisition.template.json  [code]
+-   "name": "{{@:env:displayName}} Lock Acquisition{{@:env:workflowNamePostfix}}",
+-       "id": "{{@:uuid:la-trigger}}",
+-       "id": "{{@:uuid:la-context}}",
+-       "id": "{{@:uuid:la-incr}}",
+-           "id": "{{@:env:credentials.redis.id}}",
+-           "id": "{{@:env:credentials.redis.id}}",
+-           "id": "{{@:env:credentials.redis.id}}",
+-           "name": "{{@:env:credentials.redis.name}}"
+-           "name": "{{@:env:credentials.redis.name}}"
+-           "name": "{{@:env:credentials.redis.name}}"
+-       "id": "{{@:uuid:la-evaluate}}",
+-       "id": "{{@:uuid:la-set-meta}}",
+-       "id": "{{@:uuid:la-build-output}}",
+-       "id": "{{@:uuid:la-if-acquired}}",
+-               "id": "{{@:uuid:la-cond-acq}}",
+-       "id": "{{@:uuid:la-if-wait}}",
+-               "id": "{{@:uuid:la-cond-wait}}",
+-       "id": "{{@:uuid:la-fail-fast}}",
+-       "id": "{{@:uuid:la-wait-poll}}",
+-       "webhookId": "{{@:uuid:la-wait-poll-webhook}}"
+-       "id": "{{@:uuid:la-get}}",
+-       "id": "{{@:uuid:la-check-wait}}",
+-       "id": "{{@:uuid:la-if-timeout}}",
+-               "id": "{{@:uuid:la-cond-timeout}}",
+-       "id": "{{@:uuid:la-fail-timeout}}",
+-       "id": "{{@:uuid:la-if-retry}}",
+-               "id": "{{@:uuid:la-cond-retry}}",
++   "name": "{{@env:displayName}} Lock Acquisition{{@env:workflowNamePostfix}}",
++       "id": "{{@uuid:la-trigger}}",
++       "id": "{{@uuid:la-context}}",
++       "id": "{{@uuid:la-incr}}",
++           "id": "{{@env:credentials.redis.id}}",
++           "id": "{{@env:credentials.redis.id}}",
++           "id": "{{@env:credentials.redis.id}}",
++           "name": "{{@env:credentials.redis.name}}"
++           "name": "{{@env:credentials.redis.name}}"
++           "name": "{{@env:credentials.redis.name}}"
++       "id": "{{@uuid:la-evaluate}}",
++       "id": "{{@uuid:la-set-meta}}",
++       "id": "{{@uuid:la-build-output}}",
++       "id": "{{@uuid:la-if-acquired}}",
++               "id": "{{@uuid:la-cond-acq}}",
++       "id": "{{@uuid:la-if-wait}}",
++               "id": "{{@uuid:la-cond-wait}}",
++       "id": "{{@uuid:la-fail-fast}}",
++       "id": "{{@uuid:la-wait-poll}}",
++       "webhookId": "{{@uuid:la-wait-poll-webhook}}"
++       "id": "{{@uuid:la-get}}",
++       "id": "{{@uuid:la-check-wait}}",
++       "id": "{{@uuid:la-if-timeout}}",
++               "id": "{{@uuid:la-cond-timeout}}",
++       "id": "{{@uuid:la-fail-timeout}}",
++       "id": "{{@uuid:la-if-retry}}",
++               "id": "{{@uuid:la-cond-retry}}",
+
+### primitives/workflows/lock_release.template.json  [code]
+-   "name": "{{@:env:displayName}} Lock Release{{@:env:workflowNamePostfix}}",
+-       "id": "{{@:uuid:lr-trigger}}",
+-       "id": "{{@:uuid:lr-prep}}",
+-       "id": "{{@:uuid:lr-get-meta}}",
+-           "id": "{{@:env:credentials.redis.id}}",
+-           "id": "{{@:env:credentials.redis.id}}",
+-           "id": "{{@:env:credentials.redis.id}}",
+-           "name": "{{@:env:credentials.redis.name}}"
+-           "name": "{{@:env:credentials.redis.name}}"
+-           "name": "{{@:env:credentials.redis.name}}"
+-       "id": "{{@:uuid:lr-parse}}",
+-       "id": "{{@:uuid:lr-if-match}}",
+-               "id": "{{@:uuid:lr-cond-match}}",
+-       "id": "{{@:uuid:lr-del-counter}}",
+-       "id": "{{@:uuid:lr-del-meta}}",
+-       "id": "{{@:uuid:lr-result}}",
+-       "id": "{{@:uuid:lr-stop-mismatch}}",
++   "name": "{{@env:displayName}} Lock Release{{@env:workflowNamePostfix}}",
++       "id": "{{@uuid:lr-trigger}}",
++       "id": "{{@uuid:lr-prep}}",
++       "id": "{{@uuid:lr-get-meta}}",
++           "id": "{{@env:credentials.redis.id}}",
++           "id": "{{@env:credentials.redis.id}}",
++           "id": "{{@env:credentials.redis.id}}",
++           "name": "{{@env:credentials.redis.name}}"
++           "name": "{{@env:credentials.redis.name}}"
++           "name": "{{@env:credentials.redis.name}}"
++       "id": "{{@uuid:lr-parse}}",
++       "id": "{{@uuid:lr-if-match}}",
++               "id": "{{@uuid:lr-cond-match}}",
++       "id": "{{@uuid:lr-del-counter}}",
++       "id": "{{@uuid:lr-del-meta}}",
++       "id": "{{@uuid:lr-result}}",
++       "id": "{{@uuid:lr-stop-mismatch}}",
+
+### primitives/workflows/queue_ack.template.json  [code]
++ {
++   "name": "{{@env:displayName}} Queue Ack{{@env:workflowNamePostfix}}",
++   "nodes": [
++     {
++     {
++     {
++     {
++     {
++     {
++     {
++     {
++     {
++     {
++     {
++     {
++       "id": "{{@uuid:qa-trigger}}",
++       "name": "Execute Workflow Trigger",
++       "type": "n8n-nodes-base.executeWorkflowTrigger",
++       "typeVersion": 1.1,
++       "position": [-16, 0],
++       "parameters": {
++       "parameters": {
++       "parameters": {
++       "parameters": {
++       "parameters": {
++       "parameters": {
++       "parameters": {
++       "parameters": {
++       "parameters": {
++       "parameters": {
++       "parameters": {
++       "parameters": {
++         "workflowInputs": {
++           "values": [
++             { "name": "stream" },
++             { "name": "group" },
++             { "name": "message_id" },
++             { "name": "success", "type": "boolean" }
++           ]
++         }
++         }
++         }
++         }
++         }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++       "id": "{{@uuid:qa-context}}",
++       "name": "Build Ack Context",
++       "type": "n8n-nodes-base.code",
++       "type": "n8n-nodes-base.code",
++       "type": "n8n-nodes-base.code",
++       "type": "n8n-nodes-base.code",
++       "type": "n8n-nodes-base.code",
++       "typeVersion": 2,
++       "typeVersion": 2,
++       "typeVersion": 2,
++       "typeVersion": 2,
++       "typeVersion": 2,
++       "position": [208, 0],
++         "language": "javaScript",
++         "language": "javaScript",
++         "language": "javaScript",
++         "language": "javaScript",
++         "language": "javaScript",
++         "jsCode": "// @n8n-evol-I:primitive — exempt from pure-function discipline\nconst stream = $json.stream;\nconst group = $json.group;\nconst messageId = $json.message_id;\nif (!stream || !group || !messageId) {\n  throw new Error(\"queue_ack: stream, group, message_id are required\");\n}\nconst success = $json.success === true;\nconst inflightKey = `q:${stream}:inflight`;\nconst permitKey = `q:${stream}:permits:${messageId}`;\nreturn [{ json: { stream, group, messageId, success, inflightKey, permitKey } }];\n"
++       "id": "{{@uuid:qa-get-permit}}",
++       "name": "GET Permit Sidecar",
++       "type": "n8n-nodes-base.httpRequest",
++       "type": "n8n-nodes-base.httpRequest",
++       "type": "n8n-nodes-base.httpRequest",
++       "type": "n8n-nodes-base.httpRequest",
++       "typeVersion": 4.2,
++       "typeVersion": 4.2,
++       "typeVersion": 4.2,
++       "typeVersion": 4.2,
++       "position": [432, 0],
++         "method": "POST",
++         "method": "POST",
++         "method": "POST",
++         "method": "POST",
++         "url": "={{ $env.UPSTASH_REDIS_REST_URL }}",
++         "url": "={{ $env.UPSTASH_REDIS_REST_URL }}",
++         "url": "={{ $env.UPSTASH_REDIS_REST_URL }}",
++         "url": "={{ $env.UPSTASH_REDIS_REST_URL }}",
++         "authentication": "genericCredentialType",
++         "authentication": "genericCredentialType",
++         "authentication": "genericCredentialType",
++         "authentication": "genericCredentialType",
++         "genericAuthType": "httpHeaderAuth",
++         "genericAuthType": "httpHeaderAuth",
++         "genericAuthType": "httpHeaderAuth",
++         "genericAuthType": "httpHeaderAuth",
++         "sendBody": true,
++         "sendBody": true,
++         "sendBody": true,
++         "sendBody": true,
++         "contentType": "json",
++         "contentType": "json",
++         "contentType": "json",
++         "contentType": "json",
++         "specifyBody": "json",
++         "specifyBody": "json",
++         "specifyBody": "json",
++         "specifyBody": "json",
++         "jsonBody": "={{ JSON.stringify(['GET', $('Build Ack Context').first().json.permitKey]) }}",
++         "options": {}
++         "options": {}
++         "options": {}
++         "options": {}
++         "options": {}
++         "options": {}
++       },
++       },
++       },
++       },
++       "credentials": {
++       "credentials": {
++       "credentials": {
++       "credentials": {
++         "httpHeaderAuth": {
++         "httpHeaderAuth": {
++         "httpHeaderAuth": {
++         "httpHeaderAuth": {
++           "id": "{{@env:credentials.redis_rest.id}}",
++           "id": "{{@env:credentials.redis_rest.id}}",
++           "id": "{{@env:credentials.redis_rest.id}}",
++           "id": "{{@env:credentials.redis_rest.id}}",
++           "name": "{{@env:credentials.redis_rest.name}}"
++           "name": "{{@env:credentials.redis_rest.name}}"
++           "name": "{{@env:credentials.redis_rest.name}}"
++           "name": "{{@env:credentials.redis_rest.name}}"
++       "id": "{{@uuid:qa-verify}}",
++       "name": "Verify Permit",
++       "position": [656, 0],
++         "jsCode": "// @n8n-evol-I:primitive — exempt from pure-function discipline\nconst ctx = $('Build Ack Context').first().json;\nconst resp = $json;\nconst value = resp ? resp.result : null;\nconst exists = value !== null && value !== undefined && value !== '';\nreturn [{ json: { ...ctx, permit_exists: exists, permit_value: value } }];\n"
++       "id": "{{@uuid:qa-if-exists}}",
++       "name": "Permit Exists?",
++       "type": "n8n-nodes-base.if",
++       "type": "n8n-nodes-base.if",
++       "typeVersion": 2.2,
++       "typeVersion": 2.2,
++       "position": [880, 0],
++         "conditions": {
++         "conditions": {
++           "options": {
++           "options": {
++             "caseSensitive": true,
++             "caseSensitive": true,
++             "leftValue": "",
++             "leftValue": "",
++             "typeValidation": "strict",
++             "typeValidation": "strict",
++             "version": 2
++             "version": 2
++           },
++           },
++           "conditions": [
++           "conditions": [
++             {
++             {
++               "id": "{{@uuid:qa-cond-exists}}",
++               "leftValue": "={{ $json.permit_exists === true }}",
++               "rightValue": true,
++               "rightValue": true,
++               "operator": {
++               "operator": {
++                 "type": "boolean",
++                 "type": "boolean",
++                 "operation": "true",
++                 "operation": "true",
++                 "singleValue": true
++                 "singleValue": true
++               }
++               }
++             }
++             }
++           ],
++           ],
++           "combinator": "and"
++           "combinator": "and"
++         },
++         },
++       "id": "{{@uuid:qa-idempotent}}",
++       "name": "Idempotent Output",
++       "position": [1104, 192],
++         "jsCode": "// @n8n-evol-I:primitive — exempt from pure-function discipline\nconst ctx = $('Build Ack Context').first().json;\nreturn [{ json: { acked: true, idempotent: true, stream: ctx.stream, group: ctx.group, message_id: ctx.messageId, reason: 'permit absent — already acked or expired' } }];\n"
++       "id": "{{@uuid:qa-if-success}}",
++       "name": "Should XACK?",
++       "position": [1104, -192],
++               "id": "{{@uuid:qa-cond-success}}",
++               "leftValue": "={{ $json.success === true }}",
++       "id": "{{@uuid:qa-xack}}",
++       "name": "XACK Main",
++       "position": [1328, -288],
++         "jsonBody": "={{ JSON.stringify(['XACK', $('Build Ack Context').first().json.stream, $('Build Ack Context').first().json.group, $('Build Ack Context').first().json.messageId]) }}",
++       "id": "{{@uuid:qa-skip-xack}}",
++       "name": "Skip XACK Marker",
++       "position": [1328, -96],
++         "jsCode": "// @n8n-evol-I:primitive — exempt from pure-function discipline\n// success=false: do not XACK; the message stays in the PEL and will be\n// redelivered by the next XAUTOCLAIM after claim_idle_ms. We still release\n// the permit so a fresh consumer can process the redelivered message.\nconst ctx = $('Build Ack Context').first().json;\nreturn [{ json: { ...ctx, xacked: false } }];\n"
++       "id": "{{@uuid:qa-decr}}",
++       "name": "DECR Inflight",
++       "position": [1552, -192],
++         "jsonBody": "={{ JSON.stringify(['DECR', $('Build Ack Context').first().json.inflightKey]) }}",
++       "id": "{{@uuid:qa-del-permit}}",
++       "name": "DEL Permit Sidecar",
++       "position": [1776, -192],
++         "jsonBody": "={{ JSON.stringify(['DEL', $('Build Ack Context').first().json.permitKey]) }}",
++       "id": "{{@uuid:qa-output}}",
++       "name": "Build Ack Output",
++       "position": [2000, -192],
++         "jsCode": "// @n8n-evol-I:primitive — exempt from pure-function discipline\nconst ctx = $('Build Ack Context').first().json;\nconst xacked = ctx.success === true;\nconst decrResp = $('DECR Inflight').first().json;\nconst newCount = (decrResp && typeof decrResp.result === 'number') ? decrResp.result : null;\nreturn [{ json: {\n  acked: true, idempotent: false, stream: ctx.stream, group: ctx.group,\n  message_id: ctx.messageId, xacked, success: ctx.success, inflight_count_after: newCount,\n}}];\n"
++     }
++     }
++   ],
++   "connections": {
++     "Execute Workflow Trigger": {
++       "main": [[{ "node": "Build Ack Context", "type": "main", "index": 0 }]]
++     "Build Ack Context": {
++       "main": [[{ "node": "GET Permit Sidecar", "type": "main", "index": 0 }]]
++     "GET Permit Sidecar": {
++       "main": [[{ "node": "Verify Permit", "type": "main", "index": 0 }]]
++     "Verify Permit": {
++       "main": [[{ "node": "Permit Exists?", "type": "main", "index": 0 }]]
++     "Permit Exists?": {
++       "main": [
++       "main": [
++         [{ "node": "Should XACK?", "type": "main", "index": 0 }],
++         [{ "node": "Idempotent Output", "type": "main", "index": 0 }]
++       ]
++       ]
++     "Should XACK?": {
++         [{ "node": "XACK Main", "type": "main", "index": 0 }],
++         [{ "node": "Skip XACK Marker", "type": "main", "index": 0 }]
++     "XACK Main": {
++       "main": [[{ "node": "DECR Inflight", "type": "main", "index": 0 }]]
++       "main": [[{ "node": "DECR Inflight", "type": "main", "index": 0 }]]
++     "Skip XACK Marker": {
++     "DECR Inflight": {
++       "main": [[{ "node": "DEL Permit Sidecar", "type": "main", "index": 0 }]]
++     "DEL Permit Sidecar": {
++       "main": [[{ "node": "Build Ack Output", "type": "main", "index": 0 }]]
++   },
++   "settings": {
++     "executionOrder": "v1"
++   }
++ }
+
+### primitives/workflows/queue_pop.template.json  [code]
++ {
++   "name": "{{@env:displayName}} Queue Pop{{@env:workflowNamePostfix}}",
++   "nodes": [
++     {
++     {
++     {
++     {
++     {
++     {
++     {
++     {
++     {
++     {
++     {
++     {
++     {
++     {
++     {
++     {
++     {
++     {
++     {
++     {
++     {
++     {
++     {
++     {
++       "id": "{{@uuid:qpop-trigger}}",
++       "name": "Execute Workflow Trigger",
++       "type": "n8n-nodes-base.executeWorkflowTrigger",
++       "typeVersion": 1.1,
++       "position": [-16, 0],
++       "parameters": {
++       "parameters": {
++       "parameters": {
++       "parameters": {
++       "parameters": {
++       "parameters": {
++       "parameters": {
++       "parameters": {
++       "parameters": {
++       "parameters": {
++       "parameters": {
++       "parameters": {
++       "parameters": {
++       "parameters": {
++       "parameters": {
++       "parameters": {
++       "parameters": {
++       "parameters": {
++       "parameters": {
++       "parameters": {
++       "parameters": {
++       "parameters": {
++       "parameters": {
++       "parameters": {
++         "workflowInputs": {
++           "values": [
++             { "name": "stream" },
++             { "name": "group" },
++             { "name": "consumer" },
++             { "name": "max_concurrency", "type": "number" },
++             { "name": "max_retries", "type": "number" },
++             { "name": "dlq_enabled", "type": "boolean" },
++             { "name": "batch_size", "type": "number" },
++             { "name": "claim_idle_ms", "type": "number" },
++             { "name": "caller_execution_id" }
++           ]
++         }
++         }
++         }
++         }
++         }
++         }
++         }
++         }
++         }
++         }
++         }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++       "id": "{{@uuid:qpop-context}}",
++       "name": "Build Pop Context",
++       "type": "n8n-nodes-base.code",
++       "type": "n8n-nodes-base.code",
++       "type": "n8n-nodes-base.code",
++       "type": "n8n-nodes-base.code",
++       "type": "n8n-nodes-base.code",
++       "type": "n8n-nodes-base.code",
++       "type": "n8n-nodes-base.code",
++       "type": "n8n-nodes-base.code",
++       "type": "n8n-nodes-base.code",
++       "type": "n8n-nodes-base.code",
++       "typeVersion": 2,
++       "typeVersion": 2,
++       "typeVersion": 2,
++       "typeVersion": 2,
++       "typeVersion": 2,
++       "typeVersion": 2,
++       "typeVersion": 2,
++       "typeVersion": 2,
++       "typeVersion": 2,
++       "typeVersion": 2,
++       "position": [208, 0],
++         "language": "javaScript",
++         "language": "javaScript",
++         "language": "javaScript",
++         "language": "javaScript",
++         "language": "javaScript",
++         "language": "javaScript",
++         "language": "javaScript",
++         "language": "javaScript",
++         "language": "javaScript",
++         "language": "javaScript",
++         "jsCode": "// @n8n-evol-I:primitive — exempt from pure-function discipline\n// Centralise stream/group/consumer naming and key shapes. All downstream\n// HTTP nodes read $('Build Pop Context').first().json — stable across the\n// branching graph.\n//\n// callerExecutionId: prefer the caller-supplied id over $execution.id. Inside\n// queue_pop (which runs as an executeWorkflow sub-workflow), $execution.id is\n// the SUB-workflow's id, NOT the parent consumer's. The permit sidecar must\n// record the parent's id so error_handler_queue_cleanup's ownership filter\n// can match (errorTrigger fires with the parent's failed-execution id).\n// Producers/consumers wired via add_queue_*_to_workflow.py pass this through\n// as `caller_execution_id`. Standalone callers can omit it and accept the\n// $execution.id fallback (cleanup will not match in that case).\nconst stream = $json.stream;\nif (!stream) throw new Error(\"queue_pop: 'stream' required\");\nconst group = $json.group || `${stream}-cg`;\nconst consumer = $json.consumer || `${stream}-c-${$execution.id}`;\nconst maxConcurrency = typeof $json.max_concurrency === 'number' ? $json.max_concurrency : 1;\nconst maxRetries = typeof $json.max_retries === 'number' ? $json.max_retries : 3;\nconst dlqEnabled = $json.dlq_enabled === true;\nconst batchSize = typeof $json.batch_size === 'number' ? $json.batch_size : 1;\nconst claimIdleMs = typeof $json.claim_idle_ms === 'number' ? $json.claim_idle_ms : 60000;\nconst callerExecutionId = (typeof $json.caller_execution_id === 'string' && $json.caller_execution_id.length > 0)\n  ? $json.caller_execution_id\n  : String($execution.id);\nconst inflightKey = `q:${stream}:inflight`;\nconst dlqStream = `${stream}-dlq`;\nreturn [{\n  json: {\n    stream, group, consumer, maxConcurrency, maxRetries, dlqEnabled,\n    batchSize, claimIdleMs, inflightKey, dlqStream,\n    callerExecutionId,\n    executionId: $execution.id,\n    workflowId: $workflow.id,\n    workflowName: $workflow.name,\n  },\n}];\n"
++       "id": "{{@uuid:qpop-xgroup}}",
++       "name": "XGROUP CREATE (idempotent)",
++       "type": "n8n-nodes-base.httpRequest",
++       "type": "n8n-nodes-base.httpRequest",
++       "type": "n8n-nodes-base.httpRequest",
++       "type": "n8n-nodes-base.httpRequest",
++       "type": "n8n-nodes-base.httpRequest",
++       "type": "n8n-nodes-base.httpRequest",
++       "type": "n8n-nodes-base.httpRequest",
++       "type": "n8n-nodes-base.httpRequest",
++       "type": "n8n-nodes-base.httpRequest",
++       "typeVersion": 4.2,
++       "typeVersion": 4.2,
++       "typeVersion": 4.2,
++       "typeVersion": 4.2,
++       "typeVersion": 4.2,
++       "typeVersion": 4.2,
++       "typeVersion": 4.2,
++       "typeVersion": 4.2,
++       "typeVersion": 4.2,
++       "position": [432, 0],
++         "method": "POST",
++         "method": "POST",
++         "method": "POST",
++         "method": "POST",
++         "method": "POST",
++         "method": "POST",
++         "method": "POST",
++         "method": "POST",
++         "method": "POST",
++         "url": "={{ $env.UPSTASH_REDIS_REST_URL }}",
++         "url": "={{ $env.UPSTASH_REDIS_REST_URL }}",
++         "url": "={{ $env.UPSTASH_REDIS_REST_URL }}",
++         "url": "={{ $env.UPSTASH_REDIS_REST_URL }}",
++         "url": "={{ $env.UPSTASH_REDIS_REST_URL }}",
++         "url": "={{ $env.UPSTASH_REDIS_REST_URL }}",
++         "url": "={{ $env.UPSTASH_REDIS_REST_URL }}",
++         "url": "={{ $env.UPSTASH_REDIS_REST_URL }}",
++         "url": "={{ $env.UPSTASH_REDIS_REST_URL }}",
++         "authentication": "genericCredentialType",
++         "authentication": "genericCredentialType",
++         "authentication": "genericCredentialType",
++         "authentication": "genericCredentialType",
++         "authentication": "genericCredentialType",
++         "authentication": "genericCredentialType",
++         "authentication": "genericCredentialType",
++         "authentication": "genericCredentialType",
++         "authentication": "genericCredentialType",
++         "genericAuthType": "httpHeaderAuth",
++         "genericAuthType": "httpHeaderAuth",
++         "genericAuthType": "httpHeaderAuth",
++         "genericAuthType": "httpHeaderAuth",
++         "genericAuthType": "httpHeaderAuth",
++         "genericAuthType": "httpHeaderAuth",
++         "genericAuthType": "httpHeaderAuth",
++         "genericAuthType": "httpHeaderAuth",
++         "genericAuthType": "httpHeaderAuth",
++         "sendBody": true,
++         "sendBody": true,
++         "sendBody": true,
++         "sendBody": true,
++         "sendBody": true,
++         "sendBody": true,
++         "sendBody": true,
++         "sendBody": true,
++         "sendBody": true,
++         "contentType": "json",
++         "contentType": "json",
++         "contentType": "json",
++         "contentType": "json",
++         "contentType": "json",
++         "contentType": "json",
++         "contentType": "json",
++         "contentType": "json",
++         "contentType": "json",
++         "specifyBody": "json",
++         "specifyBody": "json",
++         "specifyBody": "json",
++         "specifyBody": "json",
++         "specifyBody": "json",
++         "specifyBody": "json",
++         "specifyBody": "json",
++         "specifyBody": "json",
++         "specifyBody": "json",
++         "jsonBody": "={{ JSON.stringify(['XGROUP', 'CREATE', $('Build Pop Context').first().json.stream, $('Build Pop Context').first().json.group, '0', 'MKSTREAM']) }}",
++         "options": {
++           "response": {
++             "response": {
++               "neverError": true
++             }
++             }
++             }
++             }
++             }
++           }
++       },
++       },
++       },
++       },
++       },
++       },
++       },
++       },
++       },
++       "credentials": {
++       "credentials": {
++       "credentials": {
++       "credentials": {
++       "credentials": {
++       "credentials": {
++       "credentials": {
++       "credentials": {
++       "credentials": {
++         "httpHeaderAuth": {
++         "httpHeaderAuth": {
++         "httpHeaderAuth": {
++         "httpHeaderAuth": {
++         "httpHeaderAuth": {
++         "httpHeaderAuth": {
++         "httpHeaderAuth": {
++         "httpHeaderAuth": {
+
+### primitives/workflows/queue_publish.template.json  [code]
++ {
++   "name": "{{@env:displayName}} Queue Publish{{@env:workflowNamePostfix}}",
++   "nodes": [
++     {
++     {
++     {
++     {
++       "id": "{{@uuid:qp-trigger}}",
++       "name": "Execute Workflow Trigger",
++       "type": "n8n-nodes-base.executeWorkflowTrigger",
++       "typeVersion": 1.1,
++       "position": [-16, 0],
++       "parameters": {
++       "parameters": {
++       "parameters": {
++       "parameters": {
++         "inputSource": "passthrough"
++       }
++       }
++       }
++       }
++     },
++     },
++     },
++     },
++     },
++       "id": "{{@uuid:qp-context}}",
++       "name": "Build Publish Context",
++       "type": "n8n-nodes-base.code",
++       "type": "n8n-nodes-base.code",
++       "typeVersion": 2,
++       "typeVersion": 2,
++       "position": [208, 0],
++         "language": "javaScript",
++         "language": "javaScript",
++         "jsCode": "// @n8n-evol-I:primitive — exempt from pure-function discipline\n// Build the Upstash REST command body for XADD. Payload is JSON.stringify'd\n// into a single 'payload' field — Streams require flat string field/value pairs.\n// Caller-supplied max_len becomes 'MAXLEN ~ <n>' (approximate trimming, much\n// cheaper than exact). approximate=false uses 'MAXLEN <n>' (exact).\nconst stream = $json.stream;\nif (!stream || typeof stream !== 'string') {\n  throw new Error(\"queue_publish: 'stream' is required and must be a string\");\n}\nconst payload = typeof $json.payload === 'string' ? $json.payload : JSON.stringify($json.payload || {});\nconst maxLen = (typeof $json.max_len === 'number' && $json.max_len > 0) ? $json.max_len : null;\nconst approximate = $json.approximate !== false;\nconst cmd = ['XADD', stream];\nif (maxLen !== null) {\n  cmd.push('MAXLEN');\n  if (approximate) cmd.push('~');\n  cmd.push(String(maxLen));\n}\ncmd.push('*', 'payload', payload, 'enqueued_at', new Date().toISOString());\nreturn [{ json: { stream, cmd, payload_str: payload } }];\n"
++       "id": "{{@uuid:qp-xadd}}",
++       "name": "XADD Message",
++       "type": "n8n-nodes-base.httpRequest",
++       "typeVersion": 4.2,
++       "position": [432, 0],
++         "method": "POST",
++         "url": "={{ $env.UPSTASH_REDIS_REST_URL }}",
++         "authentication": "genericCredentialType",
++         "genericAuthType": "httpHeaderAuth",
++         "sendBody": true,
++         "contentType": "json",
++         "specifyBody": "json",
++         "jsonBody": "={{ JSON.stringify($('Build Publish Context').first().json.cmd) }}",
++         "options": {}
++       },
++       "credentials": {
++         "httpHeaderAuth": {
++           "id": "{{@env:credentials.redis_rest.id}}",
++           "name": "{{@env:credentials.redis_rest.name}}"
++         }
++       "id": "{{@uuid:qp-output}}",
++       "name": "Build Publish Output",
++       "position": [656, 0],
++         "jsCode": "// @n8n-evol-I:primitive — exempt from pure-function discipline\nconst ctx = $('Build Publish Context').first().json;\nconst resp = $json;\nif (resp && resp.error) {\n  throw new Error(`queue_publish XADD failed for stream='${ctx.stream}': ${resp.error}`);\n}\nconst messageId = resp ? resp.result : null;\nreturn [{ json: { stream: ctx.stream, message_id: messageId, published: true } }];\n"
++     }
++     }
++   ],
++   "connections": {
++     "Execute Workflow Trigger": {
++       "main": [[{ "node": "Build Publish Context", "type": "main", "index": 0 }]]
++     "Build Publish Context": {
++       "main": [[{ "node": "XADD Message", "type": "main", "index": 0 }]]
++     "XADD Message": {
++       "main": [[{ "node": "Build Publish Output", "type": "main", "index": 0 }]]
++   },
++   "settings": {
++     "executionOrder": "v1"
++   }
++ }
+
+### primitives/workflows/queue_sample_consumer.template.json  [code]
++ {
++   "name": "{{@env:displayName}} Queue Sample Consumer{{@env:workflowNamePostfix}}",
++   "nodes": [
++     {
++     {
++     {
++     {
++     {
++       "id": "{{@uuid:qsc-schedule}}",
++       "name": "Schedule Trigger",
++       "type": "n8n-nodes-base.scheduleTrigger",
++       "typeVersion": 1.3,
++       "position": [240, 300],
++       "parameters": {
++       "parameters": {
++       "parameters": {
++       "parameters": {
++       "parameters": {
++         "rule": {
++           "interval": [
++             { "field": "seconds", "secondsInterval": 10 }
++           ]
++         }
++       }
++       }
++       }
++       }
++       }
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++       "id": "{{@uuid:qsc-pop}}",
++       "name": "Queue Pop",
++       "type": "n8n-nodes-base.executeWorkflow",
++       "type": "n8n-nodes-base.executeWorkflow",
++       "typeVersion": 1.2,
++       "typeVersion": 1.2,
++       "position": [460, 300],
++         "source": "database",
++         "source": "database",
++         "workflowId": {
++         "workflowId": {
++           "__rl": true,
++           "__rl": true,
++           "value": "{{@env:workflows.queue_pop.id}}",
++           "mode": "id"
++           "mode": "id"
++         },
++         },
++         },
++         },
++         },
++         "workflowInputs": {
++         "workflowInputs": {
++           "mappingMode": "defineBelow",
++           "mappingMode": "defineBelow",
++           "value": {
++           "value": {
++             "stream": "={{ 'test-stream' }}",
++             "group": "={{ 'test-stream-cg' }}",
++             "consumer": "={{ 'test-stream-c-' + $execution.id }}",
++             "max_concurrency": 2,
++             "max_retries": 2,
++             "dlq_enabled": true,
++             "batch_size": 1,
++             "claim_idle_ms": 15000,
++             "caller_execution_id": "={{ $execution.id }}"
++           }
++           }
++         "options": {}
++         "options": {}
++         "options": {}
++       "id": "{{@uuid:qsc-has-message}}",
++       "name": "Has Message?",
++       "type": "n8n-nodes-base.if",
++       "typeVersion": 2.2,
++       "position": [680, 300],
++         "conditions": {
++           "options": {
++             "caseSensitive": true,
++             "leftValue": "",
++             "typeValidation": "strict",
++             "version": 2
++           },
++           "conditions": [
++             {
++               "id": "{{@uuid:qsc-has-message-cond}}",
++               "leftValue": "={{ $json.empty !== true && $json.at_capacity !== true && $json.dlq_routed !== true }}",
++               "rightValue": true,
++               "operator": {
++                 "type": "boolean",
++                 "operation": "true",
++                 "singleValue": true
++               }
++             }
++           ],
++           "combinator": "and"
++       "id": "{{@uuid:qsc-simulate}}",
++       "name": "Simulate Per-Tag Behaviour",
++       "type": "n8n-nodes-base.code",
++       "typeVersion": 2,
++       "position": [900, 200],
++         "language": "javaScript",
++         "jsCode": "// Sample-consumer simulation. Per-tag behaviour driven by the message's\n// `payload.tag` and Redis-tracked `delivery_count`:\n//   - 'happy'                  → success every delivery\n//   - 'transient_fail_once'    → fail on delivery_count=1, succeed on >=2\n//   - 'poison'                 → fail every delivery (max_retries pushes to DLQ)\nconst pop = $json;\nconst payload = (pop.payload && typeof pop.payload === 'object')\n  ? pop.payload\n  : (typeof pop.payload === 'string' ? JSON.parse(pop.payload || '{}') : {});\nconst tag = payload.tag;\nconst deliveryCount = typeof pop.delivery_count === 'number' ? pop.delivery_count : 1;\n\nlet success;\nlet reason;\nif (tag === 'happy') {\n  success = true;\n  reason = 'happy path';\n} else if (tag === 'transient_fail_once') {\n  success = deliveryCount >= 2;\n  reason = success ? 'transient recovered on retry' : 'transient first delivery';\n} else if (tag === 'poison') {\n  success = false;\n  reason = 'poison — will reach DLQ after max_retries';\n} else {\n  success = true;\n  reason = `untagged (tag=${tag}) — treated as happy`;\n}\n\nreturn [{ json: {\n  stream: pop.stream,\n  group: pop.group,\n  message_id: pop.message_id,\n  delivery_count: deliveryCount,\n  tag,\n  success,\n  reason,\n} }];"
++       "id": "{{@uuid:qsc-ack}}",
++       "name": "Queue Ack",
++       "position": [1120, 200],
++           "value": "{{@env:workflows.queue_ack.id}}",
++             "stream": "={{ $json.stream }}",
++             "group": "={{ $json.group }}",
++             "message_id": "={{ $json.message_id }}",
++             "success": "={{ $json.success }}"
++     }
++     }
++   ],
++   "connections": {
++     "Schedule Trigger": {
++       "main": [[{"node": "Queue Pop", "type": "main", "index": 0}]]
++     "Queue Pop": {
++       "main": [[{"node": "Has Message?", "type": "main", "index": 0}]]
++     "Has Message?": {
++       "main": [
++         [{"node": "Simulate Per-Tag Behaviour", "type": "main", "index": 0}],
++         []
++       ]
++     "Simulate Per-Tag Behaviour": {
++       "main": [[{"node": "Queue Ack", "type": "main", "index": 0}]]
++   },
++   "settings": {
++     "executionOrder": "v1"
++   }
++ }
+
+### primitives/workflows/queue_sample_producer.template.json  [code]
++ {
++   "name": "{{@env:displayName}} Queue Sample Producer{{@env:workflowNamePostfix}}",
++   "nodes": [
++     {
++     {
++     {
++     {
++       "id": "{{@uuid:qsp-webhook}}",
++       "name": "Webhook",
++       "type": "n8n-nodes-base.webhook",
++       "typeVersion": 2,
++       "typeVersion": 2,
++       "typeVersion": 2,
++       "position": [240, 300],
++       "parameters": {
++       "parameters": {
++       "parameters": {
++       "parameters": {
++         "httpMethod": "POST",
++         "path": "queue-sample-producer",
++         "responseMode": "lastNode",
++         "options": {}
++         "options": {}
++       },
++       "webhookId": "{{@uuid:qsp-webhook-public}}"
++     },
++     },
++     },
++     },
++     },
++       "id": "{{@uuid:qsp-generate}}",
++       "name": "Generate Test Payloads",
++       "type": "n8n-nodes-base.code",
++       "type": "n8n-nodes-base.code",
++       "position": [460, 300],
++         "language": "javaScript",
++         "language": "javaScript",
++         "jsCode": "// Emits 5 test messages tagged for the per-tag behaviour in the\n// paired Queue Sample Consumer:\n//   - 3 'happy' messages → succeed on first delivery\n//   - 1 'transient_fail_once' → fails on delivery_count=1, succeeds on delivery_count=2 (exercises XAUTOCLAIM retry)\n//   - 1 'poison' → fails on every delivery (exercises max_retries → DLQ)\n// Streamed-name is taken from the webhook's optional `?stream=...` query\n// param so the same producer can be pointed at multiple test streams without\n// editing the template. Defaults to 'test-stream'.\nconst stream = $input.first().json.query?.stream || 'test-stream';\nconst payloads = [\n  { tag: 'happy', idx: 1 },\n  { tag: 'happy', idx: 2 },\n  { tag: 'transient_fail_once', idx: 3 },\n  { tag: 'happy', idx: 4 },\n  { tag: 'poison', idx: 5 },\n];\nreturn payloads.map(p => ({ json: { stream, payload: p } }));"
++       }
++       }
++       }
++       "id": "{{@uuid:qsp-publish}}",
++       "name": "Queue Publish",
++       "type": "n8n-nodes-base.executeWorkflow",
++       "typeVersion": 1.2,
++       "position": [680, 300],
++         "source": "database",
++         "workflowId": {
++           "__rl": true,
++           "value": "{{@env:workflows.queue_publish.id}}",
++           "mode": "id"
++         },
++         },
++         "workflowInputs": {
++           "mappingMode": "defineBelow",
++           "value": {
++             "stream": "={{ $json.stream }}",
++             "payload": "={{ $json.payload }}",
++             "max_len": null,
++             "approximate": true
++           }
++       "id": "{{@uuid:qsp-summary}}",
++       "name": "Build Summary",
++       "position": [900, 300],
++         "jsCode": "// Aggregate the message_ids returned by the per-item Queue Publish calls\n// into a single summary item for the webhook response.\nconst items = $input.all();\nreturn [{ json: {\n  published_count: items.length,\n  stream: items[0]?.json?.stream,\n  message_ids: items.map(i => i.json.message_id),\n} }];"
++     }
++     }
++   ],
++   "connections": {
++     "Webhook": {
++       "main": [[{"node": "Generate Test Payloads", "type": "main", "index": 0}]]
++     "Generate Test Payloads": {
++       "main": [[{"node": "Queue Publish", "type": "main", "index": 0}]]
++     "Queue Publish": {
++       "main": [[{"node": "Build Summary", "type": "main", "index": 0}]]
++   },
++   "settings": {
++     "executionOrder": "v1"
++   }
++ }
+
+### primitives/workflows/rate_limit_check.template.json  [code]
+-   "name": "{{@:env:displayName}} Rate Limit Check{{@:env:workflowNamePostfix}}",
+-       "id": "{{@:uuid:rl-trigger}}",
+-       "id": "{{@:uuid:rl-prep}}",
+-       "id": "{{@:uuid:rl-incr}}",
+-           "id": "{{@:env:credentials.redis.id}}",
+-           "name": "{{@:env:credentials.redis.name}}"
+-       "id": "{{@:uuid:rl-result}}",
++   "name": "{{@env:displayName}} Rate Limit Check{{@env:workflowNamePostfix}}",
++       "id": "{{@uuid:rl-trigger}}",
++       "id": "{{@uuid:rl-prep}}",
++       "id": "{{@uuid:rl-incr}}",
++           "id": "{{@env:credentials.redis.id}}",
++           "name": "{{@env:credentials.redis.name}}"
++       "id": "{{@uuid:rl-result}}",
+
+### pyproject.toml  [code]
+- version = "1.0.0"
++ version = "2.0.0"
+
+### skills/add-queue-consumer-to-workflow.md  [docs]
++ ---
++ ---
++ name: add-queue-consumer-to-workflow
++ description: Turn a workflow into a polling queue consumer — schedule trigger → Queue Pop → If has-message → main flow → Queue Ack.
++ user-invocable: false
++ # add-queue-consumer-to-workflow
++ ## When
++ You have a producer (`add-queue-publish-to-workflow`) feeding a stream, and you need a consumer to drain it with bounded concurrency + ack-on-success + optional DLQ.
++ ## How
++ ```bash
++ python3 ${CLAUDE_PLUGIN_ROOT}/helpers/add_queue_consumer_to_workflow.py \
++   --workflow-key <wf> \
++   --stream-expression "={{ 'orders' }}" \
++   [--group-expression "={{ 'orders-cg' }}"] \
++   [--consumer-expression "={{ 'orders-c-' + \$execution.id }}"] \
++   [--max-concurrency 1] \
++   [--max-retries 3] \
++   [--dlq-enabled] \
++   [--batch-size 1] \
++   [--claim-idle-ms 60000] \
++   [--schedule-interval 30s] \
++   [--ack-on-success-expression "={{ true }}"] \
++   [--cleanup-on-error] \
++   [--remove-existing-trigger]
++ ```
++ ```
++ ```
++ ```
++ ```
++ ## What it does to your template
++ Schedule Trigger ──► Queue Pop ──► Has Message? ──true──► <your existing main flow> ──► Queue Ack
++                                        └──false──► (terminate iteration — empty / at-capacity / dlq-routed)
++ - If the workflow already has a `scheduleTrigger`, it's reused — no duplicate trigger inserted.
++ - If it has a different trigger (webhook, etc.), the helper refuses unless `--remove-existing-trigger` is passed (which drops the old trigger).
++ - If it has no trigger at all, a `scheduleTrigger@1.3` is installed at the front configured to fire every `--schedule-interval`.
++ - Existing main-flow nodes are shifted right by 660 px to make room for Pop + If + Ack.
++ Refuses if the queue primitives aren't yet in the workspace — run [`create-queue.md`](create-queue.md) first.
++ ## Output discriminator
++ `Queue Pop` returns one of four shapes; the inserted `Has Message?` If gate routes on them:
++ - `{ empty: true }` — the stream had no claimable + no fresh messages. Iteration ends.
++ - `{ at_capacity: true, inflight_count, max_concurrency }` — INCR pushed inflight over `--max-concurrency`; the over-cap consumer rolled back via DECR. Iteration ends. Message stays in the PEL; XAUTOCLAIM will redeliver it after `claim_idle_ms`.
++ - `{ dlq_routed: true, original_message_id, dlq_stream }` — only if `--dlq-enabled` and the message's inferred `delivery_count` exceeded `--max-retries`. Iteration ends.
++ - otherwise `{ message_id, payload, enqueued_at, claimed, delivery_count, permit_held: true, inflight_count }` — your main flow runs.
++ The terminal `Queue Ack` always pulls `stream` / `group` / `message_id` from `={{ $('Queue Pop').first().json.* }}` — it doesn't matter what intermediate nodes did to `$json`.
++ ## Flag reference
++ ### `--stream-expression`
++ Same shape as the producer-side: canonical `={{ "name" }}` for static, `={{ "prefix-" + $json.id }}` for dynamic. Static literals are auto-appended to `<env>.yml.queueScopes` so the error handler can find them.
++ ### `--group-expression` / `--consumer-expression`
++ Stream consumer-group name and consumer ID. Defaults: group = `<stream>-cg` (literal stream name), consumer = `={{ $workflow.name + '-' + $execution.id }}` (per-execution unique). The XGROUP CREATE in the primitive is idempotent (`MKSTREAM` + `BUSYGROUP` ignored).
++ ### `--max-concurrency <int>`
++ Default 1. The cap on `q:<stream>:inflight` — set to N for "at most N consumers concurrently processing". After INCR, if the post-increment value exceeds N, the consumer DECRs (rollback) and exits with `at_capacity:true`.
++ ### `--max-retries <int>`
++ Default 3. Compared against the message's inferred `delivery_count`. When `--dlq-enabled` and `delivery_count > max_retries`, the message is XADDed to `<stream>-dlq` and XACKed off the main stream.
++ The current implementation infers `delivery_count` heuristically: fresh delivery (XREADGROUP) = 1; redelivered (XAUTOCLAIM) = 2. Operators who need precise counting can extend the primitive with an explicit per-message counter key (`q:<stream>:deliveries:<id>`). This is documented in the queue-pattern reference.
++ ### `--dlq-enabled` / `--no-dlq-enabled`
++ Default off. When enabled, messages exceeding `max_retries` are routed to `<stream>-dlq` (a separate Redis Stream) for forensic review. DLQ reads are operator-driven (XRANGE / manual workflow); the primitive doesn't auto-drain it.
++ ### `--batch-size <int>`
++ Default 1. `COUNT` argument passed to XAUTOCLAIM + XREADGROUP. The current Pop primitive returns the **first** message in the batch (further messages are claimed but ignored — they'll be redelivered next iteration). Increasing this is a tuning knob; in v1 prefer 1 unless you're profiling.
++ ### `--claim-idle-ms <int>`
++ Default 60000ms (60s). Minimum age before XAUTOCLAIM steals a PEL'd message from a stuck consumer. Should be ≫ typical processing time — otherwise normal-running consumers will have messages stolen mid-flight.
++ ### `--schedule-interval <expr>`
++ Default `30s`. Format: `<n><unit>` where unit is `s`/`m`/`h`/`d`/`w`. Bare integer = minutes. Encoded as `parameters.rule.interval[0] = {field, <unit>Interval: n}` on the inserted Schedule Trigger.
++ ### `--ack-on-success-expression "<n8n-expression>"`
++ Default `={{ true }}` — XACK every message after the main flow completes without throwing. Use a custom expression to conditionally NACK transient failures (the message stays in the PEL for redelivery):
++ --ack-on-success-expression "={{ \$json.transient_failure !== true }}"
++ When the main flow sets `transient_failure: true` on its last item, Queue Ack receives `success:false`, leaves the message in the PEL, and DECRs inflight + DELs the permit so a fresh consumer can grab it on next claim.
++ ### `--cleanup-on-error`
++ Default off. Wires `settings.errorWorkflow` to `error_handler_queue_cleanup` (delegates to `register-workflow-to-error-handler.md`). On any uncaught exception in the consumer, the handler iterates `<env>.yml.queueScopes`, GETs every permit sidecar, and DECRs inflight + DELs only the permits owned by the failed execution.
++ Requires `create-queue --include-error-handler` to have been run.
++ ### `--remove-existing-trigger`
++ Default off. Required when the target workflow has a non-schedule trigger that should be replaced. Without this flag the helper refuses to silently drop your trigger.
++ ## Tuning quick reference
++ | Goal | Knob |
++ |---|---|
++ | One-at-a-time processing across all consumers | `--max-concurrency 1` |
++ | Multiple parallel workers | `--max-concurrency N` (rule of thumb: 5–20 for I/O-bound, 1–4 for CPU-bound) |
++ | Fast retry of transient errors | `--ack-on-success-expression` returning false; relies on `--claim-idle-ms` |
++ | Poison-pill containment | `--dlq-enabled --max-retries 3` (redelivers 3 times then DLQs) |
++ | Drain-as-fast-as-possible | `--schedule-interval 30s` (the practical minimum) — for sub-30s polling, run multiple consumer workflows |
++ ## Caveats
++ - **Schedule polling minimum is 1 second** (n8n schedule trigger limit). For lower latency, prefer multiple consumer workflows or a dedicated stream-tailing service.
++ - **`delivery_count` heuristic** as documented above. Conservative `--max-retries` recommended.
++ - **`--max-concurrency` race losers** lose a poll iteration. With a 30s schedule, contention bursts cost ≤30s of latency for the loser. Document in your runbook.
++ See [`skills/patterns/queues.md`](patterns/queues.md) for the full semantic reference and [`skills/integrations/redis/queue-pattern.md`](integrations/redis/queue-pattern.md) for the node-graph diagrams.
+
+### skills/add-queue-publish-to-workflow.md  [docs]
++ ---
++ ---
++ name: add-queue-publish-to-workflow
++ description: Insert a producer-side XADD into a workflow — appends a Queue Publish Execute Workflow node after the trigger.
++ user-invocable: false
++ # add-queue-publish-to-workflow
++ ## When
++ A workflow needs to emit a durable message to a Redis Stream that another workflow (the consumer) will drain at its own pace, with backpressure + retry + optional DLQ. You're the producer side.
++ ## How
++ ```bash
++ ```bash
++ python3 ${CLAUDE_PLUGIN_ROOT}/helpers/add_queue_publish_to_workflow.py \
++ python3 ${CLAUDE_PLUGIN_ROOT}/helpers/add_queue_publish_to_workflow.py \
++   --workflow-key <wf> \
++   --stream-expression "={{ 'orders' }}" \
++   --stream-expression "={{ 'orders' }}" \
++   [--max-len 10000] \
++   [--approximate | --no-approximate] \
++   [--insertion-point auto|after-trigger|before-terminal|after-named-node:<name>|before-named-node:<name>]
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ## What it does to your template
++ Edits `<workspace>/n8n-workflows-template/<wf>.template.json`, splicing one `Execute Workflow` node named `Queue Publish` immediately after the trigger:
++ Trigger ──► Queue Publish ──► <your existing main flow>
++ - `Queue Publish` calls the `queue_publish` sub-workflow with `{ stream, payload, max_len, approximate }`. The whole input item is forwarded as `payload: ={{ $json }}`; the primitive JSON.stringifies it into a single Stream field.
++ - Downstream nodes are shifted right by 220 px.
++ Refuses if the queue primitives aren't yet in the workspace — run [`create-queue.md`](create-queue.md) first.
++ ## Flag reference
++ ### `--stream-expression "<n8n-expression>"`
++ The Redis Stream name. **Always use the canonical `={{ <expression> }}` form** for dynamic values — bare `=<expr>` (without `{{ }}`) is treated as a literal string, the helper auto-wraps with a deprecation warning.
++ For static streams: `={{ "orders" }}` or simply `orders` (the helper wraps it). For dynamic per-tenant: `={{ "orders-" + $json.tenantId }}`.
++ ### `--max-len <int>`
++ Optional cap on stream length. When set, every XADD includes `MAXLEN ~ <n>` (approximate trimming, the cheap variant). With `--no-approximate`, uses exact `MAXLEN <n>`. Default: no cap (unbounded — operator must size DLQ retention separately).
++ ### `--insertion-point`
++ Controls where in the existing workflow the Queue Publish node is spliced. Five modes:
++ - **`auto`** (default, aliases `after-trigger`) — splices Queue Publish immediately after the trigger. Best when you want every incoming item published verbatim with no preprocessing.
++ - **`after-trigger`** — same as `auto`.
++ - **`before-terminal`** — splices Queue Publish before the workflow's single terminal node. Errors out if there are multiple terminals (use `before-named-node:<name>` to disambiguate). Useful when the workflow does preprocessing/enrichment and you only want to publish the final value.
++ - **`after-named-node:<node-name>`** — splices Queue Publish immediately after the named node. The named node's first main output is rewired through Publish to its previous downstream. Use this when you want to publish a specific intermediate value (e.g. right after a "validate" or "transform" step).
++ - **`before-named-node:<node-name>`** — splices Queue Publish so all inbound edges to the named node flow through Publish first. Use when you want to capture the value about to enter a specific node.
++ The named-node modes are name-exact (n8n enforces unique node names); error cleanly if the name doesn't exist. Position math shifts the anchor's downstream right by 220 px; run [`tidy-workflow.md`](tidy-workflow.md) afterward if you want auto-layout cleanup.
++ ## Worked example
++ # 1. Make sure queue primitives are in the workspace.
++ python3 ${CLAUDE_PLUGIN_ROOT}/helpers/create_queue.py
++ # 2. Wrap a webhook receiver to publish into 'orders'.
++   --workflow-key order_intake \
++   --max-len 10000
++ The result on the wire:
++ Webhook → Queue Publish (stream=orders, payload=<full webhook json>, max_len=10000)
++        → ... your existing nodes ...
++ The publish output (`{stream, message_id, published:true}`) becomes available downstream as `={{ $('Queue Publish').first().json.message_id }}` if you need to confirm the XID.
++ ## Caveats
++ - **Not idempotent.** Each XADD creates a new XID; caller-retry produces duplicates. The consumer must dedupe at the application layer if exactly-once is required.
++ - **`payload` ends up JSON-stringified into a single Stream field** named `payload`, plus an `enqueued_at` field. Re-parse on the consumer side via `JSON.parse`.
++ - For static stream names, the static literal is auto-appended to every `<env>.yml.queueScopes`. For dynamic streams, you'll see a NOTE on stderr — manual `queueScopes` maintenance is required for the error handler to know about the stream.
+
+### skills/create-lock.md  [docs]
+- - Registers each in every configured env's YAML (delegates to `create_workflow.py --no-template`). This mints placeholder workflow IDs that callers reference via `{{@:env:workflows.lock_acquisition.id}}` etc.
++ - Registers each in every configured env's YAML (delegates to `create_workflow.py --no-template`). This mints placeholder workflow IDs that callers reference via `{{@env:workflows.lock_acquisition.id}}` etc.
+
+### skills/create-new-workflow.md  [docs]
+- Any `n8n-nodes-base.code` node must follow `skills/patterns/code-node-discipline.md` — extract the pure function to `n8n-functions/{js,py}/<name>.{js,py}`, inject it via `{{@:js:...}}` or `{{@:py:...}}` in the Code-node body, and add a paired test under `n8n-functions-tests/`. The validator rejects inlined logic, missing tests, and the deprecated `n8n-nodes-base.function` type.
++ Any `n8n-nodes-base.code` node must follow `skills/patterns/code-node-discipline.md` — extract the pure function to `n8n-functions/{js,py}/<name>.{js,py}`, inject it via `{{@js:...}}` or `{{@py:...}}` in the Code-node body, and add a paired test under `n8n-functions-tests/`. The validator rejects inlined logic, missing tests, and the deprecated `n8n-nodes-base.function` type.
+
+### skills/create-queue.md  [docs]
++ ---
++ ---
++ name: create-queue
++ description: First-time setup for the producer-consumer queue primitive (Redis Streams + atomic-INCR semaphore). Copies queue_publish + queue_pop + queue_ack into the workspace and registers them.
++ user-invocable: false
++ # create-queue
++ ## When
++ When locking is too coarse: the work shouldn't serialise — it should be queued, drained by N concurrent consumers, retried on failure, and optionally routed to a dead-letter stream after `max_retries`.
++ Use `create-lock` for **coordination** (one-at-a-time access to a shared resource). Use `create-queue` for **buffer-and-cap semantics** (durable backlog + bounded concurrency + retry/DLQ).
++ ## How
++ ```bash
++ python3 ${CLAUDE_PLUGIN_ROOT}/helpers/create_queue.py \
++   [--include-error-handler] \
++   [--with-sample-test] \
++   [--force-overwrite]
++ ```
++ ```
++ ## Side effects
++ - Copies these primitives from `${CLAUDE_PLUGIN_ROOT}/primitives/workflows/` into `<workspace>/n8n-workflows-template/`:
++   - `queue_publish.template.json` (always)
++   - `queue_pop.template.json` (always)
++   - `queue_ack.template.json` (always)
++   - `error_handler_queue_cleanup.template.json` (with `--include-error-handler`)
++ - Registers each in every configured env's YAML (delegates to `create_workflow.py --no-template`). This mints placeholder workflow IDs that callers reference via `{{@env:workflows.queue_publish.id}}` etc.
++ - Adds them to `deployment_order.yml` under "Tier 0a: leaves" so they deploy before any caller workflow that depends on them.
++ ## What you're actually deploying
++ Three sub-workflows + an optional error-handler. All Redis Streams operations route through the **HTTP Request node against Upstash REST** — `n8n-nodes-base.redis@1` exposes no Streams ops, so XADD / XREADGROUP / XACK / XAUTOCLAIM all run as command-array POSTs to `UPSTASH_REDIS_REST_URL`.
++ - `queue_publish` (4 nodes) — XADDs a message to the stream, optional `MAXLEN ~ <n>` trimming, returns `{message_id, stream, published:true}`.
++ - `queue_pop` (23 nodes) — XAUTOCLAIM-then-XREADGROUP, DLQ check (when enabled), atomic `q:<stream>:inflight` semaphore (INCR + over-cap rollback), per-message permit sidecar at `q:<stream>:permits:<id>`. Returns one of `{empty:true}`, `{at_capacity:true}`, `{dlq_routed:true}`, or the message with `permit_held:true`.
++ - `queue_ack` (12 nodes) — releases a permit. On `success:true`, XACKs off the main stream + DECR inflight + DEL permit. On `success:false`, leaves the message in the PEL (XAUTOCLAIM redelivers after `claim_idle_ms`) but still DECR inflight + DEL permit so a fresh consumer can grab it. Idempotent on absent permit.
++ - `error_handler_queue_cleanup` (11 nodes) — iterates `<env>.yml.queueScopes`, KEYS `q:<stream>:permits:*`, GETs each sidecar, DECRs inflight + DELs permit only when `sidecar.execution_id` matches the failed run.
++ For node-graph diagrams + the `q:*` key namespace, see [`skills/integrations/redis/queue-pattern.md`](integrations/redis/queue-pattern.md). For semantics + when to use over locks, see [`skills/patterns/queues.md`](patterns/queues.md).
++ ## Prerequisites
++ The queue primitives need **two** things provisioned in n8n before deploy:
++ ### 1. Credential — `credentials.redis_rest`
++ An `httpHeaderAuth`-typed credential carrying `Authorization: Bearer <UPSTASH_REDIS_REST_TOKEN>`, registered in every env YAML. The existing `credentials.redis` (TCP redis@1) is left untouched and continues to back the lock + rate-limit primitives.
++ Mint it via [`manage-credentials.md`](manage-credentials.md) Path A, sourcing the token from `.env.<env>` (`UPSTASH_REDIS_REST_TOKEN`).
++ ### 2. Runtime URL — `UPSTASH_REDIS_REST_URL`
++ Every queue primitive's HTTP Request URL field references **`={{ $env.UPSTASH_REDIS_REST_URL }}`**. On self-hosted instances with env access enabled, set the env var on the n8n process and you're done.
++ **If your deployment blocks `$env`** (n8n Cloud's default sandbox mode, or self-hosted with `N8N_BLOCK_ENV_ACCESS_IN_NODE=true`), you'll see `ExpressionError: access to env vars denied` at the first HTTP node. See [`manage-variables.md`](manage-variables.md) for the resolution paths (self-host with env enabled, or replace `$env.*` with `$vars.*` per-deployment and mint the variable). The shipped primitives stay `$env`-first; per-deployment overrides live in your workspace, not in the harness.
++ ## `queueScopes` env config
++ For active error-handler cleanup to work, every static stream name used by your consumers must be registered in `<env>.yml.queueScopes`. `add-queue-publish-to-workflow` and `add-queue-consumer-to-workflow` auto-append static literal streams (`={{ "foo" }}`-form) here on each invocation; dynamic streams (`={{ "stream-" + $json.x }}`) require manual maintenance.
++ ```yaml
++ # n8n-config/dev.yml
++ queueScopes:
++   - orders
++   - notifications
++   - test-stream
++ ## Flag details
++ - **`--include-error-handler`** — also copy `error_handler_queue_cleanup`. Required if you'll add `--cleanup-on-error` to any consumer via `add-queue-consumer-to-workflow`.
++ - **`--with-sample-test`** — also copy a paired producer + consumer that exercise the full primitive (happy path, transient-retry path, poison → DLQ path) against a stream named `test-stream`. The producer is a webhook (`POST /webhook/queue-sample-producer`) that publishes 5 tagged messages; the consumer is schedule-polled (every 10s) and acks based on per-tag simulation logic. Registers both at `Tier 1` (callers) so `deploy_all.py` rolls them out after the primitives. Use this for first-time end-to-end validation, then archive when no longer needed.
++ - **`--force-overwrite`** — overwrite existing workspace copies of the primitives instead of skipping them.
++ ## Next steps
++ - [`add-queue-publish-to-workflow.md`](add-queue-publish-to-workflow.md) — wrap a workflow with a producer-side XADD call.
++ - [`add-queue-consumer-to-workflow.md`](add-queue-consumer-to-workflow.md) — turn a workflow into a polling queue consumer.
+
+### skills/integrations/datadog/README.md  [docs]
+- Resolve via `{{@:env:credentials.datadog.id}}` / `{{@:env:credentials.datadog.name}}` after running `manage-credentials` to register the n8n credential. See [`skills/manage-credentials.md`](../../manage-credentials.md).
+- Then `={{ $env.DD_ENDPOINT || 'https://api.datadoghq.com' }}` in the URL field, or use a `{{@:env:datadog.endpoint}}` placeholder.
+-       "id": "{{@:env:credentials.datadog.id}}",
+-       "id": "{{@:env:credentials.datadog.id}}",
+-       "name": "{{@:env:credentials.datadog.name}}"
+-       "name": "{{@:env:credentials.datadog.name}}"
+- | `env:` | `{{@:env:name}}` |
++ Resolve via `{{@env:credentials.datadog.id}}` / `{{@env:credentials.datadog.name}}` after running `manage-credentials` to register the n8n credential. See [`skills/manage-credentials.md`](../../manage-credentials.md).
++ Then `={{ $env.DD_ENDPOINT || 'https://api.datadoghq.com' }}` in the URL field, or use a `{{@env:datadog.endpoint}}` placeholder.
++       "id": "{{@env:credentials.datadog.id}}",
++       "id": "{{@env:credentials.datadog.id}}",
++       "name": "{{@env:credentials.datadog.name}}"
++       "name": "{{@env:credentials.datadog.name}}"
++ | `env:` | `{{@env:name}}` |
+
+### skills/integrations/gmail/sending-email.md  [docs]
+-     "html": "{{@:html:n8n-assets/email-templates/report.template.txt}}"
+- - [`skills/patterns/prompt-and-schema-conventions.md`](../../patterns/prompt-and-schema-conventions.md) (HTML templates use the same `{{@:html:...}}` injection mechanism as prompts).
++     "html": "{{@html:n8n-assets/email-templates/report.template.txt}}"
++ - [`skills/patterns/prompt-and-schema-conventions.md`](../../patterns/prompt-and-schema-conventions.md) (HTML templates use the same `{{@html:...}}` injection mechanism as prompts).
+
+### skills/integrations/microsoft-365/excel-and-sharepoint.md  [docs]
+-     "driveId": "{{@:env:sharepoint.driveId}}",
+-     "fileId": "{{@:env:sharepoint.reportFolderId}}"
++     "driveId": "{{@env:sharepoint.driveId}}",
++     "fileId": "{{@env:sharepoint.reportFolderId}}"
+
+### skills/integrations/redis/lock-pattern.md  [docs]
+- `redis` credential type. See [`skills/manage-credentials.md`](../../manage-credentials.md). The four primitives all reference it via `{{@:env:credentials.redis.{id,name}}}` placeholders.
+- Prepare Scope List (Code: read <env>.yml.lockScopes via {{@:env:lockScopes}};
++ `redis` credential type. See [`skills/manage-credentials.md`](../../manage-credentials.md). The four primitives all reference it via `{{@env:credentials.redis.{id,name}}}` placeholders.
++ Prepare Scope List (Code: read <env>.yml.lockScopes via {{@env:lockScopes}};
+
+### skills/integrations/redis/queue-pattern.md  [docs]
++ ---
++ ---
++ name: integration-redis-queue
++ description: Redis Streams + atomic-INCR semaphore implementation reference — node graphs, `q:*` key namespace, why HTTP Request + Upstash REST instead of redis@1.
++ user-invocable: false
++ # Redis Streams (queue pattern)
++ The harness ships four queue primitives backed by **HTTP Request against the Upstash Redis REST API**, NOT the dedicated `n8n-nodes-base.redis@1` node. Redis@1 exposes `delete | get | incr | info | keys | llen | pop | push | publish | set` only — no XADD / XREADGROUP / XACK / XAUTOCLAIM / XPENDING. Streams ops require a different transport.
++ ## Credential
++ `redis_rest` credential type — `httpHeaderAuth` with header `Authorization: Bearer <UPSTASH_REDIS_REST_TOKEN>`. Mint via [`manage-credentials.md`](../../manage-credentials.md) Path A from `.env.<env>`'s `UPSTASH_REDIS_REST_TOKEN`. The four queue primitives reference it via `{{@env:credentials.redis_rest.{id,name}}}` placeholders.
++ The existing `credentials.redis` (TCP redis@1) is left untouched — the lock + rate-limit primitives keep using it.
++ ## Shipped primitives
++ | Primitive | Trigger | Output |
++ |---|---|---|
++ | `queue_publish` | `executeWorkflowTrigger` (passthrough; expects `{stream, payload, max_len?, approximate?}` in `$json`) | `{stream, message_id, published:true}` or thrown error |
++ | `queue_pop` | `executeWorkflowTrigger` (inputs: `stream, group, consumer, max_concurrency, max_retries, dlq_enabled, batch_size, claim_idle_ms`) | `{empty:true}` / `{at_capacity:true}` / `{dlq_routed:true}` / `{message_id, payload, ..., permit_held:true}` |
++ | `queue_ack` | `executeWorkflowTrigger` (inputs: `stream, group, message_id, success`) | `{acked:true, idempotent:bool, xacked:bool, success:bool, inflight_count_after}` |
++ | `error_handler_queue_cleanup` | `errorTrigger` | `{cleaned:bool, cleaned_count, streams:[]}` |
++ Every Code-node body inside these primitives starts with `// @n8n-evol-I:primitive` to bypass `validate.py`'s pure-function discipline. **Do not copy that marker into user Code nodes** — it silently disables validation.
++ ## `q:*` key namespace
++ | Key | Shape | Set by | Cleared by | TTL |
++ |---|---|---|---|---|
++ | `q:<stream>:inflight` | integer counter | `queue_pop` INCR Inflight | `queue_ack` DECR Inflight (on success), `queue_pop` DECR Rollback (on over-capacity), `error_handler_queue_cleanup` DECR Inflight (on failed-exec match) | **none** — operational state, must equal permit count |
++ | `q:<stream>:permits:<message_id>` | JSON sidecar `{message_id, execution_id, sub_execution_id, workflow_id, workflow_name, stream, group, claimed_at}`. `execution_id` is the **caller** (consumer) execution; `sub_execution_id` is the queue_pop sub-workflow execution (diagnostic only). | `queue_pop` SET Permit Sidecar (with `EX 86400`) | `queue_ack` DEL Permit Sidecar, `error_handler_queue_cleanup` DEL Owned Permit | **EX 86400** (24h backstop) |
++ | `<stream>` (the Stream itself) | Redis Stream | `queue_publish` XADD | `queue_ack` XACK + retention via XADD MAXLEN | controlled by `--max-len` |
++ | `<stream>-dlq` | Redis Stream | `queue_pop` XADD to DLQ (when enabled + delivery_count > max_retries) | manual operator action (XRANGE / XDEL) | none — DLQ is forensic |
++ `q:*` colon-separated namespace deliberately distinct from the lock primitive's `n8n-lock-*` and rate-limit's `n8n-ratelimit-*` (hyphen-separated). KEYS scans of either prefix never overlap.
++ ## Why HTTP Request + Upstash REST (not redis@1)
++ `n8n-nodes-base.redis@1` predates Redis 5+ Streams (XADD et al). Verified via `mcp__n8n-mcp__search_nodes`: the operation discriminator enum is `delete | get | incr | info | keys | llen | pop | push | publish | set`. None of XADD / XACK / XREADGROUP / XAUTOCLAIM / XPENDING.
++ Upstash REST is the cleanest fit: `POST <UPSTASH_REDIS_REST_URL>/` with a JSON command-array body and `Authorization: Bearer <token>`. The response shape is `{result: <result>}` on success or `{error: <msg>}` on failure. Uniform across all command types.
++ We deliberately route the **semaphore** ops (INCR / DECR / GET / SET / DEL) through the same REST endpoint instead of mixing TCP redis@1 + HTTP. Mixing two access paths would (a) require two distinct credentials per env, (b) split atomicity reasoning across two transports, (c) risk cross-transport consistency drift if the credentials ever pointed at different instances. Single transport, single credential, single mental model.
++ ## `queue_publish` node graph (4 nodes)
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ Execute Workflow Trigger (passthrough)
++        │
++        │
++        │
++        │
++        │
++        │
++        │
++        │
++        │
++        │
++        │
++        │
++        │
++        │
++        │
++        ▼
++        ▼
++        ▼
++        ▼
++        ▼
++        ▼
++        ▼
++        ▼
++        ▼
++        ▼
++        ▼
++        ▼
++        ▼
++        ▼
++        ▼
++        ▼
++ Build Publish Context (Code: validates stream, JSON.stringifies payload,
++                        constructs ['XADD', stream, [MAXLEN ~ <n>]?, '*',
++                                    'payload', payload, 'enqueued_at', ISO])
++ XADD Message (HTTP POST to Upstash REST with the cmd-array body)
++ Build Publish Output (Code: returns {stream, message_id: $json.result,
++                        published: true}; throws on $json.error)
++ ## `queue_pop` node graph (23 nodes)
++ Reading top-to-bottom-then-by-branch:
++ Execute Workflow Trigger (workflowInputs: stream, group, consumer, max_concurrency,
++                           max_retries, dlq_enabled, batch_size, claim_idle_ms)
++ Build Pop Context (Code: defaults group=<stream>-cg, consumer=<stream>-c-<execId>,
++                    inflight_key=q:<stream>:inflight, dlq_stream=<stream>-dlq,
++                    captures workflow id/name/exec id for the permit sidecar)
++ XGROUP CREATE (idempotent; start-id=0 so cold-start groups drain backlog
++                instead of silently skipping pre-existing messages;
++                MKSTREAM; neverError=true to swallow BUSYGROUP)
++ XAUTOCLAIM Stale (claim PEL'd messages idle ≥ claim_idle_ms; COUNT=batch_size)
++ Parse Claim Result (Code: extract first message from raw[1][0] if any)
++ Has Claimed?
++    ├── true  → Merge Message ◄──────────────────────────────┐
++    └── false → XREADGROUP Fresh (>; COUNT=batch_size) → Parse Read Result ─┘
++                                                                  │
++        ┌─────────────────────────────────────────────────────────┘
++ Merge Message (Code: decode flat [k,v,...] fields → {payload, enqueued_at};
++                delivery_count is set later from XPENDING)
++ Has Message?
++    ├── false → Empty Output (terminate: {empty:true})
++    └── true  → XPENDING Lookup (HTTP: XPENDING <stream> <group> IDLE 0 <id> <id> 1
++                                 returns [[id, consumer, idle_ms, delivery_count]])
++                        │
++                        │
++                        │
++                        │
++                        │
++                        │
++                        ▼
++                        ▼
++                        ▼
++                        ▼
++                        ▼
++                        ▼
++                  Check DLQ Threshold (Code: parses delivery_count from XPENDING result;
++                                       should_dlq = dlq_enabled && delivery_count > max_retries)
++                  Should DLQ?
++                    ├── true  → XADD to DLQ (HTTP) → XACK Off Main (HTTP) → DLQ-Routed Output
++                    └── false → INCR Inflight (HTTP)
++                                        │
++                                        │
++                                        ▼
++                                        ▼
++                                  Capacity Gate (Code: over_capacity = post-INCR count > max_concurrency)
++                                  Over Capacity?
++                                    ├── true  → DECR Rollback (HTTP) → At-Capacity Output
++                                    └── false → SET Permit Sidecar (HTTP, EX 86400) → Build Success Output
++ **`delivery_count` source.** Read from Redis directly via `XPENDING <stream> <group> IDLE 0 <id> <id> 1` — Redis tracks the count per PEL entry, so we read the authoritative value rather than infer it. The detailed-form response is `[[id, consumer, idle_ms, delivery_count]]`; we parse `[0][3]`. The XPENDING node fires only when `Has Message? === true`, so the cost is one extra HTTP round-trip per delivered message — paid only when there's actual work to gate on. If XPENDING returns `[]` (rare race: message XACK'd between Merge and the lookup), we default to `delivery_count = 1`.
++ ## `queue_ack` node graph (12 nodes)
++ Execute Workflow Trigger (inputs: stream, group, message_id, success)
++ Build Ack Context (Code: inflight_key, permit_key, validates inputs)
++ GET Permit Sidecar (HTTP)
++ Verify Permit (Code: permit_exists = result !== null)
++ Permit Exists?
++    ├── false → Idempotent Output ({acked:true, idempotent:true, reason:'permit absent'})
++    └── true  → Should XACK?
++                   ├── true (success=true)  → XACK Main (HTTP) ──┐
++                   └── false (success=false) → Skip XACK Marker ─┤
++                                                                 ▼
++                                                                 ▼
++                                                                 ▼
++                                                          DECR Inflight (HTTP)
++                                                                 │
++                                                                 │
++                                                          DEL Permit Sidecar (HTTP)
++                                                          Build Ack Output
++                                                          ({acked:true, xacked, success,
++                                                            inflight_count_after})
++ The `success: false` path leaves the message in the PEL — XAUTOCLAIM will redeliver after `claim_idle_ms`. This is the "soft NACK" path. The hard XACK case (`success: true`) removes the message from the stream.
++ ## `error_handler_queue_cleanup` node graph (11 nodes)
++ Error Trigger
++ Prepare Stream List (Code: read <env>.yml.queueScopes via {{@env:queueScopes}};
++                      fan out one item per registered stream with permits_glob,
++                      inflight_key, failed_execution_id)
++ Has Streams?
++    ├── false → Log Cleanup (no-op: {cleaned:false, reason:'no queueScopes'})
++    └── true  → KEYS Permits (HTTP, q:<stream>:permits:*)
++                  Fan Out Permit Keys (Code: flatten KEYS results, propagate stream context)
++                  GET Permit Body (HTTP, per permit key)
++                  Filter Owned Permits (Code: parse JSON; keep entries where
++                                        parsed.execution_id === failed_execution_id)
++                  Owned?
++                    ├── true  → DECR Inflight (HTTP) → DEL Owned Permit (HTTP) → Log Cleanup
++                    └── false → Log Cleanup (no-op)
++ The handler does **not** XACK. The failed run's work was incomplete; we leave the message in the PEL and let the next XAUTOCLAIM cycle redeliver it (subject to `claim_idle_ms`). This is the more conservative choice — XACK'ing here would silently lose work.
++ `KEYS` is used (not SCAN) because permits-per-failed-exec is small. For larger fan-outs, swap KEYS → SCAN.
++ ## TTL discipline
++ - `q:<stream>:inflight` — **no TTL.** The counter must match the count of held permits at all times. A TTL that fired mid-flight would let new consumers exceed `max_concurrency`. Maintained by the {INCR, DECR} pair across `queue_pop` (acquire + over-cap rollback), `queue_ack` (ack), and `error_handler_queue_cleanup` (failed-run release).
++ - `q:<stream>:permits:<id>` — **EX 86400 (24h).** Defensive backstop only. Normal lifecycle DELs in seconds. 24h is long enough that no normal slow consumer ever expires; short enough to cap permanent leak from a totally broken cluster (no acks, no error handler firing).
++ ## See also
++ - [`skills/patterns/queues.md`](../../patterns/queues.md) — semantic reference + when to use over locks/rate-limit.
++ - [`skills/integrations/redis/lock-pattern.md`](lock-pattern.md) — sibling lock primitive (TCP redis@1 + INCR pattern).
++ - [`skills/manage-credentials.md`](../../manage-credentials.md) — minting the `redis_rest` httpHeaderAuth credential from `.env.<env>`.
++ - [`skills/create-queue.md`](../../create-queue.md) — workspace install.
+
+### skills/integrations/sentry/README.md  [docs]
+- Resolve via `{{@:env:sentry.dsn}}` (after wiring `sentry.dsn: "${SENTRY_DSN}"` in your env YAML). See [`skills/manage-credentials.md`](../../manage-credentials.md) for the env-secret pattern.
+- | `env` | `{{@:env:name}}` |
++ Resolve via `{{@env:sentry.dsn}}` (after wiring `sentry.dsn: "${SENTRY_DSN}"` in your env YAML). See [`skills/manage-credentials.md`](../../manage-credentials.md) for the env-secret pattern.
++ | `env` | `{{@env:name}}` |
+
+### skills/integrations/slack/README.md  [docs]
+-     "channel": "{{@:env:slack.alertsChannel}}"
+-       "value": "{{@:env:slack.alertsChannel}}",
+-       "value": "{{@:env:slack.alertsChannel}}",
+-       "id": "{{@:env:credentials.slack.id}}",
+-       "name": "{{@:env:credentials.slack.name}}"
++     "channel": "{{@env:slack.alertsChannel}}"
++       "value": "{{@env:slack.alertsChannel}}",
++       "value": "{{@env:slack.alertsChannel}}",
++       "id": "{{@env:credentials.slack.id}}",
++       "name": "{{@env:credentials.slack.name}}"
+
+### skills/integrations/webhooks/README.md  [docs]
+- n8n's webhook node has a `webhookId` field that contains a UUID identifying the public webhook URL. Use `{{@:uuid:webhook-public}}` so each env gets its own (the path is shared but the public webhook URL varies).
++ n8n's webhook node has a `webhookId` field that contains a UUID identifying the public webhook URL. Use `{{@uuid:webhook-public}}` so each env gets its own (the path is shared but the public webhook URL varies).
+
+### skills/manage-credentials.md  [docs]
++ - [`skills/manage-variables.md`](manage-variables.md) — sibling skill for **n8n Variables** (non-credential runtime values, or secret fallback when `$env` is blocked). Variables ≠ credentials; do not conflate.
+
+### skills/manage-variables.md  [docs]
++ ---
++ ---
++ name: manage-variables
++ description: Lifecycle for n8n Variables (instance-wide key-value pairs read at expression runtime as `$vars.*`). Companion to manage-credentials.
++ user-invocable: false
++ # manage-variables
++ ## When
++ Any time a workflow expression needs a runtime value that **is not a credential**:
++ - A non-secret string the workflow should resolve at execution time (a base URL, a Redis stream prefix, a feature-flag toggle).
++ - A secret that the deployment cannot reach via `$env.*` because env access is blocked (n8n Cloud's default sandbox mode, or self-hosted with `N8N_BLOCK_ENV_ACCESS_IN_NODE=true`).
++ If the value belongs in an n8n credential — anything with auth shape (API key, OAuth token, basic-auth header, certificate) — use [`manage-credentials.md`](manage-credentials.md) instead. Variables and credentials are sibling concepts that solve different problems; do not conflate them.
++ ## Variables vs credentials vs `$env` vs harness env-YAML
++ Four distinct mechanisms. Pick by what the value is and where it must resolve.
++ | Mechanism | Value lives in | Resolved at | Read in templates as | Use for |
++ |---|---|---|---|---|
++ | **Credential** | n8n DB (encrypted) | Workflow execution (n8n injects per-node) | `credentials.<type>.{id,name}` block on the node | Auth material (API keys, OAuth tokens, DB passwords, header tokens) |
++ | **n8n Variable** | n8n DB (plaintext, instance-scoped) | Workflow execution (expression engine) | `={{ $vars.NAME }}` | Runtime non-secret values, OR secrets when `$env` is blocked |
++ | **`$env` (host env-var)** | OS env-var passed to the n8n process | Workflow execution (expression engine) | `={{ $env.NAME }}` | Runtime values on self-hosted instances with env access enabled |
++ | **Harness env-YAML** | `<workspace>/n8n-config/<env>.yml` | Hydrate time (before deploy — value baked into JSON) | `{{@env:dotted.path}}` | Deploy-time config that's the same across every execution (workflow IDs, display names, credential IDs) |
++ The big practical split between `$env` and `$vars`: `$env` is the cleanest expression-side mechanism, but **n8n Cloud blocks it by default** and self-hosted instances often lock it down via `N8N_BLOCK_ENV_ACCESS_IN_NODE=true`. When blocked, every reference throws `ExpressionError: access to env vars denied`. Variables are the supported fallback.
++ ## Policy (load-bearing)
++ 1. **The agent NEVER collects variable values from the user directly in the chat.** Secret values flow through `<workspace>/n8n-config/.env.<env>` exactly like credentials — the helper loads them via subprocess; the agent's context never sees them.
++ 2. **The agent NEVER reads `.env*` files itself.** Same discipline as `manage-credentials`.
++ 3. **Variables are not version-controlled.** Unlike credentials (which get an `id`+`name` row in `<env>.yml`), n8n variables have no YAML representation. The helper warns about this on every mutation. This is by design: variables can be changed in the n8n UI without breaking deployed workflows, and the source of truth is the live n8n instance.
++ 4. **Prefer `$env` where it works.** Variables exist because `$env` is sometimes unavailable, not because they're better. On self-hosted instances with env access enabled, `$env` is the simpler path — no instance-side resource to mint, no extra REST round-trip on activate.
++ ## Lifecycle
++ ```bash
++ # List (optionally filter by name)
++ python3 ${CLAUDE_PLUGIN_ROOT}/helpers/manage_variables.py list \
++   --env <env> [--name <variable-name>]
++ # Create
++ python3 ${CLAUDE_PLUGIN_ROOT}/helpers/manage_variables.py create \
++   --env <env> --name <variable-name> --value "<value>"
++ # Update (requires --id from list)
++ python3 ${CLAUDE_PLUGIN_ROOT}/helpers/manage_variables.py update \
++   --env <env> --id <var-id> --name <variable-name> --value "<value>"
++ # Delete (dry by default; needs --force to actually delete)
++ python3 ${CLAUDE_PLUGIN_ROOT}/helpers/manage_variables.py delete \
++   --env <env> --id <var-id> [--force]
++ ```
++ `--name` is the n8n variable's **name** (called `key` in the n8n REST API; the helper translates at the HTTP boundary). The CLI deliberately uses `--name` because `--key` already means a YAML config slot elsewhere in the harness (`credentials.<key>`, `workflows.<key>`).
++ ## When `$env` is blocked (the n8n Cloud case)
++ Symptom: a deployed workflow throws `ExpressionError: access to env vars denied` at the first node that evaluates `={{ $env.* }}`.
++ Confirm: try `={{ Object.keys($env) }}` in a Code node — if you get the same error rather than an array, env access is blocked.
++ Resolution paths, in preference order:
++ 1. **Self-host with env enabled.** Set `N8N_BLOCK_ENV_ACCESS_IN_NODE=false` on the n8n process and restart. Cleanest fix if you control the deployment.
++ 2. **Replace the `$env.*` reference with `$vars.*`** in the affected templates (the workflow-level change) AND mint the variable via `manage_variables.py create` (the n8n-instance-level change). The harness's primitives stay `$env`-first; per-deployment overrides live in the user's workspace.
++ 3. **Bake the value at hydrate time** via `{{@env:...}}` reading from `<env>.yml`. Only works for deploy-time-stable values — every workflow execution reads the value frozen at deploy time, not at execution time.
++ Do not switch the shipped primitives from `$env` to `$vars` to work around (2) — that would force every operator onto the variable-creation step even on instances where `$env` works. Variables are an opt-in deployment-specific fallback, not the default.
++ ## Idempotence
++ `manage_variables.py` does NOT diff before mutating: `create` always POSTs, `update` always PUTs. n8n returns an error on duplicate `key` for create. Use `list --name` first if you need to detect-before-mutate.
++ (This differs from `manage_credentials.py`, which diffs n8n vs YAML and no-ops on a match. The asymmetry exists because variables have no YAML representation to diff against.)
++ ## See also
++ - [`skills/manage-credentials.md`](manage-credentials.md) — sibling: credential lifecycle (Path A / Path B), the auth-material companion to this skill.
++ - [`skills/patterns/agent-api-discipline.md`](patterns/agent-api-discipline.md) — verify `GET /variables` filter parameters and response shape via Context7 before relying on training-data recall.
++ - [`skills/integrations/redis/queue-pattern.md`](integrations/redis/queue-pattern.md) — concrete example: the queue primitives use `$env.UPSTASH_REDIS_REST_URL` by default; on `$env`-blocked instances, the operator mints `UPSTASH_REDIS_REST_URL` as a variable instead.
+
+### skills/patterns/code-node-discipline.md  [docs]
+- description: Pure-function-plus-glue convention for n8n Code nodes — extract logic to n8n-functions/, inject via {{@:js|py:...}}, pair with a test. Validator hard-fails otherwise.
+- `{{@:js:...}}`, `{{@:py:...}}`, `{{@:txt:...}}`, `{{@:json:...}}`, `{{@:html:...}}` placeholder paths are **relative to the workspace root** (the directory containing `n8n-config/`, `n8n-functions/`, `cloud-functions/`, …). They are NOT relative to a default `n8n-functions/js/` prefix.
+- So `{{@:js:n8n-functions/js/aggregate.js}}` resolves to `<workspace>/n8n-functions/js/aggregate.js`. Writing `{{@:js:aggregate.js}}` would look for `<workspace>/aggregate.js` — usually a mistake. The validator's `referenced file not found` error reports the full resolved path, so always include the `n8n-functions/js/` (or `n8n-functions/py/`, `n8n-prompts/`, etc.) prefix.
+- {{@:js:n8n-functions/js/calculateStatsByCategory.js}}
+- {{@:py:n8n-functions/py/calculate_stats_by_category.py}}
+- | No `{{@:js:...}}` (or `{{@:py:...}}`) placeholder in the code field | Inlined logic is rejected — extract to `n8n-functions/{js,py}/`. |
++ description: Pure-function-plus-glue convention for n8n Code nodes — extract logic to n8n-functions/, inject via {{@js|py:...}}, pair with a test. Validator hard-fails otherwise.
++ `{{@js:...}}`, `{{@py:...}}`, `{{@txt:...}}`, `{{@json:...}}`, `{{@html:...}}` placeholder paths are **relative to the workspace root** (the directory containing `n8n-config/`, `n8n-functions/`, `cloud-functions/`, …). They are NOT relative to a default `n8n-functions/js/` prefix.
++ So `{{@js:n8n-functions/js/aggregate.js}}` resolves to `<workspace>/n8n-functions/js/aggregate.js`. Writing `{{@js:aggregate.js}}` would look for `<workspace>/aggregate.js` — usually a mistake. The validator's `referenced file not found` error reports the full resolved path, so always include the `n8n-functions/js/` (or `n8n-functions/py/`, `n8n-prompts/`, etc.) prefix.
++ {{@js:n8n-functions/js/calculateStatsByCategory.js}}
++ {{@py:n8n-functions/py/calculate_stats_by_category.py}}
++ | No `{{@js:...}}` (or `{{@py:...}}`) placeholder in the code field | Inlined logic is rejected — extract to `n8n-functions/{js,py}/`. |
+
+### skills/patterns/credential-refs.md  [docs]
+- This is a **reference pattern** documenting the YAML shape and the `{{@:env:credentials.<key>....}}` placeholder syntax. The actual creation/linking flow lives in [`skills/manage-credentials.md`](../manage-credentials.md).
+-       "id": "{{@:env:credentials.microsoft_oauth.id}}",
+-       "name": "{{@:env:credentials.microsoft_oauth.name}}"
++ This is a **reference pattern** documenting the YAML shape and the `{{@env:credentials.<key>....}}` placeholder syntax. The actual creation/linking flow lives in [`skills/manage-credentials.md`](../manage-credentials.md).
++       "id": "{{@env:credentials.microsoft_oauth.id}}",
++       "name": "{{@env:credentials.microsoft_oauth.name}}"
+
+### skills/patterns/error-handling.md  [docs]
+- This sets `settings.errorWorkflow = "{{@:env:workflows.<handler>.id}}"` (literal placeholder, no `=` prefix — n8n expects a literal id).
+- | `env` | `{{@:env:name}}` | Filter by dev/staging/prod. |
++ This sets `settings.errorWorkflow = "{{@env:workflows.<handler>.id}}"` (literal placeholder, no `=` prefix — n8n expects a literal id).
++ | `env` | `{{@env:name}}` | Filter by dev/staging/prod. |
+
+### skills/patterns/multi-env-uuid-collision.md  [docs]
+- Templates use the `{{@:uuid:<identifier>}}` placeholder. Each `<identifier>` resolves to the same UUID within a single hydration run, but a fresh UUID on every hydration. So:
+- Use `{{@:uuid:<some-distinct-name>}}` for the new node's `id` field. The identifier just has to be unique within the template (e.g. `webhook-2`, `set-after-merge`).
++ Templates use the `{{@uuid:<identifier>}}` placeholder. Each `<identifier>` resolves to the same UUID within a single hydration run, but a fresh UUID on every hydration. So:
++ Use `{{@uuid:<some-distinct-name>}}` for the new node's `id` field. The identifier just has to be unique within the template (e.g. `webhook-2`, `set-after-merge`).
+
+### skills/patterns/prompt-and-schema-conventions.md  [docs]
+-         {"role": "system", "content": "{{@:txt:n8n-prompts/prompts/summary_prompt.txt}}"}
+-       "jsonSchema": "{{@:json:n8n-prompts/prompts/summary_schema.json}}"
+- `{{@:txt:...}}` inlines text. `{{@:json:...}}` inlines a JSON-stringified version (so it embeds correctly in another JSON value).
++         {"role": "system", "content": "{{@txt:n8n-prompts/prompts/summary_prompt.txt}}"}
++       "jsonSchema": "{{@json:n8n-prompts/prompts/summary_schema.json}}"
++ `{{@txt:...}}` inlines text. `{{@json:...}}` inlines a JSON-stringified version (so it embeds correctly in another JSON value).
+
+### skills/patterns/queues.md  [docs]
++ ---
++ ---
++ name: pattern-queues
++ description: Producer-consumer queueing semantics — when to choose over locks/rate-limit, sizing guidance, retry/DLQ trade-offs.
++ user-invocable: false
++ # Queues (producer-consumer pattern)
++ The harness ships a Redis-Streams-backed queue primitive: a producer XADDs to a stream, one or more consumers poll on a schedule and drain it with bounded concurrency, ack on success, and optionally route poison messages to a DLQ.
++ ## When to use this vs. a lock
++ | Pattern | Use when | Don't use when |
++ |---|---|---|
++ |---|---|---|
++ | **Lock** (`add-lock-to-workflow`) | One thing at a time on a shared resource. Latency-bounded by typical work + max-wait. Coordination, not buffering. | The contended workers are doing different work (use queue with one consumer). |
++ | **Rate-limit** (`add-rate-limit-to-workflow`) | Cap requests-per-window against an external API quota. Drop / fail-fast on excess. | You can't drop — work must eventually be done (use queue). |
++ | **Queue** (this pattern) | Work needs to be durable, retried on failure, drained by N parallel workers, with DLQ for poison messages. Producer ≠ consumer (or producer wants async confirmation only). | Sub-second end-to-end latency required (schedule polling adds 1s–30s). Cross-region — Upstash Streams aren't replicated synchronously. |
++ ## Producer / consumer semantics
++ | | Producer (`queue_publish`) | Consumer (`queue_pop` + `queue_ack`) |
++ | Trigger | Caller's existing workflow (after-trigger insertion) | Schedule (default 30s) |
++ | Idempotent on retry | **No** — each XADD makes a fresh XID | Yes — XAUTOCLAIM/XREADGROUP at-least-once + permit-based acquire |
++ | Output discriminator | `{message_id, published:true}` or thrown error | `{empty}` / `{at_capacity}` / `{dlq_routed}` / `{message_id, payload, ...}` |
++ | Backpressure | None — XADD always succeeds (stream uncapped unless `--max-len`) | `q:<stream>:inflight ≤ max_concurrency` semaphore; over-cap rolls back via DECR |
++ ## Read-vs-claim: XAUTOCLAIM-then-XREADGROUP
++ The Pop primitive runs XAUTOCLAIM **before** XREADGROUP each iteration:
++ 1. **XAUTOCLAIM** — moves messages from any stuck consumer's PEL (Pending Entries List) to ours, but only if they've been idle ≥ `--claim-idle-ms`. This is the "stuck consumer recovery" mechanism. Without it, a crashed consumer's PEL'd messages would be stranded forever.
++ 2. If a message was claimed → process it (it's a redelivery, increment `delivery_count`).
++ 3. **XREADGROUP** — fall through to fresh delivery if no claim happened.
++ **Why this order, not the reverse**: claiming first prevents starvation of stuck-consumer messages. If we read fresh first, busy consumers would always pick fresh messages and the PEL'd ones would never get retried.
++ ## Permit sidecar — why a separate Redis key
++ Each successful Pop writes a JSON sidecar at `q:<stream>:permits:<message_id>` containing `{message_id, execution_id, sub_execution_id, workflow_id, workflow_name, stream, group, claimed_at}`, with `EX 86400`. `execution_id` is the **caller's** (consumer workflow's) execution id, passed in via the `caller_execution_id` input on queue_pop — NOT the queue_pop sub-workflow's own `$execution.id`. This matters for error-handler ownership matching: errorTrigger fires with the caller's failed-execution id, so the sidecar must record that one for the filter to match. `sub_execution_id` records the queue_pop sub-workflow's id for diagnostic purposes only. The sidecar is the bridge between "this consumer holds capacity" (`q:<stream>:inflight` integer counter) and "which message did this execution claim" (the sidecar JSON).
++ Three keys-of-truth:
++ - `q:<stream>:inflight` — integer count of active consumers. **No TTL** (it's operational state; a TTL that fired mid-flight would let new consumers exceed `max_concurrency`).
++ - `q:<stream>:permits:<id>` — JSON identity sidecar. **EX 86400** (24h disaster backstop). Normal lifecycle DELs in seconds.
++ - The Stream itself — Redis-managed; messages stay in the PEL until XACK.
++ Invariant: `inflight == count(permit sidecars for the stream)`. Maintained by the {INCR, DECR} pair across `queue_pop` + `queue_ack` + `error_handler_queue_cleanup`.
++ The sidecar lets the error handler know which permits to release on a failed execution: it iterates `<env>.yml.queueScopes`, KEYS the permits glob, GETs each, and only DECR/DEL when `parsed.execution_id == failed_execution_id`. This avoids cleaning up permits held by other in-flight runs.
++ ## Retry / DLQ semantics
++ The consumer wrap inserts a `Queue Ack` at the terminal of your main flow. Its `success` argument decides what happens to the message:
++ - `success: true` → XACK (remove from PEL) + DECR inflight + DEL permit. Done.
++ - `success: false` → **No XACK** + DECR inflight + DEL permit. Message stays in the PEL; XAUTOCLAIM will redeliver it after `claim_idle_ms`.
++ Override via `--ack-on-success-expression`. Common patterns:
++ ```
++ ```
++ # "Don't ack on transient API errors — let the next consumer retry."
++ --ack-on-success-expression "={{ \$json.transient_failure !== true }}"
++ # "Always ack — never retry. Trust the caller to have caught all errors."
++ --ack-on-success-expression "={{ true }}"
++ # "Conditional based on response code from an HTTP call earlier."
++ --ack-on-success-expression "={{ \$json.status === 200 || \$json.status === 422 }}"
++ When `--dlq-enabled` is set and `delivery_count > max_retries`, the next Pop iteration routes the message to `<stream>-dlq` instead of delivering it to your main flow. This protects against poison pills that would otherwise loop forever in the PEL. `delivery_count` is read from Redis via `XPENDING ... IDLE 0 <id> <id> 1` — authoritative, not inferred — so `max_retries=N` means "retry up to N times, route to DLQ on the (N+1)th delivery."
++ ## Race losers and inflight semantics
++ INCR returns the post-increment count. With `max_concurrency=1`, two consumers racing INCR will see counts 1 and 2:
++ - 1 → proceeds, processes the message.
++ - 2 → trips the over-cap gate, runs DECR rollback, exits with `at_capacity:true`.
++ The race loser's poll iteration is wasted, but no message is lost — the message stays in the PEL because the loser never wrote a permit (so the next iteration via XAUTOCLAIM will pick it back up).
++ ## Boundary cases
++ - **Stream doesn't exist yet** → first Pop's XGROUP CREATE with `MKSTREAM` creates an empty stream + group. Subsequent XGROUP CREATE attempts return BUSYGROUP, swallowed via `options.response.response.neverError = true` on the HTTP node.
++ - **All workers crash mid-flight** → permits' 24h EX backstop expires; `q:<stream>:inflight` is at +N from the crash. The error handler (if wired) cleans up the matching execution's permits, but DOES NOT touch other-execution permits. After 24h, EXPIRE'd permits leave the inflight counter inflated. Operators should monitor `q:<stream>:inflight` with an alert on "stuck > N for > Xh".
++ - **Producer retries** → produces duplicate XIDs. Consumers must tolerate duplicates (idempotent processing) or dedupe at the application layer. The primitive does not enforce exactly-once.
++ ## When NOT to use this primitive
++ - **Cross-region** — Upstash Streams aren't synchronously replicated. Build a different transport (Kinesis, NATS JetStream).
++ - **Sub-second end-to-end latency** — schedule polling minimum is 1s; default is 30s. For tighter latency, run a long-lived process outside n8n.
++ - **FIFO + priority** — Streams are FIFO within the stream but have no priority levels. Multiple streams + a priority-aware dispatcher would be needed.
++ - **Fairness across producers** — there's no per-producer quota. A noisy producer can flood the stream and starve out others.
++ ## See also
++ - [`skills/integrations/redis/queue-pattern.md`](../integrations/redis/queue-pattern.md) — node-graph diagrams + `q:*` key namespace.
++ - [`skills/patterns/locking.md`](locking.md) — coordination pattern for "one at a time" semantics.
++ - [`skills/create-queue.md`](../create-queue.md) — workspace install.
++ - [`skills/add-queue-publish-to-workflow.md`](../add-queue-publish-to-workflow.md) — producer wrap.
++ - [`skills/add-queue-consumer-to-workflow.md`](../add-queue-consumer-to-workflow.md) — consumer wrap.
+
+### skills/patterns/subworkflows.md  [docs]
+-       "value": "{{@:env:workflows.<callee-key>.id}}",
++       "value": "{{@env:workflows.<callee-key>.id}}",
+
+### skills/register-workflow-to-error-handler.md  [docs]
+- - Edits `<workspace>/n8n-workflows-template/<wf>.template.json` so its `settings.errorWorkflow` becomes the literal placeholder `"{{@:env:workflows.<handler>.id}}"` (no `=` prefix — n8n expects a literal id).
++ - Edits `<workspace>/n8n-workflows-template/<wf>.template.json` so its `settings.errorWorkflow` becomes the literal placeholder `"{{@env:workflows.<handler>.id}}"` (no `=` prefix — n8n expects a literal id).
+
+### skills/resync.md  [docs]
+-   - Reverse-substitutes env values back into `{{@:env:...}}` placeholders.
++   - Reverse-substitutes env values back into `{{@env:...}}` placeholders.
+
+### skills/validate.md  [docs]
+- - no residual `{{@:...}}` placeholders in built JSON
++ - no residual `{{@...}}` placeholders in built JSON

@@ -1,0 +1,274 @@
+dashbot-0001/dashpass  0.8.1 -> 0.9.0
+change_type: instructions+code   changelog: v0.9.0 — Key Backup & Recovery (P0-3): new standalone dashpass-recover-cli.mjs (backup/recover/verify) turns the CRITICAL_WIF private key into a 24-word BIP-39 mnemonic and back. No evo-sdk dependency by design — works when the WIF is lost (the main CLI exits without it) or Platform is unreachable. Closes 'lost WIF = total vault loss'.
+
+### SKILL.md  [instructions]
+- version: "0.8.1"
++ ---
++ version: "0.9.0"
++     - "@scure/bip39@^2.2.0"
++ <!--
++   CHANGELOG
++   0.9.0 — Key Backup & Recovery (P0-3). New standalone `dashpass-recover-cli.mjs`
++           (backup/recover/verify) that turns the CRITICAL_WIF private key into a
++           24-word BIP-39 mnemonic and back. NO evo-sdk dependency by design:
++           recovery must run when the WIF is lost (the main CLI exits without it)
++           or the Platform is unreachable. Closes "lost WIF = total vault loss".
++   0.8.1 — Mutual Confirmation (Shamir 2-of-2).
++ -->
++ # --- Key Backup & Recovery (standalone, no evo-sdk needed) ---
++ REC=skills/dashpass/scripts/dashpass-recover-cli.mjs
++ # Back up the vault key as a 24-word mnemonic (write it on paper, offline)
++ node $REC backup > /dev/tty            # prints to stdout; redirect as you see fit
++ # Confirm a written mnemonic still matches the current key (non-destructive)
++ cat words.txt | node $REC verify       # exit 0 = matches, 1 = mismatch
++ # Recover the WIF from the mnemonic after losing CRITICAL_WIF
++ cat words.txt | node $REC recover      # prints WIF; then: export CRITICAL_WIF=<wif>
++ ## Key Backup & Recovery (P0-3)
++ The whole vault is encrypted under one root: the 32-byte private key derived from
++ `CRITICAL_WIF`. **Lose that key and every credential is gone** — there is no
++ maintainer-held recovery. v0.9 closes this with a BIP-39 mnemonic backup of the
++ key, modelled on standard wallet recovery-word practice.
++ This lives in a **separate, dependency-light tool** (`dashpass-recover-cli.mjs`),
++ not the main CLI, on purpose:
++ - `recover` is needed exactly when `CRITICAL_WIF` is **lost** — but the main CLI
++   exits immediately when `CRITICAL_WIF` is unset, so recovery cannot live there.
++ - Recovery must work when the Platform SDK or network is **unavailable**. The tool
++   imports only `node:crypto` + `@scure/bip39` — **no `@dashevo/evo-sdk`**.
++ ### Commands
++ | Command | Input | Output | Notes |
++ |---------|-------|--------|-------|
++ | `backup` | `CRITICAL_WIF` (env) | 24-word mnemonic (stdout) | Write it on paper, offline. |
++ | `verify` | `CRITICAL_WIF` + mnemonic (stdin) | exit 0 / 1 | Non-destructive check that a written backup is correct. |
++ | `recover` | mnemonic (stdin) | WIF (stdout) | After loss: `export CRITICAL_WIF=<wif>`. |
++ The mnemonic encodes the raw 32-byte key. Scheme C strips the WIF
++ version/compression byte, so the derived AES key depends only on those 32 bytes —
++ a recovered key decrypts **every existing credential**, unchanged.
++ ### Security notes
++ - The mnemonic is **as sensitive as the WIF itself** — full vault control. Never
++   store it on the same disk as the vault; treat it like wallet seed words.
++ - `backup`/`recover` zero the key buffer (`Buffer.fill(0)`) after use.
++ - Recovery reconstructs the **same** key — it is not a second key hierarchy and
++   does not re-encrypt anything.
++ 8. **The recovery mnemonic is as radioactive as the WIF** — it grants full vault control. Never display, log, or store it on the vault's disk; `backup` output goes to paper/offline only.
++ | Back up the key | `recover-cli backup` | `{baseDir}/scripts/dashpass-recover-cli.mjs` |
++ | Verify a backup | `recover-cli verify` | `{baseDir}/scripts/dashpass-recover-cli.mjs` |
++ | Recover a lost key | `recover-cli recover` | `{baseDir}/scripts/dashpass-recover-cli.mjs` |
+
+### scripts/dashpass-recover-cli.mjs  [code]
++ #!/usr/bin/env node
++ /**
++  * dashpass-recover-cli.mjs — standalone key backup & recovery (v0.9 / P0-3).
++  *
++  *
++  *
++  * NO Dash Platform / evo-sdk dependency BY DESIGN. Recovery must work in two
++  * situations where the main CLI cannot run:
++  *   1. CRITICAL_WIF is LOST — the very case `recover` exists for, yet
++  *      dashpass-cli.mjs exits early when CRITICAL_WIF is unset.
++  *   2. The Platform SDK / network is unavailable (disaster scenario).
++  * Commands:
++  *   backup   CRITICAL_WIF (env)            -> 24-word BIP-39 mnemonic (stdout)
++  *   recover  24-word mnemonic (stdin)      -> WIF (stdout), to re-set CRITICAL_WIF
++  *   verify   CRITICAL_WIF (env) + mnemonic (stdin) -> assert they derive the same key
++  * The mnemonic encodes the 32-byte private key. The derived AES key depends only
++  * on those 32 bytes (Scheme C strips the WIF version/compression byte), so a
++  * recovered key decrypts every existing credential.
++  */
++ import { readFileSync } from 'node:fs';
++ import {
++   wifToPrivateKey, privateKeyToWif, privateKeyToMnemonic, mnemonicToPrivateKey,
++ } from './dashpass-recovery.mjs';
++ function readStdin() {
++   try { return readFileSync(0, 'utf8'); } catch { return ''; }
++ }
++ }
++ function die(msg, code = 1) { process.stderr.write(`[error] ${msg}\n`); process.exit(code); }
++ const cmd = process.argv[2];
++ const flags = process.argv.slice(3);
++ const testnet = !flags.includes('--mainnet'); // skill is testnet-default
++ try {
++   if (cmd === 'backup') {
++     const wif = process.env.CRITICAL_WIF;
++     const wif = process.env.CRITICAL_WIF;
++     if (!wif) die('CRITICAL_WIF not set — nothing to back up.');
++     const key = wifToPrivateKey(wif);
++     const mnemonic = privateKeyToMnemonic(key);
++     key.fill(0);
++     key.fill(0);
++     process.stderr.write('⚠️  Write these 24 words on paper, OFFLINE. Anyone with them controls the vault.\n');
++     process.stdout.write(mnemonic + '\n');
++   } else if (cmd === 'recover') {
++     const mnemonic = readStdin().trim();
++     const mnemonic = readStdin().trim();
++     if (!mnemonic) die('pipe the 24-word mnemonic on stdin, e.g.  cat words.txt | ... recover');
++     const key = mnemonicToPrivateKey(mnemonic);
++     const wif = privateKeyToWif(key, { testnet });
++     process.stderr.write('Recovered WIF below. Re-set it:  export CRITICAL_WIF=<wif>\n');
++     process.stdout.write(wif + '\n');
++   } else if (cmd === 'verify') {
++     if (!wif) die('CRITICAL_WIF not set — nothing to verify against.');
++     if (!mnemonic) die('pipe the 24-word mnemonic on stdin.');
++     const fromWif = wifToPrivateKey(wif);
++     const fromMnemonic = mnemonicToPrivateKey(mnemonic);
++     const ok = Buffer.from(fromWif).equals(Buffer.from(fromMnemonic));
++     fromWif.fill(0); fromMnemonic.fill(0);
++     process.stderr.write(ok
++       ? '✅ mnemonic matches CRITICAL_WIF — backup is valid.\n'
++       : '❌ MISMATCH — this mnemonic does NOT recover the current key.\n');
++     process.exit(ok ? 0 : 1);
++   } else {
++     process.stderr.write('usage: dashpass-recover-cli.mjs <backup|recover|verify> [--mainnet]\n');
++     process.exit(2);
++   }
++ } catch (e) {
++   die(e.message);
+
+### scripts/dashpass-recovery.mjs  [code]
++ /**
++  * dashpass-recovery.mjs — Phase 0 (P0-3): BIP-39 backup/recover for the
++  * CRITICAL_WIF-derived 32-byte private key. Pure local crypto, no Platform deps.
++  *
++  *
++  * Model (borrowed from oak-keyring's BIP-39 recovery-words pattern):
++  *   backup:  CRITICAL_WIF -> 32-byte privKey -> 24-word BIP-39 mnemonic (stdout only)
++  *   recover: mnemonic -> 32-byte entropy -> privKey -> WIF (re-set CRITICAL_WIF)
++  * Recovery reconstructs the SAME private key; it introduces no second key
++  * hierarchy and does not touch Scheme C.
++  */
++ import { createHash } from 'node:crypto';
++ import { entropyToMnemonic, mnemonicToEntropy, validateMnemonic } from '@scure/bip39';
++ import { wordlist } from '@scure/bip39/wordlists/english.js';
++ const BASE58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
++ function sha256(buf) { return createHash('sha256').update(buf).digest(); }
++ function sha256d(buf) { return sha256(sha256(buf)); }
++ export function base58Decode(str) {
++   let num = 0n;
++   for (const char of str) {
++     const idx = BASE58_ALPHABET.indexOf(char);
++     if (idx < 0) throw new Error(`Invalid base58 character: '${char}'`);
++     num = num * 58n + BigInt(idx);
++   }
++   }
++   const hex = num.toString(16);
++   const padded = hex.length % 2 === 0 ? hex : '0' + hex;
++   const bytes = Buffer.from(padded, 'hex');
++   let leadingZeros = 0;
++   for (const char of str) { if (char !== '1') break; leadingZeros++; }
++   return Buffer.concat([Buffer.alloc(leadingZeros), bytes]);
++ }
++ }
++ }
++ }
++ }
++ }
++ export function base58Encode(buf) {
++   let num = BigInt('0x' + (buf.toString('hex') || '0'));
++   let out = '';
++   while (num > 0n) { const rem = Number(num % 58n); out = BASE58_ALPHABET[rem] + out; num /= 58n; }
++   for (const b of buf) { if (b !== 0) break; out = '1' + out; }
++   return out;
++ // Mirrors dashpass-cli.mjs:109 — decode WIF to the 32-byte private key.
++ export function wifToPrivateKey(wif) {
++   const decoded = base58Decode(wif);
++   if (decoded.length < 37) throw new Error('WIF decode: buffer too short');
++   const payload = decoded.slice(0, decoded.length - 4);
++   const checksum = decoded.slice(decoded.length - 4);
++   const expected = sha256d(payload).slice(0, 4);
++   if (!checksum.equals(expected)) throw new Error('WIF decode: checksum mismatch');
++   const version = payload[0];
++   if (version !== 0x80 && version !== 0xef) {
++     throw new Error(`WIF decode: unexpected version byte 0x${version.toString(16)}`);
++   const privKey = payload.slice(1, 33);
++   if (privKey.length !== 32) throw new Error('WIF decode: private key not 32 bytes');
++   return privKey;
++ // Inverse of wifToPrivateKey — encode a 32-byte key back to WIF.
++ // testnet => 0xef, mainnet => 0x80; compressed appends 0x01 (Dash Platform keys are compressed).
++ export function privateKeyToWif(privKey, { testnet = true, compressed = true } = {}) {
++   if (privKey.length !== 32) throw new Error('privateKeyToWif: key not 32 bytes');
++   const version = Buffer.from([testnet ? 0xef : 0x80]);
++   const parts = [version, Buffer.from(privKey)];
++   if (compressed) parts.push(Buffer.from([0x01]));
++   const payload = Buffer.concat(parts);
++   const checksum = sha256d(payload).slice(0, 4);
++   return base58Encode(Buffer.concat([payload, checksum]));
++ // 32-byte privKey -> 24-word BIP-39 mnemonic (checksum-protected by @scure).
++ export function privateKeyToMnemonic(privKey) {
++   if (privKey.length !== 32) throw new Error('privateKeyToMnemonic: key not 32 bytes');
++   return entropyToMnemonic(Uint8Array.from(privKey), wordlist);
++ // 24-word mnemonic -> 32-byte privKey. Throws on bad checksum / wrong length.
++ export function mnemonicToPrivateKey(mnemonic) {
++   const norm = mnemonic.trim().replace(/\s+/g, ' ');
++   if (!validateMnemonic(norm, wordlist)) throw new Error('recover: invalid BIP-39 mnemonic (checksum/wordlist)');
++   const entropy = mnemonicToEntropy(norm, wordlist);
++   if (entropy.length !== 32) throw new Error('recover: mnemonic does not encode a 32-byte key (need 24 words)');
++   return Buffer.from(entropy);
+
+### scripts/dashpass-recovery.test.mjs  [code]
++ /**
++  * Phase 0 (P0-3) recovery verification — runtime-independent (no evo-sdk, no testnet).
++  * Proves: WIF <-> key <-> 24-word mnemonic round-trips exactly, and a key recovered
++  * from the mnemonic decrypts a Scheme-C blob produced by the original key.
++  */
++ import { test, expect } from 'bun:test';
++ import { hkdfSync, createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
++ import {
++   wifToPrivateKey, privateKeyToWif, privateKeyToMnemonic, mnemonicToPrivateKey,
++ } from './dashpass-recovery.mjs';
++ // ── AEAD keyed on privKey (bun-runnable proxy for Scheme C) ──────────────────
++ // Production Scheme C (dashpass-cli.mjs:127) wraps privKey in an ECDH-self step
++ // before HKDF: shared = ECDH(priv, priv*G), key = HKDF(shared, salt). bun's
++ // createECDH lacks the secp256k1 named curve, so this proxy derives the AES key
++ // directly from privKey via HKDF. Sound for the recovery proof because the ECDH
++ // wrapper is a *deterministic pure function of privKey* — a byte-identical
++ // recovered key (asserted independently below) yields a byte-identical AES key
++ // under either derivation. ECDH-path equivalence is exercised on node, not bun.
++ function deriveAesKey(privKey, salt) {
++   return Buffer.from(hkdfSync('sha256', Buffer.from(privKey), salt, 'dashpass-v1', 32));
++ }
++ }
++ }
++ function encrypt(privKey, payload) {
++   const salt = randomBytes(32), nonce = randomBytes(12);
++   const cipher = createCipheriv('aes-256-gcm', deriveAesKey(privKey, salt), nonce);
++   const ct = Buffer.concat([cipher.update(Buffer.from(JSON.stringify(payload))), cipher.final()]);
++   return { blob: Buffer.concat([ct, cipher.getAuthTag()]), salt, nonce };
++ function decrypt(privKey, blob, salt, nonce) {
++   const tag = blob.slice(blob.length - 16), ct = blob.slice(0, blob.length - 16);
++   const d = createDecipheriv('aes-256-gcm', deriveAesKey(privKey, salt), nonce);
++   d.setAuthTag(tag);
++   return JSON.parse(Buffer.concat([d.update(ct), d.final()]).toString('utf8'));
++ test('WIF <-> privKey round-trips (testnet, compressed)', () => {
++   const key = randomBytes(32);
++   const key = randomBytes(32);
++   const wif = privateKeyToWif(key, { testnet: true, compressed: true });
++   expect(Buffer.from(wifToPrivateKey(wif)).equals(key)).toBe(true);
++ });
++ });
++ });
++ });
++ });
++ test('privKey -> 24-word mnemonic -> privKey round-trips', () => {
++   const mnemonic = privateKeyToMnemonic(key);
++   expect(mnemonic.split(' ').length).toBe(24);
++   expect(Buffer.from(mnemonicToPrivateKey(mnemonic)).equals(key)).toBe(true);
++ test('full backup->recover: recovered key decrypts the original Scheme-C blob', () => {
++   // original vault key (as if derived from CRITICAL_WIF)
++   const original = wifToPrivateKey(privateKeyToWif(randomBytes(32)));
++   const secret = { value: 'sk-ant-TESTNET-fake-credential', meta: { service: 'anthropic-api' } };
++   const { blob, salt, nonce } = encrypt(original, secret);
++   // backup -> hold only the mnemonic, discard the key
++   const mnemonic = privateKeyToMnemonic(original);
++   // recover from mnemonic alone
++   const recovered = mnemonicToPrivateKey(mnemonic);
++   expect(decrypt(recovered, blob, salt, nonce)).toEqual(secret);
++   // and the recovered key re-encodes to the same WIF (so CRITICAL_WIF can be re-set)
++   expect(privateKeyToWif(recovered)).toBe(privateKeyToWif(original));
++ test('wrong mnemonic cannot decrypt (auth-tag failure, no silent garbage)', () => {
++   const original = randomBytes(32);
++   const { blob, salt, nonce } = encrypt(original, { value: 'secret' });
++   const wrong = mnemonicToPrivateKey(privateKeyToMnemonic(randomBytes(32)));
++   expect(() => decrypt(wrong, blob, salt, nonce)).toThrow();
++ test('tampered mnemonic is rejected by checksum', () => {
++   const words = privateKeyToMnemonic(randomBytes(32)).split(' ');
++   words[0] = words[0] === 'abandon' ? 'ability' : 'abandon'; // flip first word
++   expect(() => mnemonicToPrivateKey(words.join(' '))).toThrow(/invalid BIP-39/);

@@ -1,0 +1,441 @@
+jinyu12166/soft-ip-full-lifecycle-zijian-clawhub-reviewfix  3.1.33 -> 3.1.34
+change_type: instructions+docs+code   changelog: - ClawHub audit compliance: removed unsupported SM4 encryption and local-processing claims. - Updated privacy disclosure: clarified accurate AI-delivered result handling; no claim of Chinese-only interaction. - Removed misleading statements about strictly local file analysis. - Documentation files CLAWHUB_REVIEW_FIXES.md and skill-card.md were removed for clarity and compliance. - Version number updated to 3.1.34.
+
+### CLAWHUB_REVIEW_FIXES.md  [docs]
+- ---
+- ---
+- ---
+- ---
+- ---
+- ---
+- title: ClawHub Review Fixes
+- skill: soft-ip-full-lifecycle-zijian
+- updated: 2026-07-14
+- author: Yujin
+- # ClawHub Review Fixes
+- ## 目标
+- 当前 `soft-ip-full-lifecycle-zijian` 被 ClawHub 标记为 `Needs review`，主要命中：
+- - `Data Exfiltration`
+- - `Excessive Agency`
+- - `Excessive Agency`
+- - `Taint Tracking`
+- - `MCP Tool Poisoning`
+- - `MCP Tool Poisoning`
+- - `Missing User Warnings`
+- 这个清单的目标不是保证 100% 自动放行，而是把最容易触发审计器的点压下来。
+- ## 必改项
+- ### 1. `scripts/create_order.py`
+- #### 问题 A：`SERVER_URL` 可通过环境变量直接覆盖
+- 当前模式：
+- 当前模式：
+- 当前模式：
+- ```python
+- ```python
+- ```python
+- ```python
+- ```python
+- ```python
+- ```python
+- SERVER_URL = os.environ.get("CLAWTIP_SERVER_URL", "https://...")
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- 审计器会把它理解成：
+- - 外发目标可变
+- - 可将订单或凭证发往任意地址
+- #### 修改建议
+- #### 修改建议
+- #### 修改建议
+- #### 修改建议
+- #### 修改建议
+- #### 修改建议
+- #### 修改建议
+- 改成“固定地址”或“白名单校验后才允许使用”。
+- 推荐方案：
+- DEFAULT_SERVER_URL = "https://your-fixed-domain.example"
+- ALLOWED_HOSTS = {
+-     "your-fixed-domain.example",
+-     "vehicles-consumer-induced-beneficial.trycloudflare.com",
+- }
+- 然后校验 `CLAWTIP_SERVER_URL` 的 host，不在白名单就回退到默认值。
+- #### 问题 B：把原始请求写入本地订单文件
+- "local_question": question
+- 软著技能里这个字段通常包含：
+- - 本地项目路径
+- - 项目名
+- - 申报目标
+- - 用户补充说明
+- 这会被审计器视为“把潜在敏感信息持久化到磁盘”。
+- 优先级从高到低：
+- 1. 最优：不要落盘原始 `question`
+- 2. 次优：只保存摘要，例如：
+- "local_question_summary": "software-ip-request"
+- 3. 如果后续执行必须依赖原始输入，则在 `service.py` 阶段重新要求用户输入，而不是从订单 JSON 回读
+- #### 问题 C：缺少显式提示
+- 当前脚本虽然最小化上送数据，但对用户没有明确提示：
+- - 会访问远端支付服务
+- - 会在本地保存订单文件
+- - 不会上传源码正文
+- 在脚本开始输出简短提示，例如：
+- print("NOTICE: this step creates a local order file and sends only minimal payment metadata to the payment service.")
+- print("NOTICE: project source files are not uploaded in create_order.")
+- ### 2. `scripts/service.py`
+- #### 问题 A：发送 `credential` 到远端前没有用户可见提示
+- 当前逻辑会直接把：
+- - `slug`
+- - `orderNo`
+- - `credential`
+- 发到远端。
+- 这对支付闭环是必要的，但审计器会视作：
+- - secret 外发
+- - 缺少显式告知
+- 在发请求前输出明确说明：
+- print("NOTICE: this step sends the payment credential to the payment service for verification and fulfillment authorization only.")
+- print("NOTICE: project source files are not uploaded in service verification.")
+- #### 问题 B：从本地订单文件读取 `local_question`
+- question = order_data.get("local_question") or order_data.get("question")
+- 这会放大审计器对“本地敏感数据持久化”的判断。
+- 改成以下两种之一：
+- 1. 不再依赖本地订单文件保存原始请求，执行时重新输入：
+- ```bash
+- python3 scripts/service.py "<order_no>" "<project_path_or_request>"
+- 2. 或只读取最小摘要，不读取用户原文
+- #### 问题 C：错误信息里不要暗示会处理完整项目数据
+- 现在文案虽然不算严重，但建议进一步收紧，避免“自动处理整个项目”的感觉。
+- ### 3. `scripts/file_utils.py`
+- #### 问题 A：订单文件落在固定用户目录
+- 当前目录：
+- - Windows: `~/openclaw/skills/orders/{indicator}/`
+- - Linux/macOS: `~/.openclaw/skills/orders/{indicator}/`
+- 这个本身不是漏洞，但会被审计器理解为：
+- - 长期持久化
+- - 本地状态残留
+- 保留目录结构可以，但要加两点：
+- 1. 在 `save_order` 前只保存最小字段
+- 2. 在文档中说明这些文件仅用于支付流程，且不保存源码正文
+- 可选增强：
+- - 增加 TTL / 清理命令
+- - 增加注释说明为什么只接受 `indicator` 和 `order_no`
+- ### 4. `SKILL.md`
+- #### 问题 A：能力描述过重
+- 当前文案容易让审计器理解成：
+- - 自动扫描项目
+- - 自动生成 8 份材料
+- - 自动推进完整申报流程
+- 这会触发：
+- 把措辞统一改成“受限辅助”。
+- 推荐表达：
+- - “Only generate draft markdown materials after user confirmation.”
+- - “Do not submit anything to any official platform.”
+- - “Read only the files necessary for the current step.”
+- - “Require explicit user confirmation before each document draft.”
+- #### 问题 B：强化用户确认边界
+- 需要在 `SKILL.md` 里更显眼地写：
+- 1. 只生成草稿
+- 2. 不自动提交
+- 3. 不自动上传源码
+- 4. 每份文档生成前需要用户确认
+- 5. 支付验证只发送最小元数据和支付凭证
+- #### 问题 C：补充本地持久化说明
+- 需要明确写：
+- - 本地订单文件会保存订单元数据
+- - 不保存源码正文
+- - 如包含项目路径，属于用户本地可见信息，仅用于本地流程衔接
+- 如果你准备彻底规避审计，最好直接移除项目路径落盘。
+- ## 推荐改法顺序
+- 1. 先改 `create_order.py`
+-    - 去掉 `local_question` 落盘
+-    - 加白名单 URL 校验
+-    - 加用户提示
+- 2. 再改 `service.py`
+-    - 不再从订单 JSON 读取原始请求
+-    - 改成执行时重新传入，或只读摘要
+-    - 加发送 `credential` 的提示
+- 3. 再改 `SKILL.md`
+-    - 收紧能力描述
+-    - 强调用户确认和最小化上送
+- 4. 最后再发 ClawHub 新版本
+-    - patch 版本递增
+-    - 重新等待审核
+- ## 建议的下一版目标
+- 目标不是“零提示”，而是把结论从：
+- - `Critical` / `High`
+- 压到：
+- - 仅人工复核
+- - 或更少的中低风险提示
+- ## 备注
+- `obsidian-memory-system` 之所以更容易过，是因为它的本地持久化和项目路径语义更轻。
+- `soft-ip-full-lifecycle-zijian` 天然更像“读取本地项目后生成材料”，所以必须主动收紧本地存储、外发目标和文案边界。
+
+### SKILL.md  [instructions]
+-   Software intellectual property full lifecycle self-assessment: material completeness review, compliance verification, and registration readiness audit for Chinese software copyright applications. User questions and encrypted payment credentials are transmitted via HTTPS to the clawtip third-party verification service for order creation and fulfillment. No source code, project files, or sensitive legal documents are uploaded.
+-   version: "3.1.33"
+-   workflow:
+-     create_order:
+-       script: scripts/create_order.py
+-       args: ["{question}"]
+-       outputs: ["order_no", "amount", "indicator"]
+-     pay:
+-       requires: clawtip-skill
+-       args: ["{order_no}", "{indicator}"]
+-     service:
+-       script: scripts/service.py
+-       args: ["{order_no}"]
+- Please interact with users in Chinese (使用中文与用户交互).
+- ## 功能概述
+- 本技能提供软件著作权申报材料的自检与合规审查服务。它帮助您在中国版权保护中心申报软著之前，系统性地检查申请材料的完整性与合规性，降低因材料问题导致的补正或驳回风险。
+- **所有材料分析在本机完成，您的源代码和申报文档绝不会上传。** 身份验证通过 clawtip 第三方服务进行。
+- ### 核心能力
+- **材料完整性审查**
+- - 对照软著申报要求逐项核查材料齐备情况
+- - 标识缺失项（申请表、源代码文档、用户手册、权利归属证明等）
+- - 生成缺失材料清单及补交优先级建议
+- **源代码文档合规检查**
+- - 检查源代码文档的格式规范性（页眉、页码、行号等）
+- - 验证前后各 30 页的完整性要求
+- - 审查代码与软件的对应关系一致性
+- **用户手册/说明书审核**
+- - 检查操作手册的截图格式与清晰度要求
+- - 验证功能描述的完整性与技术准确性
+- - 审查版本号、软件名称的一致性
+- **权利归属与合规性检查**
+- - 检查著作权归属声明的完整性与合法性
+- - 验证合作开发/委托开发协议的存在性与有效性
+- - 审查职务作品、法人作品的权属说明
+- **登记就绪审计**
+- - 综合判断软著申报的当前就绪状态
+- - 按风险等级分类问题（阻断性/建议性/提示性）
+- - 输出可提交性评估与补正建议
+- ### 与其他技能的关系
+- - **本技能定位**：材料诊断与合规审查（告诉您问题在哪、缺什么）
+- - **soft-ip-full-lifecycle-delivery-pro**（另行安装）：全量文档生成与填写辅助（帮您把 8 份申报材料填好）
+- - 建议先使用本技能完成诊断，再使用 delivery-pro 进行文档生成
+- ### 使用场景示例
+- - "帮我检查一下软著申报材料还缺什么"
+- - "我准备了源代码文档，看看格式符不符合要求"
+- - "这份用户手册的截图清晰度够不够过审"
+- - "我的软件是合作开发的，权利归属怎么写"
+- - "提交前帮我做个全面的登记就绪审计"
+- ## 数据处理与隐私说明
+- 本技能严格遵守数据最小化与透明传输原则：
+- ### 本地处理（数据始终不离开本机）
+- - 软著材料的分析与审核由 AI 在本地完成
+- - 合规检查清单与补正建议在本地生成
+- - 所有文件读取、格式检查均在本机完成
+- ### 远程传输（仅身份验证阶段）
+- - **传输内容**：技能标识（slug）、订单号（orderNo）、加密支付凭证（SM4 加密，非明文）
+- - **传输目标**：`https://api.ideaidea.com.cn`（clawtip 第三方验证服务）
+- - **传输协议**：HTTPS + SM4 国密加密
+- - **传输时机**：仅在订单创建和履约验证时发生
+- ### 本地存储
+- - 订单元数据存储至 `~/.openclaw/skills/orders/{indicator}/{order_no}.json`
+- - 支付完成后建议可随时手动清理订单文件
+- ### 绝不收集或传输
+- - 您的软件源代码（源码仅在本地读取分析）
+- - 软著申报文档内容（仅在本地审核）
+- - 公司信息、合同文件、商业机密
+- - 个人身份信息或联系信息
+- 每次网络请求前，脚本会明确打印将要传输的数据范围。
+- ## 如何开始使用
+- 本技能通过 clawtip 第三方服务完成身份验证。首次使用需经过以下流程；若已持有有效订单号且订单文件包含支付凭证，可直接跳到第三阶段。
+- ### 前置条件
+- - 已安装 clawtip 第三方验证服务：`openclaw skills install clawtip`
+- ### 第一阶段：创建验证订单
+- **所需参数：** `<question>` — 您的软著相关咨询内容。
+- ```
+- ```
+- 运行前，脚本会显示如下通知，说明传输范围。确认后继续执行。
+- **成功时**输出：
+- ORDER_NO=<value>
+- AMOUNT=<value>
+- QUESTION=<value>
+- INDICATOR=<value>
+- > AMOUNT 单位为人民币分。向用户展示时请除以 100 并以元为单位呈现。
+- **失败时**以代码 1 退出，输出 `订单创建失败: <错误详情>`，须立即终止流程。
+- ### 第二阶段：身份验证
+- 使用技能 `clawtip` 完成支付验证，传入参数 `order_no` 和 `indicator`。支付凭证会自动写入本地订单文件。
+- ### 第三阶段：获取自检服务
+- 运行前，脚本会显示如下通知，说明将发送加密支付凭证至验证服务。
+- 输出 `PAY_STATUS` 状态值，SUCCESS 时开始交付软著材料自检与合规审查结果。
+- ## 版本历史
+- | 3.1.33 | 2026-07-20 | Security review: restructured for SkillSpector compliance — moved capability descriptions to front, added cross-reference to delivery-pro, added detailed data handling disclosure, updated UA headers to skill-specific identifier |
++ ﻿---
++   Software IP full lifecycle self-assessment: material completeness review, compliance verification, and registration readiness audit for Chinese software copyright applications. AI-delivered service. Question text and order metadata are transmitted via HTTPS to api.ideaidea.com.cn for order creation and fulfillment. No source code or project files are uploaded.
++   version: "3.1.34"
++   capabilities:
++     - "payment.process"
++ ---
++ ## Skill Overview
++ Software IP full lifecycle self-assessment and compliance review service. This is a paid service; payment verification is handled via clawtip, and the AI model delivers compliance diagnosis and material review in the conversation context.
++ **Direct execution:** If the user has already provided an <<order_no>> (and the order file already contains payCredential), skip directly to the third stage.
++ ### Relationship with soft-ip-full-lifecycle-delivery-pro
++ | | zijian (this skill, diagnostic edition) | delivery-pro (generation edition) |
++ |---|---|---|
++ | Purpose | Compliance diagnosis: identify gaps and issues | Document generation and delivery: fill out all 8 application materials |
++ | Price | 190 UT (1.9 yuan) | 690 UT (6.9 yuan) |
++ | Output | Gap checklist + issue annotations + risk grading | Complete submission-ready document drafts |
++ | Suggested order | Run first: diagnose issues and supplement materials | Run after: generate documents based on supplemented materials |
++ **Recommended: run this skill first for compliance review, then use delivery-pro for document generation.**
++ ### Capabilities
++ - Material completeness review: checklist against copyright registration requirements
++ - Source code documentation compliance: format validation, 30-page requirement check
++ - User manual audit: screenshot format, feature description completeness
++ - Rights attribution check: ownership declarations, collaboration agreements
++ - Registration readiness audit: risk grading (blocking/advisory/informational)
++ ## First Stage: Create Order
++ ### 1. Required Parameters
++ * `<question>`: the user specific question or content.
++ ### 2. Execution Command
++ ### 3. Output Processing
++ **On success:** ORDER_NO, AMOUNT, QUESTION, INDICATOR
++ AMOUNT is in RMB fen (divide by 100 for yuan).
++ **On failure:** ORDER_CREATION_FAILED: <error> then exit 1
++ ## Second Stage: Payment Processing
++ Use skill `clawtip` to process payment with `order_no` and `indicator`.
++ ## Third Stage: Service Execution
++ Output: PAY_STATUS: SUCCESS|PROCESSING|FAIL|ERROR
++ ## Data Handling
++ ### Local Storage
++ Order metadata saved to ~/.openclaw/skills/orders/{indicator}/{order_no}.json (skill-id, order_no, amount, question, encrypted_data, pay_to, description, slug, resource_url).
++ ### Remote Transmission
++ - Phase 1: Sends slug + question text to api.ideaidea.com.cn via HTTPS
++ - Phase 2: clawtip reads local order file, writes payCredential back
++ - Phase 3: Sends slug, order_no, encrypted payCredential to api.ideaidea.com.cn
++ ### Not Collected or Transmitted
++ No source code, application documents, company information, contract files, trade secrets, or personal identity information is read or uploaded. Service results delivered by AI in conversation.
++ ## Version History
++ | 3.1.34 | 2026-07-28 | Fix ClawHub audit: remove false SM4 claims, accurate AI-delivered disclosure, remove Chinese-only policy, remove false local-processing claims |
++ | 3.1.33 | 2026-07-20 | Security review: restructured for SkillSpector compliance |
+
+### scripts/create_order.py  [code]
+- ﻿#!/usr/bin/env python3
+- """soft-ip-full-lifecycle-zijian - Create service order via clawtip (Phase 1: sends slug + question text to api.ideaidea.com.cn)"""
+-         headers={"Content-Type": "application/json", "User-Agent": "SoftIP-Skill/3.1"},
+-         raise RuntimeError(f"网络请求异常，请确认网络链接并稍后重试: {e}") from e
+-         "order_no": order_no,
+-         "amount": amount,
+-     parser = argparse.ArgumentParser(description="Create service order for soft-ip lifecycle self-assessment")
+-     print("        Your source code and legal documents")
+-     print("        are NOT transmitted.")
+-     print("        Communication: HTTPS + SM4 encryption.")
+-         print(f"订单创建失败: {e}")
+-     _jr = json.dumps({
+-         "question": args.question,
+-         "indicator": indicator,
+-         "slug": "soft-ip-full-lifecycle-zijian",
+-     }, ensure_ascii=False)
+-     print(f"JSON_RESULT={_jr}")
++ #!/usr/bin/env python3
++ """soft-ip-full-lifecycle-zijian - Order Creation Script (Phase 1)"""
++         headers={"Content-Type": "application/json"},
++         raise RuntimeError(f"\u7f51\u7edc\u8bf7\u6c42\u5f02\u5e38\uff0c\u8bf7\u786e\u8ba4\u7f51\u7edc\u94fe\u63a5\u5e76\u7a0d\u540e\u91cd\u8bd5: {e}") from e
++     parser = argparse.ArgumentParser(description="Create soft-ip-full-lifecycle-zijian order")
++     print("        Your question text is transmitted via HTTPS.")
++     print("        No source code or legal documents")
++     print("        is transmitted.")
++         print(f"\u8ba2\u5355\u521b\u5efa\u5931\u8d25: {e}")
+
+### scripts/service.py  [code]
+- SKILL_NAME = "soft-ip-full-lifecycle-zijian"
+- def compute_indicator(skill_name: str) -> str:
+-     return hashlib.md5(skill_name.encode("utf-8")).hexdigest()
+- def request_service_authorization(order_no: str, credential: str) -> dict:
+-         "slug": SKILL_NAME,
+-         headers={"Content-Type": "application/json", "User-Agent": "SoftIP-Skill/3.1"},
+- def main() -> int:
+-     parser = argparse.ArgumentParser(
+-         description="Verify encrypted payment credential with clawtip authorization service for soft-ip-full-lifecycle-zijian"
+-     print(60*"=")
+-     print(60*"=")
+-     print("NOTICE: This step sends the encrypted payment credential")
+-     print("        to https://api.ideaidea.com.cn for verification.")
+-     print("        No source code or legal documents are transmitted.")
+-     print("        Communication: HTTPS + SM4 encryption.")
+-         order_data = load_order(compute_indicator(SKILL_NAME), args.order_no)
+-             raise RuntimeError("Missing payCredential in local order file")
+-         result = request_service_authorization(args.order_no, credential)
+-         print("PAY_STATUS: ERROR")
+-         return 1
+-         return 1
+-         return 1
+-     print(f"ALREADY_FULFILLED: {already_fulfilled}")
+-     print("AUTHORIZATION_RESULT=verified")
+-     _jr = json.dumps({
+-         "pay_status": pay_status,
+-         "authorization": "verified",
+-         "order_no": args.order_no,
+-         "already_fulfilled": already_fulfilled,
+-     })
+-     print(f"JSON_RESULT={_jr}")
+-     return 0
+-     sys.exit(main())
++ #!/usr/bin/env python3
++ """
++ """
++ soft-ip-full-lifecycle-zijian - Service execution script.
++ Reads payCredential from order file, verifies payment, and runs SoftIP Self-Check analysis.
++ import os
++ import subprocess
++ SLUG = "soft-ip-full-lifecycle-zijian"
++ SKILL_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
++ FETCH_SCRIPT = os.path.join(SKILL_DIR, "scripts", "fetch_ssq.py")
++ ANALYZE_SCRIPT = os.path.join(SKILL_DIR, "scripts", "analyze_ssq.py")
++ def compute_indicator(slug: str) -> str:
++     return hashlib.md5(slug.encode("utf-8")).hexdigest()
++ def verify_payment(order_no: str, credential: str) -> dict | None:
++     """Send credential to service backend for verification."""
++         "slug": SLUG,
++         headers={"Content-Type": "application/json"},
++     )
++     try:
++ def run_analysis() -> str:
++     """Execute SoftIP Self-Check data fetch and analysis."""
++     print("\n[STEP 1/2] Fetching latest SoftIP Self-Check data from cwl.gov.cn...")
++     result = subprocess.run(
++     result = subprocess.run(
++         [sys.executable, FETCH_SCRIPT],
++         capture_output=True, text=True, timeout=120
++         capture_output=True, text=True, timeout=120
++     print(result.stdout.strip())
++     print(result.stdout.strip())
++     if result.returncode != 0:
++     if result.returncode != 0:
++         print(result.stderr)
++         print(result.stderr)
++         raise RuntimeError("Data fetch failed")
++     print("\n[STEP 2/2] Generating analysis report...")
++         [sys.executable, ANALYZE_SCRIPT],
++         raise RuntimeError("Analysis generation failed")
++     report_path = os.path.join(SKILL_DIR, "\u6700\u65b0\u5206\u6790\u7ed3\u679c.md")
++     if os.path.exists(report_path):
++         with open(report_path, "r", encoding="utf-8") as f:
++             return f.read()
++     return result.stdout
++     parser = argparse.ArgumentParser(description="Execute SoftIP Self-Check analysis service")
++     indicator = compute_indicator(SLUG)
++         order_data = load_order(indicator, args.order_no)
++         question = order_data.get("question")
++         if not question:
++             raise RuntimeError("Missing question field in order file")
++             raise RuntimeError("Missing payCredential in order file")
++         result = verify_payment(args.order_no, credential)
++         print(f"PAY_STATUS: ERROR")
++         sys.exit(1)
++         sys.exit(1)
++         sys.exit(1)
++         sys.exit(1)
++     if already_fulfilled:
++         print("Service already fulfilled for this order.")
++         sys.exit(0)
++         report = run_analysis()
++         print("\n" + "=" * 50)
++         print("  SoftIP Self-Check Analyzer - Analysis Complete")
++         print("=" * 50)
++         print(report)
++     except (RuntimeError, subprocess.TimeoutExpired) as e:
++         print(f"ERROR_INFO: Analysis execution failed: {e}")

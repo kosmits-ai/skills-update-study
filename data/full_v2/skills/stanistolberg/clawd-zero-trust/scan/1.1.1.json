@@ -1,0 +1,93 @@
+{
+  "fetched_at": "2026-10-26T17:27:48.300006+00:00",
+  "status": 200,
+  "payload": {
+    "skill": {
+      "slug": "clawd-zero-trust",
+      "displayName": "Clawd Zero Trust"
+    },
+    "version": {
+      "version": "1.1.1",
+      "createdAt": 1771607163341,
+      "changelogSource": "auto"
+    },
+    "moderation": {
+      "scope": "skill",
+      "sourceVersion": {
+        "version": "1.3.2",
+        "createdAt": 1773162066873
+      },
+      "matchesRequestedVersion": false,
+      "isPendingScan": false,
+      "isMalwareBlocked": false,
+      "isSuspicious": false,
+      "isHiddenByMod": false,
+      "isRemoved": false
+    },
+    "security": {
+      "status": "suspicious",
+      "hasWarnings": true,
+      "checkedAt": 1771607209617,
+      "model": "gpt-5-mini",
+      "hasScanResult": true,
+      "sha256hash": "7019f8af83396de647876b07f13eec5deae5c6abe7a9723a0ea4f3f08eef5656",
+      "virustotalUrl": "https://www.virustotal.com/gui/file/7019f8af83396de647876b07f13eec5deae5c6abe7a9723a0ea4f3f08eef5656",
+      "scanners": {
+        "vt": {
+          "status": "suspicious",
+          "verdict": "suspicious",
+          "normalizedStatus": "suspicious",
+          "analysis": "Type: OpenClaw Skill\nName: clawd-zero-trust\nVersion: 1.1.1\n\nThe skill bundle is designed for Zero Trust security hardening, with extensive documentation and robust safety features like transactional apply, rollback, and script hash gating. However, the `scripts/egress-filter.sh` uses `eval` in its `cmd()` function, and `scripts/harden.sh` executes `jq` with constructed filter strings. While the inputs to these commands appear to be carefully sanitized or hardcoded within the current implementation, `eval` and dynamic command execution are high-risk primitives that represent potential shell/command injection vulnerabilities if input control were to fail or be modified in the future. This pattern, despite the clear benign intent and strong security posture of the project, warrants a 'suspicious' classification due to the inherent risks of these capabilities.",
+          "source": "palm",
+          "checkedAt": 1771607209617
+        },
+        "skillspector": null,
+        "llm": {
+          "status": "suspicious",
+          "verdict": "suspicious",
+          "normalizedStatus": "suspicious",
+          "confidence": "medium",
+          "summary": "The skill mostly implements what it claims (firewall-based Zero Trust and OpenClaw hardening) but contains several behaviors that could hide or enable risky changes (audit output suppression, automatic plugin allowlisting, and an allowlist entry for a third-party API); review and test carefully before use.",
+          "dimensions": [
+            {
+              "detail": "The scripts (egress-filter.sh, harden.sh, audit.sh) match the described Zero Trust purpose: they snapshot DNS, build UFW egress rules, modify OpenClaw config, and run audits. Requiring sudo for firewall changes and jq for JSON edits is expected. Minor mismatch: the skill automatically suggests adding/installing the 'secureclaw' plugin and includes api.agentsandbox.co in the egress allowlist — both are plausible for OpenClaw deployments but not documented in the top-level description as a third-party dependency.",
+              "label": "Purpose & Capability",
+              "name": "purpose_capability",
+              "rating": "note"
+            },
+            {
+              "detail": "Runtime instructions and scripts will read and modify host-level state: ~/.openclaw/openclaw.json, UFW rules (sudo), and write a versioned state file in the skill directory. audit.sh explicitly filters out patterns ('openclaw-agentsandbox', 'secureclaw') from audit output (grep -v), which can suppress alerts that would otherwise surface credential-harvesting or dangerous exec patterns. The egress script also implements a TOFU-style hash gate (first run ungated) and provides --force to bypass it, giving a wide operational scope. These behaviors expand the agent's authority beyond read-only auditing into active configuration and network policy changes.",
+              "label": "Instruction Scope",
+              "name": "instruction_scope",
+              "rating": "concern"
+            },
+            {
+              "detail": "There is no remote install artifact; this is an instruction + bundled scripts skill. No downloads are automatically performed by the skill itself. The README/harden.sh suggests cloning a GitHub repo if SecureClaw is missing (external install instructions), which is a normal human-run step but worth auditing before execution. No arbitrary URL-extract installs or opaque binary fetches are present in the bundle.",
+              "label": "Install Mechanism",
+              "name": "install_mechanism",
+              "rating": "ok"
+            },
+            {
+              "detail": "The skill declares no required environment variables or credentials, which reduces surface risk. However, scripts read host config files (e.g., ~/.openclaw/openclaw.json) that often contain tokens and will modify plugins.allow and gateway settings; they also hit external endpoints for verification (curl). The audit script's suppression of certain alert strings (grep -v) and the included allowlist entry for api.agentsandbox.co mean the skill explicitly preserves behavior that would otherwise be flagged — this needs justification and review before trusting on a production host.",
+              "label": "Credentials",
+              "name": "environment_proportionality",
+              "rating": "note"
+            },
+            {
+              "detail": "The skill is not always-enabled and does not request to be force-included. It writes only to its own .state/egress-profile.json and logs under the workspace, and it requires sudo to modify UFW (expected for firewall changes). It does not modify other skills' configurations directly. The rollback logic is strict (perform_reset_or_die) and can exit with code 99 requiring manual intervention; that is safer than silent failure but increases operational risk if not tested.",
+              "label": "Persistence & Privilege",
+              "name": "persistence_privilege",
+              "rating": "ok"
+            }
+          ],
+          "guidance": "What to consider before installing or running this skill:\n\n- Treat this as a powerful host-level tool: it will (when you run --apply/--canary) change UFW rules (requires sudo) and mutate your OpenClaw config. Always run in dry-run first and on a non-production machine.\n- Backup first: snapshot ~/.openclaw/openclaw.json and current UFW rules before applying. The script writes a state file under the skill directory; back that up too.\n- Audit the suppressed filters: audit.sh deliberately removes lines containing the exact strings 'openclaw-agentsandbox' and 'secureclaw' from the audit output. That can hide true positives (credential harvesting, dynamic exec). Consider removing or altering those grep -v lines, or inspect the filtered output separately, before trusting the 'clean' audit.\n- Validate third-party trust: the skill allows api.agentsandbox.co and recommends installing 'secureclaw' from a GitHub repository. Verify you trust those providers/repos and review their source code before enabling them in your allowlist/plugins.\n- Test rollback & TOFU behavior: the script uses a TOFU hash gate (first-run ungated) and a rollback that exits with code 99 on failure. Simulate failure scenarios on a test host to ensure you can recover manually (sudo ufw default allow outgoing && sudo ufw reload) if needed.\n- Least privilege for execution: run the scripts manually as an operator rather than granting autonomous agent invocation until you're confident. If you do allow autonomous invocation, prefer dry-run-only operations and strict monitoring.\n\nIf you want, I can: (1) point out exactly where to remove the grep -v filters, (2) create a checklist of pre-apply backups and commands to recover from lockout, or (3) scan any external repos referenced (secureclaw / agentsandbox) for obvious red flags.",
+          "findings": null,
+          "agenticRiskFindings": null,
+          "riskSummary": null,
+          "model": "gpt-5-mini",
+          "checkedAt": 1771607202640
+        }
+      }
+    }
+  }
+}

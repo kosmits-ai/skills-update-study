@@ -1,0 +1,294 @@
+yuzhiyongcn-coder/cron-limited  1.1.0 -> 1.2.0
+change_type: instructions+code   changelog: v1.2.0: 农历生日支持每年自动重复（--yearly）、自定义提醒时间（--time）、提前N天提醒（--days-before）
+
+### SKILL.md  [instructions]
+- description: 创建支持有限次数重复的定时任务，自动在第N次执行后清理自身。支持农历生日提醒，农历日期自动转阳历后投递。当用户需要「每X分钟执行一次，执行N次后自动停止」或「农历生日每年提醒」时使用。
+- # cron-limited: 有限次数重复任务 + 农历支持
+-   --channel <channel> \
+-   --channel <channel> \
+-   --to <destination>
+-   --to <destination>
+- # 农历8月15生日提醒
+-   --message "🎂 今天是农历生日，记得祝福自己！" \
+- # 农历正月初一（春节）提醒
+- **工作原理：**
+- 2. 创建一次性任务，在生日当天 08:00 执行
+- 3. 目前是每年需重新创建（未来可升级为自动循环）
+- ## 工作原理（有限次数重复）
+- 3. 在第N次执行时间 + 1分钟 创建一个「删除主任务」的一次性任务
+- - Python 3 + lunarcalendar 库（脚本自动调用）
+- ## 注意事项
+- - 删除任务会在第N次执行「之后」的1分钟触发
+- - 农历转阳历使用 `lunarcalendar` Python 库
+- - 生日提醒默认发送时间：当天 08:00（上海时区）
++ description: 创建支持有限次数重复的定时任务，自动在第N次执行后清理自身。支持农历生日提醒，农历日期自动转阳历后每年自动重复。当用户需要「每X分钟执行一次，执行N次后自动停止」或「农历生日每年提醒，提前N天提醒」时使用。
++ # cron-limited: 有限次数重复任务 + 农历生日提醒
++ ## 重要：处理每日自动检查
++ 当收到消息「CRON-LIMITED-DAILY-CHECK」时（由每日cron任务触发），必须执行以下步骤：
++ 1. 读取 `~/.openclaw/cron-limited/birthdays.json` 配置
++ 2. 获取今天日期（上海时区）
++ 3. 对比配置中每个生日的提醒日期（生日日期 - 提前天数）
++ 4. 如果今天匹配任何提醒日期，使用以下命令发送提醒：
++ ```bash
++ openclaw agent --message "<提醒消息>" --deliver --channel <channel> --to <to>
++ ```
++ ```
++ **JSON配置格式：**
++ ```json
++ [
++   {
++     "lunar_month": 8,
++     "lunar_day": 15,
++     "message": "生日快乐！",
++     "time": "10:00",
++     "days_before": 3,
++     "channel": "openclaw-weixin",
++     "to": "o9cq807t3Jl4ow-J7evcB-2LeEzc@im.wechat"
++   }
++ ]
++ **提醒消息格式：**
++ - 提前N天：`📅 提醒：农历{月}月{日}日是 {生日阳历日期}，还有 {N} 天！\n{自定义消息}`
++ - 当天：`🎂 今天是农历{月}月{日}日！\n{自定义消息}`
++   [--channel <channel>] \
++   [--channel <channel>] \
++   [--to <destination>]
++   [--to <destination>]
++   --channel openclaw-weixin --to "o9cq807t3Jl4ow-J7evcB-2LeEzc@im.wechat"
++   [--time <HH:MM>] \
++   [--days-before <N>] \
++   [--yearly] \
++ | `--time` | 否 | 提醒时间，默认 `08:00` |
++ | `--days-before` | 否 | 提前N天提醒，默认 0（当天） |
++ | `--yearly` | 否 | 是否每年重复，默认 false |
++ # 农历8月15生日提醒（当天早上10点）
++ openclaw cron-limited add-lunar --lunar 8-15 \
++   --message "🎂 生日快乐！" \
++   --time 10:00 \
++ # 农历8月15，提前3天提醒
++   --message "🎂 记得准备好庆祝！" \
++   --time 09:00 \
++   --days-before 3 \
++   --yearly \
++   --yearly \
++ # 春节提醒（农历正月初一）
++   --time 08:00 \
++ ## 工作原理
++ ### 有限次数重复
++ 3. 在第N次执行时间 + 1分钟 创建「删除主任务」的一次性任务
++ ### 农历生日提醒（每年模式）
++ 2. 保存配置到 `~/.openclaw/cron-limited/birthdays.json`
++ 3. 创建每日检查cron任务（早上7点）
++ 4. 每日检查任务触发时，agent读取配置并发送当日所有提醒
++ - Python 3 + lunarcalendar 库
+
+### scripts/cron-limited.sh  [code]
+- # 支持农历生日等场景
+-       # 格式: --lunar 8-15 表示农历8月15
+-     exit 1
+- # 农历转阳历（使用 Python）
+- lunar_to_solar() {
+-   local year=$1
+-   local month=$2
+-   local day=$3
+- from lunarcalendar import Lunar, Converter
+- lunar = Lunar($year, $month, $day)
+- solar = Converter.Lunar2Solar(lunar)
+- year = today.year
+- # 尝试今年
+- if solar.to_date() >= today:
+-     print(f'{solar.year}-{solar.month:02d}-{solar.day:02d}')
+-     print(f'{solar.year}-{solar.month:02d}-{solar.day:02d}')
+-     # 明年
+-     lunar = Lunar(year + 1, $month, $day)
+-     solar = Converter.Lunar2Solar(lunar)
+-   # 农历生日提醒模式
+-     echo "错误: 农历模式需要 --lunar <月份-日期> 和 --message"
+-   # 计算下一个生日的阳历日期
+-   next_date=$(get_next_lunar_date "$LUNAR_MONTH" "$LUNAR_DAY")
+-   echo "农历 ${LUNAR_MONTH}月${LUNAR_DAY}日 -> 阳历: $next_date"
+-   # 创建一次性任务，在生日当天早上8点执行
+-   at_time="${next_date}T08:00:00"
+-   # 创建生日提醒任务
+-   echo "创建生日提醒任务..."
+-   birthday_job=$(openclaw cron add \
+-     --name "生日提醒-农历${LUNAR_MONTH}月${LUNAR_DAY}日" \
+-     --at "$at_time" \
+-     --message "$MESSAGE" \
+-     --announce \
+-     --channel "$CHANNEL" \
+-     --to "$TO" \
+-     --json 2>&1)
+-   birthday_id=$(echo "$birthday_job" | jq -r '.id // empty')
+-   if [[ -z "$birthday_id" ]]; then
+-     echo "错误: 创建生日提醒任务失败"
+-     echo "$birthday_job"
+-   echo ""
+-   echo ""
+-   echo "✅ 农历生日提醒创建成功！"
+-   echo "任务ID: $birthday_id"
+-   echo "执行时间: ${next_date} 08:00 (上海时区)"
+-   echo "注意: 这是一次性任务，明年需要重新创建。或者我可以创建一个每年自动重发的循环版本。"
+- fi
+- # 原有逻辑：有限次数重复任务
+-   exit 1
+- echo "创建自动删除任务（将于 $(date -d "@$(( delete_at_ms / 1000 ))" "+%H:%M:%S") 执行）..."
+- delete_msg="此任务由 cron-limited 自动创建，用于删除主任务 $main_id"
+- if [[ -z "$delete_id" ]]; then
+-   echo "错误: 创建删除任务失败"
+-   echo "$delete_job"
+- echo ""
+- echo "第 $REPEAT 次执行完成后，删除任务会在1分钟后自动清理主任务。"
++ # 支持农历生日等场景及每年自动重复
++ TIME="08:00"
++ DAYS_BEFORE=0
++ REPEAT_YEARLY=false
++ # 配置文件目录
++ CONFIG_DIR="$HOME/.openclaw/cron-limited"
++ CONFIG_FILE="$CONFIG_DIR/birthdays.json"
++ DAILY_JOB_MSG="CRON-LIMITED-DAILY-CHECK"
++ # 初始化配置目录
++ init_config() {
++   mkdir -p "$CONFIG_DIR"
++   if [[ ! -f "$CONFIG_FILE" ]]; then
++     echo "[]" > "$CONFIG_FILE"
++   fi
++   fi
++   fi
++ }
++ }
++ }
++ }
++   else
++   else
++   local year=${3:-""}
++ import datetime
++ if '$year':
++     year = int('$year')
++     year = today.year
++ # 计算提前N天后的日期
++ calculate_reminder_date() {
++   local solar_date="$1"
++   local days_before=$2
++ date = datetime.date.fromisoformat('$solar_date')
++ reminder = date - datetime.timedelta(days=$days_before)
++ print(reminder.isoformat())
++ # 保存生日配置
++ save_birthday_config() {
++   local lunar_month="$1"
++   local lunar_day="$2"
++   local message="$3"
++   local time="$4"
++   local days_before="$5"
++   local channel="$6"
++   local to="$7"
++   init_config
++   /tmp/lunar-venv/bin/python3 << PYEOF
++ import json
++ with open('$CONFIG_FILE', 'r') as f:
++     data = json.load(f)
++ # 检查是否已存在相同配置
++ for entry in data:
++     if entry['lunar_month'] == $lunar_month and entry['lunar_day'] == $lunar_day:
++         # 更新现有条目
++         entry['message'] = '''$message'''.strip()
++         entry['time'] = '$time'
++         entry['days_before'] = $days_before
++         entry['channel'] = '$channel'
++         entry['to'] = '$to'
++         with open('$CONFIG_FILE', 'w') as f:
++             json.dump(data, f, ensure_ascii=False, indent=2)
++         print('updated')
++         exit(0)
++ # 添加新配置
++ new_entry = {
++     'id': 'lunar_${lunar_month}_${lunar_day}',
++     'lunar_month': $lunar_month,
++     'lunar_day': $lunar_day,
++     'message': '''$message'''.strip(),
++     'time': '$time',
++     'days_before': $days_before,
++     'channel': '$channel',
++     'to': '$to'
++ data.append(new_entry)
++ with open('$CONFIG_FILE', 'w') as f:
++     json.dump(data, f, ensure_ascii=False, indent=2)
++ print('added')
++ PYEOF
++ # 创建每日检查任务（如果不存在）
++ ensure_daily_checker() {
++   local job_name="cron-limited-每日生日检查"
++   # 检查是否已存在
++   if openclaw cron list --json 2>/dev/null | grep -q "\"$job_name\""; then
++     return 0
++   # 创建每日检查任务
++   # 注意：这个任务的消息是一个特殊标记，实际检查逻辑由agent执行
++   openclaw cron add \
++     --name "$job_name" \
++     --cron "0 7 * * *" \
++     --message "$DAILY_JOB_MSG" \
++     --no-deliver \
++     --session isolated \
++     --timeout-seconds 60 \
++     --json 2>/dev/null
++   echo "已创建每日检查任务"
++       shift
++       ;;
++       ;;
++       ;;
++       shift 2
++       shift 2
++     --time)
++       TIME="$2"
++     --days-before)
++       DAYS_BEFORE="$2"
++     --yearly)
++       REPEAT_YEARLY=true
++ # 农历生日提醒
++     echo "错误: 需要 --lunar <月份-日期> 和 --message"
++   # 计算生日阳历日期
++   birthday_solar=$(get_next_lunar_date "$LUNAR_MONTH" "$LUNAR_DAY")
++   echo "农历 ${LUNAR_MONTH}月${LUNAR_DAY}日 -> 阳历生日: $birthday_solar"
++   # 计算提醒日期
++   reminder_solar=$(calculate_reminder_date "$birthday_solar" "$DAYS_BEFORE")
++   if [[ "$DAYS_BEFORE" -gt 0 ]]; then
++     echo "提前 $DAYS_BEFORE 天 -> 提醒日期: $reminder_solar"
++     echo "提醒日期: $reminder_solar"
++   if [[ "$REPEAT_YEARLY" == "true" ]]; then
++     # 保存配置
++     save_birthday_config "$LUNAR_MONTH" "$LUNAR_DAY" "$MESSAGE" "$TIME" "$DAYS_BEFORE" "$CHANNEL" "$TO"
++     # 确保每日检查任务存在
++     ensure_daily_checker
++     echo ""
++     echo ""
++     echo ""
++     echo ""
++     echo "✅ 已创建每年重复的农历提醒！"
++     echo "配置信息："
++     echo "  农历日期: ${LUNAR_MONTH}月${LUNAR_DAY}日"
++     echo "  生日阳历: $birthday_solar"
++     echo "  提醒时间: $TIME"
++     echo "  提前天数: $DAYS_BEFORE"
++     echo "📋 提醒日程："
++     echo "  ${reminder_solar} $TIME - 发送第一条提醒"
++     echo "  之后每年自动重复，无需重新创建"
++     # 单次提醒 - 创建一次性任务
++     if [[ "$DAYS_BEFORE" -gt 0 ]]; then
++       display_message="📅 提醒：农历${LUNAR_MONTH}月${LUNAR_DAY}日是 ${birthday_solar}，还有 ${DAYS_BEFORE} 天！
++ ${MESSAGE}"
++ ${MESSAGE}"
++     else
++       display_message="🎂 今天是农历${LUNAR_MONTH}月${LUNAR_DAY}日！
++     fi
++     openclaw cron add \
++       --name "农历${LUNAR_MONTH}月${LUNAR_DAY}日提醒" \
++       --at "${reminder_solar}T${TIME}:00" \
++       --message "$display_message" \
++       --announce \
++       --channel "$CHANNEL" \
++       --to "$TO" \
++       --delete-after-run \
++       --json 2>&1 | jq -r '.id' > /dev/null
++     echo "✅ 单次提醒创建成功！"
++     echo "执行时间: ${reminder_solar} $TIME (上海时区)"
++ # 有限次数重复任务
++ echo "创建自动删除任务..."

@@ -1,0 +1,1363 @@
+nextaltair/soul-in-sapphire  1.0.0 -> 1.0.2
+change_type: instructions+docs+code   changelog: - Major refactor: All local scripts and related files were removed; now relies on the `notion-api-automation` skill for Notion operations. - Added clear dependency metadata and workspace discovery requirements to SKILL.md. - Updated documentation to reflect new runtime structure and external dependency handling. - Subagent spawn planning now exclusively uses the shared `subagent-spawn-command-builder` skill—local planner scripts are no longer available.
+
+### README.md  [docs]
+- # soul-in-sapphire
+- ## Intent (何を意図したスキルか)
+- OpenClawは「会話ログ」は残る一方で、**人格/気分/学び/その日の余韻**みたいなものは、放っておくと散逸します。
+- `soul-in-sapphire` はそれを **Notionに外部化して継続性を作る**ためのスキルです。
+- 狙いは3つ:
+- 1) **Durable memory**: 汎用の長期メモリ(LTM)を残し、後から検索して会話/作業に戻す
+- 2) **Emotion/State**: 出来事(event)に複数の感情を紐づけ、状態(state)を更新して「育つ感じ」を出す
+- 3) **Journal**: 毎日1回、世界の出来事(ニュース) + 仕事/会話 + 感情 + 未来を短くまとめ、記憶の層を厚くする
+- このスキルは **プロジェクト特化ではなく汎用**で、ユーザーがDB名や語彙を自分の世界観に合わせて差し替えられるように設計しています。
+- ## Inspiration (元ネタ)
+- このスキル名/モチーフは、SF小説 ｢ヴァレンティーナ -コンピュータネットワークの女王- (訳:小川 隆)｣ *Valentina: Soul in Sapphire* (Joseph H. Delaney / Marc Stiegler) に由来します。
+- ネットワーク上に生まれた自我を持つプログラム、というアイデアの空気感を借りています。
+- ---
+- ---
+- OpenClaw向けのNotionベースLTM(長期記憶) + Emotion/State + Journal運用。
+- - Notion API **2025-09-03**(data_sources世代) 前提
+- - 個人のNotion token/IDはリポジトリに含めない
+- - 初回セットアップでDBを作り、以後はスクリプトから記録/参照する
+- ## これは何?
+- このスキルは2系統あります。
+- 1. **LTM(汎用メモリ)系**
+-    - 決定事項/好み/手順/注意点をNotionに保存し、あとで検索して使う
+- 2. **Emotion/State + Journal 系**
+-    - event(出来事)に対して複数のemotionをぶら下げ、stateを更新する
+-    - 毎日01:00にjournalを書いて「その日」「世界の出来事」「作業」「感情」「未来」を残す
+- ## 依存
+- - OpenClaw Gateway
+- - Notion Integration + token
+- - Notion操作用スキル(ClawHub): `notion-api-automation`
+- - subagent payload生成スキル(ClawHub): `subagent-spawn-command-builder`
+- インストール例:
+- ```bash
+- ```bash
+- ```bash
+- ```bash
+- ```bash
+- ```bash
+- ```bash
+- # notion-api-automation
+- npx clawhub@latest install notion-api-automation
+- npx clawhub@latest install notion-api-automation
+- pnpm dlx clawhub@latest install notion-api-automation
+- pnpm dlx clawhub@latest install notion-api-automation
+- # subagent-spawn-command-builder
+- npx clawhub@latest install subagent-spawn-command-builder
+- pnpm dlx clawhub@latest install subagent-spawn-command-builder
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ## セットアップ
+- ## Notionデータベース設計(必須)
+- このスキルを他ユーザーが再利用する場合、まず以下5つのDB構成を揃える必要があります。
+- `setup_ltm.js` を使うと自動作成されますが、手動で作る場合も同じプロパティ名を使ってください。
+- 作成対象:
+- - `<base>-mem`
+- - `<base>-mem`
+- - `<base>-events`
+- - `<base>-events`
+- - `<base>-emotions`
+- - `<base>-emotions`
+- - `<base>-state`
+- - `<base>-state`
+- - `<base>-journal`
+- - `<base>-journal`
+- ### 1) `<base>-mem` (長期記憶)
+- - 目的: 高シグナルな記憶を保存
+- - プロパティ:
+- - プロパティ:
+- - プロパティ:
+- - プロパティ:
+- - プロパティ:
+-   - `Name` (title)
+-   - `Name` (title)
+-   - `Name` (title)
+-   - `Name` (title)
+-   - `Name` (title)
+-   - `Type` (select): `decision|preference|fact|procedure|todo|gotcha`
+-   - `Tags` (multi-select)
+-   - `Content` (rich_text)
+-   - `Source` (url, 任意)
+-   - `Confidence` (select: `high|medium|low`, 任意)
+- ### 2) `<base>-events` (出来事)
+- - 目的: 作業/会話中の意味あるトリガーを保存
+-   - `when` (date)
+-   - `when` (date)
+-   - `when` (date)
+-   - `importance` (select: `1..5`)
+-   - `trigger` (select): `progress|boundary|ambiguity|external_action|manual`
+-   - `context` (rich_text)
+-   - `source` (select): `discord|cli|cron|heartbeat|other`
+-   - `link` (url, 任意)
+-   - `uncertainty` (number)
+-   - `control` (number)
+-   - `emotions` (relation -> `<base>-emotions`)
+-   - `state` (relation -> `<base>-state`)
+- ### 3) `<base>-emotions` (感情)
+- - 目的: 1つの出来事に対する感情軸を複数記録
+-   - `axis` (select): `arousal|valence|focus|confidence|stress|curiosity|social|solitude|joy|anger|sadness|fun|pain`
+-   - `level` (number)
+-   - `comment` (rich_text)
+-   - `weight` (number)
+-   - `body_signal` (multi-select): `tension|relief|fatigue|heat|cold`
+-   - `need` (select): `safety|progress|recognition|autonomy|rest|novelty`
+-   - `coping` (select): `log|ask|pause|act|defer`
+-   - `event` (relation -> `<base>-events`)
+-   - `event` (relation -> `<base>-events`)
+- ### 4) `<base>-state` (状態スナップショット)
+- - 目的: 出来事+感情を解釈した現在状態を保存
+-   - `state_json` (rich_text)
+-   - `reason` (rich_text)
+-   - `source` (select): `event|cron|heartbeat|manual`
+-   - `mood_label` (select): `clear|wired|dull|tense|playful|guarded|tender`
+-   - `intent` (select): `build|fix|organize|explore|rest|socialize|reflect`
+-   - `need_stack` (select): `safety|stability|belonging|esteem|growth`
+-   - `need_level` (number)
+-   - `avoid` (multi-select): `risk|noise|long_tasks|external_actions|ambiguity`
+- ### 5) `<base>-journal` (日次統合)
+- - 目的: 1日の感情/作業/世界状況を統合して保存
+-   - `body` (rich_text)
+-   - `worklog` (rich_text)
+-   - `session_summary` (rich_text)
+-   - `mood_label` (select)
+-   - `intent` (select)
+-   - `future` (rich_text)
+-   - `world_news` (rich_text)
+-   - `tags` (multi-select)
+-   - `source` (select): `cron|manual`
+- ### 0) Notion操作スキルをインストール
+- ``bash
+- ### 1) Notion Integration
+- 1. <https://www.notion.so/my-integrations> でIntegrationを作る
+- 2. Tokenを控える
+- 3. 親ページ(例: OpenClawページ)をIntegrationに共有(Connect to)
+- ### 2) APIキー
+- 推奨: 環境変数
+- export NOTION_API_KEY="..."
+- (OpenClaw運用なら `~/.openclaw/.env` に `NOTION_API_KEY=...`)
+- ### 3) DB作成 + config生成
+- 親ページ配下に以下を作成/再利用し、`~/.config/soul-in-sapphire/config.json` を生成します。
+- `<base>` は `--base` で指定。指定しない場合は workspace の `IDENTITY.md` の Name をデフォルトにします。
+- node skills/soul-in-sapphire/scripts/setup_ltm.js \
+-   --parent "<Notion parent page url>" \
+-   --base "Valentina" \
+-   --yes
+- ## 使い方
+- ### Emotion/State: tick
+- 1 event + N emotions を書き、最新stateから更新したstate snapshotを1件作ります。
+- cat <<'JSON' | node skills/soul-in-sapphire/scripts/emostate_tick.js
+- {
+-   "event": {
+-     "title": "...",
+-     "importance": 4,
+-     "trigger": "progress",
+-     "context": "...",
+-     "source": "discord",
+-     "uncertainty": 2,
+-     "control": 8
+-   },
+-   "emotions": [
+-     {"axis": "joy", "level": 7, "comment": "...", "need": "progress", "coping": "act"},
+-     {"axis": "stress", "level": 6, "comment": "...", "need": "safety", "coping": "log"}
+-   ],
+-   "state": {
+-     "mood_label": "clear",
+-     "intent": "build",
+-     "need_stack": "growth",
+-     "need_level": 6,
+-     "avoid": ["noise"],
+-     "reason": "..."
+-   }
+- }
+- JSON
+- - stateは時間で5へ戻る(自然減衰)
+- - 強いイベントは `imprints` としてstate_jsonに残る(根に持つ)
+- ### Journal: 1件書く
+- echo '{
+-   "body": "...",
+-   "worklog": "...",
+-   "session_summary": "...",
+-   "world_news": "...",
+-   "future": "...",
+-   "tags": ["openclaw","news"],
+-   "mood_label": "clear",
+-   "intent": "reflect",
+-   "source": "manual"
+- }' | node skills/soul-in-sapphire/scripts/journal_write.js
+- ## 自動実行(推奨)
+- - **01:00 JST**: journalを必ず書く(ニュース1-2件+感想、作業/会話まとめ、未来)
+- - **heartbeat**: ファジーに感情が動いた時だけ emostate tick を打つ(通知は必要時のみ)
+- OpenClawの cron/heartbeat は環境ごとに設定してください。
+- ## Subagentモデル指定(共通builderスキル運用)
+- このスキルでは、subagent用payloadの生成を
+- `subagent-spawn-command-builder` に委譲します。
+- ### 1) テンプレートをコピー
+- - テンプレート: `skills/subagent-spawn-command-builder/state/spawn-profiles.template.json`
+- - 実運用ファイル: `skills/subagent-spawn-command-builder/state/spawn-profiles.json`
+- cp skills/subagent-spawn-command-builder/state/spawn-profiles.template.json \
+-    skills/subagent-spawn-command-builder/state/spawn-profiles.json
+- ### 2) モデル/think/timeoutを設定
+- `spawn-profiles.json` の `profiles.heartbeat` / `profiles.journal` を編集して使うモデルを設定します。
+- ### 3) builderスキルで `sessions_spawn` payloadを生成
+- - `subagent-spawn-command-builder` を呼び出す
+- - `profile=heartbeat` を指定
+- - `task` に「直近の感情変化を評価して必要ならemostateを1件記録」を渡す
+- 出力はそのまま `sessions_spawn` に渡せるJSONです。
+- ### 補足
+- - 生成ログ: `skills/subagent-spawn-command-builder/state/build-log.jsonl`
+- - 設定変更後のGateway再読込が必要な場合は `openclaw gateway restart` を実行してください。
+- ## ローカル設定
+- `~/.config/soul-in-sapphire/config.json` はローカル専用。
+- - Notion DB IDs
+- - journal tag vocab (例): `journal.tag_vocab`
+- はここで管理し、リポジトリにはコミットしない。
+- 細かい運用ルール/プロパティ名の変更は、Notion側のスキーマとスクリプトの対応が必要です。
+
+### SKILL.md  [instructions]
++ metadata: {"openclaw":{"emoji":"💠","requires":{"bins":["node"],"env":["NOTION_API_KEY"]},"primaryEnv":"NOTION_API_KEY","dependsOnSkills":["notion-api-automation"],"localReads":["~/.openclaw/openclaw.json","~/.config/soul-in-sapphire/config.json"]}}
++ - Dependency skill: `notion-api-automation` (`scripts/notionctl.mjs` is executed via local child process)
++ - Local workspace discovery read: `~/.openclaw/openclaw.json` (used to resolve workspace/skill path)
+
+### package.json  [code]
+- {
+-   "name": "soul-in-sapphire",
+-   "private": true,
+-   "type": "module"
+- }
+
+### scripts/bootstrap_config.js  [code]
+- #!/usr/bin/env node
+- import fs from 'fs';
+- import path from 'path';
+- import { httpJson, expandHome } from './ltm_common.js';
+- function parseArgs(argv) {
+-   const out = { name: '', out: '~/.config/soul-in-sapphire/config.json' };
+-   for (let i = 2; i < argv.length; i++) {
+-     const a = argv[i];
+-     if (a === '--name') out.name = argv[++i] || '';
+-     else if (a === '--out') out.out = argv[++i] || out.out;
+-   }
+-   }
+-   return out;
+- }
+- }
+- }
+- }
+- function plainTitle(obj) {
+-   const parts = obj?.title || [];
+-   return parts.map(p => p?.plain_text || '').join('').trim();
+- function resolveOne(name) {
+-   const res = httpJson('POST', '/search', { query: name, page_size: 50 });
+-   const results = res?.results || [];
+-   const ds = results.filter(r => r.object === 'data_source' && plainTitle(r) === name);
+-   const db = results.filter(r => r.object === 'database' && plainTitle(r) === name);
+-   if (ds.length !== 1 || db.length !== 1) {
+-     throw new Error(`Notion database/data_source exact match failed for: ${name}`);
+-   return { ltm_db_name: name, data_source_id: ds[0].id, database_id: db[0].id };
+- function main() {
+-   const { name, out } = parseArgs(process.argv);
+-   if (!name) throw new Error('Missing --name');
+-   const cfg = resolveOne(name);
+-   const outPath = expandHome(out);
+-   fs.mkdirSync(path.dirname(outPath), { recursive: true });
+-   fs.writeFileSync(outPath, JSON.stringify(cfg, null, 2) + '\n', 'utf-8');
+-   console.log(JSON.stringify({ ok: true, out: outPath, config: cfg }, null, 2));
+- try { main(); } catch (e) { console.error(String(e?.stack || e)); process.exit(1); }
+
+### scripts/emostate_config.js  [code]
+- #!/usr/bin/env node
+- import fs from 'fs';
+- import path from 'path';
+- import os from 'os';
+- function configPath() { return path.join(os.homedir(), '.config', 'soul-in-sapphire', 'config.json'); }
+- function loadConfig() {
+-   const p = configPath();
+-   const p = configPath();
+-   if (!fs.existsSync(p)) throw new Error(`Missing config: ${p}`);
+-   return JSON.parse(fs.readFileSync(p, 'utf-8'));
+- }
+- }
+- }
+- function saveConfig(cfg) {
+-   fs.mkdirSync(path.dirname(p), { recursive: true });
+-   fs.writeFileSync(p, JSON.stringify(cfg, null, 2) + '\n', 'utf-8');
+- function requirePaths(cfg, keys) {
+-   const missing = [];
+-   for (const k of keys) if (!cfg?.[k]) missing.push(k);
+-   if (missing.length) throw new Error(`Config missing keys: ${missing.join(', ')}`);
+- export { configPath, loadConfig, saveConfig, requirePaths };
+
+### scripts/emostate_notion.js  [code]
+- #!/usr/bin/env node
+- import { httpJson } from './ltm_common.js';
+- function nowIso() { return new Date().toISOString(); }
+- const _rt = s => ({ rich_text: s ? [{ type: 'text', text: { content: String(s) } }] : [] });
+- const _title = s => ({ title: [{ type: 'text', text: { content: String(s) } }] });
+- const _select = n => ({ select: n ? { name: String(n) } : null });
+- const _multi = arr => ({ multi_select: (arr || []).filter(Boolean).map(n => ({ name: String(n) })) });
+- const _date = s => ({ date: s ? { start: String(s) } : null });
+- const _num = x => ({ number: (x === null || x === undefined || x === '') ? null : Number(x) });
+- const _url = u => ({ url: u ? String(u) : null });
+- function clamp010(x) { return Math.max(0, Math.min(10, Number(x))); }
+- function queryRecent(dsId, pageSize = 10) {
+-   const body = { page_size: pageSize, sorts: [{ timestamp: 'created_time', direction: 'descending' }] };
+-   const res = httpJson('POST', `/data_sources/${dsId}/query`, body);
+-   return res?.results || [];
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- function textOf(prop) {
+-   if (!prop) return '';
+-   const t = prop.type;
+-   if (t === 'title' || t === 'rich_text') return (prop[t] || []).map(x => x?.plain_text || '').join('').trim();
+-   if (t === 'select') return prop.select?.name || '';
+-   if (t === 'multi_select') return (prop.multi_select || []).map(x => x?.name).filter(Boolean);
+-   if (t === 'number') return prop.number;
+-   if (t === 'date') return prop.date?.start || '';
+-   if (t === 'url') return prop.url || '';
+-   if (t === 'relation') return (prop.relation || []).map(x => x?.id).filter(Boolean);
+-   return '';
+- function createPage(databaseId, properties) {
+-   return httpJson('POST', '/pages', { parent: { database_id: databaseId }, properties });
+- function patchPage(pageId, properties = undefined, archived = undefined) {
+-   const b = {};
+-   if (properties !== undefined) b.properties = properties;
+-   if (archived !== undefined) b.archived = !!archived;
+-   return httpJson('PATCH', `/pages/${pageId}`, b);
+- function buildEventProps(obj = {}) {
+-   const when = obj.when || nowIso();
+-   const when = obj.when || nowIso();
+-   return {
+-     Name: _title(obj.title || obj.Name || '(event)'),
+-     when: _date(when),
+-     when: _date(when),
+-     importance: _select(obj.importance != null ? String(obj.importance) : null),
+-     trigger: _select(obj.trigger),
+-     context: _rt(obj.context || ''),
+-     source: _select(obj.source || 'other'),
+-     link: _url(obj.link),
+-     uncertainty: _num(obj.uncertainty),
+-     control: _num(obj.control),
+-   };
+-   };
+-   };
+- function buildEmotionProps(obj = {}, eventPageId = null) {
+-   const props = {
+-   const props = {
+-     Name: _title(obj.title || `${obj.axis}=${obj.level}`),
+-     axis: _select(obj.axis),
+-     level: _num(obj.level),
+-     comment: _rt(obj.comment || ''),
+-     weight: _num(obj.weight),
+-     body_signal: _multi(obj.body_signal || []),
+-     need: _select(obj.need),
+-     coping: _select(obj.coping),
+-   if (eventPageId) props.event = { relation: [{ id: eventPageId }] };
+-   if (eventPageId) props.event = { relation: [{ id: eventPageId }] };
+-   return props;
+-   return props;
+- function buildStateProps(obj = {}, eventPageId = null) {
+-     Name: _title(obj.title || `state@${when}`),
+-     state_json: _rt(JSON.stringify(obj.state_json || {})),
+-     reason: _rt(obj.reason || ''),
+-     source: _select(obj.source || 'manual'),
+-     mood_label: _select(obj.mood_label),
+-     intent: _select(obj.intent),
+-     need_stack: _select(obj.need_stack),
+-     need_level: _num(obj.need_level),
+-     avoid: _multi(obj.avoid || []),
+- export { nowIso, clamp010, queryRecent, textOf, createPage, patchPage, buildEventProps, buildEmotionProps, buildStateProps };
+
+### scripts/emostate_tick.js  [code]
+- #!/usr/bin/env node
+- /**
+-  * emostate_tick.js
+-  *
+-  * Input JSON on stdin:
+-  * {
+-  *   event: {...},
+-  *   emotions: [{axis, level, comment?, need?, coping?, body_signal? ...}, ...],
+-  *   state: { mood_label?, intent?, need_stack?, need_level?, avoid?, reason? }
+-  * }
+-  */
+- import fs from 'fs';
+- import os from 'os';
+- import path from 'path';
+- import {
+-   createPage,
+-   queryDataSource,
+- } from './notionctl_bridge.js';
+- function die(msg) {
+-   process.stderr.write(String(msg) + '\n');
+-   process.exit(1);
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- const AXES = [
+-   'arousal','valence','focus','confidence','stress','curiosity','social','solitude',
+-   'joy','anger','sadness','fun','pain',
+- ];
+- const NORMAL_HALF_LIFE_HOURS = 24.0;
+- function clamp010(x) {
+-   if (x < 0) return 0;
+-   if (x > 10) return 10;
+-   return x;
+- function nowIso() {
+-   // local offset ISO seconds
+-   const d = new Date();
+-   const tz = -d.getTimezoneOffset();
+-   const sign = tz >= 0 ? '+' : '-';
+-   const pad = n => String(Math.floor(Math.abs(n))).padStart(2,'0');
+-   const hh = pad(tz/60);
+-   const mm = pad(tz%60);
+-   const iso = d.toISOString().replace('Z','');
+-   return `${iso}${sign}${hh}:${mm}`;
+- function titleProp(s) {
+-   return { title: [{ type: 'text', text: { content: String(s) } }] };
+- function rtProp(s) {
+-   if (!s) return { rich_text: [] };
+-   return { rich_text: [{ type: 'text', text: { content: String(s) } }] };
+- function selectProp(name) {
+-   return { select: name ? { name: String(name) } : null };
+- function multiProp(arr) {
+-   const xs = Array.isArray(arr) ? arr : [];
+-   return { multi_select: xs.filter(Boolean).map(n => ({ name: String(n) })) };
+- function numProp(x) {
+-   if (x === null || x === undefined || x === '') return { number: null };
+-   return { number: Number(x) };
+- function dateProp(start) {
+-   if (!start) return { date: null };
+-   return { date: { start: String(start) } };
+- function urlProp(u) {
+-   if (!u) return { url: null };
+-   return { url: String(u) };
+- function relProp(pageId) {
+-   return { relation: [{ id: pageId }] };
+- function expDecayToward(x, target, hours, halfLifeHours) {
+-   if (hours <= 0) return x;
+-   if (halfLifeHours <= 0) return target;
+-   const lam = Math.log(2) / halfLifeHours;
+-   return target + (x - target) * Math.exp(-lam * hours);
+- function imprintHalfLife(severity) {
+-   const s = Math.max(0, Math.min(10, severity));
+-   return NORMAL_HALF_LIFE_HOURS * (1 + s);
+- function parseIso(s) {
+-   if (!s) return null;
+-   const t = String(s).replace('Z', '+00:00');
+-   const d = new Date(t);
+-   return isNaN(d.getTime()) ? null : d;
+- function propText(prop) {
+-   if (!prop) return '';
+-   const t = prop.type;
+-   if (t === 'rich_text' || t === 'title') {
+-     return (prop[t] || []).map(x => x?.plain_text || '').join('').trim();
+-   }
+-   }
+-   }
+-   }
+-   }
+-   }
+-   }
+-   if (t === 'date') return prop.date?.start || '';
+-   return '';
+- function readConfig() {
+-   const p = path.join(os.homedir(), '.config', 'soul-in-sapphire', 'config.json');
+-   if (!fs.existsSync(p)) die(`Missing config: ${p}. Run setup_ltm.js first.`);
+-   return JSON.parse(fs.readFileSync(p, 'utf-8'));
+- function initialState() {
+-   const s = {};
+-   for (const ax of AXES) s[ax] = 5;
+-   return s;
+- function maybeAddImprints(stateJson, emotions, event) {
+-   let imprints = Array.isArray(stateJson.imprints) ? stateJson.imprints : [];
+-   const control = event?.control;
+-   const controlV = (control === null || control === undefined) ? null : Number(control);
+-   for (const emo of emotions) {
+-   for (const emo of emotions) {
+-   for (const emo of emotions) {
+-     const axis = emo?.axis;
+-     if (!AXES.includes(axis)) continue;
+-     const level = Number(emo?.level);
+-     const level = Number(emo?.level);
+-     if (!Number.isFinite(level)) continue;
+-     if (!Number.isFinite(level)) continue;
+-     if (level < 9) continue;
+-     if (controlV !== null && Number.isFinite(controlV) && controlV > 3) continue;
+-     const sev = Math.max(0, Math.min(10, level));
+-     const tag = `imprint:${axis}:${event?.trigger || 'event'}`;
+-     imprints.push({
+-       tag,
+-       axis,
+-       severity: sev,
+-       created_at: event?.when || null,
+-       decay_half_life_hours: imprintHalfLife(sev),
+-       notes: emo?.comment || '',
+-     });
+-   // dedupe by (tag, created_at)
+-   const seen = new Set();
+-   const dedupRev = [];
+-   for (let i = imprints.length - 1; i >= 0; i--) {
+-     const it = imprints[i] || {};
+-     const key = `${it.tag || ''}|${it.created_at || ''}`;
+-     if (seen.has(key)) continue;
+-     seen.add(key);
+-     dedupRev.push(it);
+-   stateJson.imprints = dedupRev.reverse();
+- async function main() {
+-   const cfg = readConfig();
+-   const eventsDb = cfg?.events?.database_id || cfg.valentina_events_database_id;
+-   const emotionsDb = cfg?.emotions?.database_id || cfg.valentina_emotions_database_id;
+-   const stateDb = cfg?.state?.database_id || cfg.valentina_state_database_id;
+-   const stateDs = cfg?.state?.data_source_id || cfg.valentina_state_data_source_id;
+-   if (!(eventsDb && emotionsDb && stateDb && stateDs)) die('Config missing events/emotions/state ids. Re-run setup.');
+-   const raw = fs.readFileSync(0, 'utf-8').trim();
+-   if (!raw) die('Expected JSON on stdin');
+-   const payload = JSON.parse(raw);
+-   const event = payload.event || {};
+-   const emotions = payload.emotions || [];
+-   const stateOverrides = payload.state || {};
+-   const when = event.when || nowIso();
+-   // 1) create event
+-   const eventProps = {
+-     Name: titleProp(event.title || '(event)'),
+-     when: dateProp(when),
+-     when: dateProp(when),
+-     importance: selectProp(event.importance != null ? String(event.importance) : null),
+-     trigger: selectProp(event.trigger || null),
+-     context: rtProp(event.context || ''),
+-     source: selectProp(event.source || 'other'),
+-     link: urlProp(event.link || null),
+-     uncertainty: numProp(event.uncertainty),
+-     control: numProp(event.control),
+-   };
+-   };
+-   const epage = await createPage(eventsDb, eventProps);
+-   const eventId = epage.id;
+-   // 2) create emotions linked
+-     const props = {
+-       Name: titleProp(emo.title || `${emo.axis}=${emo.level}`),
+-       axis: selectProp(emo.axis || null),
+-       level: numProp(emo.level),
+-       comment: rtProp(emo.comment || ''),
+-       weight: numProp(emo.weight),
+-       body_signal: multiProp(emo.body_signal || []),
+-       need: selectProp(emo.need || null),
+-       coping: selectProp(emo.coping || null),
+-       event: relProp(eventId),
+-     };
+-     await createPage(emotionsDb, props);
+-   // 3) load latest state
+-   const q = await queryDataSource(stateDs, {
+-     page_size: 1,
+-     sorts: [{ timestamp: 'created_time', direction: 'descending' }],
+-   });
+-   const latest = (q.results || [])[0] || null;
+-   let base = initialState();
+-   let baseObj = {};
+-   let baseWhen = null;
+-   if (latest) {
+-     const props = latest.properties || {};
+-     const sj = propText(props.state_json);
+-     const w = propText(props.when);
+-     baseWhen = parseIso(w);
+-     try {
+-       baseObj = sj ? JSON.parse(sj) : {};
+-     } catch {
+-       baseObj = {};
+-     }
+-     }
+-     }
+-     if (baseObj && typeof baseObj === 'object') {
+-       for (const ax of AXES) {
+-       for (const ax of AXES) {
+-         if (ax in baseObj) base[ax] = Number(baseObj[ax]);
+-       }
+-       }
+-       }
+-   // 3.5) decay toward 5
+-   const nowDt = parseIso(when);
+-   if (nowDt && baseWhen) {
+-     const hours = (nowDt.getTime() - baseWhen.getTime()) / 3600000;
+-     if (hours > 0) {
+-       const byAxis = {};
+-       const imprints = Array.isArray(baseObj?.imprints) ? baseObj.imprints : [];
+-       for (const it of imprints) {
+-         const ax = it?.axis;
+-         if (!AXES.includes(ax)) continue;
+-         const hl = Number(it?.decay_half_life_hours);
+-         byAxis[ax] = Number.isFinite(hl) ? hl : imprintHalfLife(Number(it?.severity || 0));
+-         const hl = byAxis[ax] || NORMAL_HALF_LIFE_HOURS;
+-         base[ax] = clamp010(expDecayToward(Number(base[ax] || 5), 5, hours, hl));
+-   // 4) apply emotion deltas (level-5)
+-     const ax = emo?.axis;
+-     if (!AXES.includes(ax)) continue;
+-     const delta = level - 5;
+-     base[ax] = clamp010(Number(base[ax] || 5) + delta);
+-   const stateJson = { ...base };
+-   if (Array.isArray(baseObj?.imprints)) stateJson.imprints = baseObj.imprints;
+-   maybeAddImprints(stateJson, emotions, { ...event, when });
+-   stateJson.__meta = { version: 1 };
+-   // 5) write state
+-   const stProps = {
+-     Name: titleProp(stateOverrides.title || `state@${when}`),
+-     state_json: rtProp(JSON.stringify(stateJson)),
+-     reason: rtProp(stateOverrides.reason || 'event tick'),
+-     source: selectProp(stateOverrides.source || 'event'),
+-     mood_label: selectProp(stateOverrides.mood_label || null),
+-     intent: selectProp(stateOverrides.intent || null),
+-     need_stack: selectProp(stateOverrides.need_stack || null),
+-     need_level: numProp(stateOverrides.need_level),
+-     avoid: multiProp(stateOverrides.avoid || []),
+-     event: relProp(eventId),
+-   const spage = await createPage(stateDb, stProps);
+-   console.log(JSON.stringify({
+-     ok: true,
+-     event: { id: eventId, url: epage.url },
+-     state: { id: spage.id, url: spage.url, state_json: stateJson },
+-   }, null, 2));
+- main().catch(err => die(err?.stack || err?.message || String(err)));
+
+### scripts/journal_patch_schema.js  [code]
+- #!/usr/bin/env node
+- import fs from 'fs';
+- import os from 'os';
+- import path from 'path';
+- import { patchDataSource } from './notionctl_bridge.js';
+- function die(msg){ process.stderr.write(String(msg)+'\n'); process.exit(1); }
+- function readConfig(){
+-   const p=path.join(os.homedir(),'.config','soul-in-sapphire','config.json');
+-   if(!fs.existsSync(p)) die(`Missing config: ${p}`);
+-   return JSON.parse(fs.readFileSync(p,'utf-8'));
+- }
+- }
+- async function main(){
+-   const cfg=readConfig();
+-   const dsid = cfg?.journal?.data_source_id || cfg.journal_data_source_id;
+-   if(!dsid) die('Config missing journal_data_source_id. Re-run setup_ltm.js.');
+-   const moodOpts = ['clear','wired','dull','tense','playful','guarded','tender'].map(name=>({name}));
+-   const intentOpts = ['build','fix','organize','explore','rest','socialize','reflect'].map(name=>({name}));
+-   const sourceOpts = ['cron','manual'].map(name=>({name}));
+-   await patchDataSource(dsid, {
+-     when: { date: {} },
+-     body: { rich_text: {} },
+-     worklog: { rich_text: {} },
+-     session_summary: { rich_text: {} },
+-     mood_label: { select: { options: moodOpts } },
+-     intent: { select: { options: intentOpts } },
+-     future: { rich_text: {} },
+-     world_news: { rich_text: {} },
+-     tags: { multi_select: { options: [] } },
+-     source: { select: { options: sourceOpts } },
+-   });
+-   console.log(JSON.stringify({ok:true, journal_data_source_id: dsid}, null, 2));
+- main().catch(err=>die(err?.stack || err?.message || String(err)));
+
+### scripts/journal_write.js  [code]
+- #!/usr/bin/env node
+- /**
+-  * Write one journal entry to <base>-journal.
+-  *
+-  * stdin JSON:
+-  * {
+-  *   "title": "..." (optional),
+-  *   "when": "ISO" (optional),
+-  *   "body": "..." (required),
+-  *   "worklog": "..." (optional),
+-  *   "session_summary": "..." (optional),
+-  *   "future": "..." (optional),
+-  *   "world_news": "..." (optional),
+-  *   "tags": ["..."] (optional),
+-  *   "mood_label": "clear|..." (optional),
+-  *   "intent": "build|..." (optional),
+-  *   "highlights": ["..."] (optional),
+-  *   "links": "..." (optional),
+-  *   "source": "cron|manual" (optional)
+-  * }
+-  */
+- import fs from 'fs';
+- import os from 'os';
+- import path from 'path';
+- import { createPage } from './notionctl_bridge.js';
+- function die(msg) {
+-   process.stderr.write(String(msg) + '\n');
+-   process.exit(1);
+- }
+- }
+- }
+- }
+- }
+- }
+- function titleProp(s) { return { title: [{ type: 'text', text: { content: String(s) } }] }; }
+- function rtProp(s) {
+-   if (!s) return { rich_text: [] };
+-   return { rich_text: [{ type: 'text', text: { content: String(s) } }] };
+- function selectProp(name) { return { select: name ? { name: String(name) } : null }; }
+- function multiProp(arr) {
+-   const xs = Array.isArray(arr) ? arr : [];
+-   return { multi_select: xs.filter(Boolean).map(n => ({ name: String(n) })) };
+- function dateProp(start) { return { date: start ? { start: String(start) } : null }; }
+- function nowIso() {
+-   const d = new Date();
+-   const tz = -d.getTimezoneOffset();
+-   const sign = tz >= 0 ? '+' : '-';
+-   const pad = n => String(Math.floor(Math.abs(n))).padStart(2,'0');
+-   const hh = pad(tz/60);
+-   const mm = pad(tz%60);
+-   const iso = d.toISOString().replace('Z','');
+-   return `${iso}${sign}${hh}:${mm}`;
+- function readConfig() {
+-   const p = path.join(os.homedir(), '.config', 'soul-in-sapphire', 'config.json');
+-   if (!fs.existsSync(p)) die(`Missing config: ${p}. Run setup_ltm.js first.`);
+-   return JSON.parse(fs.readFileSync(p, 'utf-8'));
+- async function main() {
+-   const cfg = readConfig();
+-   const journalDb = cfg?.journal?.database_id || cfg.journal_database_id;
+-   if (!journalDb) die('Config missing journal_database_id. Re-run setup_ltm.js.');
+-   const raw = fs.readFileSync(0, 'utf-8').trim();
+-   if (!raw) die('Expected JSON on stdin');
+-   const obj = JSON.parse(raw);
+-   const when = obj.when || nowIso();
+-   const title = obj.title || `journal@${when}`;
+-   const body = (obj.body || '').trim();
+-   if (!body) die('Missing body');
+-   const props = {
+-     Name: titleProp(title),
+-     when: dateProp(when),
+-     body: rtProp(body),
+-     worklog: rtProp(obj.worklog || ""),
+-     session_summary: rtProp(obj.session_summary || ""),
+-     future: rtProp(obj.future || ""),
+-     world_news: rtProp(obj.world_news || ""),
+-     tags: multiProp(obj.tags || []),
+-     mood_label: selectProp(obj.mood_label || null),
+-     intent: selectProp(obj.intent || null),
+-     highlights: multiProp(obj.highlights || []),
+-     links: rtProp(obj.links || ''),
+-     source: selectProp(obj.source || 'manual'),
+-   };
+-   try {
+-     const page = await createPage(journalDb, props);
+-     console.log(JSON.stringify({ ok: true, id: page.id, url: page.url }, null, 2));
+-     return;
+-   } catch (err) {
+-     // Some journal DBs may not have optional properties (e.g., older schemas).
+-     // If Notion rejects unknown properties, retry once with those props removed.
+-     const msg = String(err?.message || err);
+-     const missingHighlights = msg.includes('highlights is not a property that exists');
+-     const missingLinks = msg.includes('links is not a property that exists');
+-     if (missingHighlights || missingLinks) {
+-       if (missingHighlights) delete props.highlights;
+-       if (missingLinks) delete props.links;
+-       const page = await createPage(journalDb, props);
+-       console.log(JSON.stringify({ ok: true, id: page.id, url: page.url, note: 'retried_without_optional_props' }, null, 2));
+-       return;
+-     }
+-     throw err;
+-   }
+- main().catch(err => die(err?.stack || err?.message || String(err)));
+
+### scripts/ltm_common.js  [code]
+- #!/usr/bin/env node
+- import fs from 'fs';
+- import os from 'os';
+- import path from 'path';
+- import { execFileSync } from 'node:child_process';
+- function expandHome(p) {
+-   if (!p) return p;
+-   if (p === '~') return os.homedir();
+-   if (p.startsWith('~/')) return path.join(os.homedir(), p.slice(2));
+-   return p;
+-   return p;
+- }
+- }
+- }
+- }
+- }
+- }
+- function workspaceFromConfig() {
+-   const cfgPath = expandHome(process.env.OPENCLAW_CONFIG_PATH || '~/.openclaw/openclaw.json');
+-   try {
+-     if (!fs.existsSync(cfgPath)) return null;
+-     const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf-8'));
+-     const ws = cfg?.agents?.defaults?.workspace;
+-     return ws ? expandHome(String(ws)) : null;
+-   } catch {
+-     return null;
+-   }
+-   }
+-   }
+-   }
+- function notionctlPath() {
+-   const ws = workspaceFromConfig() || path.resolve(process.cwd(), '..', '..', '..');
+-   const p = path.join(ws, 'skills', 'notion-api-automation', 'scripts', 'notionctl.mjs');
+-   if (!fs.existsSync(p)) throw new Error(`notionctl not found: ${p}`);
+- function httpJson(method, apiPath, payload = undefined) {
+-   const args = [notionctlPath(), 'api', '--compact', '--method', String(method).toUpperCase(), '--path', String(apiPath)];
+-   if (payload !== undefined) args.push('--body-json', JSON.stringify(payload));
+-   const out = execFileSync('node', args, { encoding: 'utf-8' }).trim();
+-   const obj = out ? JSON.parse(out) : {};
+-   if (!obj.ok) throw new Error(`notionctl api not ok: ${out}`);
+-   return obj.result || {};
+- function loadConfig(p = '~/.config/soul-in-sapphire/config.json') {
+-   const fp = expandHome(p);
+-   if (!fs.existsSync(fp)) {
+-     throw new Error(`Missing config: ${fp}`);
+-   const cfg = JSON.parse(fs.readFileSync(fp, 'utf-8'));
+-   if ((!cfg.database_id || !cfg.data_source_id) && cfg.mem?.database_id && cfg.mem?.data_source_id) {
+-     cfg.database_id = cfg.mem.database_id;
+-     cfg.data_source_id = cfg.mem.data_source_id;
+-   return cfg;
+- function requireIds(cfg) {
+-   for (const k of ['data_source_id', 'database_id']) {
+-     if (!cfg?.[k]) throw new Error(`Config missing ${k}`);
+- export { httpJson, loadConfig, requireIds, expandHome };
+
+### scripts/ltm_search.js  [code]
+- #!/usr/bin/env node
+- import { loadConfig, requireIds, httpJson } from './ltm_common.js';
+- function textOf(prop) {
+-   if (!prop) return '';
+-   const t = prop.type;
+-   if (t === 'title' || t === 'rich_text') return (prop[t] || []).map(x => x?.plain_text || '').join('').trim();
+-   if (t === 'select') return prop.select?.name || '';
+-   if (t === 'multi_select') return (prop.multi_select || []).map(x => x?.name).filter(Boolean).join(',');
+-   if (t === 'url') return prop.url || '';
+-   return '';
+- }
+- }
+- }
+- }
+- function queryDs(dsId, prop, kind, q, pageSize) {
+-   const body = { page_size: pageSize, filter: { property: prop, [kind]: { contains: q } } };
+-   const res = httpJson('POST', `/data_sources/${dsId}/query`, body);
+-   return res?.results || [];
+- function parseArgs(argv) {
+-   const out = { query: '', limit: 5 };
+-   for (let i = 2; i < argv.length; i++) {
+-     const a = argv[i];
+-     if (a === '--query') out.query = argv[++i] || '';
+-     else if (a === '--limit') out.limit = Number(argv[++i] || 5);
+-   }
+-   }
+-   return out;
+- function main() {
+-   const args = parseArgs(process.argv);
+-   if (!args.query.trim()) throw new Error('Empty query');
+-   const cfg = loadConfig();
+-   requireIds(cfg);
+-   const dsId = cfg.data_source_id;
+-   const pageSize = Math.min(50, Math.max(args.limit, 5) * 5);
+-   const hits = [
+-     ...queryDs(dsId, 'Name', 'title', args.query, pageSize),
+-     ...queryDs(dsId, 'Content', 'rich_text', args.query, pageSize),
+-   ];
+-   const seen = new Set();
+-   const out = [];
+-   for (const r of hits) {
+-     const rid = r?.id;
+-     if (!rid || seen.has(rid)) continue;
+-     seen.add(rid);
+-     const p = r.properties || {};
+-     out.push({
+-       id: rid,
+-       url: r.url,
+-       title: textOf(p.Name),
+-       type: textOf(p.Type),
+-       tags: textOf(p.Tags),
+-       content: textOf(p.Content).slice(0, 400),
+-       source: textOf(p.Source),
+-       confidence: textOf(p.Confidence),
+-     });
+-     if (out.length >= args.limit) break;
+-   console.log(JSON.stringify({ ok: true, query: args.query, results: out }, null, 2));
+- try { main(); } catch (e) { console.error(String(e?.stack || e)); process.exit(1); }
+
+### scripts/ltm_write.js  [code]
+- #!/usr/bin/env node
+- import fs from 'fs';
+- import { loadConfig, requireIds, httpJson } from './ltm_common.js';
+- const propTitle = s => ({ title: [{ type: 'text', text: { content: String(s) } }] });
+- const propRich = s => ({ rich_text: [{ type: 'text', text: { content: String(s || '') } }] });
+- const propSelect = n => ({ select: n ? { name: String(n) } : null });
+- const propMulti = a => ({ multi_select: (a || []).filter(Boolean).map(n => ({ name: String(n) })) });
+- const propUrl = u => ({ url: u ? String(u) : null });
+- async function readStdinJson() {
+-   const chunks = [];
+-   for await (const c of process.stdin) chunks.push(c);
+-   const raw = Buffer.concat(chunks).toString('utf-8').trim();
+-   if (!raw) throw new Error('Expected JSON on stdin');
+-   return JSON.parse(raw);
+- }
+- }
+- async function main() {
+-   const cfg = loadConfig();
+-   requireIds(cfg);
+-   const obj = await readStdinJson();
+-   const title = String(obj.title || '').trim();
+-   if (!title) throw new Error('Missing title');
+-   const props = {
+-     Name: propTitle(title),
+-     Type: propSelect(String(obj.type || '').trim() || null),
+-     Tags: propMulti(obj.tags || []),
+-     Content: propRich(String(obj.content || '').trim()),
+-   };
+-   if (obj.source) props.Source = propUrl(obj.source);
+-   if (obj.confidence) props.Confidence = propSelect(String(obj.confidence || '').trim() || null);
+-   const page = httpJson('POST', '/pages', { parent: { database_id: cfg.database_id }, properties: props });
+-   console.log(JSON.stringify({ ok: true, id: page.id, url: page.url }, null, 2));
+- main().catch(e => { console.error(String(e?.stack || e)); process.exit(1); });
+
+### scripts/notionctl_bridge.js  [code]
+- #!/usr/bin/env node
+- import { execFileSync } from 'node:child_process';
+- import fs from 'node:fs';
+- import os from 'node:os';
+- import path from 'node:path';
+- function expandHome(p) {
+-   if (!p) return p;
+-   if (p === '~') return os.homedir();
+-   if (p.startsWith('~/')) return path.join(os.homedir(), p.slice(2));
+-   return p;
+-   return p;
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- function readWorkspaceFromConfig() {
+-   const cfgPath = expandHome(process.env.OPENCLAW_CONFIG_PATH || '~/.openclaw/openclaw.json');
+-   try {
+-     if (!fs.existsSync(cfgPath)) return null;
+-     const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf-8'));
+-     const ws = cfg?.agents?.defaults?.workspace;
+-     return ws ? expandHome(String(ws)) : null;
+-   } catch {
+-     return null;
+-   }
+-   }
+- function notionctlPath() {
+-   const ws = readWorkspaceFromConfig() || path.resolve(process.cwd(), '..', '..', '..');
+-   const p = path.join(ws, 'skills', 'notion-api-automation', 'scripts', 'notionctl.mjs');
+-   if (!fs.existsSync(p)) throw new Error(`notionctl not found: ${p}`);
+- function runApi(method, apiPath, body = null) {
+-   const args = [notionctlPath(), 'api', '--compact', '--method', String(method).toUpperCase(), '--path', String(apiPath)];
+-   if (body != null) args.push('--body-json', JSON.stringify(body));
+-   const out = execFileSync('node', args, { encoding: 'utf-8' }).trim();
+-   const obj = out ? JSON.parse(out) : {};
+-   if (!obj.ok) throw new Error(`notionctl api not ok: ${out}`);
+-   return obj.result || {};
+- function extractPageId(idOrUrl) {
+-   if (!idOrUrl) return null;
+-   const s = String(idOrUrl).trim();
+-   const dashed = s.match(/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/);
+-   if (dashed) return dashed[0].toLowerCase();
+-   const hex32 = s.match(/[0-9a-fA-F]{32}/);
+-   if (!hex32) return null;
+-   const h = hex32[0].toLowerCase();
+-   return `${h.slice(0,8)}-${h.slice(8,12)}-${h.slice(12,16)}-${h.slice(16,20)}-${h.slice(20)}`;
+- async function listChildDatabases(parentPageId) {
+-   const out = new Map();
+-   let cursor = undefined;
+-   while (true) {
+-     const q = cursor ? `?start_cursor=${encodeURIComponent(cursor)}&page_size=100` : '?page_size=100';
+-     const res = runApi('GET', `/v1/blocks/${parentPageId}/children${q}`);
+-     for (const b of (res.results || [])) {
+-       if (b?.type === 'child_database') {
+-         const title = b?.child_database?.title;
+-         if (title) out.set(title, b.id);
+-       }
+-     }
+-     if (!res?.has_more || !res?.next_cursor) break;
+-     cursor = res.next_cursor;
+-   return out;
+- async function createDatabase(parentPageId, title, properties) {
+-   return runApi('POST', '/v1/databases', {
+-     parent: { page_id: parentPageId },
+-     title: [{ type: 'text', text: { content: String(title) } }],
+-     properties,
+-   });
+- async function getDatabase(databaseId) {
+-   return runApi('GET', `/v1/databases/${databaseId}`);
+- async function patchDataSource(dataSourceId, propertiesPatch) {
+-   return runApi('PATCH', `/v1/data_sources/${dataSourceId}`, { properties: propertiesPatch });
+- function relationSingleProperty(ref) {
+-   return { relation: { data_source_id: ref.dataSourceId, single_property: {} } };
+- async function createPage(databaseId, properties) {
+-   return runApi('POST', '/v1/pages', { parent: { database_id: databaseId }, properties });
+- async function queryDataSource(dataSourceId, body = {}) {
+-   return runApi('POST', `/v1/data_sources/${dataSourceId}/query`, body || {});
+- export {
+-   extractPageId,
+-   listChildDatabases,
+-   createDatabase,
+-   getDatabase,
+-   patchDataSource,
+-   relationSingleProperty,
+-   createPage,
+-   queryDataSource,
+- };
+
+### scripts/setup_ltm.js  [code]
+- #!/usr/bin/env node
+- /**
+-  * soul-in-sapphire setup (ESM)
+-  *
+-  *
+-  * Creates/reuses 4 databases under a parent page:
+-  *   <base>-mem, <base>-events, <base>-emotions, <base>-state
+-  * Base defaults to IDENTITY.md Name (workspace root) if found.
+-  * Writes ~/.config/soul-in-sapphire/config.json
+-  */
+- import fs from 'fs';
+- import os from 'os';
+- import path from 'path';
+- import { createRequire } from 'module';
+- const require = createRequire(import.meta.url);
+- const JSON5 = (() => {
+-   try {
+-   try {
+-     return require('json5');
+-   } catch {
+-   } catch {
+-     return null;
+-     return null;
+-   }
+-   }
+-   }
+-   }
+-   }
+-   }
+-   }
+- })();
+- import {
+-   extractPageId,
+-   listChildDatabases,
+-   createDatabase,
+-   getDatabase,
+-   patchDataSource,
+-   relationSingleProperty,
+- } from './notionctl_bridge.js';
+- function die(msg) {
+-   process.stderr.write(String(msg) + '\n');
+-   process.exit(1);
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- function promptLine(msg, def) {
+-   const full = def ? `${msg} [${def}]: ` : `${msg}: `;
+-   process.stderr.write(full);
+-   const buf = fs.readFileSync(0, 'utf-8');
+-   // NOTE: This is a non-interactive-ish prompt for environments where stdin is available.
+-   // If stdin is empty, return default.
+-   const s = (buf || '').split(/\r?\n/)[0]?.trim();
+-   return s || def || '';
+- function identityName(workspaceRoot) {
+-   const p = path.join(workspaceRoot, 'IDENTITY.md');
+-   if (!fs.existsSync(p)) return null;
+-   const t = fs.readFileSync(p, 'utf-8');
+-   const m = t.match(/^\s*-\s*\*\*Name:\*\*\s*(.+?)\s*$/m);
+-   if (!m) return null;
+-   let name = m[1].trim();
+-   name = name.replace(/\s*\(.*?\)\s*$/, '').trim();
+-   return name || null;
+- function expandHome(p) {
+-   if (!p) return p;
+-   if (p === '~') return os.homedir();
+-   if (p.startsWith('~/')) return path.join(os.homedir(), p.slice(2));
+-   return p;
+- function readOpenClawWorkspaceFromConfig() {
+-   const cfgPath = expandHome(process.env.OPENCLAW_CONFIG_PATH || path.join('~', '.openclaw', 'openclaw.json'));
+-     if (!fs.existsSync(cfgPath)) return null;
+-     const raw = fs.readFileSync(cfgPath, 'utf-8');
+-     const cfg = JSON5 ? JSON5.parse(raw) : JSON.parse(raw);
+-     const ws = cfg?.agents?.defaults?.workspace;
+-     return ws ? expandHome(String(ws)) : null;
+-     // If config is malformed/unreadable, fall back to cwd-based resolution.
+- function parseArgs(argv) {
+-   const fallbackWorkspaceRoot = path.resolve(process.cwd(), '..', '..', '..');
+-   const out = {
+-     parent: null,
+-     base: null,
+-     yes: false,
+-     outPath: path.join(os.homedir(), '.config', 'soul-in-sapphire', 'config.json'),
+-     workspaceRoot: readOpenClawWorkspaceFromConfig() || fallbackWorkspaceRoot,
+-   };
+-   };
+-   };
+-   const args = argv.slice(2);
+-   for (let i = 0; i < args.length; i++) {
+-     const a = args[i];
+-     if (a === '--parent') out.parent = args[++i];
+-     else if (a === '--base') out.base = args[++i];
+-     else if (a === '--out') out.outPath = args[++i];
+-     else if (a === '--yes') out.yes = true;
+-     else if (a === '--help' || a === '-h') {
+-       console.log('Usage: node setup_ltm.js --parent <url|page_id> [--base <name>] [--out <path>] [--yes]');
+-       process.exit(0);
+-     } else {
+-       die(`Unknown arg: ${a}`);
+-     }
+-   return out;
+- async function ensureDb(parentPageId, existingMap, title, properties) {
+-   if (existingMap.has(title)) {
+-     return { database_id: existingMap.get(title), created: false };
+-   const db = await createDatabase(parentPageId, title, properties);
+-   return { database_id: db.id, created: true, url: db.url };
+- async function main() {
+-   const args = parseArgs(process.argv);
+-   let parent = (args.parent || '').trim();
+-   if (!parent) {
+-     if (args.yes) die('Missing --parent in --yes mode');
+-     parent = promptLine('Parent page URL or page_id', '');
+-   const parentPageId = extractPageId(parent);
+-   if (!parentPageId) die('Could not parse parent page_id from input.');
+-   const defBase = identityName(args.workspaceRoot) || 'Valentina';
+-   let base = (args.base || '').trim();
+-   if (!base) {
+-     base = args.yes ? defBase : promptLine('Base name for emotion/state DBs', defBase);
+-   const names = {
+-     mem: `${base}-mem`,
+-     events: `${base}-events`,
+-     emotions: `${base}-emotions`,
+-     state: `${base}-state`,
+-     journal: `${base}-journal`,
+-   const existing = await listChildDatabases(parentPageId);
+-   const created = {};
+-   created.mem = await ensureDb(parentPageId, existing, names.mem, {
+-     Name: { title: {} },
+-     Name: { title: {} },
+-     Name: { title: {} },
+-     Name: { title: {} },
+-     Name: { title: {} },
+-     Type: { select: { options: [] } },
+-     Tags: { multi_select: { options: [] } },
+-     Content: { rich_text: {} },
+-   });
+-   });
+-   });
+-   });
+-   });
+-   });
+-   });
+-   });
+-   created.events = await ensureDb(parentPageId, existing, names.events, {
+-     when: { date: {} },
+-     when: { date: {} },
+-     when: { date: {} },
+-     importance: { select: { options: Array.from({ length: 5 }, (_, i) => ({ name: String(i + 1) })) } },
+-     trigger: { select: { options: ['progress', 'boundary', 'ambiguity', 'external_action', 'manual'].map(name => ({ name })) } },
+-     context: { rich_text: {} },
+-     source: { select: { options: ['discord', 'cli', 'cron', 'heartbeat', 'other'].map(name => ({ name })) } },
+-     link: { url: {} },
+-     uncertainty: { number: {} },
+-     control: { number: {} },
+-   created.emotions = await ensureDb(parentPageId, existing, names.emotions, {
+-     axis: {
+-       select: {
+-         options: [
+-           'arousal', 'valence', 'focus', 'confidence', 'stress', 'curiosity', 'social', 'solitude',
+-           'joy', 'anger', 'sadness', 'fun', 'pain',
+-         ].map(name => ({ name })),
+-       },
+-     },
+-     level: { number: {} },
+-     comment: { rich_text: {} },
+-     weight: { number: {} },
+-     body_signal: { multi_select: { options: ['tension', 'relief', 'fatigue', 'heat', 'cold'].map(name => ({ name })) } },
+-     need: { select: { options: ['safety', 'progress', 'recognition', 'autonomy', 'rest', 'novelty'].map(name => ({ name })) } },
+-     coping: { select: { options: ['log', 'ask', 'pause', 'act', 'defer'].map(name => ({ name })) } },
+-   created.state = await ensureDb(parentPageId, existing, names.state, {
+-     state_json: { rich_text: {} },
+-     reason: { rich_text: {} },
+-     source: { select: { options: ['event', 'cron', 'heartbeat', 'manual'].map(name => ({ name })) } },
+-     mood_label: { select: { options: ['clear', 'wired', 'dull', 'tense', 'playful', 'guarded', 'tender'].map(name => ({ name })) } },
+-     mood_label: { select: { options: ['clear', 'wired', 'dull', 'tense', 'playful', 'guarded', 'tender'].map(name => ({ name })) } },
+-     intent: { select: { options: ['build', 'fix', 'organize', 'explore', 'rest', 'socialize', 'reflect'].map(name => ({ name })) } },
+-     intent: { select: { options: ['build', 'fix', 'organize', 'explore', 'rest', 'socialize', 'reflect'].map(name => ({ name })) } },
+-     need_stack: { select: { options: ['safety', 'stability', 'belonging', 'esteem', 'growth'].map(name => ({ name })) } },
+-     need_level: { number: {} },
+-     avoid: { multi_select: { options: ['risk', 'noise', 'long_tasks', 'external_actions', 'ambiguity'].map(name => ({ name })) } },
+-   created.journal = await ensureDb(parentPageId, existing, names.journal, {
+-     // Main content
+-     body: { rich_text: {} },
+-     worklog: { rich_text: {} },
+-     session_summary: { rich_text: {} },
+-     // Mood/intent
+-     future: { rich_text: {} },
+-     // World context
+-     world_news: { rich_text: {} },
+-     // Machine tags
+-     tags: { multi_select: { options: [] } },
+-     // Source
+-     source: { select: { options: ['cron', 'manual'].map(name => ({ name })) } },
+-   // Resolve data_source_ids and patch relations in data_sources generation
+-   async function dbRef(dbid) {
+-     const db = await getDatabase(dbid);
+-     const dsId = (db.data_sources || [])[0]?.id;
+-     if (!dsId) die(`Database ${dbid} missing data_sources[].id`);
+-     return { databaseId: dbid, dataSourceId: dsId, url: db.url };
+-   const mem = await dbRef(created.mem.database_id);
+-   const events = await dbRef(created.events.database_id);
+-   const emotions = await dbRef(created.emotions.database_id);
+-   const state = await dbRef(created.state.database_id);
+-   const journal = await dbRef(created.journal.database_id);
+-   await patchDataSource(events.dataSourceId, {
+-     emotions: relationSingleProperty(emotions),
+-     state: relationSingleProperty(state),
+-   await patchDataSource(emotions.dataSourceId, {
+-     event: relationSingleProperty(events),
+-     event: relationSingleProperty(events),
+-   await patchDataSource(state.dataSourceId, {
+-   const cfg = {
+-     base,
+-     parent_page_id: parentPageId,
+-     mem: { database_id: mem.databaseId, data_source_id: mem.dataSourceId },
+-     events: { database_id: events.databaseId, data_source_id: events.dataSourceId },
+-     emotions: { database_id: emotions.databaseId, data_source_id: emotions.dataSourceId },
+-     state: { database_id: state.databaseId, data_source_id: state.dataSourceId },
+-     journal: { database_id: journal.databaseId, data_source_id: journal.dataSourceId },
+-     // legacy flat keys currently used by python scripts
+-     valentina_events_database_id: events.databaseId,
+-     valentina_emotions_database_id: emotions.databaseId,
+-     valentina_state_database_id: state.databaseId,
+-     valentina_state_data_source_id: state.dataSourceId,
+-     journal_database_id: journal.databaseId,
+-     journal_data_source_id: journal.dataSourceId,
+-   fs.mkdirSync(path.dirname(args.outPath), { recursive: true });
+-   fs.writeFileSync(args.outPath, JSON.stringify(cfg, null, 2) + '\n', 'utf-8');
+-   console.log(JSON.stringify({ ok: true, out: args.outPath, created, config: cfg }, null, 2));
+- main().catch(err => die(err?.stack || err?.message || String(err)));
+
+### scripts/state_recall.js  [code]
+- #!/usr/bin/env node
+- import fs from 'fs';
+- import path from 'path';
+- import { loadConfig } from './emostate_config.js';
+- import { queryRecent, textOf } from './emostate_notion.js';
+- function nowIsoLocal() { return new Date().toISOString(); }
+- function parseStateJson(s) { try { return s ? JSON.parse(s) : {}; } catch { return { _raw: s }; } }
+- function normalizeStatePage(page) {
+-   const p = page?.properties || {};
+-   return {
+-     page_id: page?.id,
+-     retrieved_at: nowIsoLocal(),
+-     when: textOf(p.when),
+-     mood_label: textOf(p.mood_label),
+-     intent: textOf(p.intent),
+-     need_stack: textOf(p.need_stack),
+-     need_level: textOf(p.need_level),
+-     avoid: textOf(p.avoid),
+-     reason: textOf(p.reason),
+-     state_json: parseStateJson(textOf(p.state_json)),
+-   };
+- }
+- }
+- }
+- function parseArgs(argv) {
+-   const out = { limit: 1, write: '' };
+-   for (let i = 2; i < argv.length; i++) {
+-     const a = argv[i];
+-     if (a === '--limit') out.limit = Number(argv[++i] || 1);
+-     else if (a === '--write') out.write = argv[++i] || '';
+-   }
+-   }
+-   return out;
+- function main() {
+-   const args = parseArgs(process.argv);
+-   const cfg = loadConfig();
+-   const dsId = cfg?.state?.data_source_id || cfg?.valentina_state_data_source_id;
+-   if (!dsId) throw new Error('Missing state.data_source_id in config.json');
+-   const pages = queryRecent(dsId, Math.max(1, args.limit));
+-   const out = pages.map(normalizeStatePage);
+-   if (args.write) {
+-     fs.mkdirSync(path.dirname(args.write), { recursive: true });
+-     const payload = out[0] || { retrieved_at: nowIsoLocal(), empty: true };
+-     fs.writeFileSync(args.write, JSON.stringify(payload, null, 2) + '\n', 'utf-8');
+-   console.log(JSON.stringify(out, null, 2));
+- try { main(); } catch (e) { console.error(String(e?.stack || e)); process.exit(1); }
+
+### scripts/subagent_spawn_plan.js  [code]
+- #!/usr/bin/env node
+- import fs from 'fs';
+- import path from 'path';
+- const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
+- const STATE_DIR = path.join(ROOT, 'state');
+- const CFG_PATH = path.join(STATE_DIR, 'subagent-models.json');
+- const LOG_PATH = path.join(STATE_DIR, 'subagent-spawn-log.jsonl');
+- function loadCfg() {
+-   if (!fs.existsSync(CFG_PATH)) throw new Error(`Missing config: ${CFG_PATH}`);
+-   return JSON.parse(fs.readFileSync(CFG_PATH, 'utf-8'));
+- }
+- }
+- }
+- function parseArgs(argv) {
+-   const out = { profile: '', task: '', label: '' };
+-   for (let i = 2; i < argv.length; i++) {
+-     const a = argv[i];
+-     if (a === '--profile') out.profile = argv[++i] || '';
+-     else if (a === '--task') out.task = argv[++i] || '';
+-     else if (a === '--label') out.label = argv[++i] || '';
+-   }
+-   return out;
+- function main() {
+-   const args = parseArgs(process.argv);
+-   if (!args.profile || !args.task) throw new Error('Usage: --profile <name> --task <text> [--label <label>]');
+-   const cfg = loadCfg();
+-   const p = (cfg.profiles || {})[args.profile];
+-   if (!p) throw new Error(`Unknown profile: ${args.profile}`);
+-   const d = cfg.defaults || {};
+-   const runTimeout = Number(d.runTimeoutSeconds || 180);
+-   const payload = {
+-     label: args.label || `${args.profile}-${Math.floor(Date.now() / 1000)}`,
+-     task: args.task,
+-     model: p.model,
+-     thinking: p.thinking,
+-     runTimeoutSeconds: runTimeout,
+-     timeoutSeconds: runTimeout,
+-     cleanup: d.cleanup || 'keep',
+-   };
+-   fs.mkdirSync(STATE_DIR, { recursive: true });
+-   fs.appendFileSync(LOG_PATH, JSON.stringify({ ts: Math.floor(Date.now() / 1000), profile: args.profile, payload }, null, 0) + '\n', 'utf-8');
+-   console.log(JSON.stringify(payload, null, 2));
+- try { main(); } catch (e) { console.error(String(e?.stack || e)); process.exit(1); }

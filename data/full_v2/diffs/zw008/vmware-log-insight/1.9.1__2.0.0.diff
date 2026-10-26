@@ -1,0 +1,78 @@
+zw008/vmware-log-insight  1.9.1 -> 2.0.0
+change_type: instructions+docs   changelog: 2.0: MCP tools renamed verb-first (see RELEASE_NOTES for the old -> new table); requires vmware-policy >= 1.18
+
+### SKILL.md  [instructions]
+- | Log search | `log_search` | 1 | Read |
+- | Aggregation / spikes | `log_aggregate` | 1 | Read |
+- | Metadata | `log_fields`, `log_version` | 2 | Read |
+- | Alerts | `alert_list`, `alert_get`, `alert_history` | 3 | Read |
+- uv tool install vmware-log-insight==1.9.1
+- | Incident correlation / root cause | vmware-debug (feed it `log_search` output) |
+- 1. `log_search(text="error", last="1h", filters via CLI hostname=...)` — or CLI: `vmware-log-insight search -q error -l 1h`.
+- 1. `log_aggregate(text="...", last="6h", bin_width_ms=300000)` — counts per 5-minute bin + `spikes[]` (z-score flagged).
+- 2. Take a spike's `timestamp_ms`, then `log_search(begin_ms=..., end_ms=...)` around it to read what burst.
+- 1. `log_search` / `log_aggregate` here for the log signal.
+- 3. Hand all of them to **vmware-debug** `incident_timeline` (normalise to its event envelope) to rank root causes.
+- - **MCP** (in an agent): call `log_search`/`log_aggregate`, then pass results to vmware-debug. Primary mode.
+- | Logs | `log_search` (time window + text + filters), `log_aggregate` (COUNT/etc + spike detection), `log_fields`, `log_version` |
+- | Alerts | `alert_list`, `alert_get`, `alert_history` |
+- **List envelope**: `log_fields`, `alert_list` and `alert_history` return
++ | Log search | `search_logs` | 1 | Read |
++ | Aggregation / spikes | `aggregate_logs` | 1 | Read |
++ | Metadata | `list_log_fields`, `get_log_insight_version` | 2 | Read |
++ | Alerts | `list_log_alerts`, `get_log_alert`, `get_log_alert_history` | 3 | Read |
++ uv tool install vmware-log-insight==2.0.0
++ | Incident correlation / root cause | vmware-debug (feed it `search_logs` output) |
++ 1. `search_logs(text="error", last="1h", filters via CLI hostname=...)` — or CLI: `vmware-log-insight search -q error -l 1h`.
++ 1. `aggregate_logs(text="...", last="6h", bin_width_ms=300000)` — counts per 5-minute bin + `spikes[]` (z-score flagged).
++ 2. Take a spike's `timestamp_ms`, then `search_logs(begin_ms=..., end_ms=...)` around it to read what burst.
++ 1. `search_logs` / `aggregate_logs` here for the log signal.
++ 3. Hand all of them to **vmware-debug** `build_incident_timeline` (normalise to its event envelope) to rank root causes.
++ - **MCP** (in an agent): call `search_logs`/`aggregate_logs`, then pass results to vmware-debug. Primary mode.
++ | Logs | `search_logs` (time window + text + filters), `aggregate_logs` (COUNT/etc + spike detection), `list_log_fields`, `get_log_insight_version` |
++ | Alerts | `list_log_alerts`, `get_log_alert`, `get_log_alert_history` |
++ **List envelope**: `list_log_fields`, `list_log_alerts` and `get_log_alert_history` return
+
+### references/agent-guardrails.md  [docs]
+- | "Use explicit limits for queries that may return large amounts of data" | **The list envelope.** `log_fields`, `alert_list` and `alert_history` return `{items, returned, limit, total, truncated, hint}`, so the model reads truncation instead of guessing at it. `total` is a real count, so a page that exactly fills `limit` is still reported `truncated: false` when it is genuinely complete. |
+- | "Tell me when a search was cut short" | **`log_search` returns `complete`.** `complete: False` means the result was truncated — a stated fact rather than something the model has to infer from the row count. |
+- - vmware-debug: incident correlation. Feed it log_search output normalised to
+- - Report counts from log_aggregate as returned. Do not re-bucket or re-total
+- | Long tool responses: omits items, or reports "no data returned" when data was present | This is the dominant failure here — log volume makes it routine rather than occasional. Bound every search, check `complete` on `log_search` and `truncated` on the list tools, and prefer `log_aggregate` over reading raw events when the question is "how many" or "when". |
+- | Multi-tool workflows take 30–50s end to end | `log_aggregate` answers counting and spike questions in one call that would otherwise mean pulling thousands of events. Use `log_fields` once to discover field names rather than guessing across several searches. |
++ | "Use explicit limits for queries that may return large amounts of data" | **The list envelope.** `list_log_fields`, `list_log_alerts` and `get_log_alert_history` return `{items, returned, limit, total, truncated, hint}`, so the model reads truncation instead of guessing at it. `total` is a real count, so a page that exactly fills `limit` is still reported `truncated: false` when it is genuinely complete. |
++ | "Tell me when a search was cut short" | **`search_logs` returns `complete`.** `complete: False` means the result was truncated — a stated fact rather than something the model has to infer from the row count. |
++ - vmware-debug: incident correlation. Feed it search_logs output normalised to
++ - Report counts from aggregate_logs as returned. Do not re-bucket or re-total
++ | Long tool responses: omits items, or reports "no data returned" when data was present | This is the dominant failure here — log volume makes it routine rather than occasional. Bound every search, check `complete` on `search_logs` and `truncated` on the list tools, and prefer `aggregate_logs` over reading raw events when the question is "how many" or "when". |
++ | Multi-tool workflows take 30–50s end to end | `aggregate_logs` answers counting and spike questions in one call that would otherwise mean pulling thousands of events. Use `list_log_fields` once to discover field names rather than guessing across several searches. |
+
+### references/capabilities.md  [docs]
+- | `log_search` | GET /events/{constraints} | `{count, complete, constraints, events:[{timestamp_ms, text, fields}]}` | 400–4000 (scales with limit) |
+- | `log_aggregate` | GET /aggregated-events/{constraints} | `{aggregation, bin_width_ms, bins:[...], spikes:[...]}` | 200–1500 |
+- | `log_fields` | GET /fields | envelope of `[{name}]` | 100–800 |
+- | `log_version` | GET /version | `{version, release_name, build}` | ~40 |
+- | `alert_list` | GET /alerts | envelope of `[{id, name, enabled, info}]` | 100–1500 |
+- | `alert_get` | GET /alerts/{id} | `{id, name, enabled, info, raw_keys}` | 100–400 |
+- | `alert_history` | GET /alerts/{id}/history | envelope of `[{timestamp_ms, info}]` | 100–1500 |
+- `log_fields`, `alert_list` and `alert_history` return the family list envelope
+- - `log_fields` takes no `limit` at all, so it is always `truncated: false` —
+- - **Search over list**: `log_search` defaults to `limit=50` and a 1-hour window;
+- - **Spike detection in-tool**: `log_aggregate` returns z-score-flagged `spikes[]`
++ | `search_logs` | GET /events/{constraints} | `{count, complete, constraints, events:[{timestamp_ms, text, fields}]}` | 400–4000 (scales with limit) |
++ | `aggregate_logs` | GET /aggregated-events/{constraints} | `{aggregation, bin_width_ms, bins:[...], spikes:[...]}` | 200–1500 |
++ | `list_log_fields` | GET /fields | envelope of `[{name}]` | 100–800 |
++ | `get_log_insight_version` | GET /version | `{version, release_name, build}` | ~40 |
++ | `list_log_alerts` | GET /alerts | envelope of `[{id, name, enabled, info}]` | 100–1500 |
++ | `get_log_alert` | GET /alerts/{id} | `{id, name, enabled, info, raw_keys}` | 100–400 |
++ | `get_log_alert_history` | GET /alerts/{id}/history | envelope of `[{timestamp_ms, info}]` | 100–1500 |
++ `list_log_fields`, `list_log_alerts` and `get_log_alert_history` return the family list envelope
++ - `list_log_fields` takes no `limit` at all, so it is always `truncated: false` —
++ - **Search over list**: `search_logs` defaults to `limit=50` and a 1-hour window;
++ - **Spike detection in-tool**: `aggregate_logs` returns z-score-flagged `spikes[]`
+
+### references/setup-guide.md  [docs]
+- uv tool install vmware-log-insight==1.9.1
+-   "args": ["--from", "vmware-log-insight==1.9.1", "vmware-log-insight-mcp"],
++ uv tool install vmware-log-insight==2.0.0
++   "args": ["--from", "vmware-log-insight==2.0.0", "vmware-log-insight-mcp"],

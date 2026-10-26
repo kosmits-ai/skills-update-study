@@ -1,0 +1,189 @@
+redisread/reddit-digest  1.0.2 -> 1.0.3
+change_type: instructions+docs+code   changelog: reddit-digest v1.0.3  - 新增 scripts/fetch_post_details.py，实现批量串行抓取所有 Post 详情与评论，提升数据准确性与完整性。 - 输出路径和临时目录结构优化，支持多 Subreddit 独立存储，便于管理和隔离。 - 流程升级：通过一键后台命令自动批量采集并持久化每条 Post，与 autocli 浏览器并发限制兼容。 - 增强容错，采集失败自动记录 error 字段，仅用元数据生成摘要。 - 文档优化，明确操作说明与排错建议，便于实际部署和使用。
+
+### SKILL.md  [instructions]
+- 输出路径：`{BASE_DIR}/{YYYYMMDD}/{subreddit_name}-{YYYYMMDD}.md`
+- 临时目录：`{BASE_DIR}/{YYYYMMDD}/temp/`
+- - **agent-browser**：容错备用
+- 1. 确定 `BASE_DIR` 和 `SUBREDDIT`
+- 2. 若 `{BASE_DIR}/{YYYYMMDD}/` 已存在则清空
+- 3. `mkdir -p {TEMP_DIR}`
+- ### Step 2: 获取 Post 列表
+- autocli reddit subreddit {subreddit_name} --sort top --time day --format json
+- 返回字段：`author`, `comments`, `title`, `upvotes`, `url`
+- ### Step 3: 逐一获取 Post 详情
+- autocli reddit read {post_url} -f json
+- 返回字段：`author`, `score`, `text`, `type`（L0=原文，L1+=评论）
+- **容错顺序**：autocli read → autocli 动态判断 → agent-browser → 仅用列表元数据生成简要摘要
+- ### Step 4: 分析每个 Post
+- 将分析结果写入 `{TEMP_DIR}/{subreddit_name}-{rank}-{sanitized_title}.md`，筛选并剔除低价值 Post。
+- ### Step 5: 汇总输出
+- 读取所有临时文件，按 rank 排序合并，写入最终文档。所有内容**使用简体中文撰写**。
++ 输出路径：`{BASE_DIR}/{YYYYMMDD}/{subreddit_name}/{subreddit_name}-{YYYYMMDD}.md`
++ 临时目录：`{BASE_DIR}/{YYYYMMDD}/{subreddit_name}/temp/`
++ - **scripts/fetch_post_details.py**：批量串行获取所有 Post 详情，保存到临时目录
++ 确定 `BASE_DIR`、`SUBREDDIT`、`DATE`（YYYYMMDD）变量，创建目录：
++ mkdir -p {BASE_DIR}/{DATE}/{SUBREDDIT}/temp
++ ```
++ ```
++ ```
++ ### Step 2: 批量获取 Post 列表与详情
++ **注意：以下命令必须写成一行（不含换行），在终端后台执行（is_background=true），避免3分钟超时。**
++ SKILL_DIR="/path/to/skills/reddit-digest" && TEMP_DIR="{BASE_DIR}/{DATE}/{SUBREDDIT}/temp" && autocli reddit subreddit {SUBREDDIT} --limit 20 --sort top --time day --format json | python3 "$SKILL_DIR/scripts/fetch_post_details.py" --temp-dir "$TEMP_DIR" > /tmp/reddit_fetch_{SUBREDDIT}.log 2>&1
++ `SKILL_DIR` 通常为 `{workspace}/skills/reddit-digest`（本 skill 所在目录）。
++ 脚本**串行**调用 `autocli reddit read {url} -f json` 逐条抓取（autocli 基于浏览器，并发会导致 tab 冲突，默认 workers=1），每条 Post 保存为：
++ {TEMP_DIR}/{rank:02d}-{sanitized_title}.json
++ 每个文件结构：
++ ```json
++ {
++   "rank": 1,
++   "meta": { "author", "comments", "title", "upvotes", "url" },
++   "content": [ { "author", "score", "text", "type" }, ... ],
++   "error": null
++ }
++ `content` 字段：`type=POST` 为原文，`type=L0` 为顶层评论，`type=L1` 为回复。
++ **等待完成**：后台启动后，每隔 30 秒检查 `ls {TEMP_DIR}/` 或读取日志 `/tmp/reddit_fetch_{SUBREDDIT}.log` 确认进度（共 20 条，全部出现后即完成）。
++ **容错**：抓取失败时 `error` 字段记录原因，仅用 `meta` 元数据生成简要摘要。
++ ### Step 3: 分析每个 Post
++ 逐一读取 `{TEMP_DIR}/*.json`，按 rank 顺序分析，筛选并剔除低价值 Post。
++ ### Step 4: 汇总输出
++ 将所有分析结果按 rank 排序合并，写入最终文档。所有内容**使用简体中文撰写**。
+
+### references/output-template.md  [docs]
+- `{BASE_DIR}/{YYYYMMDD}/{subreddit_name}-{YYYYMMDD}.md`
++ `{BASE_DIR}/{YYYYMMDD}/{subreddit_name}/{subreddit_name}-{YYYYMMDD}.md`
+
+### scripts/fetch_post_details.py  [code]
++ #!/usr/bin/env python3
++ """
++ """
++ fetch_post_details.py - 批量获取 Reddit Post 详情并保存到临时目录
++ 用法：
++   # 从 autocli 管道获取列表，批量抓取详情
++   autocli reddit subreddit ClaudeAI --limit 50 --sort top --time day --format json | \
++     python3 fetch_post_details.py --temp-dir /tmp/reddit/temp
++   # 从已保存的 JSON 文件读取列表
++   python3 fetch_post_details.py --input posts.json --temp-dir /tmp/reddit/temp
++   # 自定义并发数
++   python3 fetch_post_details.py --input posts.json --temp-dir /tmp/reddit/temp --workers 3
++ 输出：
++   - 每条 Post 详情保存为 {temp-dir}/{rank:02d}-{sanitized_title}.json
++   - 统计信息输出到 stderr
++   - stdout 输出成功抓取的文件路径列表（换行分隔）
++ import argparse
++ import json
++ import os
++ import re
++ import subprocess
++ import sys
++ from concurrent.futures import ThreadPoolExecutor, as_completed
++ def parse_args():
++     parser = argparse.ArgumentParser(description="批量获取 Reddit Post 详情")
++     parser.add_argument(
++     parser.add_argument(
++     parser.add_argument(
++         "--input", "-i",
++         help="输入 JSON 文件路径（不指定则从 stdin 读取）",
++     )
++     )
++     )
++         "--temp-dir", "-d",
++         required=True,
++         help="临时目录路径，用于保存每条 Post 详情",
++         "--workers", "-w",
++         type=int,
++         default=1,
++         help="并发抓取数，默认 1（autocli 基于浏览器，并发过高会导致 tab 冲突）",
++     return parser.parse_args()
++ def load_posts(input_path):
++     if input_path:
++         with open(input_path, "r", encoding="utf-8") as f:
++             return json.load(f)
++     else:
++         return json.load(sys.stdin)
++ def sanitize_filename(title, max_len=60):
++     """将标题转换为安全的文件名"""
++     # 替换非字母数字字符为下划线
++     safe = re.sub(r"[^\w\s-]", "", title)
++     safe = re.sub(r"[\s_]+", "_", safe).strip("_")
++     return safe[:max_len]
++ def fetch_detail(rank, post, temp_dir):
++     """抓取单条 Post 详情，返回 (rank, output_path, error)"""
++     url = post.get("url", "")
++     title = post.get("title", f"post_{rank}")
++     sanitized = sanitize_filename(title)
++     filename = f"{rank:02d}-{sanitized}.json"
++     output_path = os.path.join(temp_dir, filename)
++     # 构建详情数据（包含 Post 元数据）
++     detail_data = {
++         "rank": rank,
++         "meta": post,  # 保留原始列表元数据
++         "content": None,
++         "error": None,
++     }
++     if not url:
++         detail_data["error"] = "missing url"
++         _write_json(output_path, detail_data)
++         return rank, output_path, "missing url"
++     try:
++         result = subprocess.run(
++             ["autocli", "reddit", "read", url, "-f", "json"],
++             capture_output=True,
++             text=True,
++             timeout=30,
++         )
++         if result.returncode == 0 and result.stdout.strip():
++             detail_data["content"] = json.loads(result.stdout)
++         else:
++             err = result.stderr.strip() or f"exit code {result.returncode}"
++             detail_data["error"] = err
++             print(f"[WARN] rank={rank} 抓取失败：{err}", file=sys.stderr)
++     except subprocess.TimeoutExpired:
++         detail_data["error"] = "timeout"
++         print(f"[WARN] rank={rank} 超时：{url}", file=sys.stderr)
++     except json.JSONDecodeError as e:
++         detail_data["error"] = f"json parse error: {e}"
++         print(f"[WARN] rank={rank} JSON 解析失败：{e}", file=sys.stderr)
++     except FileNotFoundError:
++         detail_data["error"] = "autocli not found"
++         print("[ERROR] autocli 未找到，请确认已安装", file=sys.stderr)
++         sys.exit(1)
++         sys.exit(1)
++     _write_json(output_path, detail_data)
++     return rank, output_path, detail_data["error"]
++ def _write_json(path, data):
++     with open(path, "w", encoding="utf-8") as f:
++         json.dump(data, f, ensure_ascii=False, indent=2)
++ def main():
++     args = parse_args()
++     posts = load_posts(args.input)
++     if not isinstance(posts, list):
++         print("[ERROR] 输入 JSON 应为数组格式", file=sys.stderr)
++     os.makedirs(args.temp_dir, exist_ok=True)
++     total = len(posts)
++     print(f"[INFO] 共 {total} 条 Post，并发数 {args.workers}", file=sys.stderr)
++     success_paths = []
++     failed = 0
++     completed_count = 0
++     with ThreadPoolExecutor(max_workers=args.workers) as executor:
++         futures = {
++             executor.submit(fetch_detail, rank + 1, post, args.temp_dir): rank
++             for rank, post in enumerate(posts)
++         }
++         for future in as_completed(futures):
++             rank, output_path, error = future.result()
++             completed_count += 1
++             if error:
++                 failed += 1
++                 print(f"[PROGRESS] {completed_count}/{total} 完成（rank={rank} 失败: {error}）", file=sys.stderr)
++             else:
++                 success_paths.append((rank, output_path))
++                 print(f"[PROGRESS] {completed_count}/{total} 完成（rank={rank} 成功）", file=sys.stderr)
++     # 按 rank 排序后输出路径到 stdout
++     success_paths.sort(key=lambda x: x[0])
++     for _, path in success_paths:
++         print(path)
++     print(f"[INFO] 成功：{len(success_paths)} 条，失败：{failed} 条", file=sys.stderr)
++     print(f"[INFO] 详情已保存至：{args.temp_dir}", file=sys.stderr)
++ if __name__ == "__main__":
++     main()

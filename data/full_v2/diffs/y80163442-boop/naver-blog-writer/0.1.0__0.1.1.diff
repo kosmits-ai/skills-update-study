@@ -1,0 +1,553 @@
+y80163442-boop/naver-blog-writer  0.1.0 -> 0.1.1
+change_type: instructions+docs+code   changelog: Add ACP marketplace-connected scripts (.sh) and onboarding/publish flow for OpenClaw users.
+
+### SKILL.md  [instructions]
+- # Naver Blog Writer Skill Pack (MVP)
+- 이 skill pack은 OpenClaw/Virtual ACP 환경에서 아래 흐름을 표준화합니다.
+- - `preflight(local daemon)`
+- - 실패 시 `RUNNER_NOT_READY + setup_url`
+- - `setup_runner` 실행
+- - 사람 1회 로그인
+- - `publish`
+- ## Config
+- - `OPENCLAW_OFFERING_ID`: 기본 `naver-blog-writer`
+- - `X_LOCAL_TOKEN`: local daemon 인증 토큰 (`preflight`, `publish` 필수)
+- - setup_url 자동 발급 모드: `PROOF_TOKEN` + `SETUP_ISSUE_URL` 필요
+- - setup_url 사전 발급 모드: `SETUP_URL` 사용 시 proof 단계 생략 가능
+- - `LOCAL_DAEMON_PORT`: 기본 `19090`
+- - `DEVICE_FINGERPRINT`: 미지정 시 `hostname-platform-arch` 자동 생성
+- `publish` 실행 경로는 아래 둘 중 하나가 반드시 필요:
+- 1. offering execute 경로
+-    `OPENCLAW_OFFERING_EXECUTE_URL` (+ 필요 시 `OPENCLAW_CORE_API_KEY`)
+- 2. direct dispatch fallback 경로
+-    `CONTROL_PLANE_URL` + `ACP_ADMIN_API_KEY`
+- ## Tools
+- ### 1) preflight
+- tools/preflight \
+-   --proof-token "$PROOF_TOKEN" \
+-   --proof-token "$PROOF_TOKEN" \
+-   --setup-issue-url "$SETUP_ISSUE_URL" \
+-   --setup-issue-url "$SETUP_ISSUE_URL" \
+-   --local-daemon-port 19090 \
+-   --x-local-token "$X_LOCAL_TOKEN"
+- 성공 시 local identity JSON을 반환합니다.
+- 실패 시 반드시 아래 표준 에러를 반환합니다.
+- ### 2) setup_runner
+- tools/setup_runner \
+-   --auto-service both
+- 실행 후 로그인 1회 필요:
+- ### 3) publish
+- tools/publish --title "제목" --body "본문" --tags "tag1,tag2"
+- 동작:
+- 1. preflight
+- 2. `/v1/local/identity`
+- 3. `/v1/local/seal-job`
+- 4. offering execute 호출(또는 direct dispatch fallback)
+- ## Notes
+- - 1차 지원 OS: macOS
+- - local daemon 접근 가능한 로컬 호스트 실행을 전제로 합니다.
++ ---
++ ---
++ name: naver-blog-writer
++ description: Publish Naver Blog posts through the ACP marketplace flow (buyer-local thin-runner + sealed payload + offering execute). Use when a user asks to write/publish a Naver post, recover RUNNER_NOT_READY onboarding, run one-time thin-runner setup/login, or submit a publish job that should route through your ACP offering (`naver-blog-writer`) for paid service execution.
++ # Naver Blog Writer (ACP Marketplace-connected)
++ Use this skill for the **real ACP commerce path**:
++ 1. preflight local daemon
++ 2. recover with setup_url when runner is not ready
++ 3. one-time thin-runner setup/login
++ 4. publish via ACP offering execute (paid path)
++ ## Required runtime assumptions
++ - Buyer machine: macOS + `@y80163442/naver-thin-runner`
++ - Local daemon available on `127.0.0.1:${LOCAL_DAEMON_PORT:-19090}`
++ - For paid marketplace path: `OPENCLAW_OFFERING_EXECUTE_URL` is configured
++ ## Core commands
++ ## 1) Preflight
++ scripts/preflight.sh
++ If runner is not ready, it returns:
++ ## 2) Setup runner (one-time)
++ scripts/setup_runner.sh --setup-url "<setup_url>"
++ # then user login once:
++ Or proof-based mode:
++ scripts/setup_runner.sh --proof-token "<proof_token>" --setup-issue-url "https://<control-plane>/v3/onboarding/setup-url/issue"
++ ## 3) Publish
++ scripts/publish.sh --title "제목" --body "본문" --tags "tag1,tag2"
++ Publish flow:
++ - preflight
++ - `GET /v1/local/identity`
++ - `POST /v1/local/seal-job`
++ - submit to `OPENCLAW_OFFERING_EXECUTE_URL` (preferred, paid path)
++ - fallback: direct `/v2/jobs/dispatch-and-wait` (admin/internal only)
++ ## Environment variables
++ See `references/setup.md`. Key variables:
++ - `X_LOCAL_TOKEN`
++ - `LOCAL_DAEMON_PORT` (default `19090`)
++ - `OPENCLAW_OFFERING_ID` (default `naver-blog-writer`)
++ - `OPENCLAW_OFFERING_EXECUTE_URL` (required for paid path)
++ - `PROOF_TOKEN`, `SETUP_ISSUE_URL` (for auto setup_url issue)
++ ## Safety notes
++ - Never commit real tokens/keys.
++ - Keep `ACP_ADMIN_API_KEY` for internal debugging only.
++ - For real commerce metrics/billing, use offering execute path (not direct dispatch fallback).
++ ## References
++ - `references/setup.md`
++ - `references/ops-checklist.md`
+
+### references/ops-checklist.md  [docs]
++ # Ops Checklist (OpenClaw ↔ ACP)
++ ## Before go-live
++ - [ ] `scripts/smoke_test.sh` passes
++ - [ ] control-plane `/v2/version` returns 200
++ - [ ] ACP service `/v2/version` returns 200
++ - [ ] proof issue (`/v3/onboarding/proofs/issue`) returns 201
++ - [ ] setup-url issue (`/v3/onboarding/setup-url/issue`) returns 201
++ - [ ] offering execute URL is configured for paid path
++ - [ ] one buyer machine completed runner setup + login once
++ ## Real-user test
++ 1. OpenClaw installs skill from ClawHub
++ 2. `scripts/preflight.sh`
++ 3. If `RUNNER_NOT_READY`, run `scripts/setup_runner.sh` and login once
++ 4. `scripts/publish.sh --title ... --body ...`
++ 5. Verify deliverable has `published_url`
++ 6. Verify ACP job appears as completed in marketplace records
++ ## Incident quick actions
++ - `RUNNER_NOT_READY`: issue setup_url, run setup/login
++ - `AUTH_EXPIRED`: run thin-runner login again
++ - `ATTESTATION_ALREADY_USED`: ensure fresh `/v1/local/identity` for each job
++ - `PUBLISH_CONFIRM_TIMEOUT`: retry with new idempotency key
+
+### references/publish-checklist.md  [docs]
++ # ClawHub Publish Checklist (ACP-connected skill)
++ ## Content checks
++ - [ ] `SKILL.md` explains ACP commerce path clearly
++ - [ ] No secrets committed (`token`, `key`, `.env`)
++ - [ ] Scripts point to preflight/setup_runner/publish flow
++ - [ ] `references/setup.md` updated with real env names
++ ## Validation checks
++ - [ ] `scripts/smoke_test.sh` passes
++ - [ ] `scripts/preflight.sh` returns RUNNER_NOT_READY contract on clean machine
++ - [ ] proof/setup-url issue works on production control-plane
++ ## Publish
++ ```bash
++ clawhub login
++ clawhub publish ./skills/naver-blog-writer \
++   --slug naver-blog-writer \
++   --name "Naver Blog Writer" \
++   --version 0.1.1 \
++   --changelog "Add ACP marketplace-connected scripts (.sh) for preflight/setup_runner/publish"
++ ```
++ ## Post-publish
++ - [ ] `clawhub install naver-writer-acp --version 1.1.0` works in clean dir
++ - [ ] Installed scripts run (`scripts/smoke_test.sh`)
+
+### references/setup.md  [docs]
++ # Setup (ACP marketplace path)
++ ## Recommended path (paid offering execute)
++ ```bash
++ ```bash
++ ```bash
++ # local daemon
++ export X_LOCAL_TOKEN="<thin-runner-local-token>"
++ export LOCAL_DAEMON_PORT="19090"
++ # onboarding helper (optional but recommended)
++ export PROOF_TOKEN="<proof_token>"
++ export SETUP_ISSUE_URL="https://<control-plane>/v3/onboarding/setup-url/issue"
++ # OR pre-issued setup URL
++ export SETUP_URL="https://<control-plane>/v2/onboarding/setup-sessions/start?setup_token=..."
++ # ACP offering execute path (for purchase/billing flow)
++ export OPENCLAW_OFFERING_ID="naver-blog-writer"
++ export OPENCLAW_OFFERING_EXECUTE_URL="https://<acp-service>/execute"
++ export OPENCLAW_CORE_API_KEY="<optional-if-required>"
++ export OPENCLAW_CORE_API_KEY_HEADER="x-api-key"
++ ```
++ ```
++ ```
++ ## Internal fallback only (direct dispatch)
++ Use only for debugging/ops, not for normal paid commerce tracking.
++ export CONTROL_PLANE_URL="https://control-plane-production-662b.up.railway.app"
++ export ACP_ADMIN_API_KEY="<admin-key>"
++ ## Basic runbook
++ # 1) preflight
++ scripts/preflight.sh
++ # 2) if RUNNER_NOT_READY, setup once
++ scripts/setup_runner.sh --proof-token "$PROOF_TOKEN" --setup-issue-url "$SETUP_ISSUE_URL"
++ npx @y80163442/naver-thin-runner login
++ # 3) publish
++ scripts/publish.sh --title "제목" --body "본문" --tags "tag1,tag2"
+
+### scripts/preflight.sh  [code]
++ #!/usr/bin/env bash
++ set -euo pipefail
++ SETUP_URL="${SETUP_URL:-}"
++ PROOF_TOKEN="${PROOF_TOKEN:-}"
++ SETUP_ISSUE_URL="${SETUP_ISSUE_URL:-}"
++ DEVICE_FINGERPRINT="${DEVICE_FINGERPRINT:-$(hostname)-$(uname -s)-$(uname -m)}"
++ LOCAL_DAEMON_PORT="${LOCAL_DAEMON_PORT:-19090}"
++ X_LOCAL_TOKEN="${X_LOCAL_TOKEN:-${THIN_RUNNER_LOCAL_TOKEN:-}}"
++ while [[ $# -gt 0 ]]; do
++   case "$1" in
++     --setup-url)
++       SETUP_URL="$2"
++       shift 2
++       shift 2
++       shift 2
++       shift 2
++       shift 2
++       shift 2
++       ;;
++       ;;
++       ;;
++       ;;
++       ;;
++       ;;
++       ;;
++     --proof-token)
++       PROOF_TOKEN="$2"
++     --setup-issue-url)
++       SETUP_ISSUE_URL="$2"
++     --device-fingerprint)
++       DEVICE_FINGERPRINT="$2"
++     --local-daemon-port)
++       LOCAL_DAEMON_PORT="$2"
++     --x-local-token)
++       X_LOCAL_TOKEN="$2"
++     *)
++       echo "unknown arg: $1" >&2
++       exit 1
++   esac
++ done
++ resolve_setup_url() {
++   if [[ -n "$SETUP_URL" ]]; then
++     printf '%s' "$SETUP_URL"
++     return 0
++     return 0
++     return 0
++   fi
++   fi
++   fi
++   if [[ -z "$PROOF_TOKEN" || -z "$SETUP_ISSUE_URL" ]]; then
++     printf ''
++   local tmp_body
++   tmp_body="$(mktemp)"
++   local payload
++   payload="$(node - "$PROOF_TOKEN" "$DEVICE_FINGERPRINT" <<'NODE'
++ const proofToken = process.argv[2];
++ const deviceFingerprint = process.argv[3];
++ process.stdout.write(JSON.stringify({
++   proof_token: proofToken,
++   device_fingerprint: deviceFingerprint,
++ }));
++ NODE
++ NODE
++ NODE
++ )"
++   local code
++   code="$({
++     curl -sS -o "$tmp_body" -w '%{http_code}' \
++       -X POST \
++       -H 'content-type: application/json' \
++       -d "$payload" \
++       "$SETUP_ISSUE_URL"
++   } || true)"
++   if [[ "$code" =~ ^2 ]]; then
++     node - "$tmp_body" <<'NODE'
++ const fs = require('node:fs');
++ const body = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
++ process.stdout.write(typeof body.setup_url === 'string' ? body.setup_url : '');
++     rm -f "$tmp_body"
++   rm -f "$tmp_body"
++   printf ''
++   return 0
++ }
++ }
++ emit_not_ready() {
++   local resolved_setup_url
++   resolved_setup_url="$(resolve_setup_url)"
++   node - "$resolved_setup_url" <<'NODE'
++ const setupUrl = process.argv[2] || null;
++ console.log(JSON.stringify({
++   error: 'RUNNER_NOT_READY',
++   setup_url: setupUrl,
++   next_action: 'RUN_SETUP',
++ }, null, 2));
++ if [[ -z "$X_LOCAL_TOKEN" ]]; then
++   emit_not_ready
++   emit_not_ready
++   exit 2
++   exit 2
++ fi
++ fi
++ tmp_body="$(mktemp)"
++ trap 'rm -f "$tmp_body"' EXIT
++ http_code="$({
++   curl -sS --max-time 5 -o "$tmp_body" -w '%{http_code}' \
++     -H "x-local-token: ${X_LOCAL_TOKEN}" \
++     "http://127.0.0.1:${LOCAL_DAEMON_PORT}/v1/local/identity"
++ } || true)"
++ if [[ "$http_code" != "200" ]]; then
++ cat "$tmp_body"
+
+### scripts/publish.sh  [code]
++ #!/usr/bin/env bash
++ set -euo pipefail
++ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
++ PRECHECK="$SCRIPT_DIR/preflight.sh"
++ TITLE="${TITLE:-}"
++ BODY="${BODY:-}"
++ TAGS="${TAGS:-}"
++ PUBLISH_AT="${PUBLISH_AT:-}"
++ SETUP_URL="${SETUP_URL:-}"
++ PROOF_TOKEN="${PROOF_TOKEN:-}"
++ SETUP_ISSUE_URL="${SETUP_ISSUE_URL:-}"
++ DEVICE_FINGERPRINT="${DEVICE_FINGERPRINT:-$(hostname)-$(uname -s)-$(uname -m)}"
++ LOCAL_DAEMON_PORT="${LOCAL_DAEMON_PORT:-19090}"
++ X_LOCAL_TOKEN="${X_LOCAL_TOKEN:-${THIN_RUNNER_LOCAL_TOKEN:-}}"
++ OFFERING_ID="${OPENCLAW_OFFERING_ID:-naver-blog-writer}"
++ OFFERING_EXECUTE_URL="${OPENCLAW_OFFERING_EXECUTE_URL:-}"
++ OFFERING_API_KEY="${OPENCLAW_CORE_API_KEY:-}"
++ OFFERING_API_KEY_HEADER="${OPENCLAW_CORE_API_KEY_HEADER:-x-api-key}"
++ CONTROL_PLANE_URL="${CONTROL_PLANE_URL:-${ACP_RUNNER_SERVER_URL:-}}"
++ ADMIN_KEY_RAW="${ACP_ADMIN_API_KEY:-${ACP_CONTROL_PLANE_API_KEYS:-}}"
++ ADMIN_KEY="${ADMIN_KEY_RAW%%,*}"
++ while [[ $# -gt 0 ]]; do
++   case "$1" in
++     --title)
++       TITLE="$2"
++       shift 2
++       shift 2
++       shift 2
++       shift 2
++       shift 2
++       shift 2
++       shift 2
++       ;;
++       ;;
++       ;;
++       ;;
++       ;;
++       ;;
++       ;;
++       ;;
++     --body)
++       BODY="$2"
++     --tags)
++       TAGS="$2"
++     --publish-at)
++       PUBLISH_AT="$2"
++     --setup-url)
++       SETUP_URL="$2"
++     --local-daemon-port)
++       LOCAL_DAEMON_PORT="$2"
++     --x-local-token)
++       X_LOCAL_TOKEN="$2"
++     *)
++       echo "unknown arg: $1" >&2
++       exit 1
++   esac
++ done
++ if [[ -z "$TITLE" || -z "$BODY" ]]; then
++   echo '{"error":"title and body are required"}'
++   exit 1
++   exit 1
++   exit 1
++   exit 1
++   exit 1
++ fi
++ fi
++ fi
++ fi
++ fi
++ fi
++ fi
++ set +e
++ PRECHECK_OUTPUT="$($PRECHECK \
++   --setup-url "$SETUP_URL" \
++   --proof-token "$PROOF_TOKEN" \
++   --setup-issue-url "$SETUP_ISSUE_URL" \
++   --device-fingerprint "$DEVICE_FINGERPRINT" \
++   --local-daemon-port "$LOCAL_DAEMON_PORT" \
++   --x-local-token "$X_LOCAL_TOKEN" 2>&1)"
++ PRECHECK_CODE=$?
++ set -e
++ if [[ $PRECHECK_CODE -ne 0 ]]; then
++   printf '%s\n' "$PRECHECK_OUTPUT"
++   exit $PRECHECK_CODE
++ identity_tmp="$(mktemp)"
++ seal_tmp="$(mktemp)"
++ exec_tmp="$(mktemp)"
++ trap 'rm -f "$identity_tmp" "$seal_tmp" "$exec_tmp"' EXIT
++ identity_code="$({
++   curl -sS -o "$identity_tmp" -w '%{http_code}' \
++     -H "x-local-token: ${X_LOCAL_TOKEN}" \
++     -H "x-local-token: ${X_LOCAL_TOKEN}" \
++     "http://127.0.0.1:${LOCAL_DAEMON_PORT}/v1/local/identity"
++ } || true)"
++ } || true)"
++ } || true)"
++ if [[ "$identity_code" != "200" ]]; then
++   cat "$identity_tmp"
++ seal_payload="$(node - "$TITLE" "$BODY" "$TAGS" "$PUBLISH_AT" <<'NODE'
++ const title = process.argv[2] || '';
++ const body = process.argv[3] || '';
++ const tagsRaw = process.argv[4] || '';
++ const publishAt = process.argv[5] || '';
++ const tags = tagsRaw
++   .split(',')
++   .map((v) => v.trim())
++   .filter((v) => v.length > 0);
++ const payload = {
++   title,
++   body_markdown: body,
++   tags,
++   publish_at: publishAt || null,
++ };
++ };
++ process.stdout.write(JSON.stringify(payload));
++ NODE
++ NODE
++ NODE
++ )"
++ )"
++ )"
++ seal_code="$({
++   curl -sS -o "$seal_tmp" -w '%{http_code}' \
++     -X POST \
++     -X POST \
++     -H 'content-type: application/json' \
++     -H 'content-type: application/json' \
++     -d "$seal_payload" \
++     "http://127.0.0.1:${LOCAL_DAEMON_PORT}/v1/local/seal-job"
++ if [[ "$seal_code" != "200" ]]; then
++   cat "$seal_tmp"
++ requirement_payload="$(node - "$(cat "$identity_tmp")" "$(cat "$seal_tmp")" <<'NODE'
++ const identity = JSON.parse(process.argv[2]);
++ const sealed = JSON.parse(process.argv[3]);
++ const req = {
++   runner_attestation: identity.runner_attestation,
++   sealed_payload: sealed.sealed_payload,
++   payload_digest: sealed.payload_digest,
++   idempotency_key: sealed.idempotency_key,
++ process.stdout.write(JSON.stringify(req));
++ if [[ -n "$OFFERING_EXECUTE_URL" ]]; then
++   execute_body="$(node - "$OFFERING_ID" "$requirement_payload" <<'NODE'
++ const offeringId = process.argv[2];
++ const requirements = JSON.parse(process.argv[3]);
++ process.stdout.write(JSON.stringify({
++   offering_id: offeringId,
++   requirements,
++ }));
++   if [[ -n "$OFFERING_API_KEY" ]]; then
++     execute_code="$({
++     execute_code="$({
++       curl -sS -o "$exec_tmp" -w '%{http_code}' \
++       curl -sS -o "$exec_tmp" -w '%{http_code}' \
++         -X POST \
++         -X POST \
++         -H 'content-type: application/json' \
++         -H 'content-type: application/json' \
++         -H "${OFFERING_API_KEY_HEADER}: ${OFFERING_API_KEY}" \
++         -d "$execute_body" \
++         -d "$execute_body" \
++         "$OFFERING_EXECUTE_URL"
++         "$OFFERING_EXECUTE_URL"
++     } || true)"
++     } || true)"
++   else
++   fi
++   fi
++   if [[ "$execute_code" =~ ^2 ]]; then
++     cat "$exec_tmp"
++     exit 0
++   cat "$exec_tmp"
++   cat "$exec_tmp"
++ if [[ -z "$CONTROL_PLANE_URL" || -z "$ADMIN_KEY" ]]; then
++   echo '{"error":"OPENCLAW_OFFERING_EXECUTE_URL not set and direct dispatch creds missing"}'
++ dispatch_code="$({
++   curl -sS -o "$exec_tmp" -w '%{http_code}' \
++     -H "x-api-key: ${ADMIN_KEY}" \
++     -d "$requirement_payload" \
++     "${CONTROL_PLANE_URL%/}/v2/jobs/dispatch-and-wait"
++ if [[ "$dispatch_code" =~ ^2 ]]; then
++   exit 0
++ cat "$exec_tmp"
++ exit 1
+
+### scripts/setup_runner.sh  [code]
++ #!/usr/bin/env bash
++ set -euo pipefail
++ SETUP_URL="${SETUP_URL:-}"
++ PROOF_TOKEN="${PROOF_TOKEN:-}"
++ SETUP_ISSUE_URL="${SETUP_ISSUE_URL:-}"
++ DEVICE_FINGERPRINT="${DEVICE_FINGERPRINT:-$(hostname)-$(uname -s)-$(uname -m)}"
++ AUTO_SERVICE="${AUTO_SERVICE:-both}"
++ while [[ $# -gt 0 ]]; do
++   case "$1" in
++     --setup-url)
++       SETUP_URL="$2"
++       shift 2
++       shift 2
++       shift 2
++       shift 2
++       shift 2
++       ;;
++       ;;
++       ;;
++       ;;
++       ;;
++       ;;
++     --proof-token)
++       PROOF_TOKEN="$2"
++     --setup-issue-url)
++       SETUP_ISSUE_URL="$2"
++     --device-fingerprint)
++       DEVICE_FINGERPRINT="$2"
++     --auto-service)
++       AUTO_SERVICE="$2"
++     *)
++       echo "unknown arg: $1" >&2
++       exit 1
++   esac
++ done
++ if [[ -z "$SETUP_URL" && ( -z "$PROOF_TOKEN" || -z "$SETUP_ISSUE_URL" ) ]]; then
++   echo '{"error":"setup_url required or proof_token+setup_issue_url required"}'
++   exit 1
++ fi
++ fi
++ runner_cmd=(npx @y80163442/naver-thin-runner setup)
++ if [[ -n "$SETUP_URL" ]]; then
++   runner_cmd+=(--setup-url "$SETUP_URL")
++ else
++   runner_cmd+=(--proof-token "$PROOF_TOKEN" --setup-issue-url "$SETUP_ISSUE_URL" --device-fingerprint "$DEVICE_FINGERPRINT")
++ runner_cmd+=(--auto-service "$AUTO_SERVICE")
++ "${runner_cmd[@]}"
++ echo '{"ok":true,"next_action":"RUN_LOGIN_ONCE","hint":"npx @y80163442/naver-thin-runner login"}'
+
+### scripts/smoke_test.sh  [code]
++ #!/usr/bin/env bash
++ set -euo pipefail
++ ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
++ echo "[1/3] preflight should return RUNNER_NOT_READY without local token"
++ set +e
++ set +e
++ OUTPUT="$(bash "$ROOT_DIR/scripts/preflight.sh" 2>&1)"
++ CODE=$?
++ set -e
++ set -e
++ if [[ $CODE -ne 2 ]]; then
++   echo "[FAIL] expected exit code 2, got $CODE"
++   echo "$OUTPUT"
++   exit 1
++   exit 1
++ fi
++ fi
++ echo "$OUTPUT" | grep -q '"error": "RUNNER_NOT_READY"'
++ echo "[2/3] publish input validation"
++ OUT2="$(bash "$ROOT_DIR/scripts/publish.sh" --title "" --body "" 2>&1)"
++ CODE2=$?
++ if [[ $CODE2 -eq 0 ]]; then
++   echo "[FAIL] publish should fail on empty title/body"
++ echo "$OUT2" | grep -q 'title and body are required'
++ echo "[3/3] script syntax check"
++ bash -n "$ROOT_DIR/scripts/preflight.sh"
++ bash -n "$ROOT_DIR/scripts/setup_runner.sh"
++ bash -n "$ROOT_DIR/scripts/publish.sh"
++ echo "[OK] Smoke test passed"

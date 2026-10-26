@@ -1,0 +1,63 @@
+ip930/patent-competitor-analysis  1.1.3 -> 1.1.4
+change_type: instructions+code   changelog: 进度显示改得和网页工作台一样：一直往上走、带一位小数，不会长时间停在一个数，也不会倒退。
+
+### SKILL.md  [instructions]
+- version: "1.1.3"
++ version: "1.1.4"
+
+### scripts/patentmax_competitive.py  [code]
+- def progress_line(data, started_at):
+-     """「[进度 X%] 阶段，已用时 N」。服务端给了分步进度就带百分比，没给就只报状态和已用时，不编百分比。"""
+-         line = progress_line(data, started_at_of(operation, data))
+-         stage = line.split("，")[0]
+-         "progress": progress_line(data, started_at_of(args.operation_id, data)),
++ import math
++ }
++     record = load_task(operation)
++ # 给人看的进度：和工作台一样一直往上走、带一位小数（2026-10-22，与服务端 MCP 的 report-progress-display.ts 同一套算法）。
++ # 服务端的真值很粗：想法升级、竞争分析、技术路线、OA 按「完成了几步」折算，会一下跳到完成、十分钟停在 75%，甚至倒退；
++ # 查新、交底书两次真值之间也是停着的。这里只改展示：真值之间按每格实测耗时往下一格爬（差 0.4 停住），只增不减，完成才 100。
++ _LADDERS = {
++     "novelty": [(20, 160), (32, 176), (48, 56), (62, 16), (84, 623), (94, 67), (100, 20)],
++     "technical_disclosure": [(12, 40), (15, 9), (46, 105), (96, 170), (100, 13)],
++ # 真值只是「完成了几步」的报告：按已用时间走曲线，线上实测中位用时处约 80%，95% 封顶等完成
++ _MEDIAN_SECONDS = {"idea_upgrade": 153, "patent_intelligence": 779, "roadmap_layout": 1179, "oa_response": 466, "image_search": 15}
++ def shown_progress(operation, data):
++     status = (data.get("status") or "").lower()
++     raw = data.get("progress")
++     raw = float(raw) if isinstance(raw, (int, float)) else 0.0
++     now = time.time()
++     state = record.get("shown_progress") or {}
++     if not state:
++         state = {"shown": 0.0, "raw": raw, "raw_since": now, "active": max(0.0, now - started_at_of(operation, data)),
++                  "last_seen": now, "last_status": status}
++     else:
++         if state.get("last_status") in ("running", "accepting"):
++             state["active"] = state.get("active", 0) + now - state.get("last_seen", now)
++         if raw != state.get("raw"):
++             state["raw"], state["raw_since"] = raw, now
++         state["last_seen"], state["last_status"] = now, status
++     if status == "running":
++         report_type = data.get("report_type") or REPORT_TYPE
++         ladder = _LADDERS.get(report_type)
++         if ladder:
++             value = raw
++             nxt = next(((th, secs) for th, secs in ladder if th > raw), None)
++             if nxt:
++                 crept = raw + (nxt[0] - raw) * (1 - math.exp(-(now - state["raw_since"]) / (max(nxt[1], 1) / 3)))
++                 value = max(raw, min(crept, nxt[0] - 0.4))
++         else:
++             tau = _MEDIAN_SECONDS.get(report_type, 600) / math.log(95 / 15)
++             value = 95 * (1 - math.exp(-state["active"] / tau))
++             if report_type == "image_search":
++                 value = max(value, raw)
++         state["shown"] = min(99.9, max(state.get("shown", 0.0), value))
++     save_task(operation, shown_progress=state)
++     return round(state["shown"], 1)
++ def progress_line(data, started_at, operation=None):
++     """「[进度 X.X%] 阶段，已用时 N」。百分比是平滑后的展示值（见 shown_progress），排队中不报百分比。"""
++     if operation and status == "running":
++         return f"[进度 {shown_progress(operation, data):.1f}%] {stage if detailed else label}，已用时 {elapsed}"
++         line = progress_line(data, started_at_of(operation, data), operation)
++         stage = str(data.get("stage") or status)  # 百分比每次都变，按阶段名判断换没换阶段
++         "progress": progress_line(data, started_at_of(args.operation_id, data), args.operation_id),

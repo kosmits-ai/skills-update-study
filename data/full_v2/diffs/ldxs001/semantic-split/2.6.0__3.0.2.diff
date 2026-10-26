@@ -1,0 +1,2200 @@
+ldxs001/semantic-split  2.6.0 -> 3.0.2
+change_type: instructions+docs+code   changelog: add 3 dual-perspective hooks (7->10), mandatory focus/divergent/integration, pure-regex Pipeline B, zero model dep
+
+### SKILL.md  [instructions]
+- description: 语义拆分与智能规划技能。将自然语言拆分为结构化需求块，基于5W2H维度提取与约束标注增强语义理解，双视角推理整合为单一执行步骤，支持自增强json沉淀机制。
+- version: "2.5.0"
+- tags:
+-   - semantic-split
+-   - task-planning
+-   - json-accumulation
+-   - progressive-loading
+-   - 5w2h
+-   - constraint-annotation
+- # semantic-split — 语义拆分与智能规划
+- 将自然语言拆分为结构化需求块，基于 5W2H 维度提取与约束标注增强语义理解，双视角推理整合为单一执行步骤。
+- ## 触发场景
+- - 用户提出任务请求："帮我做..."、"我需要..."、"交给你了..."
+- - 用户描述问题寻求帮助、表达需求、委托工作
+- - 简单问答和闲聊无需拆分
+- | 1 | **语义拆分** | 识别主语 → 划分块 → 提取目的/行为/动机 |
+- | 2 | **5W2H维度提取** | 自动抽取7维度 + 缺失维度填默认值（按任务类型映射表） |
+- | 3 | **约束强度标注** | 硬约束🔴/软约束🟡/无约束⚪ 三级标注 + 注意力锚定 |
+- | 4 | **双视角推理** | 聚焦（保守）+ 发散（创新）内部推理 → 整合为单一执行步骤 |
+- | 5 | **结构化输出** | 统一格式输出拆分结果（含约束标注），含确认询问 |
+- | 6 | **渐进式加载** | 规则级/能力级 json 渐进匹配，未命中时模型思考 |
+- | 7 | **自增强闭环** | 一次使用 → 沉淀 json → 下次复用 |
+- python scripts/json_manager.py scan --keywords 制作 PPT 产品    # 扫描匹配
+- python scripts/json_manager.py categorize --threshold 5        # 归类统计
+- python scripts/json_manager.py create --type capability --name my_task_v1  # 创建
+- python scripts/json_manager.py generalize --input <path> --params "具体值=[占位符]"  # 通用化
+- ```
+- ```
+- > 知识库 JSON 存放于 `skills/.standardization/semantic-split/data/`（铁律4：产出物不嵌入技能目录）
+- ### 语义拆分规则（摘要）
+- > 详细规则见 `references/split_rules.md`
+- **核心流程**：识别主语 → 划分块 → 提取目的/行为/动机 → 5W2H维度 + 约束强度标注
+- | 主语类型 | 块标记 | 块内元素 |
+- |---------|--------|---------|
+- | 用户（"我"） | `块1：用户` | 目的 / 行为(诉求) / 动机 |
+- | AI助手（"你"） | `块2：执行者` | 同上 |
+- | 第三方 | `块3：第三方-N` | 同上 |
+- **边界情况速查**：
+- | 关键情况 | 处理 |
+- |---------|------|
+- | 约束强度冲突 | 按最高强度处理（🔴>🟡🔴>🟡>⚪） |
+- | 举例内容干扰 | 「比如/例如」后内容 → [EXAMPLE]，不作为核心约束 |
+- | json 库为空 | 跳过①②，直接进入③模型思考 |
+- ### 完整执行流程
+- **步骤 1-2**：接收输入 → 识别主语 & 划分块
+- 接收用户原文 → 扫描识别主语代词（我/你/他/她/它/名称），每个独立主语 = 一个块
+- **步骤 2.5**：任务类型识别与 5W2H 初始化
+- > 内部执行，不输出。首次执行时读取 `references/task_type_defaults.md` + `references/constraint_annotation.md`
+- 1. **任务类型识别**：制作PPT / 填写周报 / 安排行程 / 写邮件 / 策划活动 / 其他
+- 2. **5W2H 维度初始化**：按任务类型从默认映射表填入默认值
+- 3. **约束强度预标注**：🔴硬约束 / 🟡软约束 / ⚪无约束
+- **步骤 3**：提取块内元素（增强版）
+- **注意力锚定**（内部执行，不输出，详见 `references/constraint_annotation.md` 第三节）：
+- 1. `[CRITICAL]` — 硬约束，后续不可违反
+- 2. `[CORE]` — 核心目标（动词+宾语）
+- 3. `[ENTITY]` — 数字、时间、人名
+- 4. `[EXAMPLE]` — 举例内容，降权不作为约束
+- 5. `[RESISTANCE]` — 「但是/担心/难」后内容
+- 6. 核心句重构：「[主语] 要 [CORE] 于 [时间/场景]」（≤20字）
+- 逐句提取目的/行为/动机 + 5W2H维度 + 约束强度（详见 `references/split_rules.md` 第五节）
+- **步骤 4**：结构化输出（增强版）
+- 【拆分结果】
+- ## 块 N：[主语名称]
+-   角色：[用户/执行者/第三方]
+-   目的：[核心目标]
+-   诉求：
+-     1. [核心交付物] 🔴  2. [支撑信息] 🟡  3. [附加要求] ⚪
+-   动机：[背景/原因/情绪]
+-   5W2H：Why/What/Who/Where/When/How/How much — [值] 🔴/🟡/⚪
+-   阻力：[描述]（如有）
+-   📌 核心句：[主语] 要 [CORE] 于 [时间/场景]
+- 【确认询问】拆分是否完整准确？
+- **步骤 4.5**：自我反查（内部执行，不输出）
+- > 展示前强制执行（详见 `references/constraint_annotation.md` 第三节）：
+- | 反查 | 检查内容 | 修正 |
+- |------|---------|------|
+- | 1 | 硬约束遗漏：`[CRITICAL]` 是否全在结果中？ | 补充 |
+- | 2 | 约束误判：🟡 词被标为 🔴？ | 修正 |
+- | 2b | 隐式升级：🟡 约束属组织规范/法律/安全？→ 🟡🔴 或 🔴 | 升级 |
+- | 3 | 举例干扰：`[EXAMPLE]` 被当核心诉求？ | 降级 |
+- | 4 | 5W2H 缺失：有明显可推断维度？ | 补充 `[推断]` |
+- **步骤 5**：用户确认
+- - 如有遗漏 → 用户补充 → 更新结构
+- - 如全部正确 → 进入步骤 6
+- **步骤 6**：渐进加载与规划生成（增强版）
+- > 加载：`references/loading_decision_tree.md`（必须）+ `references/planning_rules.md` + `references/constraint_annotation.md` + `references/json_schema.md`（按需）
+- 按决策树执行：
+- 1. 扫描规则级 json → 命中则加载并展示
+- 2. 不命中则扫描能力级 json → 命中则加载并展示
+- 3. 均不命中则**模型思考**（需加载 `planning_rules.md`）
+- 4. 展示规划 → 询问用户是否执行
+- **【模型思考：双视角推理→整合】**（详见 `references/planning_rules.md` 第六节，不输出双方案）
+- a) **聚焦方案**（内部）：5W2H取最窄值；守🔴硬约束；已验证方法；步骤≤30min
+- b) **发散方案**（内部）：5W2H取最宽值；🔴可轻微突破（标注风险）；引入非惯用工具
+- c) **整合**（输出）：聚焦为骨架 + 发散创新点→🌟增强步骤 → **单一执行步骤** + 工作包分解
+- 展示给用户的规划格式（详细规则见 `references/planning_rules.md` 第六节）：
+- 📌 任务：[名称] ｜🔴 硬约束：[列表] ｜🟡 软约束：[列表]
+- 执行步骤：
+-   步骤 N: [名称] ── serial ── milestone: ✅/❌
+-     action: [操作] | depends_on: [依赖] | constraint_level: 🔴/🟡/⚪
+-   步骤 N🌟: [名称]（增强：来自发散方案）
+-     ⚠️ 风险：[说明]（如涉及🔴突破）
+- 工作包：WP1: [描述](耗时, 前置) → 📍 检查点：[里程碑]
+- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+- 来源：[规则级json / 能力级json / 模型思考（双视角整合）]
+- **步骤 7**：执行与 json 生成
+- - 用户确认执行 → 执行任务
+- - 分支③（不命中+确认执行）→ 完成后生成通用化能力级 json（加载 `json_schema.md`）
+- - 其他分支 → 不生成新 json（除非用户主动要求）
+- ## 注意事项
+- 1. **双方案是内部推理，不输出给用户**：聚焦+发散仅在模型内部执行，最终整合为单一执行步骤
+- 2. **约束强度不能只看关键词**：需上下文推断（如"尽量用公司模板"属组织规范，应升级为🟡🔴）
+- 3. **注意力锚定在步骤3前强制执行**：[CRITICAL]/[CORE]/[ENTITY]/[EXAMPLE]/[RESISTANCE] 标记不可跳过
+- 4. **自我反查在展示前强制执行**：4项检查+反查2b（隐式约束升级），全部通过才进入用户确认
+- ## 脚本工具
+- `json_manager.py` — 管理能力级/规则级 json 的 CLI 工具（零外部依赖）
+- | 子命令 | 功能 |
+- |--------|------|
+- | `scan` / `categorize` | 按关键词扫描 / 按 tags 归类统计 |
+- | `create` / `validate` | 创建 json 骨架 / 验证格式 |
+- | `generalize` / `rule-gen` | 字段通用化 / 从能力级生成规则级 |
+- | `list` / `info` | 列出所有 json / 显示详情 |
+- ## 参考文档（渐进加载）
+- | 文件 | 加载时机 |
+- |------|---------|
+- | `split_rules.md` | 步骤 2、3 首次 |
+- | `loading_decision_tree.md` | 步骤 6 **必须** |
+- | `planning_rules.md` | 模型思考时 |
+- | `json_schema.md` | 生成 json 时 |
+- | `constraint_annotation.md` | 步骤 2.5 / 3 / 6 |
+- | `task_type_defaults.md` | 步骤 2.5 首次 |
+- | `examples.md` | 参考格式时 |
+- **v2.5.0** — 5W2H维度提取 · 约束强度标注(🔴🟡⚪) · 注意力锚定 · 双视角推理整合 · 工作包分解
++ ---
++ ---
++ ---
++ ---
++ slug: semantic-split
++ displayName: 语义拆分与智能规划
++ description: 语义拆分与智能规划。将自然语言拆分为结构化需求块，三管线协同调度（正则结构分析→bge语义匹配→bge-reranker重排序），5W2H提取与约束标注增强语义理解，双视角推理整合为单一执行步骤，自增强闭环自动沉淀能力级JSON模板，7门禁钩子系统管控流程。
++ trigger: ['帮我做', '我需要', '交给你了', '帮我分析', '需求拆分']
++ license: MIT
++ data_dir: .standardization/semantic-split/data
++ version: 3.0.2
++ tags: ['semantic-split', 'task-planning', 'json-accumulation', 'progressive-loading', '5w2h', 'constraint-annotation', 'self-reinforcing-loop']
++ trigger_negative: true
++ external_data_dir: true
++ sensitive_access: false
++ critical_write: false
++ permission_weight: LOW
++ meta_field_sync: true
++ create_permissions_md: true
++ faq_quality: improve_qa
++ h1_position: true
++ trigger_quality: refine_triggers
++ # semantic-split
++ > 语义拆分与智能规划。三管线递进调度 + 自增强闭环沉淀。
++ ## 输入输出
++ - **输入**：≤2000 字纯文本（任务描述）
++ - **输出**：JSON 结构化需求块（含步骤列表、WP 分解、钩子门禁状态）
++ - **依赖**：sentence-transformers（embedding + rerank）
++ ## 触发条件
++ **正向触发：**
++ - [需求拆分] "帮我把这个需求拆开" / "拆分一下这个任务"
++ - [语义规划] "帮我规划一下怎么做" / "整理一下思路"
++ - [5W2H分析] "帮我分析这个需求" / "5W2H分析一下"
++ - [JSON管理] "管理json文件" / "json_manager"
++ - [渐进匹配] "加载规则" / "匹配json"
++ **不触发：**
++ - 简单问答、闲聊、问候
++ - 单步任务
++ | 1 | **Pipeline B 结构分析** | 纯正则（5W2H/主语/约束/分块/注意力锚定），零外部依赖 |
++ | 2 | **Pipeline A 语义匹配** | 正则→bge-small(embedding)→bge-reranker(CrossEncoder)|
++ | 3 | **Pipeline C 智能体推理** | 结构分析 + 模板参考 喂给智能体 → 增强思考 → 生成步骤 |
++ | 4 | **覆盖率阈值路由** | 正则层覆盖率≥80% 直接通过，<80% 升级到 bge 语义层 |
++ | 5 | **自增强闭环** | 执行 → 通用化 → 保存为 JSON 模板 → 下次命中 → 0 LLM |
++ | 6 | **模板库扫描** | 每次请求自动扫描 capabilities/ 库，命中≥0.6 则作为 few-shot 参考或直接复用 |
++ | 7 | **10 道门禁钩子** | input_valid → b_pipeline_done → a_scan_done → decision_made → llm_generated → **focus_reasoning → divergent_reasoning → integration_reasoning** → template_saved → wp_done |
++ > 📚 渐进式体系：`SKILL.md` 为入口，详细内容按需加载见下方索引。
++ ### 渐进式文件索引
++ | 文件 | 内容 |
++ |-----|------|
++ | `references/LICENSE.md` | MIT 许可协议 |
++ | `references/changelog.md` | 版本更新日志 |
++ | `references/attribution.md` | 第三方组件版权声明与许可说明 |
++ | `references/json_schema.md` | 能力级/规则级 JSON 格式定义 |
++ | `references/loading_decision_tree.md` | 渐进加载决策流程（含自增强闭环） |
++ | `references/planning_rules.md` | 双视角推理与规划生成规则 |
++ | `references/split_rules.md` | 语义拆分规则 |
++ | `references/constraint_annotation.md` | 约束标注规则与注意力锚定 |
++ | `references/examples.md` | 各功能输出格式示例 |
++ | `references/faq.md` | 常见问题与排错 |
++ | `references/permissions.md` | 权限扫描与风险评估 |
++ | `references/task_type_defaults.md` | 5W2H 任务类型默认值映射 |
++ | `references/antipatterns.md` | 反模式指南 |
++ | `references/automation_tasks.md` | 自动任务配置 |
++ # 0. 安装依赖
++ pip install sentence-transformers huggingface-hub
++ # 1. 下载 BGE 模型
++ python scripts/model_manager.py --download bge-small
++ python scripts/model_manager.py --download bge-rerank
++ # 2. 三管线调度
++ python scripts/semantic_pipeline.py --text "帮我做一份PPT" --hooks
++ # 3. 查看流程门禁
++ python scripts/semantic_pipeline.py --text "帮我分析Q2数据" --hooks
++ # 4. JSON 管理（模板库操作）
++ python scripts/json_manager.py scan --keywords PPT
++ ## 三管线职责
++ | 管线 | 方法 | 模型 | 产出 |
++ |:----|:----|:----:|:----|
++ | **B 结构分析** | 纯正则 | **无** | 5W2H七维 / 主语 / 约束等级 / 分块 / 注意力锚定 |
++ | **A 语义匹配** | 正则 → embedding → rerank | bge-small + bge-reranker ✅ | 模板库扫描 / 相似度匹配 / 约束分类 |
++ | **C 智能体推理** | 智能体原生推理 | — | 步骤列表 / WP分解 / 模板沉淀 |
++ > Pipeline B 的 5W2H / 主语 / 约束提取不需要模型，纯正则完成。
++ > 正则词表覆盖常见动词/主语/时间/地点/数量词，边界 case 由 Pipeline C（LLM）推理补全。
++ > bge-small / bge-reranker 不参与结构分析，只做模板库语义匹配。
++ 输入文本
++     │
++     │
++     │
++     │
++     │
++     │
++     │
++     │
++     │
++     │
++     │
++     ▼
++     ▼
++     ▼
++     ▼
++     ▼
++     ▼
++     ▼
++     ▼
++     ▼
++     ▼
++     ▼
++ [钩子1] input_valid → 输入校验
++ [钩子2] b_pipeline_done → Pipeline B：正则层
++     │  5W2H 提取 / 主语识别 / 约束标注 / 分块
++     │  （零模型，纯 regex）
++ [钩子3] a_scan_done → Pipeline A：模板库扫描
++     │  bge-small: embedding 编码 → 余弦相似度匹配
++     │  bge-reranker: CrossEncoder 重排序
++     │  （仅模板匹配，不参与结构分析）
++     │  ┌─ 命中 ≥0.6 → 模板作为 few-shot 参考
++     │  └─ 未命中   → 空
++ [钩子4] decision_made → 渐进决策
++     │  ┌─ 模板命中 ≥0.6 → 直接复用（0 智能体调用）
++     │  └─ 未命中       → 传递 结构分析结果 + 模板参考 给智能体
++ [钩子5] llm_generated → Pipeline C：智能体推理
++     │  拿到: 5W2H + 约束 + 结构分析 + 模板参考(few-shot)
++ [钩子6] focus_reasoning → 聚焦推理（保守方案）
++     │  智能体必须执行: 生成安全可靠的执行方案
++ [钩子7] divergent_reasoning → 发散推理（创新方案）
++     │  智能体必须执行: 生成创新大胆的执行方案
++ [钩子8] integration_reasoning → 整合推理
++     │  智能体必须执行: 聚焦方案(骨架) + 发散方案(创新点) → 最终方案
++     │  输出: 步骤列表
++ [钩子9] template_saved → 自动保存为能力级 JSON
++     │  步骤通用化 → 写入 capabilities/{task}_v1.json
++ [钩子10] wp_done → WP 分解完成
++ 输出 JSON
++ ## 模型清单
++ | 模型 | 管线 | 大小 | 协议 |
++ |:----|:----|:---:|:----:|
++ | BAAI/bge-small-zh-v1.5 | Pipeline A 嵌入层 | 92MB | MIT |
++ | BAAI/bge-reranker-base | Pipeline A 重排序层 | 1.1GB | MIT |
++ | **合计** | | **~1.2GB** | **全部商业友好** |
++ > Pipeline B 为纯正则实现，零模型依赖。
++ > 无外部 API 调用，无 LLM 配置需求。Pipeline C 由智能体原生推理。
+
+### references/LICENSE.md  [docs]
++ MIT License
++ Copyright (c) 2026 wUwproject
++ Permission is hereby granted, free of charge, to any person obtaining a copy
++ of this software and associated documentation files (the "Software"), to deal
++ in the Software without restriction, including without limitation the rights
++ to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
++ copies of the Software, and to permit persons to whom the Software is
++ furnished to do so, subject to the following conditions:
++ The above copyright notice and this permission notice shall be included in all
++ copies or substantial portions of the Software.
++ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++ IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++ FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
++ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
++ SOFTWARE.
+
+### references/antipatterns.md  [docs]
++ # 反模式指南
++ ## 常见反模式
++ ### 1. 任务描述过于模糊
++ - **错误做法**："帮我处理一下这个"
++ - **正确做法**：明确任务范围、输出格式、约束条件
++ - **影响**：导致拆分不准确，规划偏离用户意图
++ ### 2. 忽略约束强度
++ - **错误做法**：将所有要求等同对待
++ - **正确做法**：区分 🔴 硬约束 / 🟡 软约束 / ⚪ 无约束
++ - **影响**：硬约束被忽略导致输出不可用
++ ### 3. 跳过自我反查
++ - **错误做法**：直接输出拆分结果
++ - **正确做法**：执行4项自我反查后输出
++ - **影响**：遗漏硬约束、误判约束等级
++ ### 4. 双视角推理不完整
++ - **错误做法**：只做聚焦方案
++ - **正确做法**：聚焦 + 发散 → 整合
++ - **影响**：方案缺乏创新性或过于冒进
+
+### references/attribution.md  [docs]
++ # Attribution — 版权声明与许可说明
++ > 本技能包含第三方开源组件和预训练模型，各自遵循不同的许可协议。
++ > 技能代码本身采用 MIT 协议，见 `references/LICENSE.md`。
++ ---
++ ---
++ ---
++ ---
++ ---
++ ---
++ ## 一、本技能代码
++ - **许可协议**：MIT License
++ - **版权归属**：Copyright (c) 2026 wUwproject
++ - **文件范围**：`SKILL.md`、`scripts/*.py`、`references/*.md`（除本文件所列第三方内容外）
++ ## 二、使用到的 Python 依赖库
++ 以下库通过 `pip install` 自动安装，其许可协议与本技能代码各自独立：
++ | 库 | 安装名 | 许可协议 | 版权方 |
++ |:--|:-----:|:--------:|--------|
++ | Sentence-Transformers | `sentence-transformers` | Apache 2.0 | UKP Lab, TU Darmstadt / Hugging Face |
++ | 🤗 Transformers | `transformers` | Apache 2.0 | Hugging Face Inc. |
++ | 🤗 Hub | `huggingface-hub` | Apache 2.0 | Hugging Face Inc. |
++ > Pipeline B 为纯正则实现（5W2H/主语/约束/分块），不依赖第三方 NLP 库。
++ ## 三、Pipeline A — 嵌入与重排序模型
++ ### BAAI/bge-small-zh-v1.5（嵌入层）
++ | 项目 | 内容 |
++ | 项目 | 内容 |
++ |:----|:----|
++ |:----|:----|
++ | **许可协议** | **MIT License** ✅ 商业友好 |
++ | **许可协议** | **MIT License** ✅ 商业友好 |
++ | **版权方** | 北京智源人工智能研究院（BAAI） |
++ | **版权方** | 北京智源人工智能研究院（BAAI） |
++ | **项目地址** | https://github.com/FlagOpen/FlagEmbedding |
++ | **项目地址** | https://github.com/FlagOpen/FlagEmbedding |
++ | **许可原文** | https://github.com/FlagOpen/FlagEmbedding/blob/master/LICENSE |
++ | **许可原文** | https://github.com/FlagOpen/FlagEmbedding/blob/master/LICENSE |
++ | **大小** | ~92MB |
++ | **用途** | Pipeline A 嵌入层：文本向量化与余弦相似度匹配 |
++ ### BAAI/bge-reranker-base（CrossEncoder 重排序层）
++ | **大小** | ~1.1GB |
++ | **用途** | Pipeline A CrossEncoder 层：query-doc 相关性重排序（基于 BERT 架构） |
++ ## 四、Pipeline B — 结构分析
++ Pipeline B 为纯正则实现，不依赖第三方模型。覆盖 5W2H 提取、主语识别、约束标注、分块、注意力锚定。
++ ## 五、Pipeline C — 智能体推理
++ Pipeline C 不依赖外部模型或 API。推理由智能体（AI Agent）原生完成，无需额外配置。
++ - 技能输出 `agent_context`（含 5W2H、约束标注、结构分析、模板参考）
++ - 智能体读取该上下文后自行执行聚焦/发散/整合推理
++ - 推理结果自动通用化并保存为能力级 JSON 模板（自增强闭环）
++ ## 六、总结
++ | 组件 | 许可协议 | 商用限制 |
++ |:----|:--------:|:--------:|
++ | 本技能代码（MIT） | ✅ | 无 |
++ | Sentence-Transformers | Apache 2.0 | 无 |
++ | Transformers | Apache 2.0 | 无 |
++ | BGE-small-zh（嵌入） | MIT | 无 |
++ | BGE-reranker-base（rerank） | MIT | 无 |
++ | 智能体推理 | — | 由运行平台提供 |
++ **本技能所有内置模型权重均可免费用于商业用途，无许可证冲突。**
++ **模型总大小约 1.2GB（bge-small 92MB + bge-reranker 1.1GB）。**
++ **Pipeline B 纯正则实现，零模型依赖。**
+
+### references/automation_tasks.md  [docs]
+- > **加载时机**：用户要求设置定时任务或自动化任务时加载
++ > **加载时机**：用户要求配置定时任务或自动化任务时加载
+
+### references/changelog.md  [docs]
+- ## v2.5.0（2026-05-23）
+- ### 变更内容
+- ### 变更内容
+- ### 变更内容
+- ### 变更内容
+- - 去掉标题中的版本号 `(Semantic Split v2.4)`，版本号仅在 frontmatter
+- ## v2.4.1（2026-05-23）
+- **改写类型：标准化改造 — SKILL.md 瘦身 + 渐进式MD体系完善**
+- - `references/split_rules.md` — 从SKILL.md第一部分迁移的完整语义拆分规则（划分块、诉求聚合、主语映射表、边界情况、5W2H提取规则）
+- ## v2.4.0（2026-05-23）
+- - `references/task_type_defaults.md` — 5 种任务类型（制作PPT/填写周报/安排行程/写邮件/策划活动）的 5W2H 默认值映射表 + 通用默认值
+- ## v2.3.0（2026-05-23）
+- ## v2.1.0（2026-05-22）
++ ## [3.0.2] - 2026-07-01
++ ### 修复
++ ### 修复
++ ### 修复
++ - 新增 focus_reasoning / divergent_reasoning / integration_reasoning 三道门禁钩子（7→10道）
++ - 双视角推理子步骤不再跳过，强制走聚焦→发散→整合流程
++ - 清理所有 spaCy 残留引用（代码 + 文档 + 版权声明）
++ ## [3.0.1] - 2026-07-01
++ - 移除 Stanza（1.1GB），Pipeline B 改为纯正则实现，零模型依赖
++ - 移除 pipeline_b.py 中冗余的独立 BERT 层（reranker 本身已是 BERT）
++ - 清理所有 Stanza / spaCy 引用（代码 + 文档 + 版权声明）
++ ### 变更
++ - Pipeline C 改为智能体原生推理，移除外部 LLM API 调用代码
++ - pipeline_c.py 输出 `agent_context`（含结构分析 + 模板参考）增强智能体思考深度
++ - 新增 `_save_template()` 自增强闭环：每次执行后自动保存为能力级 JSON 模板
++ - 新增 7 道门禁钩子系统（input_valid → b_pipeline_done → a_scan_done → decision_made → llm_generated → template_saved → wp_done）
++ - 模板匹配阈值调整：≥0.6 直接复用（跳智能体），<0.6 作为 few-shot 参考喂给智能体
++ - 统一数据路径至 `.standardization/semantic-split/data/`
++ - model_manager.py 修复 DOWNLOAD_SOURCES 索引错误
++ ### 模型
++ - bge-small-zh-v1.5: 92MB → data/models/bge-small-zh-v1.5/
++ - bge-reranker-base: 1.1GB → data/models/bge-reranker-base/
++ - Pipeline B 纯正则，无模型
++ ## [3.0.0] - 2026-07-01
++ ### 重构
++ - 三管线架构落地：Pipeline A（正则→embedding→CrossEncoder）、Pipeline B（正则→Stanza→BERT）、Pipeline C（聚焦+发散→LLM）
++ - LLM 调用量减少约 90%：仅 Step 4 双视角推理依赖 LLM，其余 8 步全部走正则→Stanza→BERT 递进
++ - 新增 `setup_env.py`：环境检测与 pip 依赖安装
++ - 新增 `model_manager.py`：多源模型下载与索引管理（自包含 data/models/）
++ - 新增 `pipeline_a.py`：语义匹配管线（bge-small-zh-v1.5 + bge-reranker-base）
++ - 新增 `pipeline_b.py`：结构分析管线（Stanza POS/NER/DEP）
++ - 新增 `pipeline_c.py`：LLM 推理管线（可插拔 API 设计）
++ - 新增 `semantic_pipeline.py`：三管线统一调度入口
++ - 新增 `references/attribution.md`：第三方组件版权声明
++ - 许可证清理：移除 HanLP（CC BY-NC-SA）/ LTP（商用付费），替代为 Stanza（Apache 2.0）+ BGE（MIT），全部兼容商业使用
++ - 更新 `SKILL.md` 快速开始、核心能力、工作流程章节
++ ---
++ ---
++ ## [2.6.0] - 2026-06-30
++ - refactor 全流程改造：0 ERROR 0 WARN; 新增触发条件章节/C-08/C-12修复/C-14/C-17结构化数据渲染/8步工作流/CN-EN空格
++ ## 2.5.0（2026-05-23）
++ ### 更新内容
++ ### 更新内容
++ ### 更新内容
++ ### 更新内容
++ - 删除标题中的版本号 `(Semantic Split v2.4)`，版本号仅在 frontmatter
++ ## 2.4.1（2026-05-23）
++ **改写类型：标准化改造 — SKILL.md 瘦身 + 渐进式 MD 体系完善**
++ - `references/split_rules.md` — 从 SKILL.md 第一部分迁移的完整语义拆分规则（划分块、诉求聚合、主语映射表、边界情况、5W2H提取规则）
++ ## 2.4.0（2026-05-23）
++ - `references/task_type_defaults.md` — 5 种任务类型（制作 PPT/填写周报/安排行程/写邮件/策划活动）的 5W2H 默认值映射表 + 通用默认值
++ ## 2.3.0（2026-05-23）
++ ## 2.1.0（2026-05-22）
+
+### references/constraint_annotation.md  [docs]
+- | 软约束 | 🟡 | 最好、尽量、如果可能、建议、通常、希望 | 聚焦方案遵守；发散方案可尝试其他方法 |
+- | 无约束 | ⚪ | 未提及或使用随意、大概、大概就行 | 两个方案均可自由处理 |
+- - "本周五前**必须**提交PPT，**尽量**用公司模板"
+- 关键词初判 → 上下文复核 → 可能升级 → 双标注输出
+- - 🔴（上下文推断的）：实际上可能不可违反
+- - 发散方案的创新点可保留为🌟步骤，但必须标注"⚠️ 风险：可能违反[组织规范/品牌要求等]，执行前需确认"
+-   - What：PPT格式
+- 🟡🔴 软表达+硬语义（用户弱化表达，但上下文推断可能不可违反）：
++ | 软约束 | 🟡 | 最好、尽量、如果、建议、通常、希望 | 聚焦方案遵守；发散方案可尝试其他方法 |
++ | 无约束 | ⚪ | 未提及或使用随意、、就行 | 两个方案均可自由处理 |
++ - "本周五前**必须**提交 PPT，**尽量**用公司模板"
++ 关键词初判 → 上下文复核 → 升级 → 双标注输出
++ - 🔴（上下文推断的）：实际上不可违反
++ - 发散方案的创新点可保留为🌟步骤，但必须标注"⚠️ 风险：违反[组织规范/品牌要求等]，执行前需确认"
++   - What：PPT 格式
++ 🟡🔴 软表达+硬语义（用户弱化表达，但上下文推断不可违反）：
+
+### references/examples.md  [docs]
+- > "这个PPT太难搞了，我想让你为我做个PPT，明天下午3点前必须交，尽量用公司模板，就介绍钛合金马扎产品，我们研发了200多天，开了200次产品会就为了精益求精，他主要成分就是钛合金，和常见的马扎功能一样，但是防水、耐磨、不易损坏，还很轻，你为我做PPT吧。"
+- - `[CORE]` 做PPT → 核心目标
+- - `[RESISTANCE]` PPT太难搞了 → 阻力
+- - 核心句重构：「用户 要 做PPT 于 明天下午3点前」
+-     1. 做一个PPT 🔴
+-   动机：PPT太难搞了 [情绪]
+-     What — PPT介绍钛合金马扎 🔴
+-   阻力：PPT太难搞了
+- | 4. 5W2H缺失 | ✅ Who/Where已补充[推断] |
+- 📌 任务：制作钛合金马扎产品PPT ｜🔴 硬约束：明天下午3点前交 ｜🟡 软约束：用公司模板
+-   步骤 2: 设计PPT大纲 ── serial ── milestone: ✅
+-   步骤 3c🌟: AI生成备选视觉方案（增强：来自发散方案）
+-   步骤 4: 审核修改 ── serial ── milestone: ✅
+-   步骤 5: 导出PPT ── serial ── milestone: ❌
+- > "这个PPT太难搞了，我想让你为我做个PPT，明天要介绍产品的，就一个钛合金马扎，我们研发了200多天，开了200次产品会就为了精益求精，他主要成分就是钛合金，和常见的马扎功能一样，但是防水、耐磨、不易损坏，承担了这些优势的情况下还很轻，你为我做PPT把。"
+-     1. 做一个PPT（核心交付物）
+-   动机：用户觉得PPT太难做
+-   目的：制作一个符合用户诉求的PPT
+-     1. 使用技能或MCP等进行完整的PPT制作
++ > "这个 PPT 太难搞了，我想让你为我做个 PPT，明天下午3点前必须交，尽量用公司模板，就介绍钛合金马扎产品，我们研发了200多天，开了200次产品会就为了精益求精，他主要成分就是钛合金，和常见的马扎功能一样，但是防水、耐磨、不易损坏，还很轻，你为我做 PPT 吧。"
++ - `[CORE]` 做 PPT → 核心目标
++ - `[RESISTANCE]` PPT 太难搞了 → 阻力
++ - 核心句重构：「用户 要 做 PPT 于 明天下午3点前」
++     1. 做一个 PPT 🔴
++   动机：PPT 太难搞了 [情绪]
++     What — PPT 介绍钛合金马扎 🔴
++   阻力：PPT 太难搞了
++ | 4. 5W2H缺失 | ✅ Who/Where 已补充[推断] |
++ 📌 任务：制作钛合金马扎产品 PPT ｜🔴 硬约束：明天下午3点前交 ｜🟡 软约束：用公司模板
++   步骤 2: 设计 PPT 大纲 ── serial ── milestone: ✅
++   步骤 3c🌟: AI 生成备选视觉方案（增强：来自发散方案）
++   步骤 4: 审核更新 ── serial ── milestone: ✅
++   步骤 5: 导出 PPT ── serial ── milestone: ❌
++ > "这个 PPT 太难搞了，我想让你为我做个 PPT，明天要介绍产品的，就一个钛合金马扎，我们研发了200多天，开了200次产品会就为了精益求精，他主要成分就是钛合金，和常见的马扎功能一样，但是防水、耐磨、不易损坏，承担了这些优势的情况下还很轻，你为我做 PPT 把。"
++     1. 做一个 PPT（核心交付物）
++   动机：用户觉得 PPT 太难做
++   目的：制作一个符合用户诉求的 PPT
++     1. 使用技能或 MCP 等进行完整的 PPT 制作
+
+### references/faq.md  [docs]
++ # FAQ — 常见问题
++ Q: 报 "file not found"？
++ A: 使用 `list` 子命令查看已有 JSON 文件列表，确认路径后重试。
++ Q: 报 ModuleNotFoundError？
++ A: 本技能零外部依赖，仅使用 Python 标准库。
++ Q: 语义拆分结果不准确？
++ A: 尝试更清晰地描述任务目标和约束条件。可手动补充 5W2H 维度信息。
++ Q: 命令行参数错误怎么办？
++ **A**：检查参数拼写和格式。使用 `--help` 查看完整参数列表。示例：`python scripts/json_manager.py scan --help`
++ A: 运行 `python scripts/json_manager.py --help` 查看完整参数说明。
++ ## 出错了怎么办？
++ ### 1. 参数错误
++ **场景：** 命令参数格式不正确或缺失必需参数。
++ **修复：** 检查命令参数是否拼写正确，使用 `--help` 查看完整参数列表。
++ ### 2. 环境/依赖错误
++ **场景：** 缺少依赖包、Python 版本不匹配或路径配置错误。
++ **修复：** 确认 Python 版本 >= 3.8，安装 requirements.txt 中的依赖包，检查 `SKILL.md` 中 `data_dir:` 声明路径是否存在。
++ ### 3. 运行时异常
++ **场景：** 技能执行过程中抛出未预期的异常。
++ **修复：** 检查输入数据格式、文件权限和磁盘空间。仍无法解决 → 查看 `--debug` 输出或提交 Issue。
+
+### references/json_schema.md  [docs]
+-     │能力级json│  │能力级json│  │能力级json│  ← 原子单元
+-   "name": "制作产品介绍PPT",
+-   "description": "从零制作一份产品介绍PPT的完整步骤，通用化版本",
+-       "action": "根据资料设计PPT结构与章节",
+-       "name": "AI生成备选视觉方案",
+-       "action": "用AI工具生成3个不同风格的视觉草稿供选择",
+-       "name": "审核修改",
+-       "name": "导出PPT",
+-   "name": "PPT类任务规则",
+-   "description": "统合所有PPT相关能力级json，提炼核心思考链",
+-     { "id": "make_product_ppt_v1", "name": "制作产品介绍PPT" },
+-     { "id": "make_tech_ppt_v1",    "name": "制作技术方案PPT" },
+-     { "id": "export_ppt_v1",       "name": "导出PPT" },
+-     { "id": "review_ppt_v1",       "name": "审核PPT" }
+- | `maps_to` | ✅ | 映射到哪些能力级的具体步骤（格式：`{能力级id}.{步骤id}`） |
++     │能力级 json│  │能力级 json│  │能力级 json│  ← 原子单元
++   "name": "制作产品介绍 PPT",
++   "description": "从零制作一份产品介绍 PPT 的完整步骤，通用化版本",
++       "action": "根据资料设计 PPT 结构与章节",
++       "name": "AI 生成备选视觉方案",
++       "action": "用 AI 工具生成3个不同风格的视觉草稿供选择",
++       "name": "审核更新",
++       "name": "导出 PPT",
++   "name": "PPT 类任务规则",
++   "description": "统合所有 PPT 相关能力级 json，提炼核心思考链",
++     { "id": "make_product_ppt_v1", "name": "制作产品介绍 PPT" },
++     { "id": "make_tech_ppt_v1",    "name": "制作技术方案 PPT" },
++     { "id": "export_ppt_v1",       "name": "导出 PPT" },
++     { "id": "review_ppt_v1",       "name": "审核 PPT" }
++ | `maps_to` | ✅ | 映射到哪些能力级的具体步骤（格式：`{能力级 id}.{步骤 id}`） |
+
+### references/loading_decision_tree.md  [docs]
+-     │               └─ 有调整   → 按调整修改规划 → 再次展示
+-                         └─ 有调整   → 按调整修改规划 → 再次展示
+-    - 例：用户说"帮我做个PPT" → 匹配 `rule_ppt_v1`（tags 含 "ppt"）
+-    - 例：用户说"导出PPT" → 匹配 `export_ppt_v1`
+-    - 例：用户说"做个PPT并导出为PDF" → 组合 `make_product_ppt_v1` + `export_ppt_v1`
++     │               └─ 有调整   → 按调整更新规划 → 再次展示
++                         └─ 有调整   → 按调整更新规划 → 再次展示
++    - 例：用户说"帮我做个 PPT" → 匹配 `rule_ppt_v1`（tags 含 "ppt"）
++    - 例：用户说"导出 PPT" → 匹配 `export_ppt_v1`
++    - 例：用户说"做个 PPT 并导出为 PDF" → 组合 `make_product_ppt_v1` + `export_ppt_v1`
+
+### references/permissions.md  [docs]
++ ---
++ ---
++ risk_level: LOW
++ high_risk_operations:
++   - none
++ data_access: none
++ network_access: none
++ external_services: none
++ filesystem_write:
++   - .standardization/semantic-split/data/*.json
++ description: >
++   semantic-split 是纯 NL 处理+JSON 生成的技能。所有操作在 LLM 内部完成，
++   不涉及网络请求、外部 API 调用或系统文件删除。仅写入标准化数据目录。
++ # permissions.md
++ ## skill-standardization 权限声明头部
++ ## skill-standardization 权限声明头部
++ 基于 skill-standardization 渐进式披露规范的权限说明
++ | 声明项 | 值 | 说明 |
++ | 声明项 | 值 | 说明 |
++ |--------|-----|------|
++ |--------|-----|------|
++  — 权限说明
++ | 风险等级 | LOW | 无网络请求、无文件删除、无敏感数据访问 |
++ | 文件删除操作 | 无 | json_manager.py 仅读写，不删除 |
++ | 网络请求 | 无 | 无外部 API 调用 |
++ | subprocess 调用 | 无 | 纯文件操作 |
++ | 敏感数据访问 | 无 | 不处理个人/敏感信息 |
++ ## 风险等级：LOW
++ | 检查项 | 状态 | 说明 |
++ |--------|------|------|
++ | 文件删除 | ✅ 无 | 无文件删除操作 |
++ | 网络请求 | ✅ 无 | 无外部 API/网络请求 |
++ | subprocess 调用 | ✅ 无 | json_manager.py 纯文件操作 |
++ | 敏感数据访问 | ✅ 无 | 不处理个人/敏感信息 |
+
+### references/planning_rules.md  [docs]
+- | 动作→步骤 | 每个独立动作对应一个步骤 | "做PPT" → 收集资料 / 设计大纲 / 制作PPT / 审核 / 导出 |
+- | 时间倒推 | 根据 purpose 时间约束倒推交付步骤 | "明天要" → 最后一步必须是"导出PPT" |
+- 来源：[规则级json / 能力级json / 模型思考]
+- - **有调整** → 按用户意见修改规划 → 再次展示 → 再次询问
+- 4. 时间上尝试「反向工作法」（先做最不可能的部分）
+- - 每 3-5 个 WP 设置一个检查点：`📍 检查点：验证[XX]`
++ | 动作→步骤 | 每个独立动作对应一个步骤 | "做 PPT" → 收集资料 / 设计大纲 / 制作 PPT / 审核 / 导出 |
++ | 时间倒推 | 根据 purpose 时间约束倒推交付步骤 | "明天要" → 最后一步必须是"导出 PPT" |
++ 来源：[规则级 json / 能力级 json / 模型思考]
++ - **有调整** → 按用户意见更新规划 → 再次展示 → 再次询问
++ 4. 时间上尝试「反向工作法」（先做最不的部分）
++ - 每 3-5 个 WP 配置一个检查点：`📍 检查点：验证[XX]`
+
+### references/split_rules.md  [docs]
+- | AI助手（"你"） | 执行者、帮助者 | `块2：执行者` |
+- | **行为/诉求 (Request)** | 需要执行的具体操作或交付物 | "做一个PPT"、"写一份报告" |
+- | **动机 (Motivation)** | 为什么会产生这个需求 | "PPT太难做了"、"时间紧迫" |
+- | 你、您 | 执行者 | AI助手 |
++ | AI 助手（"你"） | 执行者、帮助者 | `块2：执行者` |
++ | **行为/诉求 (Request)** | 需要执行的具体操作或交付物 | "做一个 PPT"、"写一份报告" |
++ | **动机 (Motivation)** | 为什么会产生这个需求 | "PPT 太难做了"、"时间紧迫" |
++ | 你、您 | 执行者 | AI 助手 |
+
+### scripts/model_manager.py  [code]
++ #!/usr/bin/env python3
++ """
++ """
++ semantic-split 模型管理模块 v0.1.0
++ Pipeline A 嵌入模型（bge-small / bge-reranker）的下载/校验/索引管理。
++ 多源递进下载（modelscope → hf_mirror → hf_official → hf_direct），
++ 完整性校验，路径索引持久化。
++ 用法:
++   python scripts/model_manager.py --download-all         # 下载所有模型
++   python scripts/model_manager.py --download bge-small    # 下载指定模型
++   python scripts/model_manager.py --list                  # 列出已下载模型
++   python scripts/model_manager.py --verify-all            # 验证所有模型
++ import os
++ import sys
++ import json
++ import re
++ import hashlib
++ import shutil
++ from pathlib import Path
++ # ============================================================
++ # ============================================================
++ # ============================================================
++ # ============================================================
++ # ============================================================
++ # ============================================================
++ # ============================================================
++ # ============================================================
++ # ============================================================
++ # ============================================================
++ # ============================================================
++ # ============================================================
++ # ============================================================
++ # ============================================================
++ # 路径常量（铁律4：产出物存至 skills/.standardization/semantic-split/data/）
++ SKILL_DIR = Path(__file__).resolve().parent.parent
++ DATA_DIR = SKILL_DIR.parent / ".standardization" / "semantic-split" / "data"
++ MODELS_DIR = DATA_DIR / "models"
++ MODEL_INDEX_FILE = MODELS_DIR / "model_index.json"
++ CACHE_DIR = Path.home() / ".cache" / "huggingface" / "hub"
++ # 模型清单
++ EMBEDDING_MODELS = [
++     {
++     {
++         "id": "BAAI/bge-small-zh-v1.5",
++         "name": "bge-small-zh-v1.5",
++         "size_mb": 130,
++         "desc": "轻量中文嵌入（Pipeline A 嵌入层）",
++         "type": "embedding",
++     },
++     },
++     },
++         "id": "BAAI/bge-reranker-base",
++         "name": "bge-reranker-base",
++         "size_mb": 556,
++         "desc": "中文 rerank/重排序（Pipeline A BERT层）",
++         "type": "rerank",
++ ]
++ ]
++ ]
++ DOWNLOAD_SOURCES = [
++     {"name": "modelscope",     "env": {},                          "desc": "ModelScope 国内镜像（推荐）"},
++     {"name": "hf_mirror",      "env": {"HF_ENDPOINT": "https://hf-mirror.com"},       "desc": "HuggingFace 国内镜像"},
++     {"name": "hf_official",    "env": {"HF_ENDPOINT": "https://huggingface.co"},      "desc": "HuggingFace 官方源"},
++     {"name": "hf_direct",      "env": {},                          "desc": "HF 逐文件下载（稳定）"},
++ # 工具函数
++ def _log(msg: str):
++     print(f"  {msg}")
++ def _ensure_dir(path):
++     os.makedirs(str(path), exist_ok=True)
++ def _normalize(s):
++     """归一化字符串为纯字母数字，去除符号差异"""
++     return re.sub(r'[^a-zA-Z0-9\u4e00-\u9fff]', '', s.lower())
++ def _name_similarity(a, b):
++     """名称相似度评分（0~100）"""
++     if a == b:
++         return 100
++     if a in b or b in a:
++         return 80 + int(10 * min(len(a), len(b)) / max(len(a), len(b)))
++     i = 0
++     while i < min(len(a), len(b)) and a[i] == b[i]:
++         i += 1
++     prefix_score = 40 * i / max(len(a), len(b)) if max(len(a), len(b)) > 0 else 0
++     common = sum(1 for c in a if c in b)
++     char_score = 30 * common / max(len(a), len(b)) if max(len(a), len(b)) > 0 else 0
++     return prefix_score + char_score
++ def dir_size(path):
++     """目录总大小（MB）"""
++     total = 0
++     for root, _, files in os.walk(str(path)):
++         for f in files:
++         for f in files:
++             try:
++                 total += os.path.getsize(os.path.join(root, f))
++             except OSError:
++                 pass
++     return round(total / (1024 * 1024), 1)
++ # 模型索引管理
++ def _load_index() -> dict:
++     if MODEL_INDEX_FILE.exists():
++         try:
++         try:
++         try:
++             return json.loads(MODEL_INDEX_FILE.read_text(encoding="utf-8"))
++         except (json.JSONDecodeError, OSError):
++             pass
++     return {}
++ def _save_index(index: dict):
++     _ensure_dir(MODEL_INDEX_FILE.parent)
++     tmp = str(MODEL_INDEX_FILE) + ".tmp"
++     with open(tmp, "w", encoding="utf-8") as f:
++         json.dump(index, f, ensure_ascii=False, indent=2)
++     os.replace(tmp, str(MODEL_INDEX_FILE))
++ def _is_model_dir(path) -> bool:
++     """判断目录是否包含有效模型文件"""
++     if not os.path.isdir(path):
++         return False
++         return False
++     try:
++     try:
++     try:
++         entries = os.listdir(path)
++         model_files = {"config.json", "pytorch_model.bin", "model.safetensors",
++                        "vocab.txt", "tokenizer.json"}
++         for entry in entries:
++         for entry in entries:
++             if entry in model_files:
++                 return True
++                 return True
++                 return True
++             if entry.endswith((".bin", ".safetensors")):
++             sub = os.path.join(path, entry)
++             if os.path.isdir(sub) and _is_model_dir(sub):
++     except (PermissionError, OSError):
++     return False
++ def _find_actual_model_path(model_id: str) -> str:
++     """从本地缓存中找到模型实际路径"""
++     target = model_id.split("/")[-1]
++     target_norm = _normalize(target)
++     # 1. 检查 MODELS_DIR
++     best = None
++     best_score = 0
++     if MODELS_DIR.exists():
++         for d in os.listdir(str(MODELS_DIR)):
++             dp = str(MODELS_DIR / d)
++             if not os.path.isdir(dp) or d.startswith("."):
++                 continue
++             dn = _normalize(d)
++             score = _name_similarity(target_norm, dn)
++             if score > best_score and _is_model_dir(dp):
++                 best_score = score
++                 best = dp
++     if best:
++         return best
++     # 2. 检查 HF 缓存
++     safe_id = f"models--{model_id.replace('/', '--')}"
++     snap_dir = CACHE_DIR / safe_id / "snapshots"
++     if snap_dir.exists():
++         snaps = sorted(snap_dir.iterdir())
++         if snaps:
++             return str(snaps[-1])
++     return ""
++     return ""
++ # 多源下载
++ def _download_via_hf(model_id: str, source_name: str) -> dict:
++     """通过 huggingface_hub 下载模型"""
++     env = os.environ.copy()
++     env = os.environ.copy()
++     source_map = {
++         "modelscope":  {"env": {"HF_ENDPOINT": "https://hf-mirror.com"}},
++         "hf_mirror":   {"env": {"HF_ENDPOINT": "https://hf-mirror.com"}},
++         "hf_official": {"env": {"HF_ENDPOINT": "https://huggingface.co"}},
++         "hf_direct":   {"env": {}},
++     }
++     }
++     src = source_map.get(source_name, source_map["hf_official"])
++     for k, v in src["env"].items():
++         env[k] = v
++     env["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
++     env["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
++     from huggingface_hub import snapshot_download
++     import tempfile
++     cache_dir = str(MODELS_DIR)
++     _ensure_dir(cache_dir)
++         path = snapshot_download(
++             model_id,
++             cache_dir=cache_dir,
++             local_files_only=False,
++             ignore_patterns=["*.h5", "*.ot", "*.msgpack"],
++         )
++         return {"success": True, "path": path, "source": source_name}
++     except Exception as e:
++         return {"success": False, "path": "", "source": source_name, "error": str(e)}
++ def _download_via_hf_direct(model_id: str, source_name: str) -> dict:
++     """逐文件下载（稳定模式）"""
++     env.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
++     from huggingface_hub import hf_hub_download, list_repo_files
++     import time
++         files = list_repo_files(model_id)
++     except Exception:
++         env["HF_ENDPOINT"] = "https://huggingface.co"
++             files = list_repo_files(model_id)
++         except Exception as e:
++         except Exception as e:
++             return {"success": False, "path": "", "source": source_name, "error": str(e)}
++     skip = [".gitattributes", "onnx/", "flax/", "tf/"]
++     essentials = [f for f in files if not any(p in f for p in skip)]
++     _log(f"    需下载 {len(essentials)} 个文件（跳过 {len(files)-len(essentials)} 个非必要文件）")
++     success = True
++     last_path = ""
++     for fname in essentials:
++             print(f"      {fname}...", end="", flush=True)
++             t0 = time.time()
++             path = hf_hub_download(model_id, fname, cache_dir=str(MODELS_DIR))
++             elapsed = time.time() - t0
++             size = os.path.getsize(path)
++             speed = size / elapsed / (1024 * 1024) if elapsed > 0 else 0
++             size_s = f"{size/1024/1024:.1f}MB" if size > 1024*1024 else f"{size/1024:.0f}KB"
++             print(f" {size_s} ({speed:.1f} MB/s)")
++             last_path = str(Path(path).parent)
++             print(f" 失败: {e}")
++             success = False
++     if success and last_path:
++         return {"success": True, "path": last_path, "source": source_name}
++     return {"success": False, "path": "", "source": source_name, "error": "部分文件下载失败"}
++ def download_embedding_model(model_id: str) -> dict:
++     """下载嵌入/rerank 模型，多源递进"""
++     _log(f"下载模型: {model_id}")
++     source_methods = {
++         "modelscope": _download_via_hf,
++         "hf_mirror": _download_via_hf,
++         "hf_official": _download_via_hf,
++         "hf_direct": _download_via_hf_direct,
++     for src in DOWNLOAD_SOURCES:
++         name = src["name"]
++         _log(f"  尝试源 [{name}]...")
++         method = source_methods.get(name)
++         if not method:
++             continue
++             continue
++         for attempt in range(2):
++             _log(f"    第 {attempt+1} 次尝试...")
++             result = method(model_id, name)
++             if result["success"] and result["path"]:
++                 # 完整性检查
++                 path = result["path"]
++                 ok, detail = _check_integrity(path)
++                 if ok:
++                     _log(f"  [OK] 从 {name} 下载成功: {detail}")
++                     # 复制到 models 目录并建索引
++                     target = str(MODELS_DIR / model_id.replace("/", "_"))
++                     if os.path.exists(target):
++                         shutil.rmtree(target)
++                     shutil.copytree(path, target)
++                     idx = _load_index()
++                     idx[model_id] = {
++                         "path": target,
++                         "source": name,
++                         "size_mb": dir_size(target),
++                         "status": "ready",
++                     }
++                     _save_index(idx)
++                     return {"success": True, "path": target}
++                 else:
++                     _log(f"    完整性检查失败: {detail}")
++             else:
++                 err = result.get("error", "未知错误")
++                 _log(f"    失败: {err[-100:]}")
++     return {"success": False, "path": "", "error": "所有源均失败"}
++ def _check_integrity(path: str) -> tuple:
++     """检查模型完整性"""
++     if not path or not os.path.exists(path):
++         return False, "路径不存在"
++     model_files = []
++     for root, _, files in os.walk(path):
++             if f.endswith((".bin", ".safetensors", ".onnx", ".pt", ".pth")):
++                 model_files.append(os.path.join(root, f))
++     if not model_files:
++         return False, "缺少权重文件"
++     total = sum(os.path.getsize(f) for f in model_files)
++     return True, f"{len(model_files)} 个权重文件, {total/1e6:.1f}MB"
++ # 查询接口
++ def get_model_path(model_id: str) -> str:
++     """获取已下载模型的本地路径"""
++     idx = _load_index()
++     idx = _load_index()
++     idx = _load_index()
++     if model_id in idx:
++         return idx[model_id]["path"]
++     # 尝试查找
++     path = _find_actual_model_path(model_id)
++     if path:
++         idx[model_id] = {"path": path, "source": "local", "size_mb": dir_size(path), "status": "ready"}
++         _save_index(idx)
++         return path
++ def list_models() -> list:
++     """列出已下载模型"""
++     result = []
++     for mid, info in idx.items():
++     for mid, info in idx.items():
++         result.append({"model_id": mid, **info})
+
+### scripts/pipeline_a.py  [code]
++ #!/usr/bin/env python3
++ """
++ """
++ semantic-split Pipeline A — 语义匹配管线 v0.1.0
++ 三层递进：正则层(keyword substring) → embedding层(cosine) → BERT rerank层(CrossEncoder)
++ 覆盖步骤：
++   Step 1:   JSON 扫描匹配（替换 json_manager._match_score 的弱词匹配）
++   Step 2.5a: 约束关键词初判(🔴/🟡/⚪)
++   Step 2.5c: 注意力锚定[EXAMPLE/CRITICAL](语义补充)
++   Step 3:   5W2H 的 Why / When(正则部) / How much
++   Step 6:   自增强通用化(语义归类)
++   Step 7:   规则凝练(步骤相似度聚类)
++   Step 8:   渐进加载决策(命中判定)
++ 用法:
++   from pipeline_a import match_json, classify_constraint, generalize_actions, condense_rules
++ import os
++ import re
++ import json
++ import sys
++ from pathlib import Path
++ # ============================================================
++ # ============================================================
++ # ============================================================
++ # ============================================================
++ # ============================================================
++ # ============================================================
++ # ============================================================
++ # ============================================================
++ # ============================================================
++ # ============================================================
++ # ============================================================
++ # ============================================================
++ # ============================================================
++ # ============================================================
++ # ============================================================
++ # ============================================================
++ # ============================================================
++ # ============================================================
++ # 路径
++ SKILL_DIR = Path(__file__).resolve().parent.parent
++ DATA_DIR = SKILL_DIR.parent / ".standardization" / "semantic-split" / "data"
++ MODELS_DIR = DATA_DIR / "models"
++ # 模型懒加载
++ _EMBEDDER = None
++ _RERANKER = None
++ def _load_embedder():
++     """懒加载 sentence-transformers 嵌入模型"""
++     global _EMBEDDER
++     if _EMBEDDER is not None:
++         return _EMBEDDER
++         return _EMBEDDER
++     model_path = str(MODELS_DIR / "BAAI_bge-small-zh-v1.5")
++     if not os.path.exists(model_path):
++     if not os.path.exists(model_path):
++         # 尝试查找
++         alt = MODELS_DIR / "bge-small-zh-v1.5"
++         model_path = str(alt) if alt.exists() else ""
++         model_path = str(alt) if alt.exists() else ""
++     if not model_path or not os.path.exists(model_path):
++     if not model_path or not os.path.exists(model_path):
++         return None
++         return None
++         return None
++         return None
++     try:
++     try:
++         from sentence_transformers import SentenceTransformer
++         os.environ.setdefault("CUDA_VISIBLE_DEVICES", "-1")
++         os.environ.setdefault("CUDA_VISIBLE_DEVICES", "-1")
++         _EMBEDDER = SentenceTransformer(model_path, device="cpu")
++     except Exception:
++     except Exception:
++ def _load_reranker():
++     """懒加载 CrossEncoder rerank 模型"""
++     global _RERANKER
++     if _RERANKER is not None:
++         return _RERANKER
++         return _RERANKER
++     model_path = str(MODELS_DIR / "BAAI_bge-reranker-base")
++         alt = MODELS_DIR / "bge-reranker-base"
++         from sentence_transformers import CrossEncoder
++         _RERANKER = CrossEncoder(model_path, device="cpu")
++ # 常量
++ # 约束关键词（扩展版，用于 embedding 补充）
++ CONSTRAINT_LABELS = {
++     "critical": ["必须", "只能", "截止", "指定", "强制", "不允许", "不得", "禁止", "一定", "硬性"],
++     "soft": ["最好", "尽量", "如果", "建议", "通常", "希望", "可以", "不妨", "推荐", "优先"],
++ }
++ # 5W2H 维度关键词
++ WHY_KEYWORDS = ["为了", "目的是", "目标是", "旨在", "想要", "想", "原因", "目的"]
++ WHEN_KEYWORDS = ["今天", "明天", "下周", "周", "月", "年", "截止", "之前", "之后"]
++ HOW_MUCH_KEYWORDS = ["预算", "成本", "费用", "个人", "份", "钱", "时间"]
++ # Step 1: JSON 扫描匹配（三层递进）
++ def _regex_match(keywords: list[str], json_data: dict) -> float:
++     """正则层：关键词子串匹配（保持与 json_manager._match_score 兼容）"""
++     if not keywords:
++         return 0.0
++         return 0.0
++         return 0.0
++         return 0.0
++         return 0.0
++         return 0.0
++     score = 0.0
++     kw_lower = [k.lower() for k in keywords]
++     tags = [t.lower() for t in json_data.get("tags", [])]
++     for kw in kw_lower:
++     for kw in kw_lower:
++     for kw in kw_lower:
++         for tag in tags:
++             if kw in tag or tag in kw:
++                 score += 0.15
++                 break
++                 break
++                 break
++     name = json_data.get("name", "").lower()
++         if kw in name:
++             score += 0.2
++     desc = json_data.get("description", "").lower()
++         if kw in desc:
++             score += 0.1
++     for step in json_data.get("steps", []):
++         st = f"{step.get('name', '')} {step.get('action', '')}".lower()
++         for kw in kw_lower:
++             if kw in st:
++                 score += 0.05
++     return min(score, 1.0)
++ def _embedding_match(query: str, json_data: dict) -> float:
++     """嵌入层：sentence-embedding 余弦相似度"""
++     embedder = _load_embedder()
++     embedder = _load_embedder()
++     embedder = _load_embedder()
++     if embedder is None:
++     if embedder is None:
++     texts = [
++         json_data.get("name", ""),
++         json_data.get("description", ""),
++     ]
++     texts += json_data.get("tags", [])
++     if not any(texts):
++     query_emb = embedder.encode(query, normalize_embeddings=True)
++     doc_embs = embedder.encode(texts, normalize_embeddings=True)
++     import numpy as np
++     import numpy as np
++     scores = [float(np.dot(query_emb, de)) for de in doc_embs]
++     return max(scores) if scores else 0.0
++ def _rerank_match(query: str, candidates: list[dict]) -> list[tuple]:
++     """BERT rerank 层：CrossEncoder 重排序"""
++     reranker = _load_reranker()
++     reranker = _load_reranker()
++     if reranker is None:
++         return [(c, 0.0) for c in candidates]
++     pairs = []
++     for c in candidates:
++         doc_text = f"{c.get('name', '')} {c.get('description', '')}"
++         pairs.append((query, doc_text))
++     scores = reranker.predict(pairs)
++     scored = list(zip(candidates, scores.tolist() if hasattr(scores, 'tolist') else scores))
++     return sorted(scored, key=lambda x: x[1], reverse=True)
++ def match_json(query: str, json_entries: list[dict]) -> list[dict]:
++     """
++     """
++     """
++     """
++     """
++     """
++     """
++     """
++     """
++     """
++     """
++     """
++     三层递进匹配。
++     返回按分数降序的 [(entry, score, layer), ...]
++     results = []
++     # 1. 正则层
++     for entry in json_entries:
++     for entry in json_entries:
++         score = _regex_match(query.split(), entry)
++         if score >= 0.15:
++             results.append((entry, score, "regex"))
++     # 检查是否足够
++     if results and results[0][1] >= 0.8:
++         return _format_results(results)
++     # 2. 嵌入层
++         if entry in [r[0] for r in results if r[2] == "regex"]:
++             continue  # 正则已过
++         score = _embedding_match(query, entry)
++         if score >= 0.6:
++             results.append((entry, score, "embedding"))
++         elif score >= 0.3:
++             results.append((entry, score, "embedding_candidate"))
++     # 3. BERT rerank 层（仅 top-5 候选）
++     pending = [e for e in json_entries if e not in [r[0] for r in results]]
++     if pending and _load_reranker() is not None:
++         reranked = _rerank_match(query, pending[:10])
++         for entry, score in reranked:
++             if score >= 0.5:
++                 results.append((entry, score, "rerank"))
++     return _format_results(results)
++ def _format_results(results: list) -> list:
++     """格式化输出"""
++     seen = set()
++     final = []
++     for entry, score, layer in sorted(results, key=lambda x: x[1], reverse=True):
++         eid = entry.get("id", "")
++         if eid in seen:
++             continue
++             continue
++         seen.add(eid)
++         final.append({
++             "id": eid,
++             "name": entry.get("name", ""),
++             "score": round(score, 3),
++             "layer": layer,
++         })
++         })
++     return final
++ # Step 2.5a: 约束关键词初判（用 embedding 补充）
++ def classify_constraint(text: str) -> dict:
++     约束强度三分类。
++     正则 → embedding 语义补充 → BERT（如果有）
++     # 正则层
++     # 正则层
++     if re.search(r'(必须|只能|截止|指定|强制|不允许|不得)', text):
++         return {"level": "critical", "method": "regex", "keyword": re.search(r'(必须|只能|截止)', text).group(0)}
++     if re.search(r'(最好|尽量|如果|建议|通常|希望)', text):
++         return {"level": "soft", "method": "regex"}
++     # embedding 语义补充
++     if embedder is not None:
++         import numpy as np
++         t_emb = embedder.encode(text, normalize_embeddings=True)
++         crit_embs = embedder.encode(CONSTRAINT_LABELS["critical"], normalize_embeddings=True)
++         soft_embs = embedder.encode(CONSTRAINT_LABELS["soft"], normalize_embeddings=True)
++         crit_sim = max(float(np.dot(t_emb, ce)) for ce in crit_embs)
++         soft_sim = max(float(np.dot(t_emb, se)) for se in soft_embs)
++         if crit_sim > 0.7:
++             return {"level": "critical", "method": "embedding", "similarity": round(crit_sim, 3)}
++         if soft_sim > 0.7:
++             return {"level": "soft", "method": "embedding", "similarity": round(soft_sim, 3)}
++     return {"level": "none", "method": "default"}
++ # Step 6: 通用化语义归类
++ def generalize_actions(actions: list[str], known_params: list[str] = None) -> list[str]:
++     将具体操作泛化为通用占位符。
++     同一语义类别的不同表达映射到统一占位符。
++     if not actions:
++         return []
++     known = known_params or []
++     # 时间类
++     time_patterns = {
++         r'(今天|明天|后天|下周|下周一|下个月|周五前|周[一二三四五六日]|明天下午|后天上午)': '[时间]',
++         r'\d{4}-\d{2}-\d{2}': '[时间]',
++     }
++     }
++     }
++     }
++     # 数量类
++     amount_patterns = {
++         r'\d+[个份页张条]': '[数量]',
++         r'\d+[元人天小时]': '[数量]',
++     # 产品/对象类
++     product_patterns = {
++         r'(钛合金马扎|演示PPT|报告|方案|产品说明)': '[产品/对象]',
++     generalized = []
++     for action in actions:
++         result = action
++         for pattern, replacement in {**time_patterns, **amount_patterns, **product_patterns}.items():
++             result = re.sub(pattern, replacement, result)
++         generalized.append(result)
++     # 检查是否所有泛化后的占位符都在 known 中
++     for g in generalized:
++         found = re.findall(r'\[([^\]]+)\]', g)
++         for p in found:
++             fp = f"[{p}]"
++             if fp not in known:
++                 known.append(fp)
++     return generalized
++ # Step 7: 规则凝练（步骤相似度聚类）
++ def _steps_similarity_regex(step_a: dict, step_b: dict) -> float:
++     """正则层：步骤名称相似度（兼容旧版 _steps_similar）"""
++     name_a = step_a.get("name", "").lower()
++     name_b = step_b.get("name", "").lower()
++     if name_a == name_b:
++         return 1.0
++     if name_a in name_b or name_b in name_a:
++         return 0.8
++     stopwords = {"的", "与", "和", "及", "或", "等", "进行", "完成", "执行"}
++     words_a = {w for w in name_a if w not in stopwords}
++     words_b = {w for w in name_b if w not in stopwords}
++     if not words_a or not words_b:
++     overlap = len(words_a & words_b) / max(len(words_a), len(words_b))
++     return overlap if overlap >= 0.6 else 0.0
++ def _steps_similarity_embedding(step_a: dict, step_b: dict) -> float:
++     """嵌入层：步骤语义相似度"""
++     text_a = f"{step_a.get('name', '')} {step_a.get('action', '')}"
++     text_b = f"{step_b.get('name', '')} {step_b.get('action', '')}"
++     if not text_a.strip() or not text_b.strip():
++     emb_a = embedder.encode(text_a, normalize_embeddings=True)
++     emb_b = embedder.encode(text_b, normalize_embeddings=True)
++     return float(np.dot(emb_a, emb_b))
++ def condense_rules(all_steps: list[dict], threshold: float = 0.6) -> list[dict]:
+
+### scripts/pipeline_b.py  [code]
++ #!/usr/bin/env python3
++ """
++ """
++ semantic-split Pipeline B — 结构分析管线 v0.1.2
++ 正则层（5W2H/主语/约束/分块），零外部依赖。
++ 覆盖步骤：
++   Step 2:   语义拆分(主语映射→分块→话题转移)
++   Step 2.5b: 隐式约束升级(领域分类)
++   Step 2.5c: 注意力锚定(CORE/ENTITY/RESISTANCE)
++   Step 3:   5W2H 七维度提取
++   Step 5:   WP分解(依赖分析+耗时估算)
++ 用法:
++   from pipeline_b import analyze_structure
++   result = analyze_structure("请帮我用公司模板制作PPT")
++ import os
++ import re
++ from pathlib import Path
++ SKILL_DIR = Path(__file__).resolve().parent.parent
++ DATA_DIR = SKILL_DIR.parent / ".standardization" / "semantic-split" / "data"
++ MODELS_DIR = DATA_DIR / "models"
++ # ============================================================
++ # ============================================================
++ # ============================================================
++ # ============================================================
++ # ============================================================
++ # ============================================================
++ # ============================================================
++ # ============================================================
++ # 常量定义
++ # 主语映射表
++ SUBJECT_MAP = {
++     "我": "用户", "咱们": "用户", "俺": "用户",
++     "你": "执行者", "您": "执行者",
++     "他": "第三方", "她": "第三方", "它": "第三方",
++ }
++ }
++ }
++ # 约束关键词
++ CRITICAL_KW = re.compile(r'(必须|只能|截止|指定|强制|不允许|不得|禁止|一定)')
++ SOFT_KW = re.compile(r'(最好|尽量|如果|建议|通常|希望|可以|不妨)')
++ EXAMPLE_KW = re.compile(r'(比如|例如|像|假如|譬如)')
++ RESISTANCE_KW = re.compile(r'(但是|不过|担心|怕|难|卡|然而|但)')
++ CORE_VERB_KW = re.compile(r'(制作|安排|写|规划|分析|设计|开发|创建|修改|删除|导出|导入|查询|搜索)')
++ PURPOSE_KW = re.compile(r'(为了|目的是|目标是|旨在|想要|想)')
++ HOW_KW = re.compile(r'(用|通过|按照|根据|借助|利用|采用)')
++ # 时间词正则
++ DATE_KW = re.compile(
++     r'(今天|明天|昨天|后天|前天|'
++     r'下周|这周|上周|下个月|这个月|上个月|'
++     r'周[一二三四五六日]|星期[一二三四五六日]|'
++     r'\d{4}[-年]\d{1,2}[-月]\d{1,2}[日号]?|'
++     r'\d{1,2}月\d{1,2}[日号]|'
++     r'\d+[天小时分秒])'
++ )
++ # 数量词正则
++ AMOUNT_KW = re.compile(r'\d+\.?\d*(个|份|人|元|小时|天|次|张|页|条|项)')
++ # 隐式约束领域升级表
++ IMPLICIT_UPGRADE_DOMAINS = {
++     "组织规范": re.compile(r'(公司模板|品牌|审批|规范|章程|制度|标准|模板|格式|命名)'),
++     "法律合规": re.compile(r'(合同|数据保护|审计|合规|法律|条款|协议|版权|隐私)'),
++     "安全底线": re.compile(r'(权限|加密|安全|密码|认证|防火墙|隔离)'),
++     "协作依赖": re.compile(r'(接口|API|交付|依赖|对接|上下游|联调)'),
++     "个人偏好": re.compile(r'(颜色|字体|风格|布局|喜欢|偏好)'),
++ # WP 耗时估算表（按动词类型）
++ ESTIMATE_MAP = {
++     "搜索": 0.5, "查询": 0.5, "收集": 1.0, "整理": 1.0,
++     "设计": 2.0, "制作": 2.0, "创建": 0.5, "编辑": 1.0,
++     "写": 1.5, "撰写": 1.5, "修改": 0.5, "删除": 0.25,
++     "审核": 0.5, "检查": 0.5, "验证": 0.5, "测试": 1.0,
++     "导出": 0.25, "导入": 0.25, "提交": 0.25, "发布": 0.5,
++     "分析": 2.0, "规划": 1.5, "讨论": 1.0, "确认": 0.5,
++ # 正则层
++ _EMPTY = {"subjects": [], "blocks": [], "constraints": [],
++           "attention": {}, "five_w2h": {}, "coverage": 0.0}
++ def _regex_subjects(text: str) -> dict:
++     """正则层：主语识别"""
++     """正则层：主语识别"""
++     subjects = []
++     for kw, mapping in SUBJECT_MAP.items():
++         if kw in text:
++         if kw in text:
++             subjects.append({"keyword": kw, "role": mapping, "method": "regex"})
++     # 去重保序
++     seen = set()
++     unique = []
++     for s in subjects:
++         key = s["role"]
++         if key not in seen:
++             seen.add(key)
++             unique.append(s)
++     return {"subjects": unique, "coverage": min(len(unique) / 3, 1.0) if unique else 0.0}
++ def _regex_blocks(text: str) -> dict:
++     """正则层：分句 + 块划分"""
++     sents = re.split(r'[。！？\n]+', text)
++     sents = [s.strip() for s in sents if s.strip()]
++     blocks = []
++     for sid, sent in enumerate(sents):
++         subj = None
++         for kw, role in SUBJECT_MAP.items():
++             if kw in sent:
++                 subj = role
++                 break
++                 break
++         if not subj and CORE_VERB_KW.search(sent):
++             subj = "用户"
++         blocks.append({
++             "id": f"b{sid}",
++             "text": sent,
++             "subject": subj or "用户",
++             "method": "regex",
++         })
++     return {"blocks": blocks, "coverage": len(blocks) / max(len(sents), 1)}
++ def _regex_constraints(text: str, blocks: list) -> dict:
++     """正则层：约束关键词初判 + 注意力锚定"""
++     constraints = []
++     attention = {"critical": [], "core": [], "entity": [], "example": [], "resistance": []}
++     for blk in blocks:
++         t = blk["text"]
++         # 硬约束
++         if CRITICAL_KW.search(t):
++             constraints.append({
++             constraints.append({
++                 "block_id": blk["id"],
++                 "block_id": blk["id"],
++                 "level": "critical", "keyword": CRITICAL_KW.search(t).group(0),
++                 "domain": "", "method": "regex",
++                 "domain": "", "method": "regex",
++             })
++             })
++             })
++             attention["critical"].append(t[:60])
++         # 软约束
++         elif SOFT_KW.search(t):
++                 "level": "soft", "keyword": SOFT_KW.search(t).group(0),
++         # 注意力锚定
++         for m in CORE_VERB_KW.finditer(t):
++             attention["core"].append({"block": blk["id"], "verb": m.group(0), "context": t[:50]})
++         for m in re.finditer(r'\d+[天小时分元个份%]', t):
++             attention["entity"].append({"block": blk["id"], "value": m.group(0)})
++         for m in EXAMPLE_KW.finditer(t):
++             attention["example"].append({"block": blk["id"], "context": t[m.start():m.start()+30]})
++         for m in RESISTANCE_KW.finditer(t):
++             attention["resistance"].append({"block": blk["id"], "context": t[m.start():m.start()+30]})
++     coverage = min(len(constraints) / max(len(blocks), 1), 1.0) if blocks else 0.0
++     return {"constraints": constraints, "attention": attention, "coverage": coverage}
++ def _regex_5w2h(text: str) -> dict:
++     """正则层：5W2H 初步提取"""
++     result = {}
++     matched = 0
++     # Why
++     m = PURPOSE_KW.search(text)
++     result["why"] = {"value": m.group(0) if m else "", "source": "regex"} if m else {}
++     if m: matched += 1
++     # What（CORE_VERB_KW）
++     verbs = CORE_VERB_KW.findall(text)
++     result["what"] = {"value": verbs[0] if verbs else "", "all_verbs": verbs, "source": "regex"}
++     # Who
++     for kw, role in SUBJECT_MAP.items():
++             result["who"] = {"value": role, "source": "regex"}
++             matched += 1
++             break
++     # When
++     dates = DATE_KW.findall(text)
++     if dates:
++         result["when"] = {"value": dates[0], "all": dates, "source": "regex"}
++         matched += 1
++         matched += 1
++         matched += 1
++         matched += 1
++     # Where（简单地点匹配）
++     where_m = re.search(r'在\s*(.{2,10}?)(?:里|上|中|处|方)', text)
++     if where_m:
++         result["where"] = {"value": where_m.group(1).strip(), "source": "regex"}
++     # How
++     how_m = HOW_KW.search(text)
++     if how_m:
++         # 提取工具/方式
++         tool_m = re.search(r'(用|通过|按照|根据|借助|利用)\s*(.{1,15}?)(?:制作|写|做|分析|创建|开发|设计)', text)
++         if tool_m:
++             result["how"] = {"value": tool_m.group(2).strip(), "source": "regex"}
++         else:
++             result["how"] = {"value": how_m.group(0), "source": "regex"}
++     # How much
++     amt = AMOUNT_KW.findall(text)
++     if amt:
++         result["how_much"] = {"value": amt[0], "all": amt, "source": "regex"}
++     result["_matched"] = matched
++     result["_coverage"] = matched / 7.0
++     result["_coverage"] = matched / 7.0
++     return result
++     return result
++     return result
++     return result
++     return result
++     return result
++     return result
++ def _regex_detect_implicit_upgrade(constraints: list) -> list:
++     """正则层：隐式约束领域检测"""
++     for c in constraints:
++         if c.get("level") != "soft":
++             continue
++         for domain, pattern in IMPLICIT_UPGRADE_DOMAINS.items():
++             if pattern.search(c.get("keyword", "")):
++                 c["domain"] = domain
++                 c["upgraded"] = domain in ("组织规范", "法律合规", "安全底线")
++     return constraints
++ # 各环节主函数（纯正则）
++ def extract_subjects(text: str) -> dict:
++     result = _regex_subjects(text)
++ def extract_blocks(text: str) -> dict:
++     """正则层：分块"""
++     result = _regex_blocks(text)
++ def extract_constraints_and_attention(text: str) -> dict:
++     """正则层：约束标注 + 注意力锚定"""
++     blocks_result = _regex_blocks(text)
++     blocks_result = _regex_blocks(text)
++     result = _regex_constraints(text, blocks_result["blocks"])
++     result["constraints"] = _regex_detect_implicit_upgrade(result["constraints"])
++ def extract_5w2h(text: str) -> dict:
++     """正则层：5W2H 七维度提取"""
++     result = _regex_5w2h(text)
++     for dim in ["why", "what", "who", "when", "where", "how", "how_much"]:
++         if dim in result and result[dim].get("value"):
++             matched = max(matched, sum(1 for d in ["why", "what", "who", "when", "where", "how", "how_much"]
++                           if d in result and result[d].get("value")))
++ def extract_attention_anchoring(text: str) -> dict:
++     """Step 2.5c: 注意力锚定"""
++     const_result = _regex_constraints(text, blocks_result["blocks"])
++     return const_result["attention"]
++ def wps_decompose(steps: list) -> list:
++     """Step 5: 工作包分解"""
++     wps = []
++     for step in steps:
++         action = step.get("action", "")
++         # 按顿号/逗号拆分子任务
++         parts = re.split(r'[，、,]', action)
++         for i, part in enumerate(parts):
++             part = part.strip()
++             if not part:
++                 continue
++             # 估算耗时
++             hours = 1.0
++             for verb, est in ESTIMATE_MAP.items():
++                 if verb in part:
++                     hours = est
++                     break
++             wps.append({
++                 "id": f"WP{len(wps)+1}",
++                 "name": part,
++                 "action": part,
++                 "estimated_hours": hours,
++                 "depends_on": step.get("depends_on", []) if i == 0 else [f"WP{len(wps)}"],
++                 "milestone": step.get("milestone", False) and i == 0,
++     return wps
++ # 统一入口
++ def analyze_structure(text: str) -> dict:
++     """
++     """
++     Pipeline B 统一入口。
++     返回结构化分析结果，包含 subjects/blocks/constraints/attention/5w2h/wp。
++     if not text or not text.strip():
++         return {"error": "empty input", "text": ""}
++     result = {
++         "text": text,
++         "subjects": extract_subjects(text),
++         "blocks": extract_blocks(text),
++         "constraints_attention": extract_constraints_and_attention(text),
++         "five_w2h": extract_5w2h(text),
++         "attention": extract_attention_anchoring(text),
++     }
++     # 管线使用统计
++     layers_used = ["regex"]
++     result["pipeline_layers"] = layers_used
++ if __name__ == "__main__":
++     import json
++     test = "请帮我用公司模板制作一份关于钛合金马扎的演示 PPT，下周之前要交给客户"
++     result = analyze_structure(test)
++     print(json.dumps(result, ensure_ascii=False, indent=2))
+
+### scripts/pipeline_c.py  [code]
++ #!/usr/bin/env python3
++ """
++ """
++ semantic-split Pipeline C — 双视角推理（智能体原生模式） v0.1.0
++ ⚠️ 运行在智能体中，LLM 即智能体本身，不需要外部 API 配置。
++ 工作方式：
++   1. pipeline_c.py 构建结构化的推理上下文（5W2H + 约束 + 聚焦/发散 prompt）
++   2. 输出 JSON 标记 `{"mode": "agent_reasoning", ...}`
++   3. 智能体（WorkBuddy）读取该标记后，用自己的推理能力生成步骤
++   4. 步骤回填到输出
++ 层级：
++   Pipeline C = 构建推理上下文（Python） → 智能体原生推理（Agent） → 解析步骤（Python）
++ 用法:
++   from pipeline_c import build_reasoning_context
++   context = build_reasoning_context(five_w2h, constraints)
++   # 输出 context，智能体读取后执行推理
++ import json
++ import re
++ FOCUS_SYSTEM = """你是一个专注于生成保守、安全执行方案的任务规划专家。
++ 你的职责是：
++ 你的职责是：
++ 你的职责是：
++ 1. 严格遵守所有🔴硬约束
++ 2. 对每个维度选择最窄/最保守/最直接的值
++ 3. 只使用已验证、低学习成本的方法
++ 4. 每个步骤不超过30分钟可完成
++ 5. 输出JSON格式的步骤列表，每步骤含 name/action/milestone/depends_on/parallel_group/dependency_heat"""
++ DIVERGENT_SYSTEM = """你是一个专注于生成创新、大胆执行方案的任务规划专家。
++ 1. 对每个维度选择最宽/最大胆/最间接的值
++ 2. 🔴硬约束可轻微突破，但必须标注风险并提供备用方案
++ 3. 引入至少一个非惯用工具或方法
++ 4. 包含"如果无限资源会怎么做"的变体
++ 5. 输出JSON格式的步骤列表+创新点列表"""
++ INTEGRATION_SYSTEM = """你是一个任务规划整合专家。
++ 1. 以聚焦方案为骨架
++ 2. 将发散方案的创新点嵌入聚焦方案对应步骤
++ 3. 所有🌟步骤注明来源
++ 4. 风险说明标注清楚
++ 5. 输出单一的JSON步骤列表"""
++ def build_reasoning_context(five_w2h: dict, constraints: list = None,
++                              structure_analysis: dict = None,
++                              template_matches: list = None) -> dict:
++     """
++     """
++     """
++     """
++     """
++     """
++     构建双视角推理的完整上下文。
++     包含结构分析 + 模板匹配，用于增强 LLM 思考深度。
++     返回格式:
++     {
++       "mode": "agent_reasoning",
++       "type": "dual_perspective",
++       "context": { ... 5W2H + 约束 + prompt + 结构分析 + 模板参考 },
++       "sub_steps": [...]
++     }
++     }
++     }
++     }
++     # ── 任务描述（5W2H + 约束） ──
++     parts = ["## 任务描述"]
++     dim_labels = [
++         ("目的", "why"), ("行为", "what"), ("执行方", "who"),
++         ("地点", "where"), ("时间", "when"), ("方法", "how"), ("度量", "how_much"),
++     ]
++     for label, key in dim_labels:
++         val = five_w2h.get(key, {})
++         if val and val.get("value"):
++             parts.append(f"- {label}: {val['value']}")
++         else:
++             parts.append(f"- {label}: (未指定)")
++     constraint_summary = []
++     if constraints:
++         parts.append("\n## 约束")
++         for c in constraints:
++             level = c.get("level", "none")
++             kw = c.get("keyword", "")
++             domain = c.get("domain", "")
++             flag = "🔴" if level == "critical" else "🟡" if level == "soft" else "⚪"
++             parts.append(f"- {flag} {level} ({domain}): {kw}")
++             constraint_summary.append({"level": level, "keyword": kw, "domain": domain})
++     # ── 结构分析增强（增强思考深度） ──
++     structure_section = ""
++     if structure_analysis:
++         sa_parts = []
++         ner = structure_analysis.get("ner", [])
++         if ner:
++             sa_parts.append(f"  实体: {', '.join([f'{t}({l})' for t,l in ner[:8]])}")
++         verbs = structure_analysis.get("verbs", [])
++         if verbs:
++             sa_parts.append(f"  动词: {', '.join([v[0] for v in verbs[:6]])}")
++         dep = structure_analysis.get("dep", [])
++         if dep:
++             sa_parts.append(f"  依存关系: {', '.join([f'{s}->{o}({r})' for s,o,r in dep[:6]])}")
++         if sa_parts:
++             structure_section = "\n".join(sa_parts)
++     # ── 模板匹配参考（few-shot 增强） ──
++     templates_section = ""
++     if template_matches:
++         tm_parts = ["## 相似历史案例参考"]
++         for m in template_matches[:3]:
++             name = m.get("name", m.get("id", "?"))
++             score = m.get("score", 0)
++             tm_parts.append(f"- [{name}] (相似度 {score:.2f})")
++         templates_section = "\n".join(tm_parts)
++     return {
++     return {
++         "mode": "agent_reasoning",
++         "mode": "agent_reasoning",
++         "type": "dual_perspective",
++         "context": {
++         "context": {
++             "task": "\n".join(parts),
++             "five_w2h": {k: v.get("value", "") if isinstance(v, dict) else v for k, v in five_w2h.items() if isinstance(v, dict)},
++             "constraints": constraint_summary,
++             "structure_analysis": structure_section,
++             "template_references": templates_section,
++             "_note": "structure_analysis 和 template_references 已作为增强输入，智能体阅读后可直接提升推理质量",
++         },
++         },
++         },
++         "prompts": {
++             "focus": {
++                 "system": FOCUS_SYSTEM,
++                 "description": "生成保守聚焦方案",
++                 "steps_name": "聚焦方案步骤",
++             },
++             },
++             },
++             "divergent": {
++                 "system": DIVERGENT_SYSTEM,
++                 "description": "生成创新发散方案",
++                 "steps_name": "发散方案步骤+创新点",
++             "integration": {
++                 "system": INTEGRATION_SYSTEM,
++                 "description": "将聚焦+发散整合为单一方案",
++                 "steps_name": "最终整合步骤",
++         "sub_steps": [
++             {"id": "focus", "name": "生成聚焦方案", "requires_agent": True},
++             {"id": "diverge", "name": "生成发散方案", "requires_agent": True},
++             {"id": "integrate", "name": "整合为单一方案", "requires_agent": True},
++         ],
++ def build_wp_context(steps: list) -> dict:
++     构建 WP 分解上下文。
++     返回 JSON，智能体读取后执行 WP 分解。
++         "type": "wp_decomposition",
++             "steps": steps[:10],
++             "rule": "每个WP 2-4小时，每3-5个WP一个检查点，格式 WP{n}: [任务] (预计耗时，前置：WP{x})",
++ # ============================================================
++ # ============================================================
++ # 步骤解析
++ def parse_steps_from_agent(steps_json: str) -> list:
++     智能体完成推理后，解析结果 JSON 为步骤列表。
++     try:
++         data = json.loads(steps_json)
++         if isinstance(data, list):
++             return data
++         if isinstance(data, dict):
++             # 尝试从常见 key 提取
++             for key in ("steps", "results", "items", "plan"):
++                 if key in data and isinstance(data[key], list):
++                     return data[key]
++             return [data]
++     except (json.JSONDecodeError, TypeError):
++         pass
++     # 尝试从文本中提取 ```json ... ``` 块
++     code_match = re.search(r'```(?:json)?\s*(\[.*?\])\s*```', steps_json, re.DOTALL)
++     if code_match:
++         try:
++             return json.loads(code_match.group(1))
++         except json.JSONDecodeError:
++             pass
++     return []
++ def decompose_wps(steps: list) -> list:
++     """WP 分解（脚本级，无需 LLM）"""
++     from pipeline_b import wps_decompose as _wps
++     return _wps(steps) if steps else []
++ if __name__ == "__main__":
++     test_w2h = {
++         "what": {"value": "制作PPT", "source": "regex"},
++         "why": {},
++         "who": {"value": "用户", "source": "regex"},
++         "when": {"value": "下周", "source": "regex"},
++         "how": {"value": "公司模板", "source": "regex"},
++     ctx = build_reasoning_context(test_w2h)
++     print(json.dumps(ctx, ensure_ascii=False, indent=2))
+
+### scripts/semantic_pipeline.py  [code]
++ #!/usr/bin/env python3
++ """
++ """
++ semantic-split 三管线统一调度入口 v0.1.0
++ 用法:
++   python scripts/semantic_pipeline.py --text "帮我制作PPT"
++   python scripts/semantic_pipeline.py --text "..." --flow
++   python scripts/semantic_pipeline.py --text "..." --json --full
++ import os
++ import sys
++ import json
++ import re
++ from pathlib import Path
++ from datetime import date
++ SKILL_DIR = Path(__file__).resolve().parent.parent
++ sys.path.insert(0, str(SKILL_DIR / "scripts"))
++ from pipeline_b import analyze_structure, _regex_blocks, _regex_subjects, _regex_constraints, _regex_5w2h
++ from pipeline_a import analyze_semantic, match_json, classify_constraint, generalize_actions
++ from pipeline_c import build_reasoning_context
++ # ============================================================
++ # ============================================================
++ # ============================================================
++ # ============================================================
++ # ============================================================
++ # ============================================================
++ # ============================================================
++ # ============================================================
++ # ============================================================
++ # ============================================================
++ # 路径
++ DATA_DIR = SKILL_DIR.parent / ".standardization" / "semantic-split" / "data"
++ CAP_DIR = DATA_DIR / "capabilities"
++ RULE_DIR = DATA_DIR / "rules"
++ # 钩子系统 — 流程门禁
++ HOOK_STATUS = {
++     "input_valid": False,
++     "b_pipeline_done": False,
++     "a_scan_done": False,
++     "decision_made": False,
++     "llm_generated": False,
++     "focus_reasoning": False,      # 双视角：聚焦方案
++     "divergent_reasoning": False,   # 双视角：发散方案
++     "integration_reasoning": False, # 双视角：整合方案
++     "template_saved": False,
++     "wp_done": False,               # 共 10 道门禁
++ }
++ HOOK_LOG = []
++ def _hook(name: str, status: bool, detail: str = ""):
++     """记录钩子状态"""
++     HOOK_STATUS[name] = status
++     HOOK_LOG.append({"hook": name, "status": "✅" if status else "⬇️", "detail": detail})
++ # 模板库管理（自增强闭环核心）
++ def _load_all_capabilities() -> list:
++     """加载所有能力级 JSON 模板"""
++     entries = []
++     if not CAP_DIR.exists():
++         return entries
++     for f in sorted(CAP_DIR.glob("*.json")):
++         try:
++             data = json.loads(f.read_text(encoding="utf-8"))
++             data["_file"] = str(f)
++             entries.append(data)
++         except (json.JSONDecodeError, Exception):
++             continue
++     return entries
++ def _save_template(text: str, steps: list, five_w2h: dict):
++     """
++     """
++     """
++     """
++     [钩子: template_saved]
++     执行后保存任务步骤为能力级 JSON 模板，实现自增强闭环。
++     下次同类任务直接命中模板，跳过 LLM。
++     # 从输入中提取任务名
++     task_name = re.sub(r'^(请|帮|帮我|我想|我需要|麻烦)', '', text.strip())[:20]
++     clean_name = re.sub(r'[^\u4e00-\u9fff\w]', '', task_name)[:16]
++     if not clean_name:
++         clean_name = "task"
++     # 通用化步骤
++     actions = [s.get("action", "") or s.get("name", "") for s in steps]
++     from pipeline_a import generalize_actions as _gen
++     gen_actions = _gen(actions)
++     # 构建能力级 JSON
++     cap = {
++         "id": f"{clean_name}_v1",
++         "type": "capability",
++         "name": clean_name,
++         "version": "1.0.0",
++         "created_at": str(date.today()),
++         "description": f"自动生成的 {clean_name} 步骤模板",
++         "generic_params": [],
++         "steps": [
++             {
++                 "id": f"s{i+1}",
++                 "name": s.get("name", f"步骤{i+1}"),
++                 "action": gen_actions[i] if i < len(gen_actions) else s.get("action", ""),
++                 "parallel_group": s.get("parallel_group"),
++                 "milestone": s.get("milestone", False),
++                 "dependency_heat": s.get("dependency_heat", 5),
++                 "depends_on": s.get("depends_on", []),
++                 "constraint_level": "none",
++                 "source": "auto_generated",
++             }
++             for i, s in enumerate(steps)
++         ],
++         "tags": [clean_name, "auto_generated"],
++     }
++     }
++     }
++     }
++     }
++     # 保存
++     CAP_DIR.mkdir(parents=True, exist_ok=True)
++     out_path = CAP_DIR / f"{clean_name}_v1.json"
++     with open(str(out_path) + ".tmp", "w", encoding="utf-8") as f:
++         json.dump(cap, f, ensure_ascii=False, indent=2)
++     os.replace(str(out_path) + ".tmp", str(out_path))
++     _hook("template_saved", True, f"已保存模板: {out_path.name} ({len(steps)} 步)")
++ def _scan_matching(text: str) -> list:
++     [钩子: a_scan_done]
++     扫描模板库，返回命中结果。
++     caps = _load_all_capabilities()
++     if not caps:
++         _hook("a_scan_done", False, "模板库为空，无模板可命中")
++         return []
++     matches = match_json(text, caps)
++     hits = [m for m in matches if m.get("score", 0) >= 0.6]
++     if hits:
++         _hook("a_scan_done", True, f"命中 {len(hits)} 个模板 (最高 {hits[0]['score']:.2f})")
++     else:
++     else:
++     else:
++     else:
++         _hook("a_scan_done", False, f"未命中 (最高 {matches[0]['score']:.2f})" if matches else "无匹配")
++     return hits
++ # 标准处理
++ def process(text: str, skip_llm: bool = False, full_output: bool = False) -> dict:
++     result = {"status": "ok", "input": text[:200], "pipeline": {}}
++     # [钩子] INPUT_VALID
++     if not text or not text.strip():
++         return {"status": "error", "message": "空输入"}
++     _hook("input_valid", True, f"输入校验通过 ({len(text)} 字)")
++     # ── Phase 1: Pipeline B - 结构分析 ──
++     structure = analyze_structure(text)
++     _hook("b_pipeline_done", True, f"B层={structure.get('pipeline_layers',['regex'])}")
++     result["pipeline"]["b"] = {
++         "subjects": structure.get("subjects", {}),
++         "blocks_count": len(structure.get("blocks", {}).get("blocks", [])),
++         "five_w2h": structure.get("five_w2h", {}),
++         "constraints": structure.get("constraints_attention", {}).get("constraints", []),
++         "layers_used": structure.get("pipeline_layers", ["regex"]),
++     # ── Phase 2: 扫描模板库（渐进加载）──
++     matches = _scan_matching(text)
++     five_w2h = structure.get("five_w2h", {})
++     constraints = structure.get("constraints_attention", {}).get("constraints", [])
++     if matches and matches[0].get("score", 0) >= 0.6:
++         # [门禁通过] 命中模板 → 直接复用，0 LLM
++         _hook("decision_made", True, f"命中模板 {matches[0]['id']} ({matches[0]['score']:.2f})，跳过 LLM")
++         result["pipeline"]["a"] = {"json_matches": matches, "hit": True, "source": "template"}
++         result["steps"] = [{"name": f"复用模板: {matches[0]['id']}", "action": "模板命中", "milestone": True}]
++         result["method"] = "template"
++         result["pipeline_summary"] = {"a_layers": ["regex", "embedding", "rerank"], "c_method": "template"}
++         return result
++     # 未命中 → 语义匹配（常规 Pipeline A）
++     _hook("decision_made", False, "未命中模板，执行语义匹配")
++     semantic = analyze_semantic(text)
++     result["pipeline"]["a"] = {
++         "json_matches": matches,
++         "constraint": semantic.get("constraint", {}),
++         "layers_used": semantic.get("pipeline_layers", ["regex"]),
++     # ── Phase 3: Pipeline C - 双视角推理 ──
++     if skip_llm:
++         _hook("llm_generated", False, "跳过 LLM（--skip-llm）")
++         reasoning = {
++         reasoning = {
++             "steps": [{"name": "分析任务（骨架）", "action": "结构分析完成", "milestone": True}],
++             "method": "skeleton",
++         }
++         }
++         }
++         _hook("llm_generated", True, "等待智能体推理完成")
++         reasoning_context = build_reasoning_context(
++             five_w2h, constraints,
++             structure_analysis={
++                 "verbs": structure.get("five_w2h", {}).get("what", {}).get("all_verbs", []),
++                 "ner": structure.get("constraints_attention", {}).get("attention", {}).get("entity", []),
++             },
++             template_matches=matches,
++         )
++             "steps": [],
++             "method": "agent_reasoning",
++             "agent_context": reasoning_context,
++     # [钩子 6/7/8] 双视角推理子步骤门禁
++     sub_steps = reasoning.get("agent_context", {}).get("sub_steps", [])
++     for sub in sub_steps:
++         sid = sub.get("id", "")
++         sname = sub.get("name", "")
++         hook_name = {
++             "focus": "focus_reasoning",
++             "diverge": "divergent_reasoning",
++             "integration": "integration_reasoning",
++         }.get(sid, "")
++         if hook_name:
++             _hook(hook_name, False, f"等待智能体执行: {sname}")
++         elif sid == "decompose":
++             _hook("wp_done", False, f"等待智能体: {sname}")
++     result["pipeline"]["c"] = {
++         "steps": reasoning.get("steps", []),
++         "method": reasoning.get("method", "skeleton"),
++         "agent_context": reasoning.get("agent_context"),
++     # [钩子] 模板保存（仅在 LLM 生成步骤且非 skip 时触发）
++     if reasoning.get("method") == "agent_reasoning" and reasoning.get("steps"):
++         _save_template(text, reasoning["steps"], five_w2h)
++     # WP 分解
++     from pipeline_c import decompose_wps
++     wps = decompose_wps(reasoning.get("steps", []))
++     result["pipeline"]["wps"] = wps
++     _hook("wp_done", True, f"WP 分解: {len(wps)} 个工作包")
++     result["pipeline_summary"] = {
++         "b_layers": result["pipeline"]["b"]["layers_used"],
++         "a_layers": result["pipeline"]["a"]["layers_used"],
++         "c_method": result["pipeline"]["c"]["method"],
++     if not full_output:
++         return {
++             "status": "ok",
++             "steps": reasoning.get("steps", []),
++             "wps": wps,
++             "method": result["pipeline_summary"]["c_method"],
++             "pipeline_summary": result["pipeline_summary"],
++             "agent_context": reasoning.get("agent_context"),
++             "hooks": HOOK_LOG,
++     return result
++ # CLI
++ def main():
++     import argparse
++     parser = argparse.ArgumentParser(description="semantic-split 三管线调度入口")
++     parser.add_argument("--text", type=str, help="用户输入文本")
++     parser.add_argument("--file", type=str, help="从文件读取输入")
++     parser.add_argument("--json", action="store_true", help="JSON 格式输出")
++     parser.add_argument("--full", action="store_true", help="输出完整中间结果")
++     parser.add_argument("--skip-llm", action="store_true", help="跳过智能体推理，返回骨架")
++     parser.add_argument("--hooks", action="store_true", help="显示钩子门禁状态")
++     args = parser.parse_args()
++     if args.file:
++         with open(args.file, "r", encoding="utf-8") as f:
++             text = f.read().strip()
++     elif args.text:
++         text = args.text
++         parser.print_help()
++         sys.exit(1)
++     result = process(text, skip_llm=args.skip_llm, full_output=args.full)
++     if args.json:
++         print(json.dumps(result, ensure_ascii=False, indent=2))
++     elif args.hooks:
++         print(f"\n{'='*50}")
++         print(f"\n{'='*50}")
++         print(f"  流程门禁状态")
++         print(f"{'='*50}")
++         print(f"{'='*50}")
++         print(f"{'='*50}")
++         print(f"{'='*50}")
++         for h in result.get("hooks", HOOK_LOG):
++             s = "✅" if h["status"] == "✅" else "⬇️"
++             print(f"  {s} {h['hook']:<20} {h['detail']}")
++         steps = result.get("steps", [])
++         wps = result.get("wps", [])
++         summary = result.get("pipeline_summary", {})
++         print(f"  semantic-split 处理结果")
++         print(f"  管线: B={summary.get('b_layers',[])}, C={summary.get('c_method','?')}")
++         print(f"  步骤: {len(steps)}  WPs: {len(wps)}")
++         for h in result.get("hooks", []):
++             print(f"  {h['status']} {h['hook']:<20} {h['detail']}")
++ if __name__ == "__main__":
++     main()
+
+### scripts/setup_env.py  [code]
++ #!/usr/bin/env python3
++ """
++ """
++ semantic-split 环境检测与依赖安装脚本 v0.1.0
++ 安装 Pipeline A(语义匹配) + Pipeline B(结构分析) 所需依赖。
++ 支持多种 PyPI 镜像源，国内用户推荐 aliyun/tsinghua。
++ 用法:
++   python scripts/setup_env.py --auto-install --mirror aliyun    # 国内推荐
++   python scripts/setup_env.py --auto-install                    # 默认源
++   python scripts/setup_env.py --check-only                      # 仅检测不安装
++ import os
++ import sys
++ import subprocess
++ import platform
++ import time
++ import datetime
++ REQUIRED_PACKAGES = [
++     "sentence-transformers",   # Pipeline A embedding + CrossEncoder
++ ]
++ ]
++ # Pipeline B 为纯正则实现，无需额外依赖。
++     "huggingface-hub",         # 模型下载
++ OPTIONAL_PACKAGES = {
++     "torch": "torch",
++     "modelscope": "modelscope",  # 国内模型下载源
++ }
++ }
++ MIRRORS = {
++     "default": "https://pypi.org/simple/",
++     "aliyun": "https://mirrors.aliyun.com/pypi/simple/",
++     "tencent": "https://mirrors.cloud.tencent.com/pypi/simple/",
++     "tsinghua": "https://pypi.tuna.tsinghua.edu.cn/simple/",
++ LOG_DIR = None
++ def _log(msg: str):
++     ts = datetime.datetime.now().strftime("%H:%M:%S")
++     print(f"[{ts}] {msg}")
++ def _check_python():
++     """检查 Python 版本（3.8-3.12 推荐）"""
++     v = sys.version_info
++     _log(f"Python {v.major}.{v.minor}.{v.micro}")
++     if v.major < 3 or (v.major == 3 and v.minor < 8):
++         _log("[!] Python >= 3.8 是必需的")
++         return False
++         return False
++         return False
++     if v.minor >= 14:
++         _log("[~] Python 3.14+ 可能需更新 pip 版本")
++     return True
++     return True
++     return True
++ def _check_package(pkg_name: str) -> bool:
++     """检测单个包是否已安装"""
++     # 尝试 importlib.metadata（Python 3.8+）
++     try:
++     try:
++     try:
++         import importlib.metadata as ilm
++         try:
++         try:
++             ilm.distribution(pkg_name)
++             return True
++         except ilm.PackageNotFoundError:
++             pass
++             pass
++         except StopIteration:
++             pass  # Python 3.14+ 兼容问题
++     except (ImportError, Exception):
++         pass
++         pass
++     # 回退：直接 import
++         __import__(pkg_name.replace("-", "_"))
++         return True
++         return True
++         return True
++     except ImportError:
++     return False
++ def _check_packages(packages: list) -> dict:
++     """检查所有必需包的状态"""
++     results = {}
++     for pkg in packages:
++         installed = _check_package(pkg)
++         results[pkg] = installed
++         status = "OK" if installed else "MISSING"
++         _log(f"  {pkg:<30} [{status}]")
++     return results
++ def _get_pip_cmd():
++     """获取正确的 pip 命令"""
++     for cmd in [sys.executable + " -m pip", "pip", "pip3"]:
++             r = subprocess.run(cmd.split()[0] if isinstance(cmd, str) else cmd,
++                                capture_output=True, shell=False, timeout=5)
++             if r.returncode == 0:
++                 return cmd
++         except (FileNotFoundError, subprocess.TimeoutExpired):
++     # fallback
++     return sys.executable + " -m pip"
++ def _pip_run(cmd_parts: list, timeout=300):
++     """运行 pip 命令，实时输出"""
++         proc = subprocess.Popen(
++             cmd_parts,
++             stdout=subprocess.PIPE,
++             stderr=subprocess.STDOUT,
++             text=True,
++             bufsize=1,
++         )
++         output_lines = []
++         for line in iter(proc.stdout.readline, ""):
++             if not line:
++                 break
++             line = line.rstrip()
++             if line:
++                 print(f"  {line}")
++                 output_lines.append(line)
++         proc.wait(timeout=timeout)
++         return proc.returncode, "\n".join(output_lines)
++     except subprocess.TimeoutExpired:
++         proc.kill()
++         return -1, "TIMEOUT"
++     except Exception as e:
++         return -1, str(e)
++ def _install_missing(missing: list, mirror: str, no_deps=False):
++     """安装缺失的包"""
++     if not missing:
++     if not missing:
++     pip_cmd = _get_pip_cmd()
++     pip_cmd = _get_pip_cmd()
++     mirror_url = MIRRORS.get(mirror, MIRRORS["default"])
++     mirror_url = MIRRORS.get(mirror, MIRRORS["default"])
++     _log(f"安装 {len(missing)} 个缺失包 (mirror: {mirror})...")
++     for pkg in missing:
++         _log(f"  安装 {pkg}...")
++         cmd = pip_cmd.split()
++         cmd += ["install"]
++         if no_deps:
++             cmd.append("--no-deps")
++         cmd.append(pkg)
++         if mirror != "default":
++             cmd += ["-i", mirror_url]
++         rc, output = _pip_run(cmd)
++         if rc != 0:
++             _log(f"  [!] {pkg} 安装失败 (rc={rc})")
++             return False
++             return False
++         # 验证安装
++         if not _check_package(pkg):
++             _log(f"  [!] {pkg} 安装后验证失败")
++         _log(f"  [OK] {pkg} 安装成功")
++ def _install_pytorch(mirror: str):
++     """安装 PyTorch CPU 版本"""
++     if _check_package("torch"):
++         _log("  torch 已安装，跳过")
++     _log("安装 PyTorch (CPU only)...")
++     cmd = pip_cmd.split() + [
++         "install", "torch",
++         "--index-url", "https://download.pytorch.org/whl/cpu",
++     ]
++     if mirror != "default":
++         cmd += ["-i", mirror_url]
++     rc, output = _pip_run(cmd, timeout=600)
++     if rc != 0:
++         _log("[!] PyTorch 安装失败")
++     if not _check_package("torch"):
++     if not _check_package("torch"):
++         _log("[!] PyTorch 安装后验证失败")
++     _log("  [OK] PyTorch 安装成功")
++ def main():
++     import argparse
++     parser = argparse.ArgumentParser(description="semantic-split 环境检测与安装")
++     parser.add_argument("--auto-install", action="store_true", help="自动安装缺失依赖")
++     parser.add_argument("--check-only", action="store_true", help="仅检测，不安装")
++     parser.add_argument("--mirror", choices=list(MIRRORS.keys()), default="aliyun",
++                         help="PyPI 镜像源 (default: aliyun)")
++     # 兼容 --mirror 直接传值
++     args, unknown = parser.parse_known_args()
++     print("=" * 55)
++     print("=" * 55)
++     print("=" * 55)
++     print("  semantic-split 环境检测 v0.1.0")
++     # --- Python 版本 ---
++     print("\n[1/3] Python 版本检测")
++     if not _check_python():
++         sys.exit(1)
++         sys.exit(1)
++     # --- 依赖包检测 ---
++     print("\n[2/3] 依赖包检测")
++     all_packages = list(REQUIRED_PACKAGES)
++     all_packages += [k for k in OPTIONAL_PACKAGES if not _check_package(k)]
++     status = _check_packages(REQUIRED_PACKAGES)
++     missing = [pkg for pkg, installed in status.items() if not installed]
++     # 可选包检测
++     for name, pkg_name in OPTIONAL_PACKAGES.items():
++         if not _check_package(pkg_name):
++             _log(f"  {name:<30} [OPTIONAL - 未安装]")
++         print("\n[3/3] 全部依赖已就绪")
++         print("=" * 55)
++         return
++     if args.check_only:
++         print(f"\n[!] 缺失 {len(missing)} 个包 (--check-only 模式)")
++         print(f"  运行: python scripts/setup_env.py --auto-install")
++     # --- 安装缺失包 ---
++     print(f"\n[3/3] 安装 {len(missing)} 个缺失包")
++     ok = _install_missing(missing, args.mirror)
++     if not ok:
++         print("\n[!] 部分包安装失败，尝试 --no-deps 模式...")
++         ok = _install_missing(missing, args.mirror, no_deps=True)
++     # 安装 PyTorch（如果缺失）
++         print("\n安装 PyTorch CPU 版本...")
++         _install_pytorch(args.mirror)
++     print("\n" + "=" * 55)
++     if ok:
++         print("  环境就绪，可以运行 model_manager.py 下载模型")
++         print("  python scripts/model_manager.py --download-all")
++     else:
++         print("  [!] 部分安装失败，请检查错误信息重试")
++         print("  建议: python scripts/setup_env.py --mirror tsinghua")
++ if __name__ == "__main__":
++     main()

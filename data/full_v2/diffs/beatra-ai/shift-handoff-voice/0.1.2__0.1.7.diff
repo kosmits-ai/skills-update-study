@@ -1,0 +1,626 @@
+beatra-ai/shift-handoff-voice  0.1.2 -> 0.1.7
+change_type: docs+code   changelog: The helper now waits for your approval, and if you approve after it has stopped waiting, Beatra connects automatically the next time you use it, with no second approval.
+
+### manifest.json  [code]
+-   "changelog": "Drop the instruction to rank a top-up tier down, and with it the hardcoded tier price and top-up address; add the read-only balance and ledger calls.",
+-   "icon": "https://beatra.ai/icon-512x512.png",
+-   "version": "0.1.2"
++   "changelog": "Connecting Beatra is smoother: the helper waits for your approval, and if you approve after it has stopped waiting, Beatra connects automatically the next time you use it, with no second approval.",
++   "icon": "https://beatra.ai/textures/icons/shift-handoff-voice.png",
++   "version": "0.1.7"
+
+### references/billing-errors-and-recovery.md  [docs]
+-   Run `scripts/authorize.py`, then recover with the original request identity
+-   and unchanged arguments.
+-   run `scripts/authorize.py --force` only after the user explicitly chooses to
+-   reconnect the full Beatra authorization. Never ask for a media-specific grant.
++   Run `python3 scripts/authorize.py` and follow its output
++   until it prints `Beatra is ready`, then recover with the original request
++   identity and unchanged arguments.
++   run `python3 scripts/authorize.py --force` only after the
++   user explicitly chooses to reconnect the full Beatra authorization. Never ask
++   for a media-specific grant.
+
+### references/installation-and-auth.md  [docs]
+- 2. requests a Device Authorization from Beatra;
+- 3. opens the returned HTTPS approval page in the user's browser and also shows
+-    its URL. The URL fragment carries the approval code, so the page verifies
+-    the code by itself;
+- 4. polls every 5 seconds for up to 15 minutes while the user signs in (or
+-    creates their account) and selects Allow;
+-    prints Ready only after it succeeds.
+- - say once that the connection continues automatically after Allow, then
+-   detect completion yourself — never ask the user to confirm in chat that
+-   they approved.
+- Approval legitimately takes minutes when sign-in or account creation is
+- involved, so run the helper in the background when the command runner enforces
+- a shorter timeout. Completion is observable without the user's help: the
+- helper exits by itself after printing Ready, and a non-billable
+- `python3 scripts/mcp_client.py verify` succeeds once the credential lands.
+- the credential and run `python3 scripts/authorize.py --force` only when the user
+- explicitly wants to reconnect or switch accounts. A timeout, DNS/TLS failure,
+- HTTP 429, or HTTP 5xx is transient: keep the credential, do not start Device
+- Authorization, and retry after connectivity recovers.
+- after the token was idle too long or was revoked, rerun `scripts/authorize.py`;
+- the helper replaces and validates the credential. Do not start another
++ 2. continues an approval that is already open on this computer, or requests a
++    new Device Authorization from Beatra. When the user already selected Allow
++    on this computer and nothing collected it, Beatra connects at once — no
++    second approval;
++ 3. prints the HTTPS approval link at once and opens it in the user's browser
++    (only once for each approval). The URL fragment carries the approval code,
++    so the page verifies the code by itself;
++ 4. waits while it checks every few seconds whether the user selected Allow,
++    and keeps checking through brief network failures. One run waits up to
++    about 15 minutes; an approval page stays open for up to an hour;
++    prints `Beatra is ready` only after it succeeds.
++ ### Wait for Allow
++ The user usually needs a minute or more to sign in or create an account before
++ selecting Allow. The helper waits for it: leave it running. If your host moves
++ the command to the background, let it keep running and do not start a second
++ one.
++ Act on how each run ends:
++ - `Beatra is ready` — the connection works; continue with the user's request.
++ - `BEATRA_AUTH_PENDING` (exit status 3) — the run ended before the user selected
++   Allow: the approval page had not been opened yet, the run's wait ran out, or
++   the run was stopped. Show the approval link to the user as described below if
++   you have not already, and again if the link is different. Then run the same
++   command again: it continues the same approval, so the user approves only
++   once. When the message says Beatra could not be reached, tell the user the
++   connection is being retried instead of asking them to approve again.
++ - `BEATRA_AUTH_IN_PROGRESS` (exit status 3) — another run on this computer is
++   starting an approval right now. Run the same command again in a moment; it
++   continues that approval.
++ - `Beatra authorization stopped (access_denied)` — the user declined on the
++   approval page. A decline is often a mis-click: if the user still wants to
++   connect, run the same command again and it opens a new approval page.
++ - `Beatra authorization stopped (expired_token)` — the approval page expired
++   before the user selected Allow. Tell the user; if they still want to
++   connect, run the same command again and share the new approval link.
++ If a run was stopped anyway, for example by a timeout or an interrupted tool
++ call, run the same command again: it continues the approval that is already
++ open.
++ An approval does not depend on a run being active when the user selects Allow.
++ Beatra keeps it, and every Beatra command collects it first: when the user
++ writes again after approving, run the helper once (or go on with their
++ request) and the connection completes without a second approval. So if the
++ user interrupts to ask something else, stop the helper and answer them; and if
++ they do not want to connect now, stop waiting — the link stays valid for a
++ while.
++ - say once that the connection continues automatically after Allow — never
++   ask the user to confirm in chat that they approved.
++ the credential and run `python3 scripts/authorize.py --force`
++ only when the user explicitly wants to reconnect or switch accounts. A timeout,
++ DNS/TLS failure, HTTP 429, or HTTP 5xx is transient: keep the credential, do
++ not start Device Authorization, and retry after connectivity recovers.
++ after the token was idle too long or was revoked, run
++ `python3 scripts/authorize.py` and act on its output as
++ described above; the helper replaces and validates the credential. Do not start another
+
+### scripts/authorize.py  [code]
+- from contextlib import contextmanager
+- PACKAGE_VERSION = "0.1.2"
+- MAX_WAIT_SECONDS = 15 * 60
+-     f"{AUTH_REQUIRED_CODE}: Beatra authorization is no longer valid. "
+-     "Complete Device Authorization to reconnect."
+-     f"{AUTH_IN_PROGRESS_CODE}: Another Beatra authorization is already in progress. "
+-     "Complete that approval instead of starting a second one."
+- AUTH_LOCK_TTL_SECONDS = MAX_WAIT_SECONDS + 120
+-     "server_error",
+-     "temporarily_unavailable",
+- def _default_post_form(url: str, fields: dict[str, str]) -> tuple[int, dict[str, Any]]:
+-         with opener.open(request, timeout=30) as response:
+-         raw = exc.read()
+-     except urllib.error.URLError as exc:
+-         raise RuntimeError("Beatra authorization service is unreachable") from exc
+-         raise RuntimeError(f"Beatra authorization returned HTTP {status}") from exc
+-     ):
+- def _read_authorization_lock(path: Path) -> tuple[dict[str, Any], tuple[int, int]] | None:
+-     return value, (path_stat.st_dev, path_stat.st_ino)
+-             existing = _read_authorization_lock(path)
+-                 raise RuntimeError(AUTH_IN_PROGRESS_MESSAGE) from exc
+-                 raise RuntimeError(AUTH_IN_PROGRESS_MESSAGE) from exc
+-                 raise RuntimeError(AUTH_IN_PROGRESS_MESSAGE) from exc
+-             payload, identity = existing
+-             age = wall_time() - float(payload["created_at"])
+-             if age <= AUTH_LOCK_TTL_SECONDS or not _same_file_identity(path, identity):
+-             path.unlink()
+-     if descriptor < 0:
+-         raise RuntimeError(AUTH_IN_PROGRESS_MESSAGE)
+-                 {
+-                     "schema_version": 1,
+-                     "created_at": wall_time(),
+-                 },
+-         yield
+-         if owned_identity is not None and _same_file_identity(path, owned_identity):
+-             if existing is None or existing[0]["owner_nonce"] == owner_nonce:
+- def _authorize_new_credential(
+-     server_lifetime = _positive_int(created, "expires_in", MAX_WAIT_SECONDS)
+-     deadline = monotonic() + min(server_lifetime, MAX_WAIT_SECONDS)
+-     print(f"Open this Beatra approval page: {verification_url}")
+-     print(
+-     print(
+-         "This helper waits and finishes by itself once the user selects "
+-         "Allow - no chat confirmation is needed from the user."
+-     open_browser(verification_url)
+-     poll_fields = {
+-     sleep(interval)
+-     while monotonic() < deadline:
+-         status, polled = post_form(TOKEN_URL, poll_fields)
+-         if status == 200:
+-             access_token = _required_string(polled, "access_token")
+-             if polled.get("token_type") != "Bearer":
+-                 raise RuntimeError("Beatra authorization returned an unsupported token type")
+-             scope = _required_string(polled, "scope")
+-             if set(scope.split()) != set(SCOPE.split()):
+-                 raise RuntimeError("Beatra authorization returned an unsupported scope")
+-             credential_path = state_dir / "credentials.json"
+-             _atomic_json(
+-                 credential_path,
+-                     "mcp_url": MCP_URL,
+-                     "token_type": "Bearer",
+-                     "access_token": access_token,
+-                     "credential_id": _required_string(polled, "credential_id"),
+-                     "installation_id": _required_string(polled, "installation_id"),
+-                     "scope": scope,
+-                     "authorized_at": datetime.now(_UTC).isoformat(),
+-                     "idle_expires_in": _positive_int(polled, "idle_expires_in", 15 * 24 * 60 * 60),
+-             access_token = ""
+-             print("Beatra authorization saved to the private credential file.")
+-             print("Beatra is ready.")
+-         error = polled.get("error")
+-         if error not in {"authorization_pending", "slow_down"}:
+-             safe_code = _safe_protocol_error(error, _TERMINAL_POLL_ERRORS)
+-             raise RuntimeError(f"Beatra authorization stopped ({safe_code})")
+-         if error == "slow_down":
+-             interval = max(interval + 5, _positive_int(polled, "interval", interval))
+-         sleep(interval)
+-     raise RuntimeError("Beatra authorization timed out after 15 minutes")
+-             print("Beatra is ready with the existing private credential.")
+-     with _device_authorization_lock(
+-         state_dir,
+-         return _authorize_new_credential(
+-             state_dir=state_dir,
+-             host_platform=host_platform,
+-             device_name=device_name,
+-             post_form=post_form,
+-             probe_credential=probe_credential,
+-             open_browser=open_browser,
+-             sleep=sleep,
+-             monotonic=monotonic,
+-         authorize(platform=args.platform, force=args.force)
+-         print(str(exc), file=os.sys.stderr)
+-         return 1
+-     return 0
++ import http.client
++ import signal
++ import sys
++ import threading
++ from contextlib import contextmanager, suppress
++ PACKAGE_VERSION = "0.1.7"
++ )
++ )
++ # How long Beatra keeps an approval open for a helper that does not say how
++ # long it keeps checking: every helper released before `max_poll_seconds`.
++ DEFAULT_APPROVAL_SECONDS = 15 * 60
++ # The longest this helper keeps one approval open. Beatra grants this only to
++ # a helper that declares it (`max_poll_seconds` below); the approval's own
++ # `expires_in` still decides, so a server that grants less is followed.
++ MAX_WAIT_SECONDS = 60 * 60
++ # This helper keeps its device code and comes back for an approval later (the
++ # next run, or mcp_client before any call). Beatra then tells it how to wait
++ # (`beatra_wait_policy`) and whether its approval page has been opened.
++ CLIENT_FEATURES = "collect_later"
++ # One run's foreground wait, and when a run whose page was never opened hands
++ # the link back, when Beatra sends no policy (a server older than the policy,
++ # or an approval an older helper opened): the long wait every helper before
++ # 09-23 had, with the link surfaced early for hosts that show output late.
++ DEFAULT_RUN_SECONDS = 900
++ DEFAULT_EARLY_RETURN_SECONDS = 60
++ # A run this short returns before most users finish signing in: its agent is
++ # told to run it again at once.
++ SHORT_RUN_SECONDS = 120
++ # How often a long run repeats the link, for hosts that show only the tail.
++ PROGRESS_SECONDS = 120
++ # How long a run waits for another run that is creating an approval right now.
++ LOCK_WAIT_SECONDS = 20
++ # A run that has not heard from Beatra for this long hands back to its agent.
++ UNREACHABLE_HAND_BACK_SECONDS = 60
++ # slow_down backs polling off by 5 s each time; two commands checking the same
++ # code would otherwise push each other far past the pace an Allow needs.
++ MAX_POLL_INTERVAL_SECONDS = 15
++     f"{AUTH_REQUIRED_CODE}: Beatra authorization is no longer valid. Run "
++     "`python3 scripts/authorize.py` again and follow its output "
++     'until it prints "Beatra is ready".'
++     f"{AUTH_IN_PROGRESS_CODE}: Another Beatra authorization is being started on this "
++     "computer right now. Run this same command again in a moment; it continues that "
++     "approval instead of starting a second one."
++ AUTH_PENDING_CODE = "BEATRA_AUTH_PENDING"
++ # Exit status of a run that stopped at its --wait-seconds budget while the user
++ # has not selected Allow yet: not done, not failed.
++ EXIT_PENDING = 3
++ WAIT_SECONDS_MIN = 30
++ WAIT_SECONDS_MAX = 900
++ # Locks without a heartbeat come only from helpers released before it, which
++ # never ran past their 15-minute approval; this is their age limit. It stays
++ # fixed however long this helper may keep an approval open.
++ LEGACY_LOCK_TTL_SECONDS = DEFAULT_APPROVAL_SECONDS + 120
++ # A live helper refreshes its lock from a background thread, whatever the main
++ # flow is blocked on (a request, a slow_down wait, the browser opening). A lock
++ # nobody refreshed for the stale window belongs to a helper the agent killed;
++ # the next run takes it over instead of waiting out the TTL.
++ AUTH_LOCK_HEARTBEAT_SECONDS = 10
++ AUTH_LOCK_HEARTBEAT_STALE_SECONDS = 90
++ # An approval given just before the code expired stays redeemable this long.
++ REDEEM_GRACE_SECONDS = 60
++ # A saved approval that lapsed this recently was still being continued by
++ # reruns; report the expiry instead of silently opening yet another page.
++ EXPIRED_NOTICE_SECONDS = 600
++ DECLINED_MESSAGE = (
++     "Beatra authorization stopped (access_denied). If Allow was not declined on "
++     "purpose, run this same command again for a new approval page."
++ EXPIRED_MESSAGE = (
++     "Beatra authorization stopped (expired_token): the approval page expired before "
++     "Allow was selected. If the user still wants to connect, run this same command "
++     "again for a new approval page."
++ # Polls answer in milliseconds. A short timeout keeps the retry after a lost
++ # response well inside the server's 120 s re-delivery window for an issued token.
++ POLL_TIMEOUT_SECONDS = 15
++ PENDING_AUTHORIZATION_FILE = "pending_authorization.json"
++ _CLIENT_ID_VALUE = re.compile(r"beatra-skill-[a-z0-9][a-z0-9-]{0,63}\Z")
++ UNREACHABLE_MESSAGE = "Beatra authorization service is unreachable"
++ # The server answers these while it is briefly unable to decide, including the
++ # moment an approval lands between two polls; polling again completes the flow.
++ _TRANSIENT_POLL_ERRORS = {"server_error", "temporarily_unavailable"}
++ class _TransientAuthorizationError(RuntimeError):
++     """The authorization service could not be reached or answered with a gateway error."""
++ class _ApprovalPending(Exception):
++     """This run ended before the user selected Allow: its time budget ran out,
++     its approval page was never opened (so the agent must show the link), or
++     the host stopped it."""
++     def __init__(
++         self,
++         verification_url: str,
++         *,
++         answered: bool = True,
++         minutes_left: int = 1,
++         legacy: bool = False,
++         connects_later: bool = False,
++         stopped: bool = False,
++         unopened: bool = False,
++     ) -> None:
++         super().__init__(verification_url)
++         self.verification_url = verification_url
++         self.answered = answered
++         self.minutes_left = minutes_left
++         self.legacy = legacy
++         self.connects_later = connects_later
++         self.stopped = stopped
++         self.unopened = unopened
++     def instructions(self) -> str:
++         if not self.answered:
++             # Say what actually happened: asking the user to approve again
++             # would be wrong while the approval may already be given.
++             return (
++             return (
++             return (
++                 f"{AUTH_PENDING_CODE}: Beatra could not be reached during this run, so it is "
++                 "not known yet whether the user selected Allow. The approval page stays "
++                 f"valid for about {self.minutes_left} more minutes: {self.verification_url}\n"
++                 "Tell the user the connection to Beatra is being retried and that they do "
++                 "not need to approve again. Then run this same command again; it continues "
++                 "this same approval. Repeat until it prints \"Beatra is ready\"."
++             )
++             )
++             )
++             )
++         if self.legacy:
++             # Short runs: a session still following the 09-23 instructions
++             # (--wait-seconds), or Beatra's short-run switch.
++                 f"{AUTH_PENDING_CODE}: The user has not selected Allow yet. "
++                 f"Approval page: {self.verification_url}\n"
++                 "Share this link with the user if you have not already (it may "
++                 "already be open in their browser). Then run this same command "
++                 "again right away: it continues this same approval, so the user "
++                 "never approves twice. Repeat until it prints \"Beatra is ready\". "
++                 "Signing in or creating an account can take a few minutes; keep "
++                 "running it until then."
++         if self.unopened:
++                 f"{AUTH_PENDING_CODE}: The approval page has not been opened yet. "
++                 f"Show this link to the user in the chat now: {self.verification_url}\n"
++                 "Then run this same command again: it continues this same approval, so "
++                 "the user never approves twice, and waits for Allow."
++                 + (
++                     " If the user approves while nothing is running, Beatra connects "
++                     "automatically the next time you use it."
++                     if self.connects_later
++                     else ""
++                 )
++                 )
++                 )
++         lead = "This run was stopped" if self.stopped else "The user has not selected Allow yet"
++         later = (
++             " If the user approves while nothing is running, Beatra connects "
++             "automatically the next time you use it - they never approve twice."
++             if self.connects_later
++             else ""
++         )
++         )
++         )
++         )
++         return (
++             f"{AUTH_PENDING_CODE}: {lead}. Approval page: {self.verification_url}\n"
++             "Show this link to the user in the chat if you have not already (it may "
++             "already be open in their browser). Then run this same command again: "
++             "it continues this same approval, so the user never approves twice, and "
++             "waits for Allow." + later
++ class _Stopped(BaseException):
++     """The host asked this run to stop (SIGINT, SIGTERM, SIGHUP)."""
++ class _AuthorizationInProgress(RuntimeError):
++     """Another run is creating an approval on this computer right now."""
++ def _default_post_form(url: str, fields: dict[str, str], *, timeout: float | None = None) -> tuple[int, dict[str, Any]]:
++     )
++     )
++     )
++     try:
++     try:
++     try:
++     try:
++     try:
++     try:
++     try:
++     try:
++     try:
++     try:
++         if timeout is None:
++             timeout = POLL_TIMEOUT_SECONDS if url == TOKEN_URL else 30
++         with opener.open(request, timeout=timeout) as response:
++         try:
++         try:
++         try:
++         try:
++         try:
++         try:
++             raw = exc.read()
++         except (OSError, http.client.HTTPException) as read_error:
++             raise _TransientAuthorizationError(UNREACHABLE_MESSAGE) from read_error
++     except (OSError, http.client.HTTPException) as exc:
++         # URLError covers DNS, refused connections and TLS handshakes; a
++         # timeout or reset while waiting for the response surfaces unwrapped.
++         raise _TransientAuthorizationError(UNREACHABLE_MESSAGE) from exc
++         failure = _TransientAuthorizationError if status >= 500 or status == 429 else RuntimeError
++         raise failure(f"Beatra authorization returned HTTP {status}") from exc
++     _atomic_json(
++     return value
++         path_stat = os.lstat(path)
++         path_stat = os.lstat(path)
++         if not stat.S_ISREG(path_stat.st_mode):
++             return None
++             return None
++             return None
++         value = json.loads(path.read_text(encoding="utf-8"))
++     except (OSError, TypeError, json.JSONDecodeError):
++         return None
++         return None
++         return None
++     _restrict_file(path)
++         return False
++ def _read_authorization_lock(path: Path) -> tuple[dict[str, Any], tuple[int, int], float] | None:
++     return value, (path_stat.st_dev, path_stat.st_ino), path_stat.st_mtime
++ def _lock_abandoned(payload: dict[str, Any], *, touched_at: float, now: float) -> bool:
++     """A heartbeat lock is judged by its heartbeat alone: a live helper may run
++     longer than any TTL (a resumed code, then a fresh one). Locks from older
++     helpers, which never heartbeat, keep their fixed age limit."""
++     if payload.get("heartbeat") is True:
++         return now - touched_at > AUTH_LOCK_HEARTBEAT_STALE_SECONDS
++     return now - float(payload["created_at"]) > LEGACY_LOCK_TTL_SECONDS
++ def _unreadable_lock_abandoned(path: Path, *, now: float) -> bool:
++     except OSError:
++     except OSError:
++         return True
++         return True
++     return stat.S_ISREG(path_stat.st_mode) and now - path_stat.st_mtime > LEGACY_LOCK_TTL_SECONDS
++ def _touch_lock(path: Path, when: float) -> None:
++     with suppress(OSError):
++     with suppress(OSError):
++         os.utime(path, (when, when))
++ def _create_lock(
++     path: Path,
++     *,
++     *,
++     *,
++     *,
++     *,
++     owner_nonce: str,
++     wall_time: Callable[[], float],
++     wall_time: Callable[[], float],
++     wall_time: Callable[[], float],
++     wall_time: Callable[[], float],
++ ) -> tuple[tuple[int, int], float]:
++     """Create and write the lock file; (its identity, when it was written)."""
++                 # Unreadable (a helper died mid-write, or another tool's file):
++                 # stale once older than any helper ever held a lock, so it
++                 # cannot block every future authorization.
++                 if not _unreadable_lock_abandoned(path, now=wall_time()):
++                     raise _AuthorizationInProgress(AUTH_IN_PROGRESS_MESSAGE) from exc
++                     raise _AuthorizationInProgress(AUTH_IN_PROGRESS_MESSAGE) from exc
++                 with suppress(OSError):
++                     path.unlink()
++                 if attempt == 1:
++                 continue
++                 continue
++             payload, identity, touched_at = existing
++             if not _lock_abandoned(payload, touched_at=touched_at, now=wall_time()) or not _same_file_identity(
++                 path, identity
++             ):
++                 raise _AuthorizationInProgress(AUTH_IN_PROGRESS_MESSAGE) from exc
++                 raise _AuthorizationInProgress(AUTH_IN_PROGRESS_MESSAGE) from exc
++             with suppress(OSError):
++             with suppress(OSError):
++                 path.unlink()
++     if descriptor < 0 or owned_identity is None:
++         raise _AuthorizationInProgress(AUTH_IN_PROGRESS_MESSAGE)
++         created_at = wall_time()
++                     "created_at": created_at,
++                     "heartbeat": True,
++         _touch_lock(path, created_at)
++     except BaseException:
++         if _same_file_identity(path, owned_identity):
++         raise
++     return owned_identity, created_at
++     state_dir: Path,
++     state_dir: Path,
++     lock_nonce: Callable[[], str],
++     lock_nonce: Callable[[], str],
++     # A stop between creating the lock file and writing it would leave an
++     # empty lock that older helpers treat as busy: it waits until written.
++     with _SIGNALS.deferred():
++     with _SIGNALS.deferred():
++         owned_identity, _created_at = _create_lock(path, owner_nonce=owner_nonce, wall_time=wall_time)
++         if _SIGNALS.requested:
++             _SIGNALS.requested = False
++             raise _Stopped()
++             raise _Stopped()
++         stopped = threading.Event()
++         def heartbeat() -> None:
++             while not stopped.wait(AUTH_LOCK_HEARTBEAT_SECONDS):
++                 if _same_file_identity(path, owned_identity):
++                     _touch_lock(path, wall_time())
++         beater = threading.Thread(target=heartbeat, name="beatra-authorize-heartbeat", daemon=True)
++         beater.start()
++             yield
++             yield
++         finally:
++         finally:
+
+### scripts/mcp_client.py  [code]
+- from typing import Any
+- PACKAGE_VERSION = "0.1.2"
+- AUTH_REQUIRED_MESSAGE = (
+-     f"{AUTH_REQUIRED_CODE}: Beatra authorization is no longer valid. "
+-     "Run scripts/authorize.py to reconnect."
+-         raise RuntimeError("Beatra credentials are missing; run scripts/authorize.py") from exc
+-         raise RuntimeError("Beatra credential file is invalid; authorize again")
+- def _run_command(command: str, tool_name: str | None = None) -> dict[str, Any]:
+-             verify()
+-             result = upload(args.path, mime_type=args.mime_type)
+-             result = _run_command(args.command, getattr(args, "tool_name", None))
++ from typing import Any, TypeVar
++ PACKAGE_VERSION = "0.1.7"
++ RECONNECT_GUIDANCE = (
++     "Reconnect with `python3 scripts/authorize.py` and follow "
++     'its output until it prints "Beatra is ready".'
++ T = TypeVar("T")
++ AUTH_REQUIRED_MESSAGE = f"{AUTH_REQUIRED_CODE}: Beatra authorization is no longer valid. {RECONNECT_GUIDANCE}"
++ class CredentialsMissing(RuntimeError):
++     """No usable credential file: this computer has not connected yet."""
++ def _allowlisted_unauthorized_message(raw: bytes) -> str | None:
++     """Take only error.message from a Beatra 401 envelope. Never dump the body."""
++     try:
++     try:
++     try:
++         payload = json.loads(raw.decode("utf-8"))
++     except (UnicodeDecodeError, json.JSONDecodeError, AttributeError):
++         return None
++         return None
++         return None
++         return None
++         return None
++     if not isinstance(payload, dict):
++     error = payload.get("error")
++     if not isinstance(error, dict):
++     details = error.get("details")
++     reason = details.get("reason") if isinstance(details, dict) else None
++     if error.get("code") != "mcp_connection_required" and reason != "mcp_connection_required":
++     message = error.get("message")
++     if not isinstance(message, str):
++     cleaned = message.strip()
++     return cleaned or None
++ def _authentication_required_message(raw: bytes) -> str:
++     message = _allowlisted_unauthorized_message(raw)
++     if message is None:
++         return AUTH_REQUIRED_MESSAGE
++     return f"{AUTH_REQUIRED_CODE}: {message} {RECONNECT_GUIDANCE}"
++         raw = b""
++         try:
++             raw = exc.read() or b""
++         except Exception:
++             raw = b""
++         if status == 401:
++             raise AuthenticationRequired(_authentication_required_message(raw)) from None
++ ) -> dict[str, Any]:
++             )
++             )
++         raise
++     *,
++     except Exception:
++     if not path.is_file():
++         # Not connected yet (or the file is gone): the caller may still find
++         # an approval waiting to be collected.
++         raise CredentialsMissing(f"Beatra credentials are missing. {RECONNECT_GUIDANCE}")
++         raise CredentialsMissing(f"Beatra credentials are missing. {RECONNECT_GUIDANCE}") from exc
++         raise CredentialsMissing("Beatra credential file is invalid; authorize again")
++     state_dir: Path,
++     state_dir: Path,
++ def _read_tool_arguments() -> dict[str, Any]:
++     return arguments
++ def _run_command(
++     command: str,
++     tool_name: str | None = None,
++     arguments: dict[str, Any] | None = None,
++     if arguments is None:
++         arguments = _read_tool_arguments()
++ CollectApproval = Callable[[Path], tuple[str, str | None]]
++ def _default_collect_approval(state_dir: Path) -> tuple[str, str | None]:
++     """The helper's one-check collection, when this package has it."""
++     import authorize  # the package's own helper, beside this file
++     collect = getattr(authorize, "collect_saved_approval", None)
++     if collect is None:
++         return "none", None
++         return "none", None
++         return "none", None
++     return collect(state_dir)
++ def _connect_waiting_approval(
++     collect: CollectApproval | None = None,
++     collect: CollectApproval | None = None,
++ ) -> tuple[str, str | None]:
++     """Before giving up on a call with no working credential: an approval the
++     user already gave on this computer may be waiting to be collected (the
++     agent was stopped while they selected Allow). One quick check; anything
++     unexpected reads as nothing waiting, so the call fails as it always did."""
++         outcome, link = (collect or _default_collect_approval)(state_dir)
++     if outcome not in {"collected", "pending", "unreachable", "none"}:
++     return outcome, link
++ def _with_waiting_approval(
++     operation: Callable[[], T],
++ ) -> T:
++     """Run one command; if it has no working credential, collect an approval
++     that is waiting and run it once more."""
++         return operation()
++     except (AuthenticationRequired, CredentialsMissing) as exc:
++         outcome, link = _connect_waiting_approval(state_dir, collect)
++         if outcome == "collected":
++             return operation()
++         if outcome == "pending" and link:
++             raise AuthenticationRequired(
++                 f"{AUTH_REQUIRED_CODE}: Beatra is waiting for the user to select Allow on "
++                 f"the approval page: {link}\nShow this link to the user if you have not "
++                 "already, then run `python3 scripts/authorize.py`: it continues this same "
++                 "approval and waits for Allow."
++             ) from exc
++         state_dir = Path.home() / ".beatra"
++             _with_waiting_approval(verify, state_dir=state_dir)
++             result = _with_waiting_approval(
++             result = _with_waiting_approval(
++                 lambda: upload(args.path, mime_type=args.mime_type),
++                 state_dir=state_dir,
++                 state_dir=state_dir,
++             # Read once: a call retried after collecting an approval reuses them.
++             arguments = _read_tool_arguments() if args.command == "call" else None
++                 lambda: _run_command(args.command, getattr(args, "tool_name", None), arguments),
+
+### scripts/uninstall.py  [code]
+- PACKAGE_VERSION = "0.1.2"
++ PACKAGE_VERSION = "0.1.7"
++     "pending_authorization.json",
++     ".authorize.lock",

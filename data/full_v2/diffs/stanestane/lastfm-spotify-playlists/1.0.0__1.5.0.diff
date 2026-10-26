@@ -1,0 +1,1955 @@
+stanestane/lastfm-spotify-playlists  1.0.0 -> 1.5.0
+change_type: instructions+docs+code   changelog: Major refactor: converted from scripts/ to a flat, entrypoint-based structure for direct, reliable script usage.  - Replaced all `scripts/` submodules with top-level Python scripts and helpers (`run_pipeline.py`, `auth.py`, `lastfm.py`, `spotify.py`, etc.). - All commands must now be run from the skill root; package installation and `python -m` invocation are no longer required or supported. - Credentials and tokens must be supplied via environment variables or standard file paths (see example c
+
+### README.md  [docs]
++ # lastfm-spotify-playlists (simple script layout)
++ This version is intentionally blunt and self-contained.
++ It does **not** require:
++ - `pip install -e .`
++ - a Python package layout
++ - `PYTHONPATH` hacks
++ - ACP agents
++ ## Main commands
++ Recommend from recent Last.fm listening:
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ python run_pipeline.py recent-tracks --user "YOUR_LASTFM_USERNAME" --output-mode lastfm-only
++ ```
++ ```
++ ```
++ ```
++ Recommend from a seed artist:
++ python run_pipeline.py artist-rule-c "Massive Attack" --output-mode lastfm-only
++ Create a Spotify playlist:
++ python run_pipeline.py recent-tracks --user "YOUR_LASTFM_USERNAME" --create-playlist
++ Run Spotify OAuth first:
++ python auth.py
+
+### SKILL.md  [instructions]
+- description: Build Spotify playlists from Last.fm scrobble history and Last.fm artist or track similarity instead of Spotify recommendations. Use when creating playlists from a user's top artists, top tracks, recent scrobbles, manually supplied seed artists, or manually supplied seed tracks; when Last.fm should provide the discovery logic and Spotify should only handle search, matching, and playlist creation.
+- # Last.fm Spotify Playlists
+- Use Last.fm as the recommendation engine and Spotify as the playback / playlist layer.
+- ## Core rule
+- Prefer Last.fm similarity for discovery.
+- - Use `artist.getsimilar` when the user wants artist-adjacent discovery.
+- - Use `track.getsimilar` when the user wants song-level discovery.
+- - Use Spotify only to:
+-   - authenticate the user
+-   - search for playable matches
+-   - create playlists
+-   - add matched items to playlists
+- ## Resources
+- - `scripts/lastfm_common.py` — shared credential loading and API calls.
+- - `scripts/lastfm_recent.py` — fetch recent tracks, top artists, and top tracks.
+- - `scripts/lastfm_similar.py` — fetch similar artists or similar tracks.
+- - `scripts/lastfm_track_playlist_candidates.py` — build merged Rule C track candidates from an artist's top tracks.
+- - `scripts/lastfm_spotify_playlist_pipeline.py` — one-command pipeline for Last.fm ranking, optional Spotify matching, and optional playlist creation.
+- - `scripts/spotify_common.py` — Spotify auth, search, playlist creation, and playlist item insertion.
+- - `scripts/spotify_auth.py` — one-shot Spotify OAuth helper.
+- - `scripts/spotify_search.py` — inspect Spotify track matches.
+- - `scripts/spotify_playlist.py` — create playlists from explicit Spotify URIs.
+- - `references/credentials.md` — local credential file formats and auth notes.
+- ## Workflow
+- 1. Confirm credentials exist. Read `references/credentials.md` if setup details are needed.
+- 2. Decide the recommendation mode:
+-    - **Artist mode** for similar artists
+-    - **Track mode / Rule C** for similar tracks
+- 3. Pull Last.fm seeds from one of:
+-    - user's top artists / top tracks
+-    - user's recent scrobbles
+-    - user-supplied artists or tracks
+- 4. Expand on Last.fm first.
+- 5. Merge and rank candidates before touching Spotify.
+- 6. If the user wants suggestions only, stop after merged candidate ranking and return Last.fm-native results.
+- 7. Authenticate Spotify only if playlist output is requested.
+- 8. Search Spotify for exact artist + track matches when possible.
+- 9. Create the playlist on Spotify.
+- 10. Add tracks through the playlist `/items` endpoint, not the older `/tracks` write endpoint.
+- 11. Report unmatched candidates explicitly instead of silently dropping them.
+- ## Recommended patterns
+- ### A. Similar artists from a seed artist
+- Use when the user wants nearby artists, not necessarily exact song similarity.
+- python skills/lastfm-spotify-playlists/scripts/lastfm_similar.py artist "Placebo" --limit 20
+- Then inspect Spotify manually or with `spotify_search.py`.
+- ### B. Similar tracks from one seed track
+- Use when the user gives a specific song.
+- python skills/lastfm-spotify-playlists/scripts/lastfm_similar.py track "Placebo" "Every You Every Me" --limit 20
+- ### C. Rule C playlist candidates from one artist's top tracks
+- Use when the user wants the most Last.fm-native discovery flow.
+- python skills/lastfm-spotify-playlists/scripts/lastfm_track_playlist_candidates.py "Placebo" --seed-count 5 --similar-per-seed 10 --final-limit 20
+- This:
+- - fetches the artist's top tracks from Last.fm
+- - expands each track via `track.getsimilar`
+- - merges duplicate candidates across seed tracks
+- - ranks results by source count and total similarity score
+- ### D. Suggestion-only mode with no Spotify writes
+- Use when the user wants a ranked suggestion list but does not want a Spotify playlist created.
+- python skills/lastfm-spotify-playlists/scripts/lastfm_spotify_playlist_pipeline.py recent-tracks --output-mode lastfm-only --final-limit 20
+- ## Spotify auth
+- Run this before playlist creation if the token is missing or outdated:
+- python skills/lastfm-spotify-playlists/scripts/spotify_auth.py --scopes playlist-modify-private playlist-modify-public playlist-read-private user-read-private
+- ## Playlist creation notes
+- - Create playlists through `/me/playlists`.
+- - Add tracks through `/playlists/{playlist_id}/items`.
+- - Do not rely on the older `/tracks` write endpoint in this environment.
+- - Expect some Last.fm candidates to fail Spotify matching; report them.
+- ## Good outputs
+- Return:
+- - seed artist or tracks used
+- - candidate tracks considered
+- - ranked Last.fm suggestions when using suggestion-only mode
+- - matched Spotify tracks when using Spotify mode
+- - unmatched candidates
+- - final playlist URL when creation succeeds
+- ## Scope of this skill
+- Include:
+- - Last.fm seed collection
+- - Last.fm similarity expansion
+- - merged candidate ranking
+- - optional suggestion-only output
+- - Spotify track matching
+- - Spotify playlist creation and population
+- - one-command artist / recent / top-artist blend pipelines
+- Exclude from the packaged skill:
+- - real API keys
+- - real secrets
+- - real token files
+- - user-specific exported candidate JSON unless the user explicitly wants example artifacts kept
+- ## Publishing readiness (new)
+- - This skill is designed for publishing in controlled environments. Before publish, verify:
+-   - No embedded credentials or secrets anywhere in code or docs.
+-   - All credential references point to environment variables or external credential files.
+-   - Scripts have clear inputs/outputs and error cases documented.
+-   - Licensing and attribution are in place where applicable.
+-   - Version tag and a changelog placeholder exist.
+- ## Quickstart for publishing (example)
+- 1) Publish scaffold: ensure SKILL.md, script docs, and credentials guide exist.
+- 2) Run a dry-run of key workflows to verify outputs:
+-    - artist-rule-c with a seed artist
+-    - recent-tracks with a user
+- 3) If all good, attach a publish note with a changelog entry and version.
+- ## Credentials and secrets (new)
+- - Last.fm: API key, shared secret, username
+-   - Environment: LASTFM_API_KEY, LASTFM_SHARED_SECRET, LASTFM_USERNAME
+-   - File: ~/.openclaw/lastfm-credentials.json
+- - Spotify: Client ID, Client Secret, Redirect URI
+-   - Environment: SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET, SPOTIFY_REDIRECT_URI
+-   - File: ~/.openclaw/spotify-credentials.json
+- ## Troubleshooting (new)
+- - Credential not found: verify environment or credentials file path
+- - Last.fm API rate limits: consider increasing limit or adding backoff
+- - Spotify auth/token refresh failures: ensure refresh_token exists; run spotify_auth.py to re-authorize
++ ---
++ description: Build music recommendations and create Spotify playlists using Last.fm similarity and listening history.
++ # Execution Model
++ This skill runs **directly via local Python scripts**.
++ Valid entrypoints:
++ - `python run_pipeline.py ...`
++ - `python run_pipeline.py ...`
++ - `python auth.py`
++ ## Absolute rules
++ - Do NOT use ACP
++ - Do NOT request or require an agentId
++ - Do NOT propose manual workflows
++ - Do NOT suggest alternative scripts or paths
++ - Do NOT reference any `scripts/` directory
++ - Do NOT use `python -m` module execution
++ - Do NOT assume the package must be installed
++ All commands must be executed from the root of this skill folder.
++ # Critical Behavior Rules
++ If the user asks for:
++ - creating a playlist
++ - adding songs to Spotify
++ - saving results to Spotify
++ You MUST execute:
++ ```bash
++ ```bash
++ ```bash
++ --output-mode spotify --create-playlist
++ Primary entrypoints:
++ - `python auth.py ...`
++ This skill is intentionally organized as plain scripts plus helper modules:
++ - `run_pipeline.py`
++ - `auth.py`
++ - `lastfm.py`
++ - `spotify.py`
++ - `pipeline.py`
++ - `common.py`
++ No package installation is required.
++ # Purpose
++ This skill:
++ - uses Last.fm as the discovery engine
++ - expands seeds through `track.getsimilar`
++ - ranks merged candidates
++ - optionally matches results on Spotify
++ - optionally creates Spotify playlists
++ # Requirements
++ ## Python
++ A normal local Python interpreter must be available.
++ ## Last.fm credentials
++ Supported sources:
++ Supported sources:
++ - environment variables:
++ - environment variables:
++   - `LASTFM_API_KEY`
++   - `LASTFM_SHARED_SECRET`
++   - `LASTFM_USERNAME`
++ - credentials file:
++ - credentials file:
++   - `~/.openclaw/lastfm-credentials.json`
++ - explicit file path via command flag:
++ - explicit file path via command flag:
++   - `--creds <path>`
++ Example file:
++ ```json
++ {
++   "api_key": "YOUR_LASTFM_API_KEY",
++   "shared_secret": "YOUR_LASTFM_SHARED_SECRET",
++   "username": "YOUR_LASTFM_USERNAME"
++ }
++ ```
++ ```
++ ```
++ ## Spotify credentials
++ Needed only for Spotify matching or playlist creation.
++   - `SPOTIFY_CLIENT_ID`
++   - `SPOTIFY_CLIENT_SECRET`
++   - `SPOTIFY_REDIRECT_URI`
++   - `~/.openclaw/spotify-credentials.json`
++   - `--spotify-creds <path>`
++ Saved token location:
++ - `~/.openclaw/spotify-token.json`
++ - or explicit path via `--spotify-token <path>`
++ # Command Selection
++ ## 1. Recommend from recent Last.fm listening
++ Use when the request is based on a user's recent scrobbles.
++ python run_pipeline.py recent-tracks   --user "<LASTFM_USER>"   --recent-count 10   --similar-per-seed 5   --final-limit 20   --output-mode lastfm-only
++ ## 2. Recommend from a seed artist
++ Use when the request is based on one artist.
++ python run_pipeline.py artist-rule-c   "<ARTIST_NAME>"   --seed-count 5   --similar-per-seed 10   --final-limit 20   --output-mode lastfm-only
++ ## 3. Recommend from top artists
++ Use when the request is based on a user's broader taste profile.
++ python run_pipeline.py top-artists-blend   --user "<LASTFM_USER>"   --period 1month   --artist-count 5   --seed-count-per-artist 3   --similar-per-seed 5   --final-limit 20   --output-mode lastfm-only
++ ## 4. Match recommendations to Spotify
++ Use when the user wants playable Spotify results but not necessarily a playlist.
++ python run_pipeline.py recent-tracks   --user "<LASTFM_USER>"   --recent-count 10   --final-limit 20   --output-mode spotify
++ ## 5. Create Spotify playlist
++ Use when the user explicitly wants a playlist created.
++ python run_pipeline.py recent-tracks   --user "<LASTFM_USER>"   --recent-count 10   --final-limit 20   --output-mode spotify   --create-playlist   --playlist-name "Last.fm Recommendations"
++ ## 6. Run Spotify auth
++ Use when Spotify token setup is required.
++ python auth.py
++ Optional explicit paths:
++ python auth.py   --spotify-creds "<PATH_TO_SPOTIFY_CREDS_JSON>"   --spotify-token "<PATH_TO_SPOTIFY_TOKEN_JSON>"
++ # Behavior Rules
++ - Prefer Last.fm for recommendation discovery
++ - Use Spotify only for:
++   - search
++   - playlist creation
++   - playlist population
++ - If the user only wants suggestions, use `--output-mode lastfm-only`
++ - If the user wants Spotify results, use `--output-mode spotify`
++ - If the user wants a playlist created, add `--create-playlist`
++ - Never invent missing credentials
++ - Never fall back to ACP or agent execution
++ # Output Expectations
++ The scripts print JSON to stdout.
++ Return the JSON result directly or summarize it faithfully.
++ Typical fields include:
++ - `mode`
++ - `user`
++ - `seed_artist`
++ - `seed_tracks`
++ - `suggestions`
++ - `matched_tracks`
++ - `unmatched_tracks`
++ - `playlist`
++ # Error Handling
++ If the script exits with an error:
++ - surface stderr or the raised error message directly
++ - do not retry through ACP
++ - do not ask for an agentId
++ - do not claim the skill is unavailable because it is not a package
++ Common expected failures:
++ - missing Last.fm API key
++ - missing Last.fm username
++ - missing Spotify credentials
++ - missing Spotify token
++ - expired Spotify token without refresh token
++ # Notes
++ This skill is intentionally script-based for reliability.
++ It should work as long as:
++ - the skill folder is present
++ - Python is present
++ - credentials are configured
++ - commands are executed from the skill folder root
++ It must not depend on package installation, editable installs, or import path manipulation.
+
+### auth.py  [code]
++ from __future__ import annotations
++ import argparse
++ from common import dump_json
++ from spotify import authorize, get_access_token, request_json
++ def main() -> None:
++     parser = argparse.ArgumentParser(description="Run Spotify OAuth and save a reusable token.")
++     parser.add_argument(
++         "--scope",
++         action="append",
++         dest="scopes",
++         default=None,
++         help="Spotify scope. Repeat as needed. If omitted, a sensible default is used.",
++     )
++     )
++     parser.add_argument("--spotify-creds", help="Path to Spotify credentials JSON file.")
++     parser.add_argument("--spotify-token", help="Path to Spotify token JSON file.")
++     parser.add_argument("--no-browser", action="store_true", help="Print auth URL instead of opening browser.")
++     args = parser.parse_args()
++     scopes = args.scopes or [
++         "playlist-modify-private",
++         "playlist-modify-public",
++     ]
++     token = authorize(
++         scopes,
++         creds_path=args.spotify_creds,
++         token_path=args.spotify_token,
++         open_browser=not args.no_browser,
++     access_token = get_access_token(creds_path=args.spotify_creds, token_path=args.spotify_token)
++     me = request_json("https://api.spotify.com/v1/me", token=access_token)
++     dump_json({
++         "saved": True,
++         "scope": token.get("scope"),
++         "access_token_present": bool(token.get("access_token")),
++         "refresh_token_present": bool(token.get("refresh_token")),
++         "user_id": me.get("id"),
++         "display_name": me.get("display_name"),
++     })
++ if __name__ == "__main__":
++     main()
+
+### common.py  [code]
++ from __future__ import annotations
++ import json
++ import sys
++ from typing import Any
++ def dump_json(data: Any) -> None:
++     json.dump(data, sys.stdout, ensure_ascii=False, indent=2)
++     sys.stdout.write("\n")
+
+### lastfm.py  [code]
++ from __future__ import annotations
++ import json
++ import os
++ import urllib.parse
++ import urllib.request
++ from pathlib import Path
++ from typing import Any
++ API_ROOT = "https://ws.audioscrobbler.com/2.0/"
++ DEFAULT_CREDS_PATH = Path.home() / ".openclaw" / "lastfm-credentials.json"
++ class LastFMError(RuntimeError):
++     pass
++ def ensure_list(value: Any) -> list[Any]:
++     if value is None:
++         return []
++     if isinstance(value, list):
++         return value
++     return [value]
++ class LastFMClient:
++     def __init__(self, *, explicit_path: str | None = None, api_key: str | None = None) -> None:
++         self._api_key = api_key or self.load_credentials(explicit_path).get("api_key")
++         if not self._api_key:
++             raise LastFMError(
++                 "Missing Last.fm API key. Set LASTFM_API_KEY or create ~/.openclaw/lastfm-credentials.json"
++             )
++     @staticmethod
++     def load_credentials(explicit_path: str | None = None) -> dict[str, str]:
++         creds: dict[str, str] = {}
++         env_key = os.getenv("LASTFM_API_KEY")
++         env_secret = os.getenv("LASTFM_SHARED_SECRET")
++         env_user = os.getenv("LASTFM_USERNAME")
++         if env_key:
++             creds["api_key"] = env_key
++         if env_secret:
++             creds["shared_secret"] = env_secret
++         if env_user:
++             creds["username"] = env_user
++         path = Path(explicit_path) if explicit_path else DEFAULT_CREDS_PATH
++         if path.exists():
++             file_creds = json.loads(path.read_text(encoding="utf-8"))
++             for key in ("api_key", "shared_secret", "username"):
++                 if file_creds.get(key) and key not in creds:
++                     creds[key] = str(file_creds[key])
++         return creds
++     def get(self, method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
++         query: dict[str, Any] = {
++             "method": method,
++             "api_key": self._api_key,
++             "format": "json",
++         }
++         if params:
++             for key, value in params.items():
++                 if value is not None:
++                     query[key] = value
++         url = API_ROOT + "?" + urllib.parse.urlencode(query)
++         with urllib.request.urlopen(url) as response:
++             payload = response.read().decode("utf-8")
++         data = json.loads(payload)
++         if "error" in data:
++             raise LastFMError(f"Last.fm error {data['error']}: {data.get('message', 'Unknown error')}")
++         return data
++ def normalize_recent_track(item: dict[str, Any]) -> dict[str, Any]:
++     return {
++     return {
++     return {
++     return {
++     return {
++     return {
++         "track": item.get("name"),
++         "track": item.get("name"),
++         "track": item.get("name"),
++         "track": item.get("name"),
++         "artist": item.get("artist", {}).get("#text") if isinstance(item.get("artist"), dict) else item.get("artist"),
++         "album": item.get("album", {}).get("#text") if isinstance(item.get("album"), dict) else item.get("album"),
++         "nowplaying": item.get("@attr", {}).get("nowplaying") == "true",
++         "played_at": item.get("date", {}).get("#text"),
++         "uts": item.get("date", {}).get("uts"),
++         "url": item.get("url"),
++         "url": item.get("url"),
++         "url": item.get("url"),
++         "url": item.get("url"),
++         "url": item.get("url"),
++         "url": item.get("url"),
++         "loved": item.get("loved") == "1",
++     }
++     }
++     }
++     }
++     }
++     }
++ def normalize_top_artist(item: dict[str, Any]) -> dict[str, Any]:
++         "artist": item.get("name"),
++         "artist": item.get("name"),
++         "playcount": int(item.get("playcount", 0) or 0),
++         "playcount": int(item.get("playcount", 0) or 0),
++         "playcount": int(item.get("playcount", 0) or 0),
++         "listeners": int(item.get("listeners", 0) or 0),
++         "listeners": int(item.get("listeners", 0) or 0),
++         "listeners": int(item.get("listeners", 0) or 0),
++         "mbid": item.get("mbid") or None,
++         "mbid": item.get("mbid") or None,
++         "mbid": item.get("mbid") or None,
++         "mbid": item.get("mbid") or None,
++ def normalize_top_track(item: dict[str, Any]) -> dict[str, Any]:
++     artist = item.get("artist", {}) if isinstance(item.get("artist"), dict) else {}
++     artist = item.get("artist", {}) if isinstance(item.get("artist"), dict) else {}
++     artist = item.get("artist", {}) if isinstance(item.get("artist"), dict) else {}
++         "artist": artist.get("name") or artist.get("#text"),
++         "artist": artist.get("name") or artist.get("#text"),
++         "artist": artist.get("name") or artist.get("#text"),
++ def normalize_similar_artist(item: dict[str, Any]) -> dict[str, Any]:
++         "match": float(item.get("match", 0.0) or 0.0),
++         "match": float(item.get("match", 0.0) or 0.0),
++ def normalize_similar_track(item: dict[str, Any]) -> dict[str, Any]:
++ def normalize_seed_track(item: dict[str, Any]) -> dict[str, Any]:
++ def get_recent_tracks(client: LastFMClient, *, user: str, limit: int, page: int = 1) -> list[dict]:
++     data = client.get(
++     data = client.get(
++     data = client.get(
++     data = client.get(
++     data = client.get(
++     data = client.get(
++         "user.getrecenttracks",
++         {"user": user, "limit": limit, "page": page, "extended": 0},
++     )
++     )
++     )
++     )
++     )
++     )
++     tracks = ensure_list(data.get("recenttracks", {}).get("track"))
++     return [normalize_recent_track(item) for item in tracks]
++ def get_top_artists(client: LastFMClient, *, user: str, period: str, limit: int, page: int = 1) -> list[dict]:
++         "user.gettopartists",
++         {"user": user, "period": period, "limit": limit, "page": page},
++         {"user": user, "period": period, "limit": limit, "page": page},
++     artists = ensure_list(data.get("topartists", {}).get("artist"))
++     return [normalize_top_artist(item) for item in artists]
++ def get_top_tracks(client: LastFMClient, *, user: str, period: str, limit: int, page: int = 1) -> list[dict]:
++         "user.gettoptracks",
++     tracks = ensure_list(data.get("toptracks", {}).get("track"))
++     tracks = ensure_list(data.get("toptracks", {}).get("track"))
++     return [normalize_top_track(item) for item in tracks]
++ def get_artist_top_tracks(client: LastFMClient, *, artist: str, limit: int, autocorrect: int = 1) -> list[dict]:
++         "artist.gettoptracks",
++         {"artist": artist, "limit": limit, "autocorrect": autocorrect},
++         {"artist": artist, "limit": limit, "autocorrect": autocorrect},
++     return [normalize_seed_track(item) for item in tracks]
++ def get_similar_artists(client: LastFMClient, *, artist: str, limit: int, autocorrect: int = 1) -> list[dict]:
++         "artist.getsimilar",
++     artists = ensure_list(data.get("similarartists", {}).get("artist"))
++     return [normalize_similar_artist(item) for item in artists]
++ def get_similar_tracks(client: LastFMClient, *, artist: str, track: str, limit: int, autocorrect: int = 1) -> list[dict]:
++         "track.getsimilar",
++         {"artist": artist, "track": track, "limit": limit, "autocorrect": autocorrect},
++     tracks = ensure_list(data.get("similartracks", {}).get("track"))
++     return [normalize_similar_track(item) for item in tracks]
+
+### lastfm_credentials.example.json  [code]
++ {
++   "api_key": "YOUR_LASTFM_API_KEY",
++   "shared_secret": "YOUR_LASTFM_SHARED_SECRET",
++   "username": "YOUR_LASTFM_USERNAME"
++ }
+
+### pipeline.py  [code]
++ from __future__ import annotations
++ from dataclasses import asdict, dataclass, field
++ from typing import Any
++ from lastfm import LastFMClient, get_artist_top_tracks, get_recent_tracks, get_similar_tracks, get_top_artists
++ from spotify import add_tracks_to_playlist, create_playlist, get_access_token, search_tracks
++ def normalized_key(artist: str, track: str) -> tuple[str, str]:
++     return artist.strip().casefold(), track.strip().casefold()
++ @dataclass(slots=True)
++ @dataclass(slots=True)
++ @dataclass(slots=True)
++ class TrackSeed:
++     artist: str
++     artist: str
++     track: str
++     track: str
++     url: str | None = None
++     url: str | None = None
++     playcount: int = 0
++     listeners: int = 0
++     origin_artist: str | None = None
++ class CandidateSource:
++     seed: str
++     match: float
++ class RankedCandidate:
++     score: float = 0.0
++     source_count: int = 0
++     sources: list[CandidateSource] = field(default_factory=list)
++     def to_dict(self) -> dict[str, Any]:
++         return {
++         return {
++             "artist": self.artist,
++             "track": self.track,
++             "score": self.score,
++             "source_count": self.source_count,
++             "sources": [{"seed": source.seed, "match": source.match} for source in self.sources],
++             "url": self.url,
++         }
++         }
++         }
++         }
++         }
++         }
++ def merge_candidate(
++     merged: dict[tuple[str, str], RankedCandidate],
++     *,
++     *,
++     *,
++     *,
++     *,
++     *,
++     *,
++     *,
++     *,
++     *,
++     key: tuple[str, str],
++     artist: str,
++     artist: str,
++     artist: str,
++     artist: str,
++     track: str,
++     track: str,
++     match: float,
++     seed_label: str,
++     root_artist: str | None = None,
++     root_artist: str | None = None,
++     url: str | None = None,
++ ) -> None:
++     if not artist or not track:
++         return
++         return
++     if root_artist and artist.casefold() == root_artist.casefold():
++     if key not in merged:
++         merged[key] = RankedCandidate(artist=artist, track=track, url=url)
++     candidate = merged[key]
++     candidate.score += float(match or 0.0)
++     candidate.source_count += 1
++     candidate.sources.append(CandidateSource(seed=seed_label, match=float(match or 0.0)))
++     if not candidate.url and url:
++         candidate.url = url
++ def rank_candidates(candidates: dict[tuple[str, str], RankedCandidate]) -> list[RankedCandidate]:
++     return sorted(candidates.values(), key=lambda item: (item.source_count, item.score), reverse=True)
++ def artist_top_track_seeds(
++     client: LastFMClient,
++     client: LastFMClient,
++     client: LastFMClient,
++     client: LastFMClient,
++     client: LastFMClient,
++     client: LastFMClient,
++     seed_count: int,
++     seed_count: int,
++     autocorrect: int = 1,
++     autocorrect: int = 1,
++     autocorrect: int = 1,
++     autocorrect: int = 1,
++     autocorrect: int = 1,
++     autocorrect: int = 1,
++ ) -> list[TrackSeed]:
++     items = get_artist_top_tracks(client, artist=artist, limit=seed_count, autocorrect=autocorrect)
++     return [
++         TrackSeed(
++             artist=item.get("artist") or artist,
++             track=item.get("track") or "",
++             url=item.get("url"),
++             playcount=item.get("playcount", 0),
++             listeners=item.get("listeners", 0),
++             origin_artist=artist,
++         )
++         )
++         )
++         )
++         )
++         )
++         )
++         )
++         for item in items
++         if item.get("track")
++     ]
++ def recent_track_seeds(client: LastFMClient, *, user: str, limit: int) -> list[TrackSeed]:
++     items = get_recent_tracks(client, user=user, limit=limit, page=1)
++     seeds: list[TrackSeed] = []
++     seen: set[tuple[str, str]] = set()
++     for item in items:
++         artist = item.get("artist") or ""
++         track = item.get("track") or ""
++         if not artist or not track:
++         if not artist or not track:
++             continue
++             continue
++             continue
++             continue
++         key = normalized_key(artist, track)
++         if key in seen:
++         seen.add(key)
++         seeds.append(TrackSeed(artist=artist, track=track, url=item.get("url")))
++     return seeds
++ def top_artist_names(client: LastFMClient, *, user: str, period: str, limit: int) -> list[str]:
++     items = get_top_artists(client, user=user, period=period, limit=limit, page=1)
++     return [item["artist"] for item in items if item.get("artist")]
++ def _build_from_seeds(
++     seeds: list[TrackSeed],
++     similar_per_seed: int,
++     similar_per_seed: int,
++     similar_per_seed: int,
++     similar_per_seed: int,
++     similar_per_seed: int,
++ ) -> list[RankedCandidate]:
++     merged: dict[tuple[str, str], RankedCandidate] = {}
++     merged: dict[tuple[str, str], RankedCandidate] = {}
++     for seed in seeds:
++         similar_tracks = get_similar_tracks(
++             client,
++             client,
++             artist=seed.artist,
++             track=seed.track,
++             limit=similar_per_seed,
++             autocorrect=autocorrect,
++             autocorrect=autocorrect,
++             autocorrect=autocorrect,
++             autocorrect=autocorrect,
++             autocorrect=autocorrect,
++             autocorrect=autocorrect,
++         for item in similar_tracks:
++             artist = item.get("artist") or ""
++             track = item.get("track") or ""
++             merge_candidate(
++                 merged,
++                 key=normalized_key(artist, track),
++                 artist=artist,
++                 track=track,
++                 match=float(item.get("match", 0.0) or 0.0),
++                 seed_label=f"{seed.artist} - {seed.track}",
++                 root_artist=root_artist or seed.artist,
++                 url=item.get("url"),
++             )
++     return rank_candidates(merged)
++ def build_from_artist_top_tracks(
++ ) -> tuple[list[TrackSeed], list[RankedCandidate]]:
++ ) -> tuple[list[TrackSeed], list[RankedCandidate]]:
++ ) -> tuple[list[TrackSeed], list[RankedCandidate]]:
++ ) -> tuple[list[TrackSeed], list[RankedCandidate]]:
++     seeds = artist_top_track_seeds(client, artist=artist, seed_count=seed_count, autocorrect=autocorrect)
++     ranked = _build_from_seeds(
++     ranked = _build_from_seeds(
++     ranked = _build_from_seeds(
++         client,
++         client,
++         client,
++         seeds=seeds,
++         seeds=seeds,
++         seeds=seeds,
++         similar_per_seed=similar_per_seed,
++         similar_per_seed=similar_per_seed,
++         similar_per_seed=similar_per_seed,
++         autocorrect=autocorrect,
++         autocorrect=autocorrect,
++         autocorrect=autocorrect,
++         root_artist=artist,
++         root_artist=artist,
++     )
++     )
++     )
++     )
++     return seeds, ranked
++     return seeds, ranked
++     return seeds, ranked
++ def build_from_recent_tracks(
++     user: str,
++     user: str,
++     recent_count: int,
++     seeds = recent_track_seeds(client, user=user, limit=recent_count)
++         root_artist=None,
++ def build_from_track_seed(
++     seeds = [TrackSeed(artist=artist, track=track, origin_artist=artist)]
++ def build_from_top_artists(
++     period: str,
++     period: str,
++     artist_count: int,
++     seed_count_per_artist: int,
++     artist_names = top_artist_names(client, user=user, period=period, limit=artist_count)
++     all_seeds: list[TrackSeed] = []
++     for artist in artist_names:
++         artist_seeds, artist_ranked = build_from_artist_top_tracks(
++             artist=artist,
++             artist=artist,
++             artist=artist,
++             seed_count=seed_count_per_artist,
++             similar_per_seed=similar_per_seed,
++             similar_per_seed=similar_per_seed,
++             similar_per_seed=similar_per_seed,
++             similar_per_seed=similar_per_seed,
++             similar_per_seed=similar_per_seed,
++         all_seeds.extend(artist_seeds)
++         for candidate in artist_ranked:
++             key = normalized_key(candidate.artist, candidate.track)
++             if key not in merged:
++                 merged[key] = RankedCandidate(
++                     artist=candidate.artist,
++                     track=candidate.track,
++                     score=candidate.score,
++                     source_count=candidate.source_count,
++                     sources=list(candidate.sources),
++                     url=candidate.url,
++                 )
++                 continue
++             existing = merged[key]
++             existing.score += candidate.score
++             existing.source_count += candidate.source_count
++             existing.sources.extend(candidate.sources)
++             if not existing.url and candidate.url:
++                 existing.url = candidate.url
++     return all_seeds, rank_candidates(merged)
++ def match_candidates_on_spotify(
++     candidates: list[RankedCandidate],
++     access_token: str,
++     final_limit: int,
++     final_limit: int,
++     market: str | None = None,
++ ) -> tuple[list[dict], list[str], list[dict]]:
++     matched: list[dict] = []
++     unmatched: list[dict] = []
++     uris: list[str] = []
++     for candidate in candidates:
++         if len(uris) >= final_limit:
++             break
++         query = f'track:"{candidate.track}" artist:"{candidate.artist}"'
++         result = search_tracks(query, access_token=access_token, limit=5, market=market)
++         items = result.get("tracks", {}).get("items", [])
++         pick = None
++         for item in items:
++             item_name = (item.get("name") or "").strip().casefold()
++             artist_names = [(a.get("name") or "").strip().casefold() for a in item.get("artists", [])]
++             if item_name == candidate.track.strip().casefold() and candidate.artist.strip().casefold() in artist_names:
++                 pick = item
++                 break
++         if not pick and items:
++             pick = items[0]
++         if not pick:
++             unmatched.append({
++                 "artist": candidate.artist,
++                 "track": candidate.track,
++                 "score": candidate.score,
++             })
++         if pick["uri"] in uris:
++         uris.append(pick["uri"])
++         matched.append({
++             "artist": candidate.artist,
++             "track": candidate.track,
++             "score": candidate.score,
++             "spotify_name": pick.get("name"),
++             "spotify_artists": ", ".join(a.get("name") for a in pick.get("artists", [])),
++             "uri": pick.get("uri"),
++             "url": pick.get("external_urls", {}).get("spotify"),
++         })
++     return matched, uris, unmatched
++ def maybe_create_playlist(
++     name: str,
++     description: str,
++     uris: list[str],
++     creds_path: str | None = None,
++     token_path: str | None = None,
+
+### references/credentials.md  [docs]
+- # Credentials
+- Keep secrets out of the skill package itself. Store them locally on the machine running the skill.
+- ## Last.fm
+- Preferred local file:
+- Preferred local file:
+- `~/.openclaw/lastfm-credentials.json`
+- Example:
+- Example:
+- ```json
+- ```json
+- {
+- {
+-   "api_key": "YOUR_LASTFM_API_KEY",
+-   "shared_secret": "YOUR_LASTFM_SHARED_SECRET",
+-   "username": "YOUR_LASTFM_USERNAME"
+- }
+- }
+- ```
+- ```
+- ```
+- Environment variables also work:
+- - `LASTFM_API_KEY`
+- - `LASTFM_SHARED_SECRET`
+- - `LASTFM_USERNAME`
+- ## Spotify
+- `~/.openclaw/spotify-credentials.json`
+-   "client_id": "YOUR_SPOTIFY_CLIENT_ID",
+-   "client_secret": "YOUR_SPOTIFY_CLIENT_SECRET",
+-   "redirect_uri": "http://127.0.0.1:8888/callback"
+- Token cache:
+- `~/.openclaw/spotify-token.json`
+- Run Spotify auth before playlist creation if the token is missing or stale:
+- ```bash
+- python skills/lastfm-spotify-playlists/scripts/spotify_auth.py
+- Current practical note:
+- - playlist creation works through `/me/playlists`
+- - playlist item insertion should use `/playlists/{playlist_id}/items`
+- - older `/tracks` write operations were unreliable in this environment
+
+### requirements.txt  [docs]
++ # Standard-library only implementation.
++ # No third-party packages required.
+
+### run_pipeline.py  [code]
++ from __future__ import annotations
++ import argparse
++ from common import dump_json
++ from pipeline import build_pipeline_output
++ def add_common_arguments(parser: argparse.ArgumentParser) -> None:
++     parser.add_argument("--final-limit", type=int, default=20)
++     parser.add_argument("--market")
++     parser.add_argument("--autocorrect", type=int, choices=[0, 1], default=1)
++     parser.add_argument("--output-mode", choices=["spotify", "lastfm-only"], default="spotify")
++     parser.add_argument("--create-playlist", action="store_true")
++     parser.add_argument("--playlist-name")
++     parser.add_argument("--playlist-description")
++     parser.add_argument("--playlist-public", action="store_true")
++     parser.add_argument("--creds", help="Path to Last.fm credentials JSON file.")
++     parser.add_argument("--spotify-creds", help="Path to Spotify credentials JSON file.")
++     parser.add_argument("--spotify-token", help="Path to Spotify token JSON file.")
++ def main() -> None:
++     parser = argparse.ArgumentParser(description="Build Last.fm-driven Spotify playlists in one command.")
++     subparsers = parser.add_subparsers(dest="mode", required=True)
++     artist_parser = subparsers.add_parser("artist-rule-c", help="Use one artist's top tracks as Last.fm similar-track seeds.")
++     artist_parser.add_argument("artist")
++     artist_parser.add_argument("--seed-count", type=int, default=5)
++     artist_parser.add_argument("--similar-per-seed", type=int, default=10)
++     add_common_arguments(artist_parser)
++     seed_track_parser = subparsers.add_parser("seed-track", help="Use one specific artist/track pair as the Last.fm similar-track seed.")
++     seed_track_parser.add_argument("--artist", required=True)
++     seed_track_parser.add_argument("--track", required=True)
++     seed_track_parser.add_argument("--similar-per-seed", type=int, default=20)
++     add_common_arguments(seed_track_parser)
++     recent_parser = subparsers.add_parser("recent-tracks", help="Use recent scrobbles as track-level Last.fm seeds.")
++     recent_parser.add_argument("--user")
++     recent_parser.add_argument("--recent-count", type=int, default=10)
++     recent_parser.add_argument("--similar-per-seed", type=int, default=5)
++     add_common_arguments(recent_parser)
++     top_parser = subparsers.add_parser("top-artists-blend", help="Use the user's top artists for a period, then blend Rule C candidates across them.")
++     top_parser.add_argument("--user")
++     top_parser.add_argument("--period", default="1month", choices=["7day", "1month", "3month", "6month", "12month", "overall"])
++     top_parser.add_argument("--artist-count", type=int, default=5)
++     top_parser.add_argument("--seed-count-per-artist", type=int, default=3)
++     top_parser.add_argument("--similar-per-seed", type=int, default=5)
++     add_common_arguments(top_parser)
++     args = parser.parse_args()
++     output = build_pipeline_output(
++         mode=args.mode,
++         lastfm_creds_path=args.creds,
++         spotify_creds_path=args.spotify_creds,
++         spotify_token_path=args.spotify_token,
++         user=getattr(args, "user", None),
++         artist=getattr(args, "artist", None),
++         track=getattr(args, "track", None),
++         period=getattr(args, "period", "1month"),
++         final_limit=args.final_limit,
++         market=args.market,
++         autocorrect=args.autocorrect,
++         output_mode=args.output_mode,
++         create_playlist_flag=args.create_playlist,
++         playlist_name=args.playlist_name,
++         playlist_description=args.playlist_description,
++         seed_count=getattr(args, "seed_count", 5),
++         similar_per_seed=getattr(args, "similar_per_seed", 10),
++         recent_count=getattr(args, "recent_count", 10),
++         artist_count=getattr(args, "artist_count", 5),
++         seed_count_per_artist=getattr(args, "seed_count_per_artist", 3),
++         playlist_public=args.playlist_public,
++     )
++     dump_json(output)
++ if __name__ == "__main__":
++     main()
+
+### scripts/lastfm_common.py  [code]
+- from __future__ import annotations
+- import json
+- import os
+- import sys
+- import urllib.parse
+- import urllib.request
+- from pathlib import Path
+- from typing import Any, Dict, Iterable, Optional
+- API_ROOT = "https://ws.audioscrobbler.com/2.0/"
+- DEFAULT_CREDS_PATH = Path.home() / ".openclaw" / "lastfm-credentials.json"
+- class LastFMError(RuntimeError):
+-     pass
+- def load_credentials(explicit_path: Optional[str] = None) -> Dict[str, str]:
+-     creds: Dict[str, str] = {}
+-     env_key = os.getenv("LASTFM_API_KEY")
+-     env_secret = os.getenv("LASTFM_SHARED_SECRET")
+-     env_user = os.getenv("LASTFM_USERNAME")
+-     if env_key:
+-         creds["api_key"] = env_key
+-     if env_secret:
+-         creds["shared_secret"] = env_secret
+-     if env_user:
+-         creds["username"] = env_user
+-     path = Path(explicit_path) if explicit_path else DEFAULT_CREDS_PATH
+-     if path.exists():
+-         file_creds = json.loads(path.read_text(encoding="utf-8"))
+-         for key in ("api_key", "shared_secret", "username"):
+-             if file_creds.get(key) and key not in creds:
+-                 creds[key] = str(file_creds[key])
+-     if not creds.get("api_key"):
+-         raise LastFMError(
+-             "Missing Last.fm API key. Set LASTFM_API_KEY or create ~/.openclaw/lastfm-credentials.json"
+-         )
+-     return creds
+- def lastfm_get(method: str, params: Optional[Dict[str, Any]] = None, api_key: Optional[str] = None) -> Dict[str, Any]:
+-     query: Dict[str, Any] = {
+-         "method": method,
+-         "api_key": api_key or load_credentials().get("api_key"),
+-         "format": "json",
+-     }
+-     if params:
+-         for key, value in params.items():
+-             if value is not None:
+-                 query[key] = value
+-     url = API_ROOT + "?" + urllib.parse.urlencode(query)
+-     with urllib.request.urlopen(url) as response:
+-         payload = response.read().decode("utf-8")
+-     data = json.loads(payload)
+-     if "error" in data:
+-         raise LastFMError(f"Last.fm error {data['error']}: {data.get('message', 'Unknown error')}")
+-     return data
+- def ensure_list(value: Any) -> list[Any]:
+-     if value is None:
+-         return []
+-     if isinstance(value, list):
+-         return value
+-     return [value]
+- def dump_json(data: Any) -> None:
+-     json.dump(data, sys.stdout, ensure_ascii=False, indent=2)
+-     sys.stdout.write("\n")
+
+### scripts/lastfm_recent.py  [code]
+- from __future__ import annotations
+- import argparse
+- from typing import Any, Dict
+- from lastfm_common import dump_json, ensure_list, lastfm_get, load_credentials
+- TRACK_FIELDS = ("name", "artist", "album", "date", "url", "streamable", "loved")
+- ARTIST_FIELDS = ("name", "playcount", "url")
+- def normalize_recent_track(item: Dict[str, Any]) -> Dict[str, Any]:
+-     return {
+-     return {
+-     return {
+-         "track": item.get("name"),
+-         "track": item.get("name"),
+-         "artist": item.get("artist", {}).get("#text") if isinstance(item.get("artist"), dict) else item.get("artist"),
+-         "album": item.get("album", {}).get("#text") if isinstance(item.get("album"), dict) else item.get("album"),
+-         "nowplaying": item.get("@attr", {}).get("nowplaying") == "true",
+-         "played_at": item.get("date", {}).get("#text"),
+-         "uts": item.get("date", {}).get("uts"),
+-         "url": item.get("url"),
+-         "url": item.get("url"),
+-         "url": item.get("url"),
+-         "loved": item.get("loved") == "1",
+-     }
+-     }
+-     }
+- def normalize_top_artist(item: Dict[str, Any]) -> Dict[str, Any]:
+-         "artist": item.get("name"),
+-         "playcount": int(item.get("playcount", 0) or 0),
+-         "playcount": int(item.get("playcount", 0) or 0),
+-         "listeners": int(item.get("listeners", 0) or 0),
+-         "listeners": int(item.get("listeners", 0) or 0),
+-         "mbid": item.get("mbid") or None,
+-         "mbid": item.get("mbid") or None,
+- def normalize_top_track(item: Dict[str, Any]) -> Dict[str, Any]:
+-     artist = item.get("artist", {}) if isinstance(item.get("artist"), dict) else {}
+-         "artist": artist.get("name") or artist.get("#text"),
+- def main() -> None:
+-     parser = argparse.ArgumentParser(description="Fetch recent or top Last.fm listening data.")
+-     parser.add_argument("mode", choices=["recent-tracks", "top-artists", "top-tracks"])
+-     parser.add_argument("--user", help="Last.fm username. Defaults to LASTFM_USERNAME or credentials file value.")
+-     parser.add_argument("--period", default="1month", choices=["7day", "1month", "3month", "6month", "12month", "overall"])
+-     parser.add_argument("--limit", type=int, default=25)
+-     parser.add_argument("--page", type=int, default=1)
+-     parser.add_argument("--creds", help="Path to credentials JSON file.")
+-     args = parser.parse_args()
+-     creds = load_credentials(args.creds)
+-     user = args.user or creds.get("username")
+-     if not user:
+-         raise SystemExit("Missing Last.fm username. Pass --user or set LASTFM_USERNAME / credentials file username.")
+-     if args.mode == "recent-tracks":
+-         data = lastfm_get(
+-         data = lastfm_get(
+-             "user.getrecenttracks",
+-             {"user": user, "limit": args.limit, "page": args.page, "extended": 0},
+-             api_key=creds["api_key"],
+-             api_key=creds["api_key"],
+-         )
+-         )
+-         tracks = ensure_list(data.get("recenttracks", {}).get("track"))
+-         dump_json({
+-         dump_json({
+-             "user": user,
+-             "user": user,
+-             "mode": args.mode,
+-             "mode": args.mode,
+-             "page": args.page,
+-             "page": args.page,
+-             "limit": args.limit,
+-             "limit": args.limit,
+-             "items": [normalize_recent_track(item) for item in tracks],
+-         })
+-         })
+-         return
+-         return
+-     if args.mode == "top-artists":
+-             "user.gettopartists",
+-             {"user": user, "period": args.period, "limit": args.limit, "page": args.page},
+-         artists = ensure_list(data.get("topartists", {}).get("artist"))
+-             "period": args.period,
+-             "items": [normalize_top_artist(item) for item in artists],
+-     data = lastfm_get(
+-         "user.gettoptracks",
+-         {"user": user, "period": args.period, "limit": args.limit, "page": args.page},
+-         api_key=creds["api_key"],
+-     )
+-     tracks = ensure_list(data.get("toptracks", {}).get("track"))
+-     dump_json({
+-         "user": user,
+-         "mode": args.mode,
+-         "period": args.period,
+-         "page": args.page,
+-         "limit": args.limit,
+-         "items": [normalize_top_track(item) for item in tracks],
+-     })
+- if __name__ == "__main__":
+-     main()
+
+### scripts/lastfm_similar.py  [code]
+- from __future__ import annotations
+- import argparse
+- from typing import Any, Dict
+- from lastfm_common import dump_json, ensure_list, lastfm_get, load_credentials
+- def normalize_similar_artist(item: Dict[str, Any]) -> Dict[str, Any]:
+-     return {
+-     return {
+-         "artist": item.get("name"),
+-         "match": float(item.get("match", 0.0) or 0.0),
+-         "match": float(item.get("match", 0.0) or 0.0),
+-         "mbid": item.get("mbid") or None,
+-         "mbid": item.get("mbid") or None,
+-         "url": item.get("url"),
+-         "url": item.get("url"),
+-     }
+-     }
+- def normalize_similar_track(item: Dict[str, Any]) -> Dict[str, Any]:
+-     artist = item.get("artist", {}) if isinstance(item.get("artist"), dict) else {}
+-         "track": item.get("name"),
+-         "artist": artist.get("name") or artist.get("#text"),
+- def main() -> None:
+-     parser = argparse.ArgumentParser(description="Fetch Last.fm similar artists or tracks.")
+-     subparsers = parser.add_subparsers(dest="command", required=True)
+-     artist_parser = subparsers.add_parser("artist", help="Find artists similar to a seed artist.")
+-     artist_parser.add_argument("name", help="Seed artist name.")
+-     artist_parser.add_argument("--limit", type=int, default=25)
+-     artist_parser.add_argument("--autocorrect", type=int, choices=[0, 1], default=1)
+-     artist_parser.add_argument("--creds", help="Path to credentials JSON file.")
+-     track_parser = subparsers.add_parser("track", help="Find tracks similar to a seed track.")
+-     track_parser.add_argument("artist", help="Seed artist name.")
+-     track_parser.add_argument("track", help="Seed track name.")
+-     track_parser.add_argument("--limit", type=int, default=25)
+-     track_parser.add_argument("--autocorrect", type=int, choices=[0, 1], default=1)
+-     track_parser.add_argument("--creds", help="Path to credentials JSON file.")
+-     args = parser.parse_args()
+-     creds = load_credentials(getattr(args, "creds", None))
+-     if args.command == "artist":
+-         data = lastfm_get(
+-             "artist.getsimilar",
+-             {"artist": args.name, "limit": args.limit, "autocorrect": args.autocorrect},
+-             api_key=creds["api_key"],
+-         )
+-         artists = ensure_list(data.get("similarartists", {}).get("artist"))
+-         dump_json({
+-             "seed_artist": args.name,
+-             "limit": args.limit,
+-             "limit": args.limit,
+-             "items": [normalize_similar_artist(item) for item in artists],
+-         })
+-         return
+-     data = lastfm_get(
+-         "track.getsimilar",
+-         {
+-             "artist": args.artist,
+-             "track": args.track,
+-             "autocorrect": args.autocorrect,
+-         },
+-         api_key=creds["api_key"],
+-     )
+-     tracks = ensure_list(data.get("similartracks", {}).get("track"))
+-     dump_json({
+-         "seed_artist": args.artist,
+-         "seed_track": args.track,
+-         "limit": args.limit,
+-         "items": [normalize_similar_track(item) for item in tracks],
+-     })
+- if __name__ == "__main__":
+-     main()
+
+### scripts/lastfm_spotify_playlist_pipeline.py  [code]
+- from __future__ import annotations
+- import argparse
+- import json
+- from typing import Any, Dict, List, Tuple
+- from lastfm_common import ensure_list, lastfm_get, load_credentials
+- from lastfm_track_playlist_candidates import get_artist_top_tracks, get_similar_tracks, norm_seed
+- from spotify_common import add_tracks_to_playlist, create_playlist, current_user, get_access_token, search_tracks
+- def key_for(artist: str, track: str) -> Tuple[str, str]:
+-     return (artist.strip().casefold(), track.strip().casefold())
+- def merge_candidate(merged: Dict[Tuple[str, str], Dict[str, Any]], *, seed_label: str, root_artist: str, artist: str, track: str, match: float, url: str | None) -> None:
+-     if not artist or not track:
+-         return
+-         return
+-     if artist.casefold() == root_artist.casefold():
+-     k = key_for(artist, track)
+-     if k not in merged:
+-         merged[k] = {
+-             'artist': artist,
+-             'track': track,
+-             'score': 0.0,
+-             'source_count': 0,
+-             'sources': [],
+-             'url': url,
+-         }
+-         }
+-         }
+-     merged[k]['score'] += float(match or 0.0)
+-     merged[k]['source_count'] += 1
+-     merged[k]['sources'].append({'seed': seed_label, 'match': float(match or 0.0)})
+- def build_from_artist_top_tracks(artist: str, *, api_key: str, seed_count: int, similar_per_seed: int, root_artist: str, autocorrect: int = 1) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+-     seeds_raw = get_artist_top_tracks(artist, api_key=api_key, limit=seed_count, autocorrect=autocorrect)
+-     seeds = [norm_seed(item) for item in seeds_raw]
+-     merged: Dict[Tuple[str, str], Dict[str, Any]] = {}
+-     merged: Dict[Tuple[str, str], Dict[str, Any]] = {}
+-     merged: Dict[Tuple[str, str], Dict[str, Any]] = {}
+-     for seed in seeds:
+-     for seed in seeds:
+-         seed_artist = seed.get('artist') or artist
+-         seed_track = seed.get('track')
+-         if not seed_track:
+-             continue
+-             continue
+-             continue
+-             continue
+-             continue
+-         sim_raw = get_similar_tracks(seed_artist, seed_track, api_key=api_key, limit=similar_per_seed, autocorrect=autocorrect)
+-         for item in sim_raw:
+-         for item in sim_raw:
+-             item_artist = item.get('artist', {}) if isinstance(item.get('artist'), dict) else {}
+-             item_artist = item.get('artist', {}) if isinstance(item.get('artist'), dict) else {}
+-             merge_candidate(
+-             merge_candidate(
+-                 merged,
+-                 merged,
+-                 seed_label=f"{seed_artist} — {seed_track}",
+-                 root_artist=root_artist,
+-                 artist=item_artist.get('name') or item_artist.get('#text') or '',
+-                 artist=item_artist.get('name') or item_artist.get('#text') or '',
+-                 track=item.get('name') or '',
+-                 track=item.get('name') or '',
+-                 match=float(item.get('match', 0.0) or 0.0),
+-                 match=float(item.get('match', 0.0) or 0.0),
+-                 url=item.get('url'),
+-                 url=item.get('url'),
+-             )
+-             )
+-     ranked = sorted(merged.values(), key=lambda item: (item['source_count'], item['score']), reverse=True)
+-     ranked = sorted(merged.values(), key=lambda item: (item['source_count'], item['score']), reverse=True)
+-     ranked = sorted(merged.values(), key=lambda item: (item['source_count'], item['score']), reverse=True)
+-     return seeds, ranked
+-     return seeds, ranked
+-     return seeds, ranked
+- def get_recent_track_seeds(user: str, *, api_key: str, limit: int) -> list[dict[str, Any]]:
+-     data = lastfm_get('user.getrecenttracks', {'user': user, 'limit': limit, 'page': 1, 'extended': 0}, api_key=api_key)
+-     tracks = ensure_list(data.get('recenttracks', {}).get('track'))
+-     seeds = []
+-     seen: set[tuple[str, str]] = set()
+-     for item in tracks:
+-         artist = item.get('artist', {}).get('#text') if isinstance(item.get('artist'), dict) else item.get('artist')
+-         track = item.get('name')
+-         if not artist or not track:
+-         k = key_for(artist, track)
+-         if k in seen:
+-         seen.add(k)
+-         seeds.append({'artist': artist, 'track': track, 'url': item.get('url')})
+-     return seeds
+- def build_from_recent_tracks(user: str, *, api_key: str, recent_count: int, similar_per_seed: int, autocorrect: int = 1) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+-     seeds = get_recent_track_seeds(user, api_key=api_key, limit=recent_count)
+-         sim_raw = get_similar_tracks(seed['artist'], seed['track'], api_key=api_key, limit=similar_per_seed, autocorrect=autocorrect)
+-                 seed_label=f"{seed['artist']} — {seed['track']}",
+-                 root_artist=seed['artist'],
+- def get_top_artists(user: str, *, api_key: str, period: str, limit: int) -> list[dict[str, Any]]:
+-     data = lastfm_get('user.gettopartists', {'user': user, 'period': period, 'limit': limit, 'page': 1}, api_key=api_key)
+-     artists = ensure_list(data.get('topartists', {}).get('artist'))
+-     return [{'artist': item.get('name'), 'playcount': int(item.get('playcount', 0) or 0), 'url': item.get('url')} for item in artists if item.get('name')]
+- def build_from_top_artists(user: str, *, api_key: str, period: str, artist_count: int, seed_count_per_artist: int, similar_per_seed: int, autocorrect: int = 1) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+-     artists = get_top_artists(user, api_key=api_key, period=period, limit=artist_count)
+-     seeds: list[dict[str, Any]] = []
+-     for artist_item in artists:
+-         artist = artist_item['artist']
+-         artist_seeds, artist_ranked = build_from_artist_top_tracks(
+-             artist,
+-             api_key=api_key,
+-             seed_count=seed_count_per_artist,
+-             similar_per_seed=similar_per_seed,
+-             root_artist=artist,
+-             autocorrect=autocorrect,
+-         )
+-         for seed in artist_seeds:
+-             seeds.append({'artist': seed.get('artist') or artist, 'track': seed.get('track'), 'origin_artist': artist})
+-         for candidate in artist_ranked:
+-             k = key_for(candidate['artist'], candidate['track'])
+-             if k not in merged:
+-                 merged[k] = {
+-                     'artist': candidate['artist'],
+-                     'track': candidate['track'],
+-                     'score': 0.0,
+-                     'source_count': 0,
+-                     'sources': [],
+-                     'url': candidate.get('url'),
+-                 }
+-             merged[k]['score'] += candidate['score']
+-             merged[k]['source_count'] += candidate['source_count']
+-             merged[k]['sources'].extend(candidate['sources'])
+- def match_candidates_on_spotify(candidates: list[dict[str, Any]], *, final_limit: int, market: str | None = None) -> tuple[list[dict[str, Any]], list[str], list[dict[str, Any]]]:
+-     token = get_access_token()
+-     token = get_access_token()
+-     matched: list[dict[str, Any]] = []
+-     unmatched: list[dict[str, Any]] = []
+-     uris: list[str] = []
+-     for candidate in candidates:
+-         if len(uris) >= final_limit:
+-             break
+-         query = f'track:"{candidate["track"]}" artist:"{candidate["artist"]}"'
+-         result = search_tracks(query, access_token=token, limit=5, market=market)
+-         items = result.get('tracks', {}).get('items', [])
+-         pick = None
+-         for item in items:
+-             item_name = (item.get('name') or '').strip().casefold()
+-             artist_names = [(a.get('name') or '').strip().casefold() for a in item.get('artists', [])]
+-             if item_name == candidate['track'].strip().casefold() and candidate['artist'].strip().casefold() in artist_names:
+-                 pick = item
+-                 break
+-         if not pick and items:
+-             pick = items[0]
+-         if not pick:
+-             unmatched.append({'artist': candidate['artist'], 'track': candidate['track'], 'score': candidate['score']})
+-         if pick['uri'] in uris:
+-         uris.append(pick['uri'])
+-         matched.append({
+-             'artist': candidate['artist'],
+-             'track': candidate['track'],
+-             'score': candidate['score'],
+-             'spotify_name': pick.get('name'),
+-             'spotify_artists': ', '.join(a.get('name') for a in pick.get('artists', [])),
+-             'uri': pick.get('uri'),
+-             'url': pick.get('external_urls', {}).get('spotify'),
+-         })
+-     return matched, uris, unmatched
+- def maybe_create_playlist(name: str, description: str, uris: list[str]) -> dict[str, Any]:
+-     me = current_user(token)
+-     playlist = create_playlist(me['id'], name, access_token=token, public=False, description=description)
+-     add_tracks_to_playlist(playlist['id'], uris, access_token=token)
+-     return {'id': playlist.get('id'), 'name': playlist.get('name'), 'url': playlist.get('external_urls', {}).get('spotify')}
+- def main() -> None:
+-     parser = argparse.ArgumentParser(description='Build Last.fm-driven Spotify playlists in one command.')
+-     subparsers = parser.add_subparsers(dest='mode', required=True)
+-     artist_parser = subparsers.add_parser('artist-rule-c', help='Use one artist\'s top tracks as Last.fm similar-track seeds.')
+-     artist_parser.add_argument('artist')
+-     artist_parser.add_argument('--seed-count', type=int, default=5)
+-     artist_parser.add_argument('--similar-per-seed', type=int, default=10)
+-     recent_parser = subparsers.add_parser('recent-tracks', help='Use recent scrobbles as track-level Last.fm seeds.')
+-     recent_parser.add_argument('--user')
+-     recent_parser.add_argument('--recent-count', type=int, default=10)
+-     recent_parser.add_argument('--similar-per-seed', type=int, default=5)
+-     top_parser = subparsers.add_parser('top-artists-blend', help='Use the user\'s top artists for a period, then blend Rule C candidates across them.')
+-     top_parser.add_argument('--user')
+-     top_parser.add_argument('--period', default='1month', choices=['7day', '1month', '3month', '6month', '12month', 'overall'])
+-     top_parser.add_argument('--artist-count', type=int, default=5)
+-     top_parser.add_argument('--seed-count-per-artist', type=int, default=3)
+-     top_parser.add_argument('--similar-per-seed', type=int, default=5)
+-     parser.add_argument('--final-limit', type=int, default=20)
+-     parser.add_argument('--market')
+-     parser.add_argument('--autocorrect', type=int, choices=[0, 1], default=1)
+-     parser.add_argument('--output-mode', choices=['spotify', 'lastfm-only'], default='spotify', help='Use Spotify matching/playlist creation, or return Last.fm-only ranked suggestions.')
+-     parser.add_argument('--create-playlist', action='store_true')
+-     parser.add_argument('--playlist-name')
+-     parser.add_argument('--playlist-description')
+-     parser.add_argument('--creds', help='Path to Last.fm credentials JSON file.')
+-     args = parser.parse_args()
+-     if args.output_mode == 'lastfm-only' and args.create_playlist:
+-         raise SystemExit('--create-playlist cannot be used with --output-mode lastfm-only.')
+-     creds = load_credentials(args.creds)
+-     api_key = creds['api_key']
+-     username = getattr(args, 'user', None) or creds.get('username')
+-     if args.mode == 'artist-rule-c':
+-         seeds, ranked = build_from_artist_top_tracks(args.artist, api_key=api_key, seed_count=args.seed_count, similar_per_seed=args.similar_per_seed, root_artist=args.artist, autocorrect=args.autocorrect)
+-         summary = {'mode': args.mode, 'seed_artist': args.artist, 'seed_tracks': seeds}
+-         default_name = f'Last.fm Rule C — {args.artist}'
+-         default_description = f'Built from {args.artist} top tracks expanded through Last.fm similar tracks.'
+-     elif args.mode == 'recent-tracks':
+-         if not username:
+-         if not username:
+-             raise SystemExit('Missing Last.fm username. Pass --user or set LASTFM_USERNAME / credentials file username.')
+-             raise SystemExit('Missing Last.fm username. Pass --user or set LASTFM_USERNAME / credentials file username.')
+-         seeds, ranked = build_from_recent_tracks(username, api_key=api_key, recent_count=args.recent_count, similar_per_seed=args.similar_per_seed, autocorrect=args.autocorrect)
+-         summary = {'mode': args.mode, 'user': username, 'seed_tracks': seeds}
+-         default_name = f'Last.fm Recent Blend — {username}'
+-         default_description = 'Built from recent Last.fm scrobbles expanded through Last.fm similar tracks.'
+-     else:
+-     else:
+-         seeds, ranked = build_from_top_artists(username, api_key=api_key, period=args.period, artist_count=args.artist_count, seed_count_per_artist=args.seed_count_per_artist, similar_per_seed=args.similar_per_seed, autocorrect=args.autocorrect)
+-         summary = {'mode': args.mode, 'user': username, 'period': args.period, 'seed_tracks': seeds[:50]}
+-         default_name = f'Last.fm Top Artists Blend — {username} — {args.period}'
+-         default_description = f'Built from top Last.fm artists for {args.period}, expanded through similar tracks.'
+-     candidates = ranked[: max(args.final_limit * 3, args.final_limit)]
+-     if args.output_mode == 'lastfm-only':
+-         output = {
+-         output = {
+-             **summary,
+-             **summary,
+-             'output_mode': args.output_mode,
+-             'output_mode': args.output_mode,
+-             'candidate_count_considered': len(candidates),
+-             'candidate_count_considered': len(candidates),
+-             'suggestion_count': min(len(ranked), args.final_limit),
+-             'suggestions': ranked[: args.final_limit],
+-         matched, uris, unmatched = match_candidates_on_spotify(candidates, final_limit=args.final_limit, market=args.market)
+-             'matched_count': len(matched),
+-             'matched_tracks': matched,
+-             'unmatched_tracks': unmatched,
+-         if args.create_playlist:
+-             playlist = maybe_create_playlist(args.playlist_name or default_name, args.playlist_description or default_description, uris)
+-             output['playlist'] = playlist
+-     print(json.dumps(output, indent=2, ensure_ascii=False))
+- if __name__ == '__main__':
+-     main()
+
+### scripts/lastfm_track_playlist_candidates.py  [code]
+- from __future__ import annotations
+- import argparse
+- from collections import defaultdict
+- from typing import Any, Dict, List, Tuple
+- from lastfm_common import dump_json, ensure_list, lastfm_get, load_credentials
+- def get_artist_top_tracks(artist: str, *, api_key: str, limit: int, autocorrect: int = 1) -> List[Dict[str, Any]]:
+-     data = lastfm_get(
+-     data = lastfm_get(
+-         "artist.gettoptracks",
+-         {"artist": artist, "limit": limit, "autocorrect": autocorrect},
+-         api_key=api_key,
+-         api_key=api_key,
+-     )
+-     )
+-     tracks = ensure_list(data.get("toptracks", {}).get("track"))
+-     return tracks
+- def get_similar_tracks(artist: str, track: str, *, api_key: str, limit: int, autocorrect: int = 1) -> List[Dict[str, Any]]:
+-         "track.getsimilar",
+-         {"artist": artist, "track": track, "limit": limit, "autocorrect": autocorrect},
+-     return ensure_list(data.get("similartracks", {}).get("track"))
+- def norm_seed(track: Dict[str, Any]) -> Dict[str, Any]:
+-     artist = track.get("artist", {}) if isinstance(track.get("artist"), dict) else {}
+-     artist = track.get("artist", {}) if isinstance(track.get("artist"), dict) else {}
+-     return {
+-     return {
+-         "track": track.get("name"),
+-         "track": track.get("name"),
+-         "artist": artist.get("name") or artist.get("#text"),
+-         "artist": artist.get("name") or artist.get("#text"),
+-         "playcount": int(track.get("playcount", 0) or 0),
+-         "listeners": int(track.get("listeners", 0) or 0),
+-         "url": track.get("url"),
+-         "url": track.get("url"),
+-     }
+-     }
+- def norm_similar(track: Dict[str, Any], seed_artist: str, seed_track: str) -> Dict[str, Any]:
+-         "match": float(track.get("match", 0.0) or 0.0),
+-         "seed_artist": seed_artist,
+-         "seed_track": seed_track,
+- def key_for(artist: str, track: str) -> Tuple[str, str]:
+-     return (artist.strip().casefold(), track.strip().casefold())
+- def main() -> None:
+-     parser = argparse.ArgumentParser(description="Build playlist candidates from Last.fm similar tracks seeded by an artist's top tracks.")
+-     parser.add_argument("artist", help="Seed artist, e.g. Placebo")
+-     parser.add_argument("--seed-count", type=int, default=5, help="How many top tracks to use as seeds.")
+-     parser.add_argument("--similar-per-seed", type=int, default=10, help="How many similar tracks to fetch for each seed track.")
+-     parser.add_argument("--final-limit", type=int, default=20, help="How many merged candidates to return.")
+-     parser.add_argument("--autocorrect", type=int, choices=[0, 1], default=1)
+-     parser.add_argument("--creds", help="Path to credentials JSON file.")
+-     args = parser.parse_args()
+-     creds = load_credentials(args.creds)
+-     api_key = creds["api_key"]
+-     seeds_raw = get_artist_top_tracks(args.artist, api_key=api_key, limit=args.seed_count, autocorrect=args.autocorrect)
+-     seeds = [norm_seed(item) for item in seeds_raw]
+-     merged: Dict[Tuple[str, str], Dict[str, Any]] = {}
+-     for seed in seeds:
+-         sim_raw = get_similar_tracks(
+-             seed["artist"] or args.artist,
+-             seed["track"],
+-             api_key=api_key,
+-             limit=args.similar_per_seed,
+-             autocorrect=args.autocorrect,
+-         )
+-         for item in sim_raw:
+-             candidate = norm_similar(item, seed["artist"] or args.artist, seed["track"])
+-             c_artist = candidate.get("artist") or ""
+-             c_track = candidate.get("track") or ""
+-             if not c_artist or not c_track:
+-                 continue
+-                 continue
+-             if c_artist.casefold() == args.artist.casefold():
+-             k = key_for(c_artist, c_track)
+-             if k not in merged:
+-                 merged[k] = {
+-                     "artist": candidate["artist"],
+-                     "track": candidate["track"],
+-                     "score": 0.0,
+-                     "source_count": 0,
+-                     "sources": [],
+-                     "url": candidate.get("url"),
+-                 }
+-             merged[k]["score"] += candidate["match"]
+-             merged[k]["source_count"] += 1
+-             merged[k]["sources"].append({
+-                 "seed_artist": candidate["seed_artist"],
+-                 "seed_track": candidate["seed_track"],
+-                 "match": candidate["match"],
+-             })
+-     ranked = sorted(
+-         merged.values(),
+-         key=lambda item: (item["source_count"], item["score"]),
+-         reverse=True,
+-     )[: args.final_limit]
+-     dump_json({
+-         "seed_artist": args.artist,
+-         "seed_tracks": seeds,
+-         "candidate_count": len(ranked),
+-         "candidates": ranked,
+-     })
+- if __name__ == "__main__":
+-     main()
+
+### scripts/spotify_auth.py  [code]
+- from __future__ import annotations
+- import argparse
+- import json
+- from spotify_common import authorize, current_user, get_access_token
+- def main() -> None:
+-     parser = argparse.ArgumentParser(description="Authorize Spotify access for local helper scripts.")
+-     parser.add_argument("--scopes", nargs="*", default=["playlist-modify-private", "playlist-modify-public"], help="OAuth scopes.")
+-     parser.add_argument("--creds", help="Path to Spotify credentials JSON.")
+-     parser.add_argument("--token", help="Path to Spotify token JSON.")
+-     parser.add_argument("--print-auth-url", action="store_true", help="Print auth URL instead of opening a browser automatically.")
+-     args = parser.parse_args()
+-     authorize(args.scopes, creds_path=args.creds, token_path=args.token, open_browser=not args.print_auth_url)
+-     access_token = get_access_token(args.creds, args.token)
+-     me = current_user(access_token)
+-     print(json.dumps({"authorized_as": me.get("id"), "display_name": me.get("display_name")}, indent=2))
+- if __name__ == "__main__":
+-     main()
+
+### scripts/spotify_common.py  [code]
+- from __future__ import annotations
+- import base64
+- import json
+- import os
+- import time
+- import urllib.parse
+- import urllib.request
+- import webbrowser
+- from http.server import BaseHTTPRequestHandler, HTTPServer
+- from pathlib import Path
+- from typing import Any, Dict, Optional
+- AUTH_URL = "https://accounts.spotify.com/authorize"
+- TOKEN_URL = "https://accounts.spotify.com/api/token"
+- API_ROOT = "https://api.spotify.com/v1"
+- DEFAULT_CREDS_PATH = Path.home() / ".openclaw" / "spotify-credentials.json"
+- DEFAULT_TOKEN_PATH = Path.home() / ".openclaw" / "spotify-token.json"
+- class SpotifyError(RuntimeError):
+-     pass
+- def _read_json(path: Path) -> Dict[str, Any]:
+-     return json.loads(path.read_text(encoding="utf-8"))
+- def load_credentials(explicit_path: Optional[str] = None) -> Dict[str, str]:
+-     creds = {}
+-     if os.getenv("SPOTIFY_CLIENT_ID"):
+-         creds["client_id"] = os.getenv("SPOTIFY_CLIENT_ID")
+-     if os.getenv("SPOTIFY_CLIENT_SECRET"):
+-         creds["client_secret"] = os.getenv("SPOTIFY_CLIENT_SECRET")
+-     if os.getenv("SPOTIFY_REDIRECT_URI"):
+-         creds["redirect_uri"] = os.getenv("SPOTIFY_REDIRECT_URI")
+-     path = Path(explicit_path) if explicit_path else DEFAULT_CREDS_PATH
+-     if path.exists():
+-         file_creds = _read_json(path)
+-         for key in ("client_id", "client_secret", "redirect_uri"):
+-             if file_creds.get(key) and key not in creds:
+-                 creds[key] = str(file_creds[key])
+-     missing = [key for key in ("client_id", "client_secret", "redirect_uri") if not creds.get(key)]
+-     if missing:
+-         raise SpotifyError(f"Missing Spotify credentials: {', '.join(missing)}")
+-     return creds
+- def _basic_auth_header(client_id: str, client_secret: str) -> str:
+-     raw = f"{client_id}:{client_secret}".encode("utf-8")
+-     return "Basic " + base64.b64encode(raw).decode("ascii")
+- def _post_form(url: str, data: Dict[str, Any], headers: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+-     req = urllib.request.Request(
+-         url,
+-         data=urllib.parse.urlencode(data).encode("utf-8"),
+-         headers=headers or {},
+-         method="POST",
+-         method="POST",
+-         method="POST",
+-     )
+-     )
+-     )
+-     )
+-     )
+-     try:
+-     try:
+-         with urllib.request.urlopen(req) as response:
+-         with urllib.request.urlopen(req) as response:
+-             return json.loads(response.read().decode("utf-8"))
+-     except urllib.error.HTTPError as exc:
+-     except urllib.error.HTTPError as exc:
+-         body = exc.read().decode("utf-8", errors="replace")
+-         raise SpotifyError(f"Spotify HTTP {exc.code}: {body}") from exc
+- def _request_json(url: str, *, method: str = "GET", token: Optional[str] = None, body: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+-     headers = {"Content-Type": "application/json"}
+-     if token:
+-         headers["Authorization"] = f"Bearer {token}"
+-     data = json.dumps(body).encode("utf-8") if body is not None else None
+-     req = urllib.request.Request(url, data=data, headers=headers, method=method)
+-             payload = response.read().decode("utf-8")
+-             return json.loads(payload) if payload else {}
+-         body_text = exc.read().decode("utf-8", errors="replace")
+-         raise SpotifyError(f"Spotify API HTTP {exc.code}: {body_text}") from exc
+- def save_token(token: Dict[str, Any], path: Optional[str] = None) -> Path:
+-     out = Path(path) if path else DEFAULT_TOKEN_PATH
+-     out.parent.mkdir(parents=True, exist_ok=True)
+-     token["saved_at"] = int(time.time())
+-     out.write_text(json.dumps(token, indent=2), encoding="utf-8")
+-     return out
+- def load_token(path: Optional[str] = None) -> Dict[str, Any]:
+-     token_path = Path(path) if path else DEFAULT_TOKEN_PATH
+-     if not token_path.exists():
+-         raise SpotifyError(f"Missing token file: {token_path}")
+-     return _read_json(token_path)
+- def refresh_token_if_needed(creds: Dict[str, str], token: Dict[str, Any], *, token_path: Optional[str] = None) -> Dict[str, Any]:
+-     expires_in = int(token.get("expires_in", 3600) or 3600)
+-     saved_at = int(token.get("saved_at", 0) or 0)
+-     if token.get("access_token") and time.time() < saved_at + expires_in - 120:
+-         return token
+-     refresh_token = token.get("refresh_token")
+-     if not refresh_token:
+-         raise SpotifyError("Token is expired and no refresh_token is available.")
+-     refreshed = _post_form(
+-         TOKEN_URL,
+-         TOKEN_URL,
+-         {"grant_type": "refresh_token", "refresh_token": refresh_token},
+-         headers={"Authorization": _basic_auth_header(creds["client_id"], creds["client_secret"])}
+-         headers={"Authorization": _basic_auth_header(creds["client_id"], creds["client_secret"])}
+-     refreshed["refresh_token"] = refreshed.get("refresh_token") or refresh_token
+-     save_token(refreshed, token_path)
+-     return refreshed
+- def get_access_token(creds_path: Optional[str] = None, token_path: Optional[str] = None) -> str:
+-     creds = load_credentials(creds_path)
+-     creds = load_credentials(creds_path)
+-     token = load_token(token_path)
+-     token = refresh_token_if_needed(creds, token, token_path=token_path)
+-     return token["access_token"]
+- def authorize(scopes: list[str], *, creds_path: Optional[str] = None, token_path: Optional[str] = None, open_browser: bool = True) -> Dict[str, Any]:
+-     parsed = urllib.parse.urlparse(creds["redirect_uri"])
+-     host = parsed.hostname or "127.0.0.1"
+-     port = parsed.port or 8888
+-     redirect_path = parsed.path or "/callback"
+-     result: Dict[str, str] = {}
+-     class CallbackHandler(BaseHTTPRequestHandler):
+-         def do_GET(self):
+-             query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+-             if urllib.parse.urlparse(self.path).path != redirect_path:
+-                 self.send_response(404)
+-                 self.end_headers()
+-                 return
+-             if "error" in query:
+-                 result["error"] = query["error"][0]
+-             elif "code" in query:
+-                 result["code"] = query["code"][0]
+-             self.send_response(200)
+-             self.send_header("Content-Type", "text/plain; charset=utf-8")
+-             self.end_headers()
+-             self.wfile.write(b"Spotify auth received. You can close this tab.")
+-         def log_message(self, format: str, *args: Any) -> None:
+-             return
+-     server = HTTPServer((host, port), CallbackHandler)
+-     scope_string = " ".join(scopes)
+-     params = {
+-         "client_id": creds["client_id"],
+-         "response_type": "code",
+-         "redirect_uri": creds["redirect_uri"],
+-         "scope": scope_string,
+-     }
+-     url = AUTH_URL + "?" + urllib.parse.urlencode(params)
+-     if open_browser:
+-         webbrowser.open(url)
+-     else:
+-         print(url)
+-     server.handle_request()
+-     server.server_close()
+-     if result.get("error"):
+-         raise SpotifyError(f"Spotify auth error: {result['error']}")
+-     if not result.get("code"):
+-         raise SpotifyError("No authorization code received.")
+-     token = _post_form(
+-         {
+-             "grant_type": "authorization_code",
+-             "code": result["code"],
+-             "redirect_uri": creds["redirect_uri"],
+-         },
+-     save_token(token, token_path)
+-     return token
+- def current_user(access_token: str) -> Dict[str, Any]:
+-     return _request_json(f"{API_ROOT}/me", token=access_token)
+- def search_tracks(query: str, *, access_token: str, limit: int = 10, market: Optional[str] = None) -> Dict[str, Any]:
+-     params = {"q": query, "type": "track", "limit": limit}
+-     if market:
+-         params["market"] = market
+-     url = f"{API_ROOT}/search?" + urllib.parse.urlencode(params)
+-     return _request_json(url, token=access_token)
+- def create_playlist(user_id: str, name: str, *, access_token: str, public: bool = False, description: str = "") -> Dict[str, Any]:
+-     return _request_json(
+-     return _request_json(
+-         f"{API_ROOT}/me/playlists",
+-         token=access_token,
+-         token=access_token,
+-         body={"name": name, "public": public, "description": description},
+- def add_tracks_to_playlist(playlist_id: str, track_uris: list[str], *, access_token: str) -> Dict[str, Any]:
+-     """Add tracks using the newer /items playlist endpoint."""
+-     if not track_uris:
+-         return {"snapshot_id": None}
+-         f"{API_ROOT}/playlists/{playlist_id}/items",
+-         body={"uris": track_uris},
+
+### scripts/spotify_playlist.py  [code]
+- from __future__ import annotations
+- import argparse
+- import json
+- from spotify_common import add_tracks_to_playlist, create_playlist, current_user, get_access_token
+- def main() -> None:
+-     parser = argparse.ArgumentParser(description="Create a Spotify playlist and optionally add track URIs.")
+-     parser.add_argument("name", help="Playlist name.")
+-     parser.add_argument("--description", default="")
+-     parser.add_argument("--public", action="store_true")
+-     parser.add_argument("--track-uri", action="append", default=[], help="Track URI to add. Repeat for multiple tracks.")
+-     parser.add_argument("--creds")
+-     parser.add_argument("--token")
+-     args = parser.parse_args()
+-     token = get_access_token(args.creds, args.token)
+-     me = current_user(token)
+-     playlist = create_playlist(me["id"], args.name, access_token=token, public=args.public, description=args.description)
+-     result = {
+-         "playlist_id": playlist.get("id"),
+-         "playlist_name": playlist.get("name"),
+-         "playlist_url": playlist.get("external_urls", {}).get("spotify"),
+-         "added": 0,
+-     }
+-     if args.track_uri:
+-         add_tracks_to_playlist(playlist["id"], args.track_uri, access_token=token)
+-         result["added"] = len(args.track_uri)
+-     print(json.dumps(result, indent=2, ensure_ascii=False))
+- if __name__ == "__main__":
+-     main()
+
+### scripts/spotify_search.py  [code]
+- from __future__ import annotations
+- import argparse
+- import json
+- from spotify_common import get_access_token, search_tracks
+- def main() -> None:
+-     parser = argparse.ArgumentParser(description="Search Spotify tracks.")
+-     parser.add_argument("query", help="Search query string.")
+-     parser.add_argument("--limit", type=int, default=10)
+-     parser.add_argument("--market")
+-     parser.add_argument("--creds")
+-     parser.add_argument("--token")
+-     args = parser.parse_args()
+-     token = get_access_token(args.creds, args.token)
+-     data = search_tracks(args.query, access_token=token, limit=args.limit, market=args.market)
+-     items = data.get("tracks", {}).get("items", [])
+-     simplified = [
+-         {
+-             "name": item.get("name"),
+-             "artists": ", ".join(artist.get("name") for artist in item.get("artists", [])),
+-             "album": item.get("album", {}).get("name"),
+-             "uri": item.get("uri"),
+-             "id": item.get("id"),
+-             "url": item.get("external_urls", {}).get("spotify"),
+-         }
+-         for item in items
+-     ]
+-     print(json.dumps({"query": args.query, "items": simplified}, indent=2, ensure_ascii=False))
+- if __name__ == "__main__":
+-     main()
+
+### spotify.py  [code]
++ from __future__ import annotations
++ import base64
++ import json
++ import os
++ import time
++ import urllib.parse
++ import urllib.request
++ import webbrowser
++ from http.server import BaseHTTPRequestHandler, HTTPServer
++ from pathlib import Path
++ from typing import Any
++ API_ROOT = "https://api.spotify.com/v1"
++ AUTH_URL = "https://accounts.spotify.com/authorize"
++ TOKEN_URL = "https://accounts.spotify.com/api/token"
++ DEFAULT_CREDS_PATH = Path.home() / ".openclaw" / "spotify-credentials.json"
++ DEFAULT_TOKEN_PATH = Path.home() / ".openclaw" / "spotify-token.json"
++ class SpotifyError(RuntimeError):
++     pass
++ def _read_json(path: Path) -> dict[str, Any]:
++     return json.loads(path.read_text(encoding="utf-8"))
++ def load_credentials(explicit_path: str | None = None) -> dict[str, str]:
++     creds: dict[str, str] = {}
++     if os.getenv("SPOTIFY_CLIENT_ID"):
++         creds["client_id"] = os.environ["SPOTIFY_CLIENT_ID"]
++     if os.getenv("SPOTIFY_CLIENT_SECRET"):
++         creds["client_secret"] = os.environ["SPOTIFY_CLIENT_SECRET"]
++     if os.getenv("SPOTIFY_REDIRECT_URI"):
++         creds["redirect_uri"] = os.environ["SPOTIFY_REDIRECT_URI"]
++     path = Path(explicit_path) if explicit_path else DEFAULT_CREDS_PATH
++     if path.exists():
++         file_creds = _read_json(path)
++         for key in ("client_id", "client_secret", "redirect_uri"):
++             if key not in creds and file_creds.get(key):
++                 creds[key] = str(file_creds[key])
++     if "client_id" not in creds or "client_secret" not in creds or "redirect_uri" not in creds:
++         raise SpotifyError(
++             "Missing Spotify credentials. Set SPOTIFY_CLIENT_ID / SPOTIFY_CLIENT_SECRET / SPOTIFY_REDIRECT_URI "
++             "or create ~/.openclaw/spotify-credentials.json"
++         )
++     return creds
++ def _basic_auth_header(client_id: str, client_secret: str) -> str:
++     raw = f"{client_id}:{client_secret}".encode("utf-8")
++     return "Basic " + base64.b64encode(raw).decode("ascii")
++ def _post_form(url: str, data: dict[str, Any], headers: dict[str, str] | None = None) -> dict[str, Any]:
++     req = urllib.request.Request(
++         url,
++         data=urllib.parse.urlencode(data).encode("utf-8"),
++         headers=headers or {},
++         method="POST",
++         method="POST",
++         method="POST",
++     )
++     )
++     )
++     )
++     )
++     try:
++     try:
++         with urllib.request.urlopen(req) as response:
++         with urllib.request.urlopen(req) as response:
++             return json.loads(response.read().decode("utf-8"))
++     except urllib.error.HTTPError as exc:
++     except urllib.error.HTTPError as exc:
++         body = exc.read().decode("utf-8", errors="replace")
++         raise SpotifyError(f"Spotify HTTP {exc.code}: {body}") from exc
++ def save_token(token: dict[str, Any], path: str | None = None) -> Path:
++     out = Path(path) if path else DEFAULT_TOKEN_PATH
++     out.parent.mkdir(parents=True, exist_ok=True)
++     token["saved_at"] = int(time.time())
++     out.write_text(json.dumps(token, indent=2), encoding="utf-8")
++     return out
++ def load_token(path: str | None = None) -> dict[str, Any]:
++     token_path = Path(path) if path else DEFAULT_TOKEN_PATH
++     if not token_path.exists():
++         raise SpotifyError(f"Missing token file: {token_path}")
++     return _read_json(token_path)
++ def refresh_token_if_needed(creds: dict[str, str], token: dict[str, Any], *, token_path: str | None = None) -> dict[str, Any]:
++     expires_in = int(token.get("expires_in", 3600) or 3600)
++     saved_at = int(token.get("saved_at", 0) or 0)
++     if token.get("access_token") and time.time() < saved_at + expires_in - 120:
++         return token
++     refresh_token = token.get("refresh_token")
++     if not refresh_token:
++         raise SpotifyError("Token is expired and no refresh_token is available.")
++     refreshed = _post_form(
++         TOKEN_URL,
++         TOKEN_URL,
++         {"grant_type": "refresh_token", "refresh_token": refresh_token},
++         headers={"Authorization": _basic_auth_header(creds["client_id"], creds["client_secret"])},
++         headers={"Authorization": _basic_auth_header(creds["client_id"], creds["client_secret"])},
++     refreshed["refresh_token"] = refreshed.get("refresh_token") or refresh_token
++     save_token(refreshed, token_path)
++     return refreshed
++ def get_access_token(creds_path: str | None = None, token_path: str | None = None) -> str:
++     creds = load_credentials(creds_path)
++     creds = load_credentials(creds_path)
++     token = load_token(token_path)
++     token = refresh_token_if_needed(creds, token, token_path=token_path)
++     return token["access_token"]
++ def authorize(
++     scopes: list[str],
++     *,
++     *,
++     *,
++     creds_path: str | None = None,
++     token_path: str | None = None,
++     open_browser: bool = True,
++ ) -> dict[str, Any]:
++ ) -> dict[str, Any]:
++     parsed = urllib.parse.urlparse(creds["redirect_uri"])
++     host = parsed.hostname or "127.0.0.1"
++     port = parsed.port or 8888
++     redirect_path = parsed.path or "/callback"
++     result: dict[str, str] = {}
++     class CallbackHandler(BaseHTTPRequestHandler):
++         def do_GET(self):
++             query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
++             if urllib.parse.urlparse(self.path).path != redirect_path:
++                 self.send_response(404)
++                 self.end_headers()
++                 return
++             if "error" in query:
++                 result["error"] = query["error"][0]
++             elif "code" in query:
++                 result["code"] = query["code"][0]
++             self.send_response(200)
++             self.send_header("Content-Type", "text/plain; charset=utf-8")
++             self.end_headers()
++             self.wfile.write(b"Spotify auth received. You can close this tab.")
++         def log_message(self, format: str, *args: Any) -> None:
++             return
++     server = HTTPServer((host, port), CallbackHandler)
++     params = {
++         "client_id": creds["client_id"],
++         "response_type": "code",
++         "redirect_uri": creds["redirect_uri"],
++         "scope": " ".join(scopes),
++     }
++     url = AUTH_URL + "?" + urllib.parse.urlencode(params)
++     if open_browser:
++         webbrowser.open(url)
++     else:
++         print(url)
++     server.handle_request()
++     server.server_close()
++     if result.get("error"):
++         raise SpotifyError(f"Spotify auth error: {result['error']}")
++     if not result.get("code"):
++         raise SpotifyError("No authorization code received.")
++     token = _post_form(
++         {
++             "grant_type": "authorization_code",
++             "code": result["code"],
++             "redirect_uri": creds["redirect_uri"],
++         },
++     save_token(token, token_path)
++     return token
++ def request_json(
++     url: str,
++     method: str = "GET",
++     token: str | None = None,
++     body: dict[str, Any] | None = None,
++     headers = {"Content-Type": "application/json"}
++     if token:
++         headers["Authorization"] = f"Bearer {token}"
++     data = json.dumps(body).encode("utf-8") if body is not None else None
++     req = urllib.request.Request(url, data=data, headers=headers, method=method)
++             payload = response.read().decode("utf-8")
++             return json.loads(payload) if payload else {}
++         body_text = exc.read().decode("utf-8", errors="replace")
++         raise SpotifyError(f"Spotify API HTTP {exc.code}: {body_text}") from exc
++ def search_tracks(query: str, *, access_token: str, limit: int = 10, market: str | None = None) -> dict:
++     params = {"q": query, "type": "track", "limit": limit}
++     if market:
++         params["market"] = market
++     url = f"{API_ROOT}/search?" + urllib.parse.urlencode(params)
++     return request_json(url, token=access_token)
++ def current_user(access_token: str) -> dict:
++     return request_json(f"{API_ROOT}/me", token=access_token)
++ def create_playlist(
++     name: str,
++     access_token: str,
++     public: bool = False,
++     description: str = "",
++ ) -> dict:
++     return request_json(
++     return request_json(
++         f"{API_ROOT}/me/playlists",
++         token=access_token,
++         token=access_token,
++         body={"name": name, "public": public, "description": description},
++ def add_tracks_to_playlist(playlist_id: str, track_uris: list[str], *, access_token: str) -> dict:
++     if not track_uris:
++         return {"snapshot_id": None}
++         f"{API_ROOT}/playlists/{playlist_id}/items",
++         body={"uris": track_uris},
+
+### spotify_credentials.example.json  [code]
++ {
++   "client_id": "YOUR_SPOTIFY_CLIENT_ID",
++   "client_secret": "YOUR_SPOTIFY_CLIENT_SECRET",
++   "redirect_uri": "http://127.0.0.1:8888/callback"
++ }

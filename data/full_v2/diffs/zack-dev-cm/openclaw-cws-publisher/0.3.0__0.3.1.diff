@@ -1,0 +1,132 @@
+zack-dev-cm/openclaw-cws-publisher  0.3.0 -> 0.3.1
+change_type: instructions+code   changelog: Redact secret-like and local-only matches in publish-surface reports so leak scans do not copy sensitive values.
+
+### SKILL.md  [instructions]
+- version: 0.3.0
+-    - Source: ChromiumDash Stable release feed, cross-checked with Chrome Releases and Chrome for Developers release notes when making decisions.
++ version: 0.3.1
++    - Source: Chrome for Testing last-known-good Stable feed, cross-checked with ChromiumDash, Chrome Releases, and Chrome for Developers release notes when making decisions.
+
+### scripts/check_chrome_release.py  [code]
+- CHROMIUM_DASH_URL = "https://chromiumdash.appspot.com/fetch_releases?channel=Stable&platform={platform}"
+- def fetch_releases(platform: str, timeout: int) -> list[dict[str, Any]]:
+-     with urllib.request.urlopen(CHROMIUM_DASH_URL.format(platform=platform), timeout=timeout) as response:
+-     if not isinstance(payload, list):
+-         raise ValueError(f"unexpected ChromiumDash response for {platform}")
+-         "| Platform | Milestone | Version |",
+-     for item in report["platforms"]:
+-         lines.append(f"| {item['platform']} | {item['milestone']} | {item['version']} |")
+-     parser = argparse.ArgumentParser(description="Check current Chrome Stable versions from ChromiumDash.")
+-     parser.add_argument("--platform", action="append", default=[], help="Repeatable platform. Defaults to Mac, Windows, Linux.")
+-     platforms = args.platform or ["Mac", "Windows", "Linux"]
+-     platform_reports: list[dict[str, Any]] = []
+-         try:
+-             release = latest_release(fetch_releases(platform, args.timeout))
+-         except Exception as exc:  # noqa: BLE001 - report the platform-specific failure.
+-             blockers.append(f"{platform}: failed to fetch Chrome Stable release data: {exc}")
+-             continue
+-         milestone = int(release.get("milestone") or version_tuple(str(release["version"]))[0])
+-         platform_reports.append(
+-             {
+-                 "platform": platform,
+-                 "milestone": milestone,
+-                 "version": release["version"],
+-                 "source": CHROMIUM_DASH_URL.format(platform=platform),
+-             }
+-         )
+-         if args.min_milestone and milestone < args.min_milestone:
+-             blockers.append(f"{platform}: Stable milestone {milestone} is below required {args.min_milestone}")
+-     if args.tested_chrome_version and platform_reports:
+-         latest_milestone = max(item["milestone"] for item in platform_reports)
+-         if tested_milestone < latest_milestone:
+-                 f"local E2E used Chrome {args.tested_chrome_version}, behind current Stable milestone {latest_milestone}"
+-         "platforms": platform_reports,
++ CHROME_FOR_TESTING_URL = "https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions-with-downloads.json"
++ LEGACY_PLATFORM_ALIASES = {
++     "Mac": ["mac-arm64", "mac-x64"],
++     "Windows": ["win32", "win64"],
++     "Linux": ["linux64"],
++ }
++ def fetch_last_known_good(timeout: int) -> dict[str, Any]:
++     request = urllib.request.Request(CHROME_FOR_TESTING_URL, headers={"user-agent": "openclaw-cws-publisher/0.3"})
++     with urllib.request.urlopen(request, timeout=timeout) as response:
++     if not isinstance(payload, dict) or not isinstance(payload.get("channels"), dict):
++         raise ValueError("unexpected Chrome for Testing last-known-good response")
++ def stable_channel(payload: dict[str, Any]) -> dict[str, Any]:
++     stable = (payload.get("channels") or {}).get("Stable")
++     if not isinstance(stable, dict) or not stable.get("version"):
++         raise ValueError("Chrome for Testing feed did not include a Stable channel version")
++     return stable
++ def expand_platforms(platforms: list[str]) -> set[str]:
++     requested: set[str] = set()
++         requested.update(LEGACY_PLATFORM_ALIASES.get(platform, [platform]))
++     return requested
++ def chrome_downloads(stable: dict[str, Any], requested_platforms: set[str]) -> list[dict[str, Any]]:
++     downloads = ((stable.get("downloads") or {}).get("chrome") or [])
++     if requested_platforms:
++         downloads = [item for item in downloads if item.get("platform") in requested_platforms]
++     return downloads
++         "",
++         f"Source: `{report['source']}`",
++         f"Feed timestamp: `{report.get('feed_timestamp', '')}`",
++         f"Stable: **{report['stable']['version']}**",
++         "| Download platform | Version | URL |",
++     for item in report["downloads"]:
++         lines.append(f"| {item['platform']} | {item['version']} | {item['url']} |")
++     parser = argparse.ArgumentParser(description="Check current Chrome Stable from the Chrome for Testing last-known-good feed.")
++     parser.add_argument(
++         "--platform",
++         action="append",
++         default=[],
++         help=(
++             "Repeatable Chrome for Testing download platform, such as mac-arm64, mac-x64, linux64, win32, or win64. "
++             "Legacy Mac/Windows/Linux aliases are accepted."
++         ),
++     )
++     payload: dict[str, Any] = {}
++     stable: dict[str, Any] = {}
++     downloads: list[dict[str, Any]] = []
++     try:
++         payload = fetch_last_known_good(args.timeout)
++         stable = stable_channel(payload)
++         stable_version = str(stable["version"])
++         stable_milestone = version_tuple(stable_version)[0]
++         downloads = chrome_downloads(stable, expand_platforms(args.platform))
++         if not downloads:
++             blockers.append("no Chrome download entries matched the requested platform filter")
++         if args.min_milestone and stable_milestone < args.min_milestone:
++             blockers.append(f"Stable milestone {stable_milestone} is below required {args.min_milestone}")
++     except Exception as exc:  # noqa: BLE001 - report feed failures as release blockers.
++         blockers.append(f"failed to fetch Chrome Stable release data: {exc}")
++     if args.tested_chrome_version and stable.get("version"):
++         stable_milestone = version_tuple(str(stable["version"]))[0]
++         if tested_milestone < stable_milestone:
++                 f"local E2E used Chrome {args.tested_chrome_version}, behind current Stable milestone {stable_milestone}"
++         "source": CHROME_FOR_TESTING_URL,
++         "feed_timestamp": payload.get("timestamp", ""),
++         "stable": {
++             "channel": stable.get("channel", "Stable"),
++             "version": stable.get("version", ""),
++             "milestone": version_tuple(str(stable.get("version", "0")))[0] if stable.get("version") else 0,
++         },
++         "tested_chrome_version": args.tested_chrome_version or "",
++         "downloads": [
++             {"platform": item.get("platform", ""), "version": stable.get("version", ""), "url": item.get("url", "")}
++             for item in downloads
++         ],
++             CHROME_FOR_TESTING_URL,
+
+### scripts/scan_publish_surface.py  [code]
+-                         "excerpt": line.strip()[:220],
++ }
++ REDACTION_LABELS = {
++     "absolute-path": "<redacted:absolute-path>",
++     "localhost-url": "<redacted:local-url>",
++     "websocket-url": "<redacted:websocket-url>",
++     "token-shaped": "<redacted:token>",
++     "google-client-id": "<redacted:google-client-id>",
++                         "excerpt": redacted_excerpt(kind, line),
++ def redacted_excerpt(kind: str, line: str) -> str:
++     pattern = PATTERNS[kind]
++     label = REDACTION_LABELS[kind]
++     return pattern.sub(label, line.strip())[:220]

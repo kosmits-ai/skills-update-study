@@ -1,0 +1,1003 @@
+sdk-team/alibabacloud-cfw-internet-firewall-protect  0.0.1 -> 0.0.2
+change_type: instructions+docs+code   changelog: Version 0.0.2 – Adds asset export & filtering features, updates workflows, and improves compatibility.  - Added CSV export capability for asset protection status reports (`--export-csv` option; Python 3.6+ required). - Enabled new asset discovery queries by time window (e.g., "last 7 days"). - Updated name-based filtering: now matches both `Name` and `BindInstanceName` case-insensitively. - Improved multi-page asset queries with `--all-pages` for comprehensive filtering and export. - No longer e
+
+### SKILL.md  [instructions]
+-   contact: cfw-agent@alibaba-inc.com
+- 1. **Query**: Run `fw-switch.sh query` with available filters (status, region, resource type). Paginate through results if `total_count` exceeds page size.
+- 3. **Impact Preview (Phase 1)**: Present the matched assets summary to the user for confirmation (follow the summary format in "Protection Switch Workflow").
+- 5. **Verify (Phase 3)**: Poll status to confirm the operation completed (follow the polling strategy in "Protection Switch Workflow").
+- | **Zero assets match the filter condition** | Use the user's original broader dimensions instead: `enable --regions <region> --resource-types <type>` or `enable --ip-version <ver>`. If no broader dimension is available, call `enable-all --yes` as fallback. **Never skip Phase 2.** |
+- Before any operation, validate the CLI environment:
+- - `cli_installed` = false → run `--install-guide` for installation instructions
+- - `cli_version_ok` = false → CLI version below 3.3.3, reinstall or update
+- - `auto_plugin_install` = false → run `aliyun configure set --auto-plugin-install true`
+- - `credential_valid` = false → no profile configured, run `aliyun configure` to add one
+- - `permission_check` = false → credentials are invalid/expired or the identity lacks `yundun-cloudfirewall:DescribeAssetList`; check AccessKey status and refer to `references/ram-policies.md`
+- Note: `credential_valid` only reflects whether a profile exists in `aliyun configure list`. Real credential validity is verified by `permission_check`, which calls the actual CFW business API — invalid/expired AccessKey will fail there.
+- ## AI-Mode Lifecycle
+- Before any CLI invocation, enable AI-mode:
+- aliyun configure ai-mode enable
+- aliyun configure ai-mode set-user-agent --user-agent "AlibabaCloud-Agent-Skills/alibabacloud-cfw-internet-firewall-protect"
+- Before delivering the final response (success, failure, error, or user cancellation), always disable AI-mode:
+- aliyun configure ai-mode disable
+- AI-mode is only for Agent Skill execution and MUST NOT remain enabled after the skill stops running.
+- > **Permission Failure Handling:** When any command or API call fails due to permission errors at any point during execution, follow this process:
+- > 1. Read `references/ram-policies.md` to get the full list of permissions required by this Skill
+- > 2. Guide the user through requesting the necessary permissions
+- Available filters: `--region`, `--status` (open/closed/opening/closing), `--resource-type`, `--search` (IP or instance ID), `--ip-version` (4/6), `--member-uid`. Each filter accepts a single value.
+- Pagination: `--page` (default 1), `--page-size` (default 10). Check `TotalCount` in the response to determine if more pages exist.
+- All enable/disable/enable-all/disable-all operations follow a three-phase workflow: **Impact Preview → User Confirmation → Execute → Result Verification**. Skipping any phase may lead to unintended changes or unverified outcomes.
+- Use `--page-size 50` for the preview query. If `TotalCount` exceeds one page, paginate to collect all data for accurate statistics.
+- Wait for **explicit user confirmation** before proceeding to Phase 2.
+- After user confirms, run the actual enable/disable command. If using a condition-based IP list from the preview query, pass the collected IPs via `--ips`.
+- 2. **Query**: Run `fw-switch.sh query` with the same filters, check if assets transitioned to the expected status
+- At least one filter dimension is required. They can be combined freely:
+- Read `references/resource-types.md` for the complete list of valid resource type values.
+- These operations affect every public IP under the account. In non-interactive (Agent) mode, `--yes` is treated as implicit user confirmation — do NOT wait for explicit user input before passing it.
+- Use `--dry-run` to preview the merged config before applying. The `--yes` flag is required for execution.
+- All operations support `--member-uid <uid>` to operate on a member account's assets. When the user manages multiple accounts under a management account, ask which account they want to operate on and pass the member UID.
+- - `ErrorParamsNotEnough`: at least one filter dimension is required for enable/disable.
+- | `fw-switch.sh query` | Query assets and protection status | `--region`, `--status`, `--resource-type`, `--search`, `--ip-version`, `--member-uid`, `--new-resource-tag`, `--page`, `--page-size` |
+- | `auto-protect.sh modify` | Modify auto-protection config | `--enable`, `--disable`, `--config`, `--region`, `--yes` |
++   Requires python3 >= 3.6 for JSON merging and CSV export.
++ |---|---|
++ | Export asset protection status to CSV/Excel for audit or reporting | `fw-switch.sh query --all-pages --export-csv <file>` |
++ | List newly discovered assets (last hour / day / 7 days) | `fw-switch.sh query --new-resource-tag "discovered in 7 days"` |
++ 1. **Query**: Run `fw-switch.sh query` with available filters (status, region, resource type). Fetch the complete set — the filter is applied locally in step 2, so a truncated page would silently drop matches. See the pagination guidance in "Query Assets" (`--page-size 1000` first, `--all-pages` only beyond that).
++    For a name condition, match against **both** `Name` and `BindInstanceName`, case-insensitively, as a substring: `Name` can be empty (e.g. some NAT gateway assets return `Name=""` while `BindInstanceName` holds the real name), so relying on either field alone misses assets.
++ 3. **Impact Preview (Phase 1)**: Present the matched assets summary to the user for confirmation (follow the summary format in "Enable / Disable Protection Workflow").
++ 5. **Verify (Phase 3)**: Poll status to confirm the operation completed (follow the polling strategy in "Enable / Disable Protection Workflow").
++ | **Zero assets match the filter condition** | Fall back to a broader dimension **only** when the user's own request supplied one (a region, resource type, or IP version they named) — e.g. `enable --regions <region> --resource-types <type>`. If they supplied none, report the zero-match outcome and state that nothing was changed: that **is** a completed workflow, not a skipped Phase 2. **Never escalate to `enable-all` / `disable-all` to compensate for a zero match** — the user's condition is a scope limit, and widening it would touch assets they explicitly excluded. |
++ Generate the session-id described in "Observability" below **before** running anything here — `validate-cli.sh --check-permission` already calls a real CFW API, so it needs the session-id too. Passing it as `SKILL_SESSION_ID={session-id} bash scripts/validate-cli.sh --check-permission` keeps every call from the very first one attributable to this session.
++ **Pre-check: Aliyun CLI >= 3.3.3 is required.** Verify with `aliyun version`. 3.3.3 is the baseline for the plugin ecosystem — older versions cannot load the Cloudfw plugin, so every command in this Skill would fail. Install or upgrade first if the version is below it:
++ ```bash
++ # First install, or major upgrade
++ /bin/bash -c "$(curl -fsSL --connect-timeout 10 --max-time 120 https://aliyuncli.alicdn.com/setup.sh)"
++ # Routine self-update (supported from CLI 3.3.5)
++ aliyun upgrade --yes
++ # Alternative on macOS
++ brew install aliyun-cli      # or: brew upgrade aliyun-cli
++ ```
++ ```
++ ```
++ `aliyun upgrade` writes into the CLI's install directory, so it needs elevated privileges when the binary lives in a system path such as `/usr/local/bin`. See `references/cli-installation-guide.md` for the full installation and troubleshooting instructions.
++ Once the CLI version is acceptable, validate the rest of the environment:
++ - `cli_installed` = false → install the CLI with one of the commands above, or run `--install-guide` for the full walkthrough
++ - `cli_version_ok` = false → CLI version below 3.3.3, upgrade with `aliyun upgrade --yes`
++ - `auto_plugin_install` = `unknown` (the normal value) → the CLI exposes no way to read this setting back, so the script reports it as unknown rather than guessing. It is a local convenience switch, not a prerequisite: run `aliyun configure set --auto-plugin-install true` once if you want missing plugins auto-installed, and do not treat `unknown` as a failure to remediate on every run.
++ - `credential_valid` = false → no profile configured; configure one **outside this session** with `aliyun configure`, then re-run. The CLI resolves credentials from its default credential chain — this Skill never reads or handles credentials itself.
++ - `permission_check` = false → credentials are invalid/expired or the identity lacks `yundun-cloudfirewall:DescribeAssetList`; check the credential status in the RAM console and refer to `references/ram-policies.md`
++ Note: `credential_valid` only reflects whether a profile exists in `aliyun configure list`. Real credential validity is verified by `permission_check`, which calls the actual CFW business API — invalid or expired credentials will fail there.
++ ## Observability
++ Every cloud API call this Skill makes should be attributable to one Agent session, so cloud-side logs can correlate all actions back to a single execution. Tag each call with a session-scoped User-Agent.
++ **UA template:**
++ --user-agent "AlibabaCloud-Agent-Skills/alibabacloud-cfw-internet-firewall-protect/{session-id} skill-version/{skill-version}"
++ - The Skill `name` segment is fixed: `alibabacloud-cfw-internet-firewall-protect`.
++ - `{session-id}` is a placeholder — replace it with the current session identifier before running the command; never send the literal text `{session-id}`.
++ - `{skill-version}` is a placeholder for the `version` string in `references/manifest.json`, which is the only accepted source for it. Read it before the first cloud call: when the file is missing, the JSON is invalid, or `version` is empty or not a string, stop and report the error rather than guessing a value. An invented or borrowed version mislabels cloud-side telemetry, and because every call in a session shares one version, one wrong read corrupts correlation for the whole session.
++ **session-id generation rules:**
++ - Generate it **once per session**, at the first CLI invocation; do not regenerate on later calls.
++ - Format: a **32-character lowercase hexadecimal** string (128 bits), e.g. `3f2a9c1b4d5e6f708192a3b4c5d6e7f8`. A portable way to produce one is `python3 -c "import uuid; print(uuid.uuid4().hex)"`.
++ - Reuse the **same session-id in every call** for the whole session, so all actions share one correlatable identifier.
++ **How the flag reaches the API:**
++ The scripts read the session-id from `SKILL_SESSION_ID`, resolve `{skill-version}` from `references/manifest.json`, and append `--user-agent` to every cloud API call themselves, so pass the session-id in when invoking them:
++ SKILL_SESSION_ID={session-id} bash scripts/fw-switch.sh query --region cn-hangzhou
++ SKILL_SESSION_ID={session-id} bash scripts/auto-protect.sh modify --enable "EIP" --yes
++ `SKILL_SESSION_ID` is mandatory: a call that carries no session attribution cannot be traced back to this session, so the scripts refuse it and exit 1 with `SKILL_SESSION_ID is not set` before any API is contacted. The same applies to an unreadable manifest version. Set the session-id at the first invocation of this Skill rather than retrying without it.
++ When you call the `aliyun` CLI directly instead of through these scripts, add the flag yourself on each cloud API command. Local CLI commands (`configure`, `plugin`, `version`, `upgrade`, `help`) do not accept `--user-agent` — do not add it to them.
++ > **[MUST] Permission Failure Handling:** When any command or API call fails due to permission
++ > errors at any point during execution, follow this process:
++ > 1. Read `references/ram-policies.md` to get the full list of permissions required by this SKILL
++ > 2. Use `ram-permission-diagnose` skill to guide the user through requesting the necessary permissions
++ ## Parameter Confirmation
++ Before executing any command or API call, make sure the user-customizable parameters below are the ones the user actually intends. Do not silently substitute a default or invent a value the user never mentioned:
++ `fw-switch.sh enable` / `disable`:
++ | Parameter | Required | Description | Default when omitted |
++ | Parameter | Required | Description | Default when omitted |
++ | Parameter | Required | Description | Default when omitted |
++ | Parameter | Required | Description | Default when omitted |
++ |---|---|---|---|
++ |---|---|---|---|
++ |---|---|---|---|
++ |---|---|---|---|
++ | `--ips` | At least one of these four | Explicit public IP list | Not IP-restricted — **every** IP matching the other filters |
++ | `--regions` | At least one of these four | Region filter, e.g. `cn-hangzhou` | **All regions** — widens scope |
++ | `--resource-types` | At least one of these four | Asset type filter, e.g. `EcsPublicIP` | **All resource types** — widens scope |
++ | `--ip-version` | At least one of these four | `4` or `6` | Both IPv4 and IPv6 |
++ | `--member-uid` | Optional | Member account UID | The management account itself |
++ `enable` / `disable` refuse a call with **none** of the four scope dimensions — the script checks this locally and exits 1 with `At least one of --ips, --regions, --resource-types, --ip-version is required`, calling no API. An empty filter is therefore not the same as "everything".
++ `fw-switch.sh enable-all` / `disable-all`:
++ | `--instance-id` | Optional | CFW instance ID | The account's default instance |
++ These two take **no scope parameters at all**: `--ips`, `--regions`, `--resource-types`, `--ip-version` and `--member-uid` are all rejected with `Unknown option` (exit 1). Their scope is the whole account by design — that is the only thing to confirm with the user. If the user wants a narrower scope, use `enable` / `disable` with filters instead.
++ `auto-protect.sh modify`:
++ | `--enable` / `--disable` | One of these, or `--config` | Comma-separated resource types to turn on / off | no change to those types |
++ | `--config` | Mutually exclusive with the above | Full replacement JSON for the auto-protection map | — |
++ `--config` replaces the **whole** map in one submission: a resource type absent from the JSON is written as not auto-protected. Passing `--config '{"EIP":true,"NatEIP":true}'` for a user who asked to auto-protect EIP and NAT therefore silently switches the other ~26 types off. When the user names only some types, do **not** hand their partial list straight to `--config` — either run `auto-protect.sh query` first and merge the request into the map you got back before submitting the full JSON, or use incremental mode (`--enable` / `--disable`), which performs that read-merge-write itself. Either way, say in the report which types the submitted map leaves at `false`.
++ Informal type names in the user's JSON (`eip`, `ecs`, `slb`) are not API values. Resolve every key through `references/resource-types.md` before it reaches the command: the map keys are case-sensitive, and an unrecognised key is not something the API reports back as an error — it simply fails to protect anything.
++ Auto-protection is configured at the account's default scope and takes **no region parameter** — there is no per-region variant to confirm with the user. If the user asks to limit auto-protection to one region, tell them the API does not support a readable region-scoped config, and offer `fw-switch.sh enable --regions <region>` for the existing assets in that region instead.
++ `fw-switch.sh query` (read-only, so no confirmation gate applies):
++ | `--region` / `--status` / `--resource-type` / `--ip-version` / `--member-uid` | Optional | Single-value filters | No filter on that dimension |
++ | `--search` | Optional | IP or instance ID substring | none |
++ | `--new-resource-tag` | Optional | Asset discovery window: `discovered in 1 hour` / `1 day` / `7 days` | none |
++ | `--page` / `--page-size` | Optional | Paging only, never affects what gets changed | page 1, size 10 |
++ Confirm only what is genuinely undetermined. A parameter the user already stated explicitly in their request is confirmed by definition — restate it in the Phase 1 impact preview instead of asking about it a second time.
++ The parameters that do need a decision are the ones the user left out **and** that widen scope — on `enable` / `disable`, an omitted region or resource type means "everything matching the remaining filters". Rather than pausing to ask, surface that interpretation concretely in the Phase 1 preview (asset count plus region distribution) so the user sees the true blast radius, and let the confirmation gate described in "Confirmation and the `--yes` Flag" handle the decision. `enable-all` / `disable-all` have no such parameter to resolve: their scope is always the whole account, so the preview itself is the disclosure.
++ > Parameter confirmation never overrides the non-interactive execution rule. In Agent mode the Phase 1 preview is informational and `--yes` is the confirmation — do not add an extra round-trip with the user, and never stop before Phase 2 and Phase 3.
++ Available filters: `--region`, `--status` (open/closed/opening/closing), `--resource-type`, `--search` (IP or instance ID), `--ip-version` (4/6), `--member-uid`, `--new-resource-tag`. Each filter accepts a single value.
++ `--new-resource-tag` filters by **asset discovery time**, not by a user-defined tag. It accepts only three values: `discovered in 1 hour`, `discovered in 1 day`, `discovered in 7 days`. Use it when the user asks about newly discovered or recently added assets.
++ Pagination: `--page` (default 1), `--page-size` (default 10). Check `TotalCount` in the response to determine if more pages exist. The API accepts a large `--page-size` (1000 is known to work), so an account with up to roughly a thousand public IPs can be fetched completely in a **single** call — try `--page-size 1000` first, since it avoids pagination entirely. Only reach for `--all-pages` when `TotalCount` exceeds what one page can hold; `--all-pages` walks every page and returns a single merged result, and it needs `python3` to do the merging.
++ ### Export Query Results
++ For security audit or reporting scenarios where the user wants a spreadsheet of asset protection status:
++ bash scripts/fw-switch.sh query --status open --all-pages --export-csv ./protected-assets.csv
++ `--export-csv <file>` writes one row per asset with all the fields listed above. The file is UTF-8 with a BOM, so it opens directly in Excel with Chinese instance names rendered correctly — no separate `.xlsx` conversion needed. Combine it with `--all-pages`, otherwise only the current page is exported.
++ When `--export-csv` is used, stdout carries an export summary (`exported_file`, `row_count`) instead of the full asset JSON. Report the file path and row count to the user; read the CSV back only if you need the contents for further analysis.
++ The target directory must already exist — the script does not create directories, and exits 1 if the path is unwritable.
++ All enable/disable/enable-all/disable-all operations follow a three-phase workflow: **Phase 1 Impact Preview → Phase 2 Execute → Phase 3 Result Verification**. Confirmation is a gate inside Phase 1, and how that gate is satisfied depends on the execution mode — see "Confirmation and the `--yes` Flag" below. Skipping any phase may lead to unintended changes or unverified outcomes.
++ This workflow covers the `fw-switch.sh` protection switches only. `auto-protect.sh modify` has its own three-step workflow without polling — see "Auto-Protection Settings → Modify Settings".
++ >
++ > **Scope boundary:** this rule forbids skipping Phase 2 **for the scope the user asked for** — it never authorises widening that scope. When the target set comes from a user-supplied condition (instance name, tag, etc.) and nothing matched it, there is no in-scope target to act on; reporting the zero match is the correct terminal state. See the zero-match row in "Conditional Multi-Step Workflow".
++ ### Confirmation and the `--yes` Flag
++ `--yes` is a **script-level safety interlock**, not a user-facing prompt. Two separate things are involved — do not conflate them:
++ - **The confirmation gate** in Phase 1 is satisfied by the user in interactive mode, and by the Agent itself in non-interactive mode.
++ - **The `--yes` flag** is a CLI argument that the caller must pass on destructive commands. The script never prompts and never reads stdin.
++ Exactly which commands take `--yes` — the flag is accepted **only** by the two rows marked Required:
++ | Command | `--yes` | Why |
++ |---|---|---|
++ | `fw-switch.sh query`, `auto-protect.sh query` | **Not accepted** | Read-only |
++ | `fw-switch.sh enable` / `disable` | **Not accepted** | Scoped to explicit IP/region/type/version filters |
++ | `fw-switch.sh enable-all` / `disable-all` | **Required** | Affects every public IP in the account |
++ | `auto-protect.sh modify` | **Required** | Changes account-wide auto-protection policy |
++ "Not accepted" is stricter than "optional": passing `--yes` to those commands aborts with `[ERROR] Unknown option: --yes` and exit code 1, calling no API. So pass `--yes` on exactly the two Required commands — never add it defensively elsewhere.
++ When `--yes` is required but omitted, the script outputs `{"success": false, "error_code": "NotConfirmed", ...}` and exits with code **1 without performing any write operation** — nothing is changed. (`auto-protect.sh modify` reads the current config first, so it may issue one read-only API call before stopping.) This is intended safety behaviour — but it also means a non-interactive run that forgets `--yes` accomplishes nothing at all. As an Agent, pass `--yes` on the Required commands as part of normal execution; do not treat it as something to withhold pending a further round-trip with the user.
++ One caveat when previewing: `--dry-run` is evaluated **before** the interlock, so `enable-all --dry-run` prints the command preview and exits 0 even without `--yes`. A successful dry-run therefore proves nothing about `--yes` — still pass it on the real invocation.
++ A second caveat, specific to `auto-protect.sh modify`: its incremental form (`--enable` / `--disable`) cannot show a merged config without first reading the current one, so `--dry-run` there **does** call `DescribeResourceTypeAutoEnable` for real. It consequently needs `SKILL_SESSION_ID` like any other cloud call, and without it exits 1 with `SKILL_SESSION_ID is not set` before printing any preview. Only `--config --dry-run` is purely local, since a full replacement needs no read. Passing the session-id on every invocation — dry-run included — makes the distinction irrelevant.
++ Use the same single-fetch approach as "Query Assets" for the preview query: `--page-size 1000` retrieves the whole result set in one call, which is what an accurate count and region distribution need. Only paginate (or use `--all-pages`) when `TotalCount` exceeds what that one page returned.
++ Three forms carry a blast radius the preview is the only chance to expose — `enable-all`, `disable-all`, and any `disable` — so for them the Phase 1 disclosure is mandatory in **content**, not just in form. Put all of it in the message that precedes Phase 2:
++ - the scope in words: "every public IP under this account" for `enable-all` / `disable-all`, or the exact filter set for `disable`;
++ - the affected asset count from the preview query, plus region distribution once it exceeds 5;
++ - for both `disable` forms, the protection-loss consequence spelled out above.
++ That disclosure is the Agent-mode stand-in for an interactive confirmation prompt — it is what leaves the operation reviewable in the transcript. Deliver it and keep going; do not convert it into a question and wait.
++ Then satisfy the confirmation gate according to the execution mode:
++ - **Interactive mode** (a human is answering): wait for explicit user confirmation before proceeding to Phase 2.
++ - **Non-interactive / Agent mode**: the preview above is informational only. Do **NOT** wait for input — proceed directly to Phase 2, passing `--yes` on the commands that require it.
++ A request phrased as "先看看有哪些，确认没问题再开启" does not change this in Agent mode. What the user is asking for is to *see* the affected assets before anything changes, and the Phase 1 preview is exactly that — deliver it, state what will run next, then run it. Reading it as "stop and wait for my reply" leaves the task unfinished, which is the one outcome the user did not ask for.
++ Two situations are the exception, and in both of them you **do** stop and ask:
++ - **The user named an interaction point.** "如果有多个候选，请先列出并让我确认后再继续", "先问我再改", "列出来我看过再执行" — this is not a generic confirmation ritual, it is an instruction about how to run the task. Present the candidates, ask, and wait for the answer.
++ - **A value central to the request is missing and cannot be safely inferred.** "帮我关闭几个公网IP的防护" names no IP, region, resource type, or IP version, so there is no scope to preview and nothing safe to assume. Ask which targets are meant rather than picking a scope yourself; guessing here risks disabling protection on assets the user never mentioned.
++ The difference from the paragraph above is who introduced the stop: a preview the user asked to see is not a question, while an explicit "ask me first" or a missing scope is.
++ Once the confirmation gate is satisfied, run the actual enable/disable command. If using a condition-based IP list from the preview query, pass the collected IPs via `--ips`.
++ 2. **Query**: Run `fw-switch.sh query` with the same **scope** filters as Phase 1 (region, resource type, IP list, IP version, member UID) but **drop the `--status` filter**. Then read each asset's `ProtectStatus` and count how many reached the target state versus how many are still `opening`/`closing`.
++    Keeping `--status closed` here inverts the result: once the enable succeeds nothing is `closed` any more, so the query returns an empty set — which reads as "nothing transitioned" when in fact everything did. An empty result under a retained status filter is the *success* signal, not a failure. Dropping the filter removes that ambiguity entirely.
++ At least one filter dimension is required. The dimensions you do pass are combined with **AND**, and any dimension you omit is left **unrestricted** — so `--regions cn-hangzhou` on its own covers every resource type and both IP versions in that region, while `--regions cn-hangzhou --resource-types EcsPublicIP` narrows to just ECS public IPs there. They can be combined freely:
++ `references/resource-types.md` maps product names users actually say (for example, `负载均衡`) to exact API values; `references/region-ids.md` maps regional labels (for example, `华北2`) to region IDs. Consult both before passing filters, because a plausible-looking but non-existent value is rejected rather than corrected.
++ These operations affect every public IP under the account. `--yes` is mandatory: without it the script exits with `NotConfirmed` (exit code 1) and calls no API. In non-interactive (Agent) mode, `--yes` is treated as implicit user confirmation — do NOT wait for explicit user input before passing it.
++ Auto-protection changes follow their own three-step workflow. It is **not** the polling workflow used for protection switches: a config change has no `opening`/`closing` intermediate state, so there is nothing to poll for.
++ 1. **Preview** — run `auto-protect.sh query` and show the user which of the requested types are currently `true` / `false`, i.e. what will actually change.
++ 2. **Execute** — run `auto-protect.sh modify` with `--yes` (see the mandatory rule below). Always run it, whatever the preview showed.
++ 3. **Verify** — run `auto-protect.sh query` **once** and report the resulting state of the requested types. No `sleep`, no polling loop. If a type does not yet read as requested, report the observed value rather than retrying blindly — repeated writes will not change the outcome.
++ Use `--dry-run` to preview the merged config before applying — with `--enable` / `--disable` that preview reads the current config from the API, so it needs `SKILL_SESSION_ID` (see the second caveat in "Confirmation and the `--yes` Flag"). `--yes` is required for execution — without it the script exits with `NotConfirmed` (exit code 1) and the config is left unchanged. In non-interactive (Agent) mode, pass it as part of normal execution.
++ `--member-uid <uid>` operates on a member account's assets, but only the asset-scoped commands accept it:
++ | Command | `--member-uid` |
++ | `fw-switch.sh query` | Supported |
++ | `fw-switch.sh enable` / `disable` | Supported |
++ | `fw-switch.sh enable-all` / `disable-all` | **Rejected** (`Unknown option`, exit 1) |
++ | `auto-protect.sh query` / `modify` | **Rejected** (`Unknown option`, exit 1) |
++ When the user manages multiple accounts under a management account, ask which account they want to operate on and pass the member UID on the commands that accept it. For a member account's assets, reach the whole-account effect via `enable --regions ... --member-uid <uid>` rather than `enable-all`, which cannot target a member account. Auto-protection settings are configured per account — switch profile or credentials to configure a member account's auto-protection.
++ - `ErrorParamsNotEnough`: at least one filter dimension is required for enable/disable. The scripts guard this locally first (exit 1, no API call), so reaching this error means the guard was bypassed — re-check the filters passed in.
++ | `fw-switch.sh query` | Query assets and protection status | `--region`, `--status`, `--resource-type`, `--search`, `--ip-version`, `--member-uid`, `--new-resource-tag`, `--page`, `--page-size`, `--all-pages`, `--export-csv` |
++ | `auto-protect.sh modify` | Modify auto-protection config | `--enable`, `--disable`, `--config`, `--yes` |
++ `--dry-run` previews the **functional** parameters (API action plus the filters that decide what gets changed). At execution time `call_cfw_api` additionally appends infrastructure flags that are identical on every call and never need reviewing — the request/connect timeouts and the `--user-agent` observability tag described above.
++ The underlying switch APIs also accept their own server-side `DryRun` precheck flag and a `ClientToken` for idempotency. These scripts deliberately surface neither: `--dry-run` stays a local command preview (with the single read-only exception noted above), and a retry after a failed enable/disable is safe without a token because the switch APIs are idempotent by target state. Do not try to pass `--DryRun` or `--ClientToken` through the scripts — they are rejected as `Unknown option`.
+
+### references/cli-installation-guide.md  [docs]
++ # Aliyun CLI Installation & Configuration Guide
++ Complete guide for installing and configuring Aliyun CLI.
++ > **Aliyun CLI 3.3.3+**: Supports installing and using all published Alibaba Cloud product plugins. Make sure to upgrade to 3.3.3 or later for full plugin ecosystem coverage.
++ ## Installation
++ ### macOS
++ **Using Homebrew (Recommended)**
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ brew install aliyun-cli
++ # Upgrade to latest
++ brew upgrade aliyun-cli
++ # Verify version (>= 3.3.3)
++ aliyun version
++ aliyun version
++ aliyun version
++ aliyun version
++ aliyun version
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ **Using Binary**
++ **Using Binary**
++ # Download
++ # Download
++ # Download
++ # Download
++ wget https://aliyuncli.alicdn.com/aliyun-cli-macosx-latest-amd64.tgz
++ # Extract
++ # Extract
++ tar -xzf aliyun-cli-macosx-latest-amd64.tgz
++ # Move to PATH
++ sudo mv aliyun /usr/local/bin/
++ sudo mv aliyun /usr/local/bin/
++ sudo mv aliyun /usr/local/bin/
++ sudo mv aliyun /usr/local/bin/
++ # Verify
++ # Verify
++ # Verify
++ # Verify
++ ### Linux
++ **Debian/Ubuntu**
++ wget https://aliyuncli.alicdn.com/aliyun-cli-linux-latest-amd64.tgz
++ wget https://aliyuncli.alicdn.com/aliyun-cli-linux-latest-amd64.tgz
++ # Extract and install
++ # Extract and install
++ # Extract and install
++ tar -xzf aliyun-cli-linux-latest-amd64.tgz
++ tar -xzf aliyun-cli-linux-latest-amd64.tgz
++ **CentOS/RHEL**
++ **ARM64 Architecture**
++ # Download ARM64 version
++ wget https://aliyuncli.alicdn.com/aliyun-cli-linux-latest-arm64.tgz
++ tar -xzf aliyun-cli-linux-latest-arm64.tgz
++ ### Windows
++ 1. Download from: https://aliyuncli.alicdn.com/aliyun-cli-windows-latest-amd64.zip
++ 2. Extract the ZIP file
++ 3. Add the directory to your PATH environment variable
++ 4. Open new Command Prompt or PowerShell
++ 5. Verify: `aliyun version`
++ **Using PowerShell**
++ ```powershell
++ Invoke-WebRequest -Uri "https://aliyuncli.alicdn.com/aliyun-cli-windows-latest-amd64.zip" -OutFile "aliyun-cli.zip"
++ Expand-Archive -Path aliyun-cli.zip -DestinationPath C:\aliyun-cli
++ # Add to PATH (requires admin privileges)
++ $env:Path += ";C:\aliyun-cli"
++ [Environment]::SetEnvironmentVariable("Path", $env:Path, [System.EnvironmentVariableTarget]::Machine)
++ ## Configuration
++ ### Quick Start
++ aliyun configure set \
++ aliyun configure set \
++ aliyun configure set \
++ aliyun configure set \
++ aliyun configure set \
++ aliyun configure set \
++ aliyun configure set \
++   --mode AK \
++   --mode AK \
++   --mode AK \
++   --mode AK \
++   --access-key-id <your-access-key-id> \
++   --access-key-secret <your-access-key-secret> \
++   --region cn-hangzhou
++   --region cn-hangzhou
++   --region cn-hangzhou
++   --region cn-hangzhou
++   --region cn-hangzhou
++   --region cn-hangzhou
++   --region cn-hangzhou
++   --region cn-hangzhou
++ All `aliyun configure` commands support non-interactive flags, which is the recommended approach —
++ it works in scripts, CI/CD pipelines, and agent-driven automation without hanging on stdin prompts.
++ **Where to Get Access Keys**
++ 1. Log in to Aliyun Console: https://ram.console.aliyun.com/
++ 2. Navigate to: AccessKey Management
++ 3. Create a new AccessKey pair
++ 4. Save the secret immediately — it's only shown once
++ ### Configuration Modes
++ Aliyun CLI supports 6 authentication modes. All examples below use non-interactive flags.
++ #### 1. AK Mode (Access Key)
++ Most common mode for personal accounts and scripts.
++   --access-key-id LTAI5tXXXXXXXX \
++   --access-key-id LTAI5tXXXXXXXX \
++   --access-key-id LTAI5tXXXXXXXX \
++   --access-key-secret 8dXXXXXXXXXXXXXXXXXXXXXXXX \
++   --access-key-secret 8dXXXXXXXXXXXXXXXXXXXXXXXX \
++   --access-key-secret 8dXXXXXXXXXXXXXXXXXXXXXXXX \
++ Configuration is stored in `~/.aliyun/config.json`:
++ ```json
++ ```json
++ {
++ {
++   "current": "default",
++   "profiles": [
++     {
++       "name": "default",
++       "mode": "AK",
++       "access_key_id": "LTAI5tXXXXXXXX",
++       "access_key_secret": "8dXXXXXXXXXXXXXXXXXXXXXXXX",
++       "region_id": "cn-hangzhou",
++       "output_format": "json",
++       "language": "en"
++     }
++   ]
++ }
++ }
++ #### 2. StsToken Mode (Temporary Credentials)
++ For short-lived access (tokens expire in 1-12 hours).
++   --mode StsToken \
++   --sts-token v1.0:XXXXXXXXXXXXXXXX \
++ Use cases: CI/CD pipelines, temporary access for external contractors, cross-account access.
++ #### 3. RamRoleArn Mode (Assume RAM Role)
++ Assume a RAM role for elevated or cross-account access.
++   --mode RamRoleArn \
++   --ram-role-arn acs:ram::123456789012:role/AdminRole \
++   --role-session-name my-session \
++   --role-session-name my-session \
++ Use cases: cross-account resource access, temporary elevated privileges, role-based access control.
++ #### 4. EcsRamRole Mode (ECS Instance RAM Role)
++ Use the RAM role attached to an ECS instance — no credentials needed.
++   --mode EcsRamRole \
++   --ram-role-name MyEcsRole \
++   --ram-role-name MyEcsRole \
++ Requirements: must be running on an ECS instance with a RAM role attached.
++ Use cases: scripts and automation running on ECS instances.
++ #### 5. RsaKeyPair Mode (RSA Key Pair)
++ Use RSA key pair for authentication (generate key pair in Aliyun Console first).
++   --mode RsaKeyPair \
++   --private-key /path/to/private-key.pem \
++   --key-pair-name my-key-pair \
++ #### 6. RamRoleArnWithEcs Mode (ECS + RAM Role)
++ Combine ECS instance role with RAM role assumption for cross-account access from ECS.
++   --mode RamRoleArnWithEcs \
++   --ram-role-arn acs:ram::123456789012:role/TargetRole \
++ ### Environment Variables
++ **Highest priority** - overrides config file
++ **Access Key Mode**
++ export ALIBABA_CLOUD_ACCESS_KEY_ID=your_access_key_id
++ export ALIBABA_CLOUD_ACCESS_KEY_ID=your_access_key_id
++ export ALIBABA_CLOUD_ACCESS_KEY_SECRET=your_access_key_secret
++ export ALIBABA_CLOUD_ACCESS_KEY_SECRET=your_access_key_secret
++ export ALIBABA_CLOUD_REGION_ID=cn-hangzhou
++ export ALIBABA_CLOUD_REGION_ID=cn-hangzhou
++ **STS Token Mode**
++ export ALIBABA_CLOUD_SECURITY_TOKEN=your_sts_token
++ **ECS RAM Role Mode**
++ export ALIBABA_CLOUD_ECS_METADATA=role_name
++ **Use Case**:
++ - CI/CD pipelines
++ - Docker containers
++ - Temporary credential override
++ ### Managing Multiple Profiles
++ **Create Named Profiles**
++ aliyun configure set --profile projectA \
++   --access-key-id LTAI5tAAAAAAAA \
++   --access-key-secret 8dAAAAAAAAAAAAAAAAAAAAAAAA \
++ aliyun configure set --profile projectB \
++   --access-key-id LTAI5tBBBBBBBB \
++   --access-key-secret 8dBBBBBBBBBBBBBBBBBBBBBBBB \
++   --region cn-shanghai
++ **Use Specific Profile**
++ aliyun ecs describe-instances --profile projectA
++ export ALIBABA_CLOUD_PROFILE=projectA
++ aliyun ecs describe-instances   # Uses projectA
++ **List and Switch Profiles**
++ aliyun configure list                      # List all profiles
++ aliyun configure set --current projectA    # Switch default profile
++ ### Credential Priority
++ Credentials are loaded in this order (first found wins):
++ 1. **Command-line flag**: `--profile <name>`
++ 2. **Environment variable**: `ALIBABA_CLOUD_PROFILE`
++ 3. **Environment credentials**: `ALIBABA_CLOUD_ACCESS_KEY_ID`, etc.
++ 4. **Configuration file**: `~/.aliyun/config.json` (current profile)
++ 5. **ECS Instance RAM Role**: If running on ECS with attached role
++ ## Verification
++ ### Test Authentication
++ # Basic test - list regions
++ aliyun ecs describe-regions
++ aliyun ecs describe-regions
++ # Expected output: JSON array of regions
++ **If successful**, you'll see:
++   "Regions": {
++     "Region": [
++       {
++         "RegionId": "cn-hangzhou",
++         "RegionEndpoint": "ecs.cn-hangzhou.aliyuncs.com",
++         "LocalName": "华东 1（杭州）"
++       },
++       ...
++     ]
++   },
++   "RequestId": "..."
++ **If failed**, you'll see error messages:
++ - `InvalidAccessKeyId.NotFound` - Wrong Access Key ID
++ - `SignatureDoesNotMatch` - Wrong Access Key Secret
++ - `InvalidSecurityToken.Expired` - STS token expired (for StsToken mode)
++ - `Forbidden.RAM` - Insufficient permissions
++ ### Debug Configuration
++ # Show current configuration
++ aliyun configure get
++ aliyun configure get
++ # Test with debug logging
++ aliyun ecs describe-regions --log-level=debug
++ aliyun ecs describe-regions --log-level=debug
++ # Check credential provider
++ aliyun configure get mode
++ ## Security Best Practices
++ ### 1. Use RAM Users (Not Root Account)
++ ❌ **Don't**: Use Aliyun root account credentials
++ ✅ **Do**: Create RAM users with specific permissions
++ # Create RAM user in console
++ # Attach only necessary policies
++ # Use RAM user's access keys
+
+### references/manifest.json  [code]
++ {"version":"0.0.2"}
+
+### references/region-ids.md  [docs]
++ # Region IDs
++ Map commonly used regional labels to Alibaba Cloud region IDs before passing a
++ region filter. Region IDs are numbered within a geography rather than globally;
++ do not pass the localized label itself to the API.
++ ```text
++ "华东1" (Hangzhou)       -> cn-hangzhou
++ "华东2" (Shanghai)       -> cn-shanghai
++ "华北1" (Qingdao)        -> cn-qingdao
++ "华北2" (Beijing)        -> cn-beijing
++ "华北3" (Zhangjiakou)    -> cn-zhangjiakou
++ "华北5" (Hohhot)         -> cn-huhehaote
++ "华北6" (Ulanqab)        -> cn-wulanchabu
++ "华南1" (Shenzhen)       -> cn-shenzhen
++ "华南2" (Heyuan)         -> cn-heyuan
++ "华南3" (Guangzhou)      -> cn-guangzhou
++ "西南1" (Chengdu)        -> cn-chengdu
++ ```
++ For example, use `cn-beijing` for the Beijing label and `cn-shanghai` for the
++ Shanghai label.
+
+### references/resource-types.md  [docs]
+- Source: `DescribeResourceTypeAutoEnable` API + `DescribeAssetList` query results.
+- All 27 types from `DescribeResourceTypeAutoEnable` are accepted (excluding `BastionHostAll`):
++ Source: `DescribeResourceTypeAutoEnable` API + `DescribeAssetList` query results,
++ cross-checked against `aliyun Cloudfw <action> --help`.
++ The CLI's own `--help` enum for `DescribeAssetList.ResourceType` is a shorter list than
++ what the API actually returns: it omits the `*IPv6` variants and `BastionHostAll`, and it
++ lists both `BastionHostEgressIP` and `BastionHostIP`. The tables below follow the observed
++ API behaviour, which is the authority for what a filter value actually matches — treat the
++ CLI help enum as a lower bound, not as the full set.
++ ## Mapping User Wording to Filter Values
++ Users may name products with informal wording, while the filters accept only the
++ exact values listed in this file. `validate_resource_type` compares
++ case-sensitively against a fixed allowlist, so a plausible-looking value is
++ rejected rather than corrected. Resolve the product name before building a command.
++ The following reference data maps common user phrases to the API values:
++ ```text
++ "ECS 公网IP" / "ECS 固定公网 IP"       -> EcsPublicIP
++ "ECS 弹性公网 IP" / "ECS EIP"          -> EcsEIP
++ "EIP" / "弹性公网 IP"                  -> EIP
++ "NAT 网关" / "NAT EIP"                 -> NatEIP (EIP form) or NatPublicIP (public IP form)
++ "负载均衡" / "SLB" / "CLB 公网IP"      -> SlbPublicIP (public IP form) or SlbEIP (EIP form)
++ "应用型负载均衡" / "ALB"                -> AlbEIP
++ "网络型负载均衡" / "NLB"                -> NlbEIP
++ "IPv6 地址"                              -> the *IPv6 variant of the matching product
++ ```
++ > When the user says a product name without specifying the address class ("所有负载均衡的公网IP"),
++ > both the `*PublicIP` and the `*EIP` form can apply. Query both and report what exists rather than
++ > picking one silently — a wrong guess returns an empty set that reads as "no assets to protect".
++ All 28 types from `DescribeResourceTypeAutoEnable` are accepted (excluding `BastionHostAll`):
++ | `VpnEIP` | VPN Gateway EIP |
++ > **Note:** `VpnEIP` is an auto-protect-only type. It is returned by `DescribeResourceTypeAutoEnable` but is NOT a valid `--resource-type` filter for the `DescribeAssetList` query API.
+
+### scripts/auto-protect.sh  [code]
+-   local ENABLE_TYPES="" DISABLE_TYPES="" CONFIG_JSON="" REGION="" YES=false DRY_RUN=false
+-       --region) REGION="$2"; shift 2 ;;
+-   --region <id>          Region filter (optional)
+-   [[ -n "$REGION" ]] && validate_region "$REGION"
+-   [[ -n "$REGION" ]] && CLI_ARGS+=(--RegionNo "$REGION")
+-     [[ -n "$REGION" ]] && echo "  --RegionNo '${REGION}' \\"
++   fi
++   fi
++   require_attribution
++   # 3 is call_cfw_api's "no attribution" code: a local configuration fault, not an
++   # 3 is call_cfw_api's "no attribution" code: a local configuration fault, not an
++   # API failure, so surface it as such instead of running error-code diagnosis on it.
++   # API failure, so surface it as such instead of running error-code diagnosis on it.
++   if [[ $exit_code -eq 3 ]]; then
++   if [[ $exit_code -eq 3 ]]; then
++     output_error "AttributionRequired" "SKILL_SESSION_ID or references/manifest.json version is unavailable"
++     output_error "AttributionRequired" "SKILL_SESSION_ID or references/manifest.json version is unavailable"
++     exit 1
++     exit 1
++   local ENABLE_TYPES="" DISABLE_TYPES="" CONFIG_JSON="" YES=false DRY_RUN=false
++     # require_attribution runs in the main shell here, so the read below can never
++     # be unattributed and call_cfw_api's rc=3 is unreachable on this path.
++     require_attribution
++   # No RegionNo: ModifyResourceTypeAutoEnable accepts it, but
++   # DescribeResourceTypeAutoEnable does not declare it and returns an empty map
++   # when it is passed. A region-scoped config could therefore be written but never
++   # read back, and the read-merge-write cycle would submit a partial map that wipes
++   # the other resource types. Both read and write stay on the default scope.
++   # Both branches converge here, so attribution is enforced for the direct --config
++   # mode too: the incremental branch already gated above, but --config reaches this
++   # point without having called a cloud API yet.
++   [[ "$DRY_RUN" == "true" ]] || require_attribution
+
+### scripts/common.sh  [code]
+- readonly VALID_RESOURCE_TYPES="AiGatewayEIP AiGatewayEIPv6 AlbEIP AlbIPv6 ApiGatewayEIP ApiGatewayEIPv6 BastionHostAll BastionHostEgressIP BastionHostIngressIP BastionHostIP EIP EcdEIP EcsEIP EcsIPv6 EcsPublicIP EniEIP EniEIPv6 GaEIP GaEIPV6 HAVIP NatEIP NatPublicIP NlbEIP NlbIPv6 SlbEIP SlbIPv6 SlbPublicIP SwasEIP"
+-   if [[ ! "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+-     log_error "Invalid IP address format: ${ip}"
++ # Observability: every cloud API call is tagged with a session-scoped User-Agent
++ # so cloud-side logs can correlate all actions back to one Agent session.
++ # The session-id comes from SKILL_SESSION_ID (see the Observability section of
++ # SKILL.md). Both it and the manifest-derived skill-version are mandatory: a
++ # call that cannot be attributed is refused rather than sent anonymously.
++ readonly SKILL_UA_PREFIX="AlibabaCloud-Agent-Skills/alibabacloud-cfw-internet-firewall-protect"
++ # Skill root, used to locate references/manifest.json.
++ readonly SKILL_ROOT_DIR="$(cd "${BASH_SOURCE[0]%/*}/.." && pwd)"
++ # Safety cap for --all-pages iteration, guards against an unbounded loop
++ # if TotalCount and the returned page contents ever disagree.
++ readonly MAX_QUERY_PAGES=200
++ # Note: BastionHostAll is query-only (not accepted by write/auto-protect APIs);
++ #       VpnEIP is auto-protect-only (not a DescribeAssetList query filter type).
++ readonly VALID_RESOURCE_TYPES="AiGatewayEIP AiGatewayEIPv6 AlbEIP AlbIPv6 ApiGatewayEIP ApiGatewayEIPv6 BastionHostAll BastionHostEgressIP BastionHostIngressIP BastionHostIP EIP EcdEIP EcsEIP EcsIPv6 EcsPublicIP EniEIP EniEIPv6 GaEIP GaEIPV6 HAVIP NatEIP NatPublicIP NlbEIP NlbIPv6 SlbEIP SlbIPv6 SlbPublicIP SwasEIP VpnEIP"
++ }
++ }
++ }
++     return 1
++     return 1
++     return 1
++   fi
++   fi
++   fi
++   fi
++   fi
++   fi
++   fi
++   fi
++   if [[ ! "$ip" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
++     log_error "Invalid IP address format: ${ip}. Expected IPv4 dotted-quad (e.g. 192.168.1.1)"
++   # Each octet must be within 0-255. The 10# prefix forces decimal —
++   # a bare octet like 08 would otherwise be read as invalid octal under bash 3.2.
++   local saved_ifs="${IFS-$' \t\n'}"
++   IFS='.'
++   for octet in $ip; do
++     IFS="$saved_ifs"
++     if (( 10#$octet > 255 )); then
++       log_error "Invalid IP address: ${ip}. Octet '${octet}' is out of the 0-255 range"
++       return 1
++       return 1
++     fi
++   done
++   IFS="$saved_ifs"
++   esac
++ # NewResourceTag filters by asset discovery time, not by a user-defined tag.
++ # Only the three enumerated values below are accepted by DescribeAssetList.
++ validate_new_resource_tag() {
++   local tag="$1"
++   case "$tag" in
++     "discovered in 1 hour"|"discovered in 1 day"|"discovered in 7 days") ;;
++     *)
++       log_error "Invalid new resource tag: ${tag}"
++       log_error "Must be one of: 'discovered in 1 hour', 'discovered in 1 day', 'discovered in 7 days'"
++       ;;
++ # Cache so a paginated query does not spawn python3 once per page.
++ RESOLVED_SKILL_VERSION=""
++ # Resolve the skill-version segment of the User-Agent. references/manifest.json is
++ # the only accepted source. Returns non-zero instead of exiting: this function is
++ # called through command substitution, where an `exit` would only terminate the
++ # subshell and let the caller proceed to make an unattributed API call anyway.
++ resolve_skill_version() {
++   if [[ -n "$RESOLVED_SKILL_VERSION" ]]; then
++     printf '%s' "$RESOLVED_SKILL_VERSION"
++     return 0
++   local manifest="${SKILL_ROOT_DIR}/references/manifest.json" version
++   if [[ ! -f "$manifest" ]]; then
++     log_error "Cannot resolve skill-version: ${manifest} is missing"
++   if ! command -v python3 &>/dev/null; then
++     log_error "python3 is required to read ${manifest} but not found in PATH"
++   if ! version=$(python3 -c '
++ import json, sys
++ try:
++     with open(sys.argv[1], encoding="utf-8") as fh:
++         data = json.load(fh)
++ except ValueError as exc:
++     sys.exit("references/manifest.json is not valid JSON: %s" % exc)
++ except OSError as exc:
++     sys.exit("cannot read references/manifest.json: %s" % exc)
++ version = data.get("version") if isinstance(data, dict) else None
++ if not isinstance(version, str) or not version.strip():
++     sys.exit("references/manifest.json must declare a non-empty string \"version\"")
++ print(version.strip())
++ ' "$manifest"); then
++     log_error "Refusing to call the API: skill-version could not be resolved from references/manifest.json"
++   RESOLVED_SKILL_VERSION="$version"
++   printf '%s' "$version"
++ # Fail-fast gate for cloud-call attribution. Call it from an entry script's top
++ # level, after argument parsing and before dispatch: `exit` only terminates the
++ # whole script when it runs in the main shell, never inside a command substitution.
++ # Read-only previews (--dry-run, --help) never reach a cloud call, so they stay usable
++ # without a session-id.
++ require_attribution() {
++   if [[ -z "${SKILL_SESSION_ID:-}" ]]; then
++   if [[ -z "${SKILL_SESSION_ID:-}" ]]; then
++     log_error "SKILL_SESSION_ID is not set; this operation calls a cloud API and cannot run unattributed"
++     log_error "  Fix: pass SKILL_SESSION_ID={session-id} when invoking this script (see Observability in SKILL.md)"
++     log_error "  Fix: pass SKILL_SESSION_ID={session-id} when invoking this script (see Observability in SKILL.md)"
++     exit 1
++     exit 1
++   if ! resolve_skill_version >/dev/null; then
++     log_error "Cannot proceed without a manifest-derived skill-version"
++   # Attribution is resolved before any network call. Returns 3 rather than exiting,
++   # because this function runs inside a command substitution whose subshell would
++   # swallow an `exit`; callers propagate 3 as a fatal, non-API error.
++     log_error "SKILL_SESSION_ID is not set; refusing to call the API without session attribution"
++     return 3
++     return 3
++   local skill_version
++   if ! skill_version=$(resolve_skill_version); then
++     --user-agent "${SKILL_UA_PREFIX}/${SKILL_SESSION_ID} skill-version/${skill_version}"
+
+### scripts/fw-switch.sh  [code]
+-   # Build CLI args
+-   local CLI_ARGS=(--CurrentPage "$PAGE" --PageSize "$PAGE_SIZE" --Lang zh)
+-   [[ -n "$REGION" ]] && CLI_ARGS+=(--RegionNo "$REGION")
+-   [[ -n "$STATUS" ]] && CLI_ARGS+=(--Status "$STATUS")
+-   [[ -n "$RESOURCE_TYPE" ]] && CLI_ARGS+=(--ResourceType "$RESOURCE_TYPE")
+-   [[ -n "$SEARCH" ]] && CLI_ARGS+=(--SearchItem "$SEARCH")
+-   [[ -n "$IP_VERSION" ]] && CLI_ARGS+=(--IpVersion "$IP_VERSION")
+-   [[ -n "$MEMBER_UID" ]] && CLI_ARGS+=(--MemberUid "$MEMBER_UID")
+-   [[ -n "${NEW_RESOURCE_TAG:-}" ]] && CLI_ARGS+=(--NewResourceTag "$NEW_RESOURCE_TAG")
+-     for ((i=0; i<${#CLI_ARGS[@]}; i+=2)); do
+-       echo "  ${CLI_ARGS[$i]} '${CLI_ARGS[$((i+1))]}' \\"
+-   # Execute
+-   response=$(call_cfw_api "DescribeAssetList" "${CLI_ARGS[@]}") || exit_code=$?
+-     exit 2
+-   output_success "$response"
+-   if printf '%s' "$response" | grep -q '"AbnormalResourceStatusList"'; then
+-     abnormal_list=$(printf '%s' "$response" | grep -o '"AbnormalResourceStatusList"[[:space:]]*:[[:space:]]*\[.*\]' | sed 's/"AbnormalResourceStatusList"[[:space:]]*:[[:space:]]*//' || echo "[]")
++ #   - python3 (>= 3.6) for JSON merging and CSV export (--all-pages / --export-csv only)
++   fw-switch.sh query --status open --all-pages --export-csv ./protected-assets.csv
++   fw-switch.sh query --new-resource-tag "discovered in 7 days"
++ }
++ }
++ }
++   local ALL_PAGES=false EXPORT_CSV=""
++       --new-resource-tag) NEW_RESOURCE_TAG="$2"; shift 2 ;;
++       --all-pages) ALL_PAGES=true; shift ;;
++       --export-csv) EXPORT_CSV="$2"; shift 2 ;;
++   --new-resource-tag <v> Filter by asset discovery time. One of:
++                          'discovered in 1 hour', 'discovered in 1 day',
++                          'discovered in 7 days'
++   --all-pages            Fetch every page and merge into one result
++   --export-csv <file>    Write results to a CSV file (UTF-8 with BOM, opens
++                          directly in Excel). Prints an export summary instead
++                          of the full asset JSON.
++   done
++   [[ -n "$NEW_RESOURCE_TAG" ]] && validate_new_resource_tag "$NEW_RESOURCE_TAG"
++   # --all-pages and --export-csv require python3 for JSON merging/CSV export
++   if [[ "$ALL_PAGES" == "true" || -n "$EXPORT_CSV" ]]; then
++     if ! command -v python3 &>/dev/null; then
++       log_error "python3 is required for --all-pages and --export-csv but not found in PATH"
++       exit 1
++       exit 1
++       exit 1
++     fi
++     fi
++     fi
++     fi
++     fi
++     fi
++     fi
++   fi
++   fi
++   fi
++   fi
++   fi
++   fi
++   # --all-pages always walks from page 1, so an explicit --page would be ignored.
++   if [[ "$ALL_PAGES" == "true" && "$PAGE" != "1" ]]; then
++     log_warn "--all-pages ignores --page ${PAGE}; pagination always starts from page 1"
++   if [[ -n "$EXPORT_CSV" ]]; then
++   if [[ -n "$EXPORT_CSV" ]]; then
++     local csv_dir
++     csv_dir=$(dirname "$EXPORT_CSV")
++     if [[ ! -d "$csv_dir" ]]; then
++       log_error "Cannot write CSV: directory does not exist: ${csv_dir}"
++   # Build CLI args shared by every page request (CurrentPage is added per call)
++   local BASE_ARGS=(--PageSize "$PAGE_SIZE" --Lang zh)
++   [[ -n "$REGION" ]] && BASE_ARGS+=(--RegionNo "$REGION")
++   [[ -n "$STATUS" ]] && BASE_ARGS+=(--Status "$STATUS")
++   [[ -n "$RESOURCE_TYPE" ]] && BASE_ARGS+=(--ResourceType "$RESOURCE_TYPE")
++   [[ -n "$SEARCH" ]] && BASE_ARGS+=(--SearchItem "$SEARCH")
++   [[ -n "$IP_VERSION" ]] && BASE_ARGS+=(--IpVersion "$IP_VERSION")
++   [[ -n "$MEMBER_UID" ]] && BASE_ARGS+=(--MemberUid "$MEMBER_UID")
++   [[ -n "$NEW_RESOURCE_TAG" ]] && BASE_ARGS+=(--NewResourceTag "$NEW_RESOURCE_TAG")
++     # --all-pages restarts from page 1, so preview that instead of --page.
++     local preview_page="$PAGE"
++     [[ "$ALL_PAGES" == "true" ]] && preview_page=1
++     echo "  --CurrentPage '${preview_page}' \\"
++     for ((i=0; i<${#BASE_ARGS[@]}; i+=2)); do
++       echo "  ${BASE_ARGS[$i]} '${BASE_ARGS[$((i+1))]}' \\"
++     [[ "$ALL_PAGES" == "true" ]] && log_info "--all-pages: would repeat the call for each page until TotalCount is reached"
++     [[ -n "$EXPORT_CSV" ]] && log_info "--export-csv: would write results to ${EXPORT_CSV}"
++   local merged
++   [[ "$DRY_RUN" == "true" ]] || require_attribution
++   [[ "$DRY_RUN" == "true" ]] || require_attribution
++   if [[ "$ALL_PAGES" == "true" ]]; then
++     # fetch_all_asset_pages runs in a subshell, so a failing page captures its
++     # error JSON into $merged instead of reaching stdout — pass it through here.
++     local rc=0
++     merged=$(fetch_all_asset_pages "$PAGE_SIZE" "${BASE_ARGS[@]}") || rc=$?
++     if [[ $rc -ne 0 ]]; then
++       printf '%s\n' "$merged"
++       exit $rc
++   else
++     query_asset_page "$PAGE" "${BASE_ARGS[@]}" || exit $?
++     merged="$QUERY_PAGE_RESPONSE"
++   # CSV export replaces the JSON dump — the caller asked for a file, and echoing
++   # every asset back would bloat the Agent context for large audit exports.
++     local json_tmp row_count export_rc=0
++     json_tmp=$(mktemp "${TMPDIR:-/tmp}/cfw-export.XXXXXX")
++     printf '%s' "$merged" >"$json_tmp"
++     row_count=$(export_assets_csv "$EXPORT_CSV" "$json_tmp") || export_rc=$?
++     rm -f "$json_tmp"
++     if [[ $export_rc -ne 0 ]]; then
++       log_error "Failed to write CSV file: ${EXPORT_CSV}"
++       output_error "ExportFailed" "Could not write CSV to ${EXPORT_CSV}"
++     log_info "Exported ${row_count} assets to ${EXPORT_CSV}"
++     # Emit the summary via python3 so the file path is JSON-escaped correctly —
++     # a raw heredoc would break on paths containing quotes, backslashes, etc.
++     python3 -c 'import json,sys; print(json.dumps({"success": True, "exported_file": sys.argv[1], "row_count": int(sys.argv[2])}, indent=2, ensure_ascii=False))' "$EXPORT_CSV" "$row_count"
++     return 0
++   output_success "$merged"
++ # Query a single page. Sets QUERY_PAGE_RESPONSE on success.
++ # Uses a global instead of stdout so that a fatal API error can propagate the
++ # exit code to the caller (an `exit` inside $(...) would only kill the subshell).
++ QUERY_PAGE_RESPONSE=""
++ query_asset_page() {
++   local page_no="$1"
++   shift
++   shift
++   response=$(call_cfw_api "DescribeAssetList" --CurrentPage "$page_no" "$@") || exit_code=$?
++   # 3 is call_cfw_api's "no attribution" code: a local configuration fault, not an
++   # API failure, so surface it as such instead of running error-code diagnosis on it.
++   if [[ $exit_code -eq 3 ]]; then
++     output_error "AttributionRequired" "SKILL_SESSION_ID or references/manifest.json version is unavailable"
++     return 3
++     return 2
++   QUERY_PAGE_RESPONSE="$response"
++ # Walk every page and merge the Assets arrays into a single JSON document.
++ # Echoes the merged JSON on stdout.
++ # Usage: fetch_all_asset_pages <page_size> <BASE_ARGS...>
++ fetch_all_asset_pages() {
++   local page_size="$1"
++   # Guard the short-page fallback below against a non-numeric --page-size.
++   [[ "$page_size" =~ ^[0-9]+$ && "$page_size" -gt 0 ]] || page_size=10
++   local pages_dir
++   pages_dir=$(mktemp -d "${TMPDIR:-/tmp}/cfw-query.XXXXXX")
++   # shellcheck disable=SC2064
++   trap "rm -rf '${pages_dir}'" RETURN
++   local page_no=1 total=0 collected=0
++   while :; do
++     query_asset_page "$page_no" "$@" || return $?
++     printf '%s' "$QUERY_PAGE_RESPONSE" >"${pages_dir}/page-$(printf '%05d' "$page_no").json"
++     local stats page_count
++     stats=$(printf '%s' "$QUERY_PAGE_RESPONSE" | python3 -c "
++ import sys, json
++ try:
++ try:
++ try:
++     data = json.load(sys.stdin)
++     print(int(data.get('TotalCount') or 0), len(data.get('Assets') or []))
++ except Exception:
++     print(0, 0)
++ ")
++     total="${stats%% *}"
++     page_count="${stats##* }"
++     collected=$((collected + page_count))
++     log_info "Fetched page ${page_no}: ${page_count} assets (collected ${collected}/${total})"
++     # An empty page always marks the end.
++     if [[ "$page_count" -eq 0 ]]; then
++       break
++       break
++       break
++     if [[ "$total" -gt 0 ]]; then
++       # Normal case: TotalCount tells us when everything has been collected.
++       [[ "$collected" -ge "$total" ]] && break
++     elif [[ "$page_count" -lt "$page_size" ]]; then
++       # TotalCount missing or zero — fall back to short-page detection so a
++       # partial result is never returned silently.
++       log_warn "Response had no usable TotalCount; stopped at page ${page_no} (returned fewer than ${page_size} assets). Verify the result is complete."
++     page_no=$((page_no + 1))
++     if [[ "$page_no" -gt "$MAX_QUERY_PAGES" ]]; then
++       log_warn "Stopped at the ${MAX_QUERY_PAGES}-page safety cap; the result may be incomplete"
++   python3 - "$pages_dir" <<'PY'
++ import sys, os, json, glob
++ pages_dir = sys.argv[1]
++ assets, request_id, total = [], "", 0
++ for path in sorted(glob.glob(os.path.join(pages_dir, 'page-*.json'))):
++     with open(path, encoding='utf-8') as fh:
++         try:
++             page = json.load(fh)
++         except ValueError:
++             continue
++     assets.extend(page.get('Assets') or [])
++     if not request_id:
++         request_id = page.get('RequestId') or ""
++     try:
++         total = max(total, int(page.get('TotalCount') or 0))
++     except (TypeError, ValueError):
++         pass
++ print(json.dumps({
++     'RequestId': request_id,
++     'TotalCount': total,
++     'Assets': assets,
++ }, ensure_ascii=False, indent=2))
++ PY
++ PY
++ # Convert the Assets array of a JSON file into a CSV file. Echoes the row count.
++ # The JSON arrives as a file path, not on stdin — the heredoc below already
++ # occupies stdin to deliver the program text.
++ export_assets_csv() {
++   local out_path="$1"
++   local json_path="$2"
++   python3 - "$out_path" "$json_path" <<'PY'
++ import sys, json, csv
++ out_path, json_path = sys.argv[1], sys.argv[2]
++ COLUMNS = [
++     'InternetAddress', 'IntranetAddress', 'ProtectStatus', 'ResourceType',
++     'RegionID', 'Name', 'BindInstanceId', 'BindInstanceName',
++     'ResourceInstanceId', 'IpVersion', 'MemberUid',
++ ]
++     with open(json_path, encoding='utf-8') as fh:
++         data = json.load(fh)
++ except ValueError as exc:
++     sys.stderr.write('[ERROR] Could not parse API response as JSON: %s\n' % exc)
++     sys.exit(1)
++     sys.exit(1)
++ assets = data.get('Assets') or []
++ # utf-8-sig writes a BOM so Excel renders Chinese instance names correctly
++ # instead of mojibake when the CSV is double-clicked open.
++     with open(out_path, 'w', newline='', encoding='utf-8-sig') as fh:
++         writer = csv.writer(fh)
++         writer.writerow(COLUMNS)
++         for asset in assets:
++             writer.writerow(['' if asset.get(col) is None else asset.get(col) for col in COLUMNS])
++ except OSError as exc:
++     sys.stderr.write('[ERROR] Could not write CSV file: %s\n' % exc)
++ print(len(assets))
++   # The aliyun CLI may pretty-print JSON across multiple lines, so collapse newlines
++   # before extracting the array — grep -o only matches within a single line.
++   local flat_response
++   flat_response=$(printf '%s' "$response" | tr '\n' ' ')
++   if printf '%s' "$flat_response" | grep -q '"AbnormalResourceStatusList"'; then
++     abnormal_list=$(printf '%s' "$flat_response" | grep -o '"AbnormalResourceStatusList"[[:space:]]*:[[:space:]]*\[[^]]*\]' | sed 's/"AbnormalResourceStatusList"[[:space:]]*:[[:space:]]*//' || echo "[]")
++     [[ -z "$abnormal_list" ]] && abnormal_list="[]"
++   require_attribution
+
+### scripts/validate-cli.sh  [code]
+-    curl -fsSL https://aliyuncli.alicdn.com/setup.sh | bash
+- 3. Configure credentials:
+-    (AccessKey from https://ram.console.aliyun.com/manage/ak)
+- 4. Enable auto plugin install:
+-       log_warn "CLI version ${CLI_VERSION} is below minimum ${MIN_CLI_VERSION}. Run: curl -fsSL https://aliyuncli.alicdn.com/setup.sh | bash"
+-   log_warn "Alibaba Cloud CLI not installed. Install with: curl -fsSL https://aliyuncli.alicdn.com/setup.sh | bash"
+-   auto_plugin=$(aliyun configure list 2>/dev/null | grep -i 'auto-plugin-install' || true)
+-   if printf '%s' "$auto_plugin" | grep -qi 'true'; then
+-     AUTO_PLUGIN_INSTALL="true"
+-   else
+-     AUTO_PLUGIN_INSTALL="false"
+-     log_warn "Auto plugin install is not enabled. Run: aliyun configure set --auto-plugin-install true"
+-     perm_result=$(aliyun "$CFW_PRODUCT_CODE" DescribeAssetList --CurrentPage 1 --PageSize 1 --Lang zh 2>&1) || true
++    /bin/bash -c "$(curl -fsSL --connect-timeout 10 --max-time 120 https://aliyuncli.alicdn.com/setup.sh)"
++    Routine updates afterwards: aliyun upgrade --yes
++ 3. Configure credentials (do this outside the Agent session):
++    Obtain credentials from the RAM console: https://ram.console.aliyun.com/manage/ak
++    The CLI then resolves them automatically via its default credential chain —
++    this Skill never reads, echoes, or handles credentials itself.
++ 4. Optional — auto-install missing plugins (local, idempotent convenience switch):
++    The CLI cannot read this setting back, so validate-cli.sh reports it as
++    "unknown" rather than "false"; not enabling it does not break this Skill.
++ }
++       log_warn "CLI version ${CLI_VERSION} is below minimum ${MIN_CLI_VERSION}. Run: aliyun upgrade --yes (or reinstall via the setup.sh command in --install-guide)"
++   fi
++   log_warn "Alibaba Cloud CLI not installed. Install it with the setup.sh command shown by: bash scripts/validate-cli.sh --install-guide"
++ # NOTE: this setting cannot actually be read back. It lives per-profile inside
++ # ~/.aliyun/config.json, but `aliyun configure list` only prints the profile
++ # table (Profile | Credential | Valid | Region | Language) and never mentions it,
++ # and `aliyun configure get` returns empty for both the kebab and snake spelling.
++ # Grepping the config file directly would be ambiguous across profiles, so rather
++ # than always reporting a wrong "false" (which made every run re-apply the set
++ # command), report "unknown" and let the caller decide. Enabling it is a local,
++ # idempotent convenience setting — not a prerequisite for this Skill.
++   AUTO_PLUGIN_INSTALL="unknown"
++   log_info "Auto plugin install state is not readable from the CLI (reported as unknown). To enable it once: aliyun configure set --auto-plugin-install true"
++ # This is a real cloud call, so it carries the same session-scoped User-Agent as
++ # every other call: a permission probe missing from the session trace would leave
++ # a gap in exactly the diagnostic trail this script exists to produce.
++ check_cfw_permission() {
++   if [[ -z "${SKILL_SESSION_ID:-}" ]]; then
++     log_warn "SKILL_SESSION_ID is not set; skipping the CFW permission check rather than issuing an unattributed API call"
++     printf 'skipped_no_session'
++     return 0
++     return 0
++   local skill_version
++   if ! skill_version=$(resolve_skill_version); then
++     printf 'skipped_no_version'
++   local out rc=0
++   out=$(aliyun "$CFW_PRODUCT_CODE" DescribeAssetList \
++     --CurrentPage 1 --PageSize 1 --Lang zh \
++     --read-timeout "$DEFAULT_READ_TIMEOUT" \
++     --connect-timeout "$DEFAULT_CONNECT_TIMEOUT" \
++     --user-agent "${SKILL_UA_PREFIX}/${SKILL_SESSION_ID} skill-version/${skill_version}" 2>&1) || rc=$?
++   printf '%s' "$out"
++   return $rc
++     perm_result=$(check_cfw_permission) || true
++     case "$perm_result" in
++       skipped_no_session|skipped_no_version)
++         PERMISSION_OK="skipped"
++         CREDENTIAL_ERROR="AttributionUnavailable"
++         ;;
++         ;;
++       *)
++     esac

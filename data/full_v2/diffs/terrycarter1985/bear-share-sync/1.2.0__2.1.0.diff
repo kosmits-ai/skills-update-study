@@ -1,0 +1,358 @@
+terrycarter1985/bear-share-sync  1.2.0 -> 2.1.0
+change_type: instructions+docs+code   changelog: Refined pipeline: poll + canvas update + BlueBubbles notify with state tracking
+
+### SKILL.md  [instructions]
+- description: Detect new Bear notes tagged #share, extract content into JSON Canvas knowledge nodes, update agent_capabilities.canvas, and broadcast previews via BlueBubbles. Use when syncing Bear notes to canvas and group chat, or when asked to "sync shared notes", "distribute Bear notes", or "publish #share notes".
+- Sync Bear notes tagged `#share` → JSON Canvas nodes → BlueBubbles group chat.
+- - Bear running with grizzly CLI installed (`go install github.com/tylerwince/grizzly/cmd/grizzly@latest`)
+- - Bear API token at `~/.config/grizzly/token`
+- - BlueBubbles channel configured in gateway (`channels.bluebubbles`)
+- - State file at `~/.openclaw/skills/bear-share-sync/state.json` tracks processed note IDs
+- ### 1. Poll for new #share notes
+- grizzly open-tag --name "share" --enable-callback --json --token-file ~/.config/grizzly/token
+- Parse the JSON response to get note list. Compare against `state.json` to find unprocessed notes.
+- ### 2. Extract note content
+- For each new note, read full content:
+- grizzly open-note --id "NOTE_ID" --enable-callback --json
+- Extract: title, body (strip `#share` tag), creation date.
+- ### 3. Update agent_capabilities.canvas
+- Read the existing canvas file, append a new text node with:
+- - `id`: `bear-<note-id>` (sanitized)
+- - `type`: `text`
+- - `text`: formatted summary (title + first 200 chars + source link)
+- - `x`: auto-positioned (max existing x + 300, or 0 if empty)
+- - `y`: auto-positioned (next row at y+200 when column exceeds 4 nodes)
+- - `width`: 260, `height`: 120
+- - `color`: `"4"` (green)
+- Add an edge from the new node to a central "Shared Notes" group node if one exists.
+- Write the updated canvas JSON back.
+- ### 4. Send preview via BlueBubbles
+- ```json
+- {
+- {
+-   "action": "send",
+-   "channel": "bluebubbles",
+-   "target": "<GROUP_CHAT_GUID>",
+-   "message": "📝 New shared note: <TITLE>\n\n<PREVIEW_TEXT>\n\n— via Bear #share"
+- }
+- }
+- ### 5. Update state
+- Append processed note ID and timestamp to `state.json`.
+- See [references/config.md](references/config.md) for configurable parameters (group chat GUID, canvas path, preview length).
+- ## State File
+- `state.json` format:
+-   "processed": [
+-     { "id": "NOTE_ID", "title": "Note Title", "processedAt": "2026-05-12T03:00:00Z" }
+-   ]
+- ## Automation
+- Set up a cron job to run this sync periodically:
+- openclaw cron add --schedule "every 15m" --payload '{"kind":"agentTurn","message":"Run bear-share-sync: poll #share notes, update canvas, send previews"}'
+- ## Scripts
+- - [scripts/sync.sh](scripts/sync.sh) — End-to-end sync script (poll → extract → canvas → notify → state update)
++ description: Detect new Bear notes tagged #share, extract core content, update a JSON Canvas knowledge graph, and broadcast a preview via BlueBubbles. Use when syncing Bear notes to canvas and iMessage, running share-note distribution, or when the user mentions "share sync", "bear to canvas", "note broadcast", or "distribute share notes".
++ Automate the flow: **Bear #share note → Canvas node → iMessage preview**.
++ - Bear running with `grizzly` CLI installed and token configured
++ - BlueBubbles channel configured in OpenClaw gateway
++ - A JSON Canvas file at the configured path (default: `canvases/agent_capabilities.canvas`)
++ Set environment variables or defaults in `scripts/config.sh`:
++ | Variable | Default | Purpose |
++ |---|---|---|
++ | `SHARE_TAG` | `share` | Bear tag to watch |
++ | `CANVAS_PATH` | `canvases/agent_capabilities.canvas` | Path to canvas file |
++ | `BB_TARGET` | _(required)_ | BlueBubbles chat GUID or phone number |
++ | `STATE_FILE` | `~/.cache/bear-share-sync/state.json` | Tracks seen note IDs |
++ 1. **Poll** — `scripts/poll.sh` finds Bear notes with #share tag not yet processed
++ 2. **Update canvas** — `scripts/canvas_update.py` appends a knowledge node for each new note
++ 3. **Notify** — `scripts/notify.sh` sends a preview via BlueBubbles
++ ### Step 1: Poll for new #share notes
++ ```bash
++ ```bash
++ ```bash
++ bash scripts/poll.sh
++ ```
++ ```
++ Outputs one JSON object per line for each new note:
++ {"id":"ABC123","title":"Design Tokens v2","text":"Core content...","created":"2026-05-12T02:00:00Z"}
++ ### Step 2: Update canvas
++ python3 scripts/canvas_update.py --input notes.jsonl --canvas "$CANVAS_PATH"
++ Reads newline-delimited note objects, appends a `text` node per note to the canvas, and auto-positions nodes in a grid. See [references/canvas-schema.md](references/canvas-schema.md) for node layout rules.
++ ### Step 3: Send preview via BlueBubbles
++ bash scripts/notify.sh --input notes.jsonl
++ Sends a short preview for each note to the configured BlueBubbles target:
++ 📝 New shared note: "Design Tokens v2"
++ Core content...
++ ## One-shot run
++ bash scripts/poll.sh | tee /tmp/share-notes.jsonl && \
++ python3 scripts/canvas_update.py --input /tmp/share-notes.jsonl --canvas canvases/agent_capabilities.canvas && \
++ bash scripts/notify.sh --input /tmp/share-notes.jsonl
++ ## Scheduling
++ Use a cron job for periodic checks:
++ # Every 15 minutes
++ */15 * * * * cd /path/to/skill && bash scripts/poll.sh | ...
++ Or use OpenClaw cron with a `systemEvent` payload to trigger the skill.
++ ## Notes
++ - The state file prevents re-processing; delete it to re-run from scratch
++ - Canvas nodes use color `"4"` (green) for share-sourced nodes
++ - If BlueBubbles is unavailable, the notify step logs a warning and continues
++ - Bear must be running for `grizzly` commands to succeed
+
+### references/canvas-schema.md  [docs]
++ # Canvas Schema for bear-share-sync
++ ## Node Layout
++ Share-sourced nodes use these attributes:
++ | Field | Value | Notes |
++ |---|---|---|
++ | `id` | `share-{bear_note_id}` | Prefixed to avoid collisions |
++ | `type` | `text` | Always text nodes |
++ | `color` | `"4"` | Green — distinguishes share-sourced nodes |
++ | `width` | `260` | Fixed width for consistency |
++ | `height` | `160` | Default; increase for long content |
++ | `text` | `**{title}**\n{excerpt}` | Markdown with bold title |
++ ## Positioning Algorithm
++ - Grid layout: 40px gap between nodes
++ - Row wrap at 1200px total width
++ - New rows start below the tallest node in the previous row
++ - Origin (0,0) at top-left
++ ## Canvas File Format
++ Standard JSON Canvas 1.0:
++ ```json
++ {
++   "nodes": [...],
++   "edges": [...]
++ }
++ ```
++ The skill only appends to `nodes` and does not modify existing nodes or edges.
+
+### references/config.md  [docs]
+- # Configuration
+- | Parameter | Default | Description |
+- |-----------|---------|-------------|
+- | `GROUP_CHAT_GUID` | (required) | BlueBubbles group chat GUID for broadcast |
+- | `CANVAS_PATH` | `canvases/agent_capabilities.canvas` | Path to JSON Canvas file |
+- | `PREVIEW_LENGTH` | `200` | Max characters for note preview in messages |
+- | `POLL_INTERVAL` | `15m` | Cron interval for polling |
+- | `STATE_FILE` | `~/.openclaw/skills/bear-share-sync/state.json` | Processed notes state |
+- Set via environment variables or a `.env` file in the skill directory.
+
+### scripts/canvas_update.py  [code]
++ #!/usr/bin/env python3
++ """canvas_update.py — Append knowledge nodes to a JSON Canvas file."""
++ import argparse
++ import json
++ import os
++ import sys
++ def load_canvas(path: str) -> dict:
++     if os.path.exists(path):
++         with open(path) as f:
++             return json.load(f)
++     return {"nodes": [], "edges": []}
++ def next_position(nodes: list, grid_x: int = 300, grid_y: int = 200) -> tuple:
++     """Position new nodes in a grid below existing ones."""
++     if not nodes:
++         return (0, 0)
++     max_y = max(n.get("y", 0) + n.get("height", 100) for n in nodes)
++     # Find rightmost node at the bottom row
++     bottom_nodes = [n for n in nodes if n.get("y", 0) + n.get("height", 100) >= max_y - 10]
++     max_x = max(n.get("x", 0) + n.get("width", 260) for n in bottom_nodes) if bottom_nodes else 0
++     if max_x + 260 > 1200:  # wrap to next row
++         return (0, max_y + 40)
++     return (max_x + 40, bottom_nodes[0].get("y", 0) if bottom_nodes else 0)
++ def main():
++     parser = argparse.ArgumentParser()
++     parser.add_argument("--input", required=True, help="JSONL file with note objects")
++     parser.add_argument("--canvas", required=True, help="Path to canvas JSON file")
++     args = parser.parse_args()
++     canvas = load_canvas(args.canvas)
++     existing_ids = {n["id"] for n in canvas["nodes"]}
++     node_counter = len(canvas["nodes"]) + 1
++     with open(args.input) as f:
++         for line in f:
++             line = line.strip()
++             if not line:
++                 continue
++                 continue
++             note = json.loads(line)
++             nid = f"share-{note['id']}"
++             if nid in existing_ids:
++             x, y = next_position(canvas["nodes"])
++             text = f"**{note['title']}**\n{note['text'][:300]}"
++             node = {
++                 "id": nid,
++                 "type": "text",
++                 "text": text,
++                 "x": x,
++                 "y": y,
++                 "width": 260,
++                 "height": 160,
++                 "color": "4",
++             }
++             canvas["nodes"].append(node)
++             node_counter += 1
++     os.makedirs(os.path.dirname(args.canvas) or ".", exist_ok=True)
++     with open(args.canvas, "w") as f:
++         json.dump(canvas, f, indent=2, ensure_ascii=False)
++     print(f"Updated {args.canvas} with {node_counter - len(existing_ids) - 1} new nodes")
++ if __name__ == "__main__":
++     main()
+
+### scripts/config.sh  [code]
++ #!/usr/bin/env bash
++ # config.sh — Shared configuration for bear-share-sync
++ SHARE_TAG="${SHARE_TAG:-share}"
++ CANVAS_PATH="${CANVAS_PATH:-canvases/agent_capabilities.canvas}"
++ BB_TARGET="${BB_TARGET:-}"
++ STATE_FILE="${STATE_FILE:-$HOME/.cache/bear-share-sync/state.json}"
+
+### scripts/notify.sh  [code]
++ #!/usr/bin/env bash
++ # notify.sh — Send note previews via BlueBubbles
++ set -euo pipefail
++ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
++ source "${SCRIPT_DIR}/config.sh"
++ if [ -z "$BB_TARGET" ]; then
++   echo "WARNING: BB_TARGET not set, skipping notifications" >&2
++   exit 0
++ fi
++ fi
++ fi
++ INPUT_FILE="${1:-}"
++ if [ -z "$INPUT_FILE" ] && [ ! -t 0 ]; then
++   INPUT_FILE="/tmp/bear-share-notify-$$.jsonl"
++   cat > "$INPUT_FILE"
++   trap 'rm -f "$INPUT_FILE"' EXIT
++ if [ -z "$INPUT_FILE" ]; then
++   echo "Usage: notify.sh --input FILE" >&2
++   exit 1
++ # Parse --input flag
++ while [[ $# -gt 0 ]]; do
++   case $1 in
++     --input) INPUT_FILE="$2"; shift 2 ;;
++     *) shift ;;
++   esac
++ done
++ done
++ python3 -c "
++ import json, sys, subprocess
++ target = '$BB_TARGET'
++ with open('$INPUT_FILE') as f:
++     for line in f:
++         line = line.strip()
++         if not line: continue
++         note = json.loads(line)
++         title = note.get('title', 'Untitled')
++         text = note.get('text', '')[:200]
++         msg = f'📝 New shared note: \"{title}\"\n{text}'
++         # Output the message for the caller to send via OpenClaw message tool
++         print(json.dumps({'target': target, 'message': msg}, ensure_ascii=False))
++ " | while IFS= read -r payload; do
++   # This script outputs payloads; actual sending is done by the OpenClaw agent
++   echo "NOTIFY_PAYLOAD: $payload"
+
+### scripts/poll.sh  [code]
++ #!/usr/bin/env bash
++ # poll.sh — Find new Bear notes tagged #share not yet processed
++ set -euo pipefail
++ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
++ # shellcheck source=config.sh
++ source "${SCRIPT_DIR}/config.sh"
++ STATE_DIR="$(dirname "$STATE_FILE")"
++ mkdir -p "$STATE_DIR"
++ # Initialize state file
++ if [ ! -f "$STATE_FILE" ]; then
++   echo '{"seen":[]}' > "$STATE_FILE"
++ fi
++ # Fetch notes with the share tag
++ NOTES_JSON=$(grizzly open-tag --name "$SHARE_TAG" --enable-callback --json 2>/dev/null || echo '{"notes":[]}')
++ # Extract note IDs we've already seen
++ SEEN_IDS=$(python3 -c "
++ import json,sys
++ state=json.load(open('$STATE_FILE'))
++ print(' '.join(state.get('seen',[])))
++ ")
++ # Filter and output new notes
++ python3 -c "
++ import json, sys
++ notes_json = json.loads('''$NOTES_JSON''')
++ seen = set('''$SEEN_IDS'''.split()) if '$SEEN_IDS'.strip() else set()
++ notes = notes_json.get('notes', []) if isinstance(notes_json, dict) else notes_json
++ new_ids = []
++ for note in notes:
++     nid = note.get('identifier', note.get('id', ''))
++     if nid and nid not in seen:
++         new_ids.append(nid)
++         output = {
++             'id': nid,
++             'title': note.get('title', ''),
++             'text': note.get('text', note.get('content', ''))[:500],
++             'created': note.get('creationDate', note.get('created', ''))
++         }
++         print(json.dumps(output, ensure_ascii=False))
++ # Update state
++ if new_ids:
++     state = json.load(open('$STATE_FILE'))
++     state['seen'].extend(new_ids)
++     json.dump(state, open('$STATE_FILE','w'))
++ " "$@"
+
+### scripts/sync.sh  [code]
+- #!/usr/bin/env bash
+- set -euo pipefail
+- SKILL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+- STATE_FILE="${STATE_FILE:-$SKILL_DIR/state.json}"
+- CANVAS_PATH="${CANVAS_PATH:-canvases/agent_capabilities.canvas}"
+- PREVIEW_LENGTH="${PREVIEW_LENGTH:-200}"
+- GROUP_CHAT_GUID="${GROUP_CHAT_GUID:?Set GROUP_CHAT_GUID env var}"
+- TOKEN_FILE="${GRIZZLY_TOKEN_FILE:-$HOME/.config/grizzly/token}"
+- # Initialize state file
+- if [ ! -f "$STATE_FILE" ]; then
+-   echo '{"processed":[]}' > "$STATE_FILE"
+- fi
+- # 1. Poll #share notes
+- NOTES_JSON=$(grizzly open-tag --name "share" --enable-callback --json --token-file "$TOKEN_FILE" 2>/dev/null || echo '{"notes":[]}')
+- # 2. Get already-processed IDs
+- PROCESSED_IDS=$(jq -r '.processed[].id' "$STATE_FILE" 2>/dev/null || echo "")
+- # 3. For each note, check if new
+- echo "$NOTES_JSON" | jq -c '.notes[] // empty' | while read -r note; do
+-   NOTE_ID=$(echo "$note" | jq -r '.id // .identifier')
+-   TITLE=$(echo "$note" | jq -r '.title')
+-   # Skip if already processed
+-   if echo "$PROCESSED_IDS" | grep -qx "$NOTE_ID"; then
+-     continue
+-   fi
+-   fi
+-   # Read full note
+-   NOTE_DETAIL=$(grizzly open-note --id "$NOTE_ID" --enable-callback --json --token-file "$TOKEN_FILE" 2>/dev/null || echo '{}')
+-   BODY=$(echo "$NOTE_DETAIL" | jq -r '.text // .content // ""' | sed 's/#share//g' | sed '/^$/d' | head -20)
+-   PREVIEW=$(echo "$BODY" | head -c "$PREVIEW_LENGTH")
+-   CREATED=$(echo "$NOTE_DETAIL" | jq -r '.creationDate // .created_at // now' )
+-   echo "Processing: $TITLE ($NOTE_ID)"
+-   # 4. Update canvas
+-   if [ -f "$CANVAS_PATH" ]; then
+-     CANVAS_JSON=$(cat "$CANVAS_PATH")
+-   else
+-     CANVAS_JSON='{"nodes":[],"edges":[]}'
+-   # Calculate position
+-   NODE_COUNT=$(echo "$CANVAS_JSON" | jq '.nodes | length')
+-   COL=$(( NODE_COUNT % 4 ))
+-   ROW=$(( NODE_COUNT / 4 ))
+-   X=$(( COL * 300 ))
+-   Y=$(( ROW * 200 ))
+-   SAFE_ID="bear-$(echo "$NOTE_ID" | tr -c 'a-zA-Z0-9_-' '-')"
+-   NEW_NODE=$(jq -n \
+-     --arg id "$SAFE_ID" \
+-     --arg text "📝 $TITLE\n$PREVIEW\n— Bear #share" \
+-     --argjson x "$X" --argjson y "$Y" \
+-     '{id: $id, type: "text", text: $text, x: $x, y: $y, width: 260, height: 120, color: "4"}')
+-   UPDATED_CANVAS=$(echo "$CANVAS_JSON" | jq --argjson node "$NEW_NODE" '.nodes += [$node]')
+-   mkdir -p "$(dirname "$CANVAS_PATH")"
+-   echo "$UPDATED_CANVAS" > "$CANVAS_PATH"
+-   # 5. Send via BlueBubbles (output message for agent to send)
+-   MSG="📝 New shared note: $TITLE\n\n$PREVIEW\n\n— via Bear #share"
+-   echo "BLUEBUBBLES_SEND:$GROUP_CHAT_GUID:$MSG"
+-   # 6. Update state
+-   STATE_ENTRY=$(jq -n --arg id "$NOTE_ID" --arg title "$TITLE" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+-     '{id: $id, title: $title, processedAt: $ts}')
+-   jq --argjson entry "$STATE_ENTRY" '.processed += [$entry]' "$STATE_FILE" > "${STATE_FILE}.tmp" && mv "${STATE_FILE}.tmp" "$STATE_FILE"
+-   echo "Done: $TITLE"
+- done
+- echo "Sync complete."

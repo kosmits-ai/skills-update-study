@@ -1,0 +1,200 @@
+tashfeenahmed/emotion-state  1.1.0 -> 1.2.0
+change_type: code   changelog: Fix JSONL session file parsing, add fetch timeouts, fix OpenAI classifier role handling, use JSON response mode, add LRU user eviction, add state file locking, add error logging
+
+### hooks/emotion-state/handler.ts  [code]
+-     timeZone,
+-   });
+-   } catch {
+-         { role, content: text },
+-   const match = content.match(/\{[\s\S]*\}/);
+-   if (!event || event.type !== "agent" || event.action !== "bootstrap") return;
+-   const context = event.context || {};
+-   const sessionEntry = context.sessionEntry;
+-   const sessionFile = context.sessionFile;
+-   const labels = envLabels();
+-   const confidenceMin = envNumber("EMOTION_CONFIDENCE_MIN", DEFAULTS.confidenceMin);
+-   const historySize = envNumber("EMOTION_HISTORY_SIZE", DEFAULTS.historySize);
+-   const halfLifeHours = envNumber("EMOTION_HALF_LIFE_HOURS", DEFAULTS.halfLifeHours);
+-   const trendWindowHours = envNumber("EMOTION_TREND_WINDOW_HOURS", DEFAULTS.trendWindowHours);
+-   const maxUserEntries = envNumber("EMOTION_MAX_USER_ENTRIES", DEFAULTS.maxUserEntries);
+-   const maxAgentEntries = envNumber("EMOTION_MAX_AGENT_ENTRIES", DEFAULTS.maxAgentEntries);
+-   const maxOtherAgents = envNumber("EMOTION_MAX_OTHER_AGENTS", DEFAULTS.maxOtherAgents);
+-   const timeZone = envString("EMOTION_TIMEZONE");
+-   const messages = await extractMessages(sessionEntry, sessionFile);
+-   const latestUser = pickLatest(messages, "user");
+-   const latestAssistant = pickLatest(messages, "assistant");
+-   const userKey = resolveUserKey(context.senderId, context.sessionKey);
+-   const agentId = resolveAgentId(context.sessionKey, sessionFile);
+-   const agentDir = resolveAgentDir(sessionFile, agentId);
+-   const statePath = path.join(agentDir, DEFAULTS.stateFileName);
+-   const state = await readState(statePath);
+-   if (!state.users[userKey]) state.users[userKey] = { history: [] };
+-   if (!state.agents[agentId]) state.agents[agentId] = { history: [] };
+-   let updated = false;
+-   if (latestUser?.content) {
+-     updated =
+-     updated =
+-       (await maybeUpdate(state.users[userKey], latestUser, "user", labels, confidenceMin, historySize)) ||
+-       updated;
+-       updated;
+-   if (latestAssistant?.content) {
+-       (await maybeUpdate(state.agents[agentId], latestAssistant, "assistant", labels, confidenceMin, historySize)) ||
+-   if (updated) await writeJsonFile(statePath, state);
+-   const otherAgents = await loadOtherAgents(
+-     getOtherAgentsRoot(agentDir),
+-     agentId,
+-     DEFAULTS.stateFileName,
+-     maxOtherAgents,
+-   );
+-   const block = buildEmotionBlock(state, userKey, agentId, {
+-     maxUserEntries,
+-     maxAgentEntries,
+-     halfLifeHours,
+-     trendWindowHours,
+-     otherAgents,
+-   injectBootstrap(context, block);
++   fetchTimeoutMs: 5000,
++   maxUsers: 50,
++   lockStaleMs: 10_000,
++ }
++ }
++ }
++ }
++   try {
++   try {
++   try {
++     const raw = await fs.readFile(filePath, "utf8");
++   }
++   }
++     }
++     }
++     }
++     }
++ async function readJsonlMessages(filePath: string): Promise<SessionMessage[]> {
++     const messages: SessionMessage[] = [];
++     for (const line of raw.split("\n")) {
++       if (!line.trim()) continue;
++       try {
++         const entry = JSON.parse(line);
++         if (entry.type !== "message" || !entry.message) continue;
++         const msg = entry.message;
++         const role = getRole(msg);
++         const content = extractContent(msg);
++         if (!role || !content) continue;
++         const timestamp = entry.timestamp || msg.timestamp;
++         messages.push({ role, content, timestamp });
++       } catch {
++         continue;
++       }
++       }
++       }
++       }
++       }
++     return messages;
++     return [];
++   const fromJsonl = await readJsonlMessages(sessionFile);
++   if (fromJsonl.length > 0) return fromJsonl;
++   const timeoutMs = envNumber("EMOTION_FETCH_TIMEOUT_MS", DEFAULTS.fetchTimeoutMs);
++   const timeoutMs = envNumber("EMOTION_FETCH_TIMEOUT_MS", DEFAULTS.fetchTimeoutMs);
++     signal: AbortSignal.timeout(timeoutMs),
++     signal: AbortSignal.timeout(timeoutMs),
++         { role: "user", content: `Classify the emotion in this ${role} message:\n\n${text}` },
++       response_format: { type: "json_object" },
++   const match = content.match(/\{[\s\S]*?\}/);
++ function pruneUsers(state: EmotionState, maxUsers: number) {
++   const keys = Object.keys(state.users);
++   if (keys.length <= maxUsers) return;
++   const sorted = keys
++     .map((key) => ({ key, ts: state.users[key].latest?.timestamp || "" }))
++     .sort((a, b) => (a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : 0));
++   const toRemove = sorted.slice(0, keys.length - maxUsers);
++   for (const { key } of toRemove) {
++     delete state.users[key];
++     return true;
++   } catch (err) {
++   } catch (err) {
++   } catch (err) {
++     console.error("[emotion-state] Classification failed, falling back to neutral:", err);
++     console.error("[emotion-state] Failed to load other agents:", err);
++ async function acquireLock(lockPath: string, staleMs: number): Promise<boolean> {
++     const handle = await fs.open(lockPath, "wx");
++     await handle.close();
++   } catch (err: any) {
++     if (err?.code !== "EEXIST") return false;
++     try {
++     try {
++       const stat = await fs.stat(lockPath);
++       if (Date.now() - stat.mtimeMs > staleMs) {
++         await fs.unlink(lockPath).catch(() => {});
++         const handle = await fs.open(lockPath, "wx");
++         await handle.close();
++         return true;
++     } catch {
++       /* lock contention, give up */
++     return false;
++ async function releaseLock(lockPath: string) {
++   await fs.unlink(lockPath).catch(() => {});
++     if (!event || event.type !== "agent" || event.action !== "bootstrap") return;
++     const context = event.context || {};
++     const sessionEntry = context.sessionEntry;
++     const sessionFile = context.sessionFile;
++     const labels = envLabels();
++     const confidenceMin = envNumber("EMOTION_CONFIDENCE_MIN", DEFAULTS.confidenceMin);
++     const historySize = envNumber("EMOTION_HISTORY_SIZE", DEFAULTS.historySize);
++     const halfLifeHours = envNumber("EMOTION_HALF_LIFE_HOURS", DEFAULTS.halfLifeHours);
++     const trendWindowHours = envNumber("EMOTION_TREND_WINDOW_HOURS", DEFAULTS.trendWindowHours);
++     const maxUserEntries = envNumber("EMOTION_MAX_USER_ENTRIES", DEFAULTS.maxUserEntries);
++     const maxAgentEntries = envNumber("EMOTION_MAX_AGENT_ENTRIES", DEFAULTS.maxAgentEntries);
++     const maxOtherAgents = envNumber("EMOTION_MAX_OTHER_AGENTS", DEFAULTS.maxOtherAgents);
++     const maxUsers = envNumber("EMOTION_MAX_USERS", DEFAULTS.maxUsers);
++     const staleMs = DEFAULTS.lockStaleMs;
++     const timeZone = envString("EMOTION_TIMEZONE");
++     const messages = await extractMessages(sessionEntry, sessionFile);
++     const latestUser = pickLatest(messages, "user");
++     const latestAssistant = pickLatest(messages, "assistant");
++     const userKey = resolveUserKey(context.senderId, context.sessionKey);
++     const agentId = resolveAgentId(context.sessionKey, sessionFile);
++     const agentDir = resolveAgentDir(sessionFile, agentId);
++     const statePath = path.join(agentDir, DEFAULTS.stateFileName);
++     const lockPath = `${statePath}.lock`;
++     const locked = await acquireLock(lockPath, staleMs);
++     if (!locked) {
++       console.error("[emotion-state] Could not acquire lock, skipping state update");
++     let state: EmotionState;
++       state = await readState(statePath);
++       if (!state.users[userKey]) state.users[userKey] = { history: [] };
++       if (!state.agents[agentId]) state.agents[agentId] = { history: [] };
++       let updated = false;
++       if (latestUser?.content) {
++         updated =
++         updated =
++           (await maybeUpdate(state.users[userKey], latestUser, "user", labels, confidenceMin, historySize)) ||
++           updated;
++           updated;
++       if (latestAssistant?.content) {
++           (await maybeUpdate(state.agents[agentId], latestAssistant, "assistant", labels, confidenceMin, historySize)) ||
++       if (updated) {
++         pruneUsers(state, maxUsers);
++         if (locked) {
++           await writeJsonFile(statePath, state);
++         } else {
++           console.error("[emotion-state] Skipping write — no lock held");
++         }
++     } finally {
++       if (locked) await releaseLock(lockPath);
++     const otherAgents = await loadOtherAgents(
++       getOtherAgentsRoot(agentDir),
++       agentId,
++       DEFAULTS.stateFileName,
++       maxOtherAgents,
++     );
++     const block = buildEmotionBlock(state, userKey, agentId, {
++       maxUserEntries,
++       maxAgentEntries,
++       halfLifeHours,
++       trendWindowHours,
++       timeZone,
++       otherAgents,
++     });
++     injectBootstrap(context, block);
++     console.error("[emotion-state] Unhandled error in hook handler:", err);

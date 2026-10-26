@@ -1,0 +1,112 @@
+songxf1024/stock-deep-report  1.0.2 -> 1.0.3
+change_type: instructions+docs+code   changelog: Version 1.0.3  - Updated skill to declare explicit capability and file/network access restrictions, following least-privilege principle. - Workspace paths now used for all read/write operations; deprecated hardcoded `/tmp` paths for better platform compatibility. - Specified allowed tools (Read, Write, Edit, Bash, WebFetch, WebSearch, present_files) and network access domains for improved security and clarity. - No changes to report functionality or user-facing features.
+
+### SKILL.md  [instructions]
+- **并行采集以下所有维度**，采集完毕后将数据保存为 JSON 文件（路径：`/tmp/stock_data.json`）。
+- 1. 写一个短脚本 `/tmp/build_json.py`，`d = {}` → 逐块 `d["fin_items"] = [...]` → `d["news"] = [...]` → ... → `json.dump(d, open("/tmp/stock_data.json","w"), ensure_ascii=False, indent=2)`
+- 3. 后续追加块用 `d = json.load(open(...))` → 更新字段 → 重新 dump，避免覆盖。
+- 将评分结果加入 JSON 的 `score` 字段，重新保存 `/tmp/stock_data.json`。
+- 将结果写入 JSON 的 `ai_analysis` 字段，重新保存 `/tmp/stock_data.json`。
+- 运行 skill 目录下的 `references/build.py`：
+- python3 ~/.workbuddy/skills/stock-deep-report/references/build.py /tmp/stock_data.json {输出路径}
+- 1. 读取 `/tmp/stock_data.json`
+- 3. 输出到指定路径
+- 2. 并行采集所有维度数据，保存为 `/tmp/stock_data.json`（Step 1）
+- | `build.py` 报错 | JSON 字段缺失 | 检查 `/tmp/stock_data.json` 是否包含所有必需字段 |
++ agent_created: true
++ # ─────────────────────────────────────────────
++ # ─────────────────────────────────────────────
++ # Capability & Least-Privilege Declarations
++ # 严格遵循 MCP 最小权限原则；所有读写限制在 ${cwd} 内，
++ # 避免 /tmp 硬编码（Windows 不存在）和路径逃逸。
++ allowed-tools:
++   - Read                                           # 读取 JSON / 脚本
++   - Write                                          # 写入 stock_data.json / build_json.py
++   - Edit                                           # 增量更新 JSON
++   - Bash                                           # 仅用于执行 references/build.py
++   - WebFetch                                       # 抓取东方财富公开网页
++   - WebSearch                                      # 检索近 30 天新闻 / 研报
++   - present_files                                  # 最终交付 HTML
++ file-access:
++   scope: workspace                                 # 仅限当前工作目录 ${cwd}
++   write:
++     - "${cwd}/stock_data.json"                     # 采集后的结构化数据
++     - "${cwd}/build_json.py"                       # 分块构建 JSON 的辅助脚本
++     - "${cwd}/*_三维深度分析报告_*.html"           # 最终报告
++   read:
++     - "${cwd}/**"
++     - "~/.workbuddy/skills/stock-deep-report/references/build.py"   # 只读渲染脚本
++   deny:
++     - "/tmp/**"                                    # 明确禁止旧版硬编码路径
++     - "/etc/**"
++     - "~/.ssh/**"
++     - "~/.aws/**"
++     - "~/.config/**"
++ network-access:
++   mode: allowlist
++   domains:
++     - "*.eastmoney.com"
++     - "cninfo.com.cn"
++ subprocess:
++   - "python3 ~/.workbuddy/skills/stock-deep-report/references/build.py <input_json> <output_html>"
++ **并行采集以下所有维度**，采集完毕后将数据保存为 JSON 文件（路径：`${cwd}/stock_data.json`，`${cwd}` 表示当前工作目录，避免 `/tmp` 在 Windows 不存在或跨平台不一致的问题）。
++ 1. 写一个短脚本 `${cwd}/build_json.py`，`d = {}` → 逐块 `d["fin_items"] = [...]` → `d["news"] = [...]` → ... → `json.dump(d, open(f"{CWD}/stock_data.json","w"), ensure_ascii=False, indent=2)`，其中 `CWD = os.getcwd()`
++ 3. 后续追加块用 `d = json.load(open(f"{CWD}/stock_data.json"))` → 更新字段 → 重新 dump，避免覆盖。
++ > **路径规范**：**禁止**使用 `/tmp/...` 硬编码。所有中间文件必须落在 `${cwd}`（当前工作目录）之下，以确保跨平台可用（Windows 无 `/tmp`）并把文件访问权限锁定在工作目录内，避免路径逃逸。
++ 将评分结果加入 JSON 的 `score` 字段，重新保存 `${cwd}/stock_data.json`。
++ 将结果写入 JSON 的 `ai_analysis` 字段，重新保存 `${cwd}/stock_data.json`。
++ 运行 skill 目录下的 `references/build.py`（把 `<cwd>` 换成当前工作目录的绝对路径，跨平台可直接用 `os.getcwd()` 或 shell 变量 `$PWD` / `%CD%`）：
++ # Unix / macOS
++ python3 ~/.workbuddy/skills/stock-deep-report/references/build.py "$PWD/stock_data.json" "$PWD/{code}_{name}_三维深度分析报告_{YYYYMMDD}.html"
++ # Windows PowerShell
++ python ~/.workbuddy/skills/stock-deep-report/references/build.py "$PWD\stock_data.json" "$PWD\{code}_{name}_三维深度分析报告_{YYYYMMDD}.html"
++ 1. 读取 `${cwd}/stock_data.json`
++ 3. 输出到指定路径（仍限制在 `${cwd}` 内）
++ 2. 并行采集所有维度数据，保存为 `${cwd}/stock_data.json`（Step 1）
++ | `build.py` 报错 | JSON 字段缺失 | 检查 `${cwd}/stock_data.json` 是否包含所有必需字段 |
+
+### references/build.py  [code]
+- build.py — 读取 /tmp/stock_data.json，生成个股三维深度分析报告 HTML
+-     data = load_json(sys.argv[1])
+-     out_path = sys.argv[2]
++ build.py — 读取 <cwd>/stock_data.json，生成个股三维深度分析报告 HTML
++ 安全约定（最小权限）：
++   - <input_json> 与 <output_html> 均应位于当前工作目录 (${cwd}) 之下；
++     调用方（skill / agent）负责在传参前把这两个路径拼成 os.path.join(os.getcwd(), ...)。
++   - 本脚本自身不做任何网络调用、不读取工作目录以外的文件；
++     仅将模板 CSS + JSON 数据渲染为 HTML 后写出。
++   - 请勿再传入 /tmp/... 硬编码路径（Windows 不存在 /tmp，且易造成路径逃逸）。
++     # ── 最小权限：把 I/O 严格限制在当前工作目录之内 ──
++     cwd = os.path.realpath(os.getcwd())
++     in_path = os.path.realpath(sys.argv[1])
++     out_path_arg = os.path.realpath(sys.argv[2])
++     for label, p in (("input_json", in_path), ("output_html", out_path_arg)):
++         if os.path.commonpath([cwd, p]) != cwd:
++             print(f"[拒绝] {label} 路径逃逸出工作目录 {cwd}: {p}")
++             sys.exit(2)
++     if os.path.splitext(out_path_arg)[1].lower() != ".html":
++         print(f"[拒绝] output_html 必须是 .html 文件: {out_path_arg}")
++         sys.exit(2)
++     data = load_json(in_path)
++     out_path = out_path_arg
+
+### references/json_template.md  [docs]
+- ## 完整模板（直接复制 → 替换占位符 → 保存为 /tmp/stock_data.json）
+- # 1. 复制上方 JSON 模板到 /tmp/stock_data.json
+- cp stock_data_template.json /tmp/stock_data.json
+- python3 /tmp/build_json.py
+- # 3. 运行 build.py 生成 HTML
+- python3 /Users/songxf/.workbuddy/skills/stock-deep-report/references/build.py \
+-     /tmp/stock_data.json \
+-     /Users/songxf/WorkBuddy/YYYY-MM-DD/000000_股票名_三维深度分析报告_YYYYMMDD.html
++ ## 完整模板（直接复制 → 替换占位符 → 保存为 `${cwd}/stock_data.json`）
++ > **路径规范**：所有中间文件必须落在 `${cwd}`（当前工作目录）之下，**禁止**使用 `/tmp/...` 硬编码——Windows 无 `/tmp`，且易造成路径逃逸。`build.py` 已内置 `${cwd}` 校验，越界会被拒绝。
++ # 0. 假设当前工作目录为 $PWD（Windows PowerShell 用 $PWD，cmd 用 %CD%）
++ cd /Users/songxf/WorkBuddy/YYYY-MM-DD   # 或用户自己的项目目录
++ # 1. 复制 JSON 模板到 ${cwd}/stock_data.json
++ cp stock_data_template.json "$PWD/stock_data.json"
++ python3 "$PWD/build_json.py"            # 脚本内部用 os.getcwd() 拼接文件名
++ # 3. 运行 build.py 生成 HTML（两个路径都必须位于 ${cwd} 之内）
++ python3 ~/.workbuddy/skills/stock-deep-report/references/build.py \
++     "$PWD/stock_data.json" \
++     "$PWD/000000_股票名_三维深度分析报告_YYYYMMDD.html"

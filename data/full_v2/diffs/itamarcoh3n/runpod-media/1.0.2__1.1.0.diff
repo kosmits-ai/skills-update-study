@@ -1,0 +1,78 @@
+itamarcoh3n/runpod-media  1.0.2 -> 1.1.0
+change_type: instructions+code   changelog: Replaced imgbb with Cloudflare R2 presigned URLs (1 min expiry) for local image uploads. Added boto3 dependency. No longer requires imgbb API key.
+
+### SKILL.md  [instructions]
+- Two keys required — add both to `~/.openclaw/secrets.json`:
+- | `/imgbb/apiKey` | Upload local images to public URLs (required for edit/video) | [api.imgbb.com](https://api.imgbb.com) |
+- imgbb is used every time you pass a **local file** to an edit or video endpoint — RunPod endpoints only accept public URLs, so the image is temporarily uploaded to imgbb first.
+- > ⚠️ **Privacy note:** Local images uploaded to imgbb become **publicly accessible URLs**. Do not pass private or sensitive images to edit/video commands.
+- 2. **Env vars** — `RUNPOD_API_KEY`, `IMGBB_API_KEY`
++ One key required — add to `~/.openclaw/secrets.json`:
++ Local images are uploaded to **Cloudflare R2** as presigned URLs (1 min expiry) before being sent to RunPod endpoints. R2 credentials are read from `/cloudflare/r2` in secrets.json — already configured ✅
++ > imgbb is no longer used. R2 presigned URLs replace it for all local file uploads.
++ 2. **Env vars** — `RUNPOD_API_KEY`
+
+### scripts/_utils.py  [code]
+- # dependencies = ["requests"]
+-     imgbb_key = (
+-         os.getenv("IMGBB_API_KEY")
+-         or _from_secrets_json("/imgbb/apiKey")
+-     resp.raise_for_status()
+- def ensure_url(path_or_url: str, imgbb_key: str | None) -> str:
+-     """Return a public URL, uploading to imgbb if a local path is given."""
+-     if not imgbb_key:
+-         raise SystemExit("Local file provided but IMGBB_API_KEY not set — set imgbb in .env")
+-     img_bytes = pathlib.Path(path_or_url).read_bytes()
+-     b64 = base64.b64encode(img_bytes).decode()
+-     resp = requests.post(
+-         "https://api.imgbb.com/1/upload",
+-         data={"key": imgbb_key, "image": b64},
+-         timeout=60,
+-     url = resp.json()["data"]["url"]
+-     print(f"  uploaded to imgbb: {url}")
++ # dependencies = ["requests", "boto3"]
++ import mimetypes
++     secrets_path = pathlib.Path.home() / ".openclaw" / "secrets.json"
++         data = json.loads(secrets_path.read_text())
++     # imgbb_key kept for backward compat but no longer used
++     imgbb_key = None
++ def _r2_config() -> dict:
++     """Load R2 config from secrets.json."""
++     cfg = _from_secrets_json("/cloudflare/r2/accessKeyId")
++     if not cfg:
++         # Return full dict
++         secrets_path = pathlib.Path.home() / ".openclaw" / "secrets.json"
++         return data.get("cloudflare", {}).get("r2", {})
++     return {}
++ def upload_to_r2(path: str, expiry: int = 60) -> str:
++     """Upload a local file to Cloudflare R2 and return a presigned GET URL (default 1 min)."""
++     import boto3
++     from botocore.config import Config
++     data = json.loads(secrets_path.read_text())
++     r2 = data.get("cloudflare", {}).get("r2", {})
++     access_key = r2.get("accessKeyId")
++     secret_key = r2.get("secretAccessKey")
++     endpoint = r2.get("endpoint")
++     bucket = r2.get("bucket", "openclaw")
++     if not all([access_key, secret_key, endpoint]):
++         raise SystemExit("R2 credentials not found in secrets.json under cloudflare.r2")
++     client = boto3.client(
++         "s3",
++         endpoint_url=endpoint,
++         aws_access_key_id=access_key,
++         aws_secret_access_key=secret_key,
++         region_name="auto",
++         config=Config(signature_version="s3v4"),
++     file_path = pathlib.Path(path)
++     key = f"uploads/{int(time.time())}_{file_path.name}"
++     content_type = mimetypes.guess_type(str(file_path))[0] or "application/octet-stream"
++     with open(file_path, "rb") as f:
++         client.put_object(Bucket=bucket, Key=key, Body=f, ContentType=content_type)
++     url = client.generate_presigned_url(
++         "get_object",
++         Params={"Bucket": bucket, "Key": key},
++         ExpiresIn=expiry,
++     print(f"  uploaded to R2: {url[:80]}…")
++ def ensure_url(path_or_url: str, imgbb_key: str | None = None) -> str:
++     """Return a public URL, uploading to R2 (presigned, 1 min) if a local path is given."""
++     return upload_to_r2(path_or_url, expiry=60)

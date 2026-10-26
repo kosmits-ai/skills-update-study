@@ -1,0 +1,93 @@
+{
+  "fetched_at": "2026-10-26T17:14:11.285625+00:00",
+  "status": 200,
+  "payload": {
+    "skill": {
+      "slug": "feishu-doc-collab",
+      "displayName": "Feishu Doc Collab"
+    },
+    "version": {
+      "version": "1.0.0",
+      "createdAt": 1773499904519,
+      "changelogSource": "user"
+    },
+    "moderation": {
+      "scope": "skill",
+      "sourceVersion": {
+        "version": "1.2.0",
+        "createdAt": 1773715254817
+      },
+      "matchesRequestedVersion": false,
+      "isPendingScan": false,
+      "isMalwareBlocked": false,
+      "isSuspicious": false,
+      "isHiddenByMod": false,
+      "isRemoved": false
+    },
+    "security": {
+      "status": "suspicious",
+      "hasWarnings": true,
+      "checkedAt": 1773557402021,
+      "model": "gpt-5-mini",
+      "hasScanResult": true,
+      "sha256hash": "2718fcaae03fe51ab0a883ee4f9da461d65d039032cbfbab21fc0661bb7ebe84",
+      "virustotalUrl": "https://www.virustotal.com/gui/file/2718fcaae03fe51ab0a883ee4f9da461d65d039032cbfbab21fc0661bb7ebe84",
+      "scanners": {
+        "vt": {
+          "status": "suspicious",
+          "verdict": "suspicious",
+          "normalizedStatus": "suspicious",
+          "analysis": "Type: OpenClaw Skill\nName: feishu-doc-collab\nVersion: 1.0.0\n\nThe skill performs invasive system-level modifications by patching the OpenClaw core extension file `/usr/lib/node_modules/openclaw/extensions/feishu/src/monitor.ts` via `scripts/patch-monitor.sh`. The injected code programmatically accesses the sensitive `openclaw.json` configuration file to retrieve authentication tokens and triggers automated agent sessions via local HTTP hooks (`/hooks/agent`) whenever a Feishu document is edited. While the behavior is aligned with the stated goal of real-time document collaboration, the practice of modifying application source code and accessing core secrets represents a high-risk pattern that could be exploited or cause system instability.",
+          "source": "palm",
+          "checkedAt": 1773557402021
+        },
+        "skillspector": null,
+        "llm": {
+          "status": "suspicious",
+          "verdict": "suspicious",
+          "normalizedStatus": "suspicious",
+          "confidence": "medium",
+          "summary": "The skill's behavior matches its stated purpose (patching OpenClaw to trigger agent turns on Feishu doc edits) but it modifies core OpenClaw code, reads secrets from ~/.openclaw/openclaw.json, and the package metadata fails to declare those requirements—so there are proportionality and installation inconsistencies you should not ignore.",
+          "dimensions": [
+            {
+              "detail": "The files and scripts do implement the claimed Feishu document auto-reply and bitable integration: the patch injects code to detect drive.file.edit_v1 and POST to the local /hooks/agent endpoint. That behavior is coherent with the described feature set (real-time doc collaboration, anti-loop, optional bitable handling).",
+              "label": "Purpose & Capability",
+              "name": "purpose_capability",
+              "rating": "note"
+            },
+            {
+              "detail": "Runtime instructions and the injected code cause the system to: read DOC_PROTOCOL.md, read the Feishu document content, and append replies; and on bitable events, update records. This stays within the described feature, but it grants the agent automatic triggering on every document edit and instructs the agent (via a crafted payload) to perform feishu_doc read/append operations. The skill also reads ~/.openclaw/openclaw.json at runtime (hooks.token and gateway.port) even though that file contains other potentially sensitive channel config; the instructions do not explicitly declare all of this in the registry metadata.",
+              "label": "Instruction Scope",
+              "name": "instruction_scope",
+              "rating": "concern"
+            },
+            {
+              "detail": "There is no centralized package install; instead the provided patch-monitor.sh modifies a system file at /usr/lib/node_modules/openclaw/extensions/feishu/src/monitor.ts (it makes a backup). Modifying core extension code is inherently risky and persistent across runs; however the script is local and does not download arbitrary remote code. The patch is idempotent and visible in the script, but injecting code into a system extension is a high-impact action and should be reviewed manually before running.",
+              "label": "Install Mechanism",
+              "name": "install_mechanism",
+              "rating": "concern"
+            },
+            {
+              "detail": "Registry metadata declares no required env vars or credentials, yet the script and injected code read ~/.openclaw/openclaw.json to obtain hooks.token and gateway.port and rely on OpenClaw's Feishu channel being configured (app ID/secret present elsewhere). The script also invokes python3 (and assumes bash utilities) but the skill metadata lists no required binaries. These undeclared dependencies and secret reads are disproportionate to what the registry entry advertises and reduce transparency.",
+              "label": "Credentials",
+              "name": "environment_proportionality",
+              "rating": "concern"
+            },
+            {
+              "detail": "The skill persists by modifying another component's source (monitor.ts) so that /hooks/agent is triggered on every document edit — a persistent, system-level change. While not using always:true, this gives broad, ongoing access to trigger agent turns on document edits and therefore a wide blast radius if hooks.token or the agent behavior is abused. The script does create a backup, but it still alters other software's behavior.",
+              "label": "Persistence & Privilege",
+              "name": "persistence_privilege",
+              "rating": "concern"
+            }
+          ],
+          "guidance": "What to consider before installing:\n\n- Principle: this skill modifies OpenClaw's Feishu extension (monitor.ts) to trigger local agent turns on every document edit. That is exactly what it claims to do, but it is a persistent, system-level modification — review the change before running it.\n\n- Inspect the patch: open scripts/patch-monitor.sh and the injected code block. Confirm you are comfortable with the exact code being inserted into /usr/lib/node_modules/openclaw/extensions/feishu/src/monitor.ts and that the backup (.bak) will be kept.\n\n- Secrets: the injected code reads ~/.openclaw/openclaw.json to get hooks.token and gateway.port. Ensure hooks.token is scoped and rotated appropriately, and that openclaw.json does not contain secrets you don't want code to read. The skill did NOT declare this dependency in its metadata — treat that as a transparency gap.\n\n- Privilege & blast radius: if an attacker can control the content of edits or the agent behavior, the local /hooks/agent mechanism could be used to run arbitrary agent instructions on document edits. Limit who can edit the documents, and test in a safe environment first.\n\n- Environment dependencies: the patch script uses python3 and standard Unix tools but the registry metadata lists no required binaries. Ensure python3 is present and inspect the script for unexpected behavior before running.\n\n- Safer approach: instead of running the script unreviewed on a production system, (1) manually inspect and apply the patch only after code review, (2) run it in a staging environment, (3) rotate/limit the hooks token, and (4) verify the agent's allowed actions (avoid granting the agent external network or broad file-system access if you don't intend that).\n\nIf you want, I can produce a step-by-step checklist to safely audit and apply the patch (diff the changes, test in staging, revoke tokens, etc.).",
+          "findings": null,
+          "agenticRiskFindings": null,
+          "riskSummary": null,
+          "model": "gpt-5-mini",
+          "checkedAt": 1773499954065
+        }
+      }
+    }
+  }
+}

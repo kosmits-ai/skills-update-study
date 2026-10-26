@@ -1,0 +1,747 @@
+ryandeathridge/clawdible-audiobooks  1.0.0 -> 1.0.1
+change_type: instructions+code   changelog: clawdible-audiobooks v1.0.1  - Updated documentation for improved clarity and completeness about setup, dependencies, and usage. - Expanded instructions for cross-platform compatibility, script auto-location, and dependency handling. - Clarified command examples, workflows, and error causes/fixes. - Enhanced usage trigger phrases and user guidance for all key features.
+
+### SKILL.md  [instructions]
+- description: Search, browse, and manage Audible audiobooks. Use when the user wants to search for audiobooks, view their Audible library, buy an audiobook, add to wishlist, or get details on a specific title. Requires one-time auth setup via audible_auth.py.
+- # Audible Skill
+- Manage Audible via the `audible` Python library (unofficial API).
+- Auth file: `~/.config/audible/auth.json`
+- **Remote/headless auth (works via iMessage — preferred):**
+- python3 /opt/homebrew/lib/node_modules/openclaw/skills/clawdible/scripts/audible_auth.py --locale us
+- Send the URL to the user. They open it on their phone and log into Amazon.
+- **Step 2** — after login, Amazon redirects to a URL starting with `https://www.amazon.com/ap/maplanding...`. User pastes that URL back, then:
+- python3 /opt/homebrew/lib/node_modules/openclaw/skills/clawdible/scripts/audible_auth.py --callback '<redirect URL>'
+- Verify with:
+- python3 /opt/homebrew/lib/node_modules/openclaw/skills/clawdible/scripts/audible_cli.py status --locale us
+- The auth file's `locale_code` field is auto-detected; override with `--locale` if needed.
+- ## Script
+- SCRIPT="python3 /opt/homebrew/lib/node_modules/openclaw/skills/clawdible/scripts/audible_cli.py"
+- All commands accept `--locale LOCALE` and `--json` flags.
+- # Auth status + library count
+- $SCRIPT status --locale us
+- $SCRIPT search "Project Hail Mary" --locale us
+- $SCRIPT search "Andy Weir" --limit 5 --locale us
+- $SCRIPT library --locale us
+- $SCRIPT library --limit 50 --locale us
+- $SCRIPT info B08G9PRS1K --locale us
+- # Purchase (requires explicit --confirm)
+- $SCRIPT buy B08G9PRS1K --locale us --confirm
+- $SCRIPT wishlist --locale us
+- $SCRIPT wishlist add B08G9PRS1K --locale us
+- 1. `search` — find the title, note the ASIN
+- 3. Confirm with user verbally
+- 4. `buy <asin> --confirm` — purchase
+- **Always confirm with the user before running buy.** The `--confirm` flag is a hard requirement.
+- - Auth file stores `locale_code` (e.g. `au`) — may differ from actual purchasing locale
+- - Ryan's account is US marketplace → always pass `--locale us`
+- - If AU purchase desired: `--locale au` and use `audible.com.au` fallback URL
+- - Fallback URL format: `https://www.audible.com/pd/<asin>` (or `.com.au`, `.co.uk`)
+- | Error | Meaning | Fix |
+- | No auth file | Not authenticated | Run audible_auth.py |
+- | Auth failed (401/403) | Token expired | Re-run audible_auth.py |
+- | Not found (404) | Wrong ASIN or locale | Check ASIN; try different locale |
+- | Rate limited (429) | Too many requests | Wait and retry |
+- | Buy fails | API purchase blocked | Send manual URL to user |
+- - `audible` library is unofficial — Amazon may change their API
+- - Token auto-refreshes via device private key; `expires` field in JSON is for access token only
+- - Auth file is chmod 600 (owner read/write only)
++ description: Search, browse, and manage Audible audiobooks. Use when the user wants to search for audiobooks on Audible, view their library, get book details, purchase a title, or manage their wishlist. Triggers on phrases like "find audiobook", "buy audiobook", "what's in my Audible library", "search Audible for", "add to wishlist". Requires one-time auth setup.
++ # Clawdible
++ Manage Audible via the `audible` Python library (unofficial API). Works across platforms — macOS, Linux, Windows.
++ ## Dependencies
++ Both scripts auto-install dependencies on first run via pip:
++ - `audible` — unofficial Audible API client
++ - `httpx` — HTTP client
++ No manual pip install needed.
++ ## Locating the scripts
++ Resolve the skill directory at runtime:
++ SKILL_DIR=$(python3 -c "
++ import subprocess, json
++ skills = subprocess.check_output(['openclaw', 'skills', '--json'], text=True)
++ for s in json.loads(skills):
++     if s['name'] == 'clawdible':
++         print(s['path']); break
++ " 2>/dev/null || find ~/.openclaw -name 'audible_cli.py' -path '*/clawdible/*' 2>/dev/null | head -1 | xargs dirname)
++ SCRIPT="python3 $SKILL_DIR/audible_cli.py"
++ AUTH="python3 $SKILL_DIR/audible_auth.py"
++ Or use the path OpenClaw provides when loading this skill (available as the skill's directory).
++ Auth stored at `~/.config/audible/auth.json` (chmod 600).
++ python3 audible_auth.py --locale us
++ Send URL to user. They open it on any device and sign into Amazon.
++ **Step 2** — after login, Amazon redirects to `https://www.amazon.com/ap/maplanding...`. User pastes that URL:
++ python3 audible_auth.py --callback '<redirect URL>'
++ **Verify:**
++ python3 audible_cli.py status
++ python3 audible_cli.py status
++ Auth file's `locale_code` is auto-detected; override with `--locale` if needed.
++ All commands accept `--locale LOCALE` and `--json`.
++ # Auth status
++ python3 audible_cli.py status --locale us
++ python3 audible_cli.py search "Project Hail Mary"
++ python3 audible_cli.py search "Andy Weir" --limit 5 --locale us
++ python3 audible_cli.py library
++ python3 audible_cli.py library --limit 50
++ python3 audible_cli.py info B08G9PRS1K
++ # Purchase (requires explicit --confirm — always verify with user first)
++ python3 audible_cli.py buy B08G9PRS1K --confirm
++ python3 audible_cli.py wishlist
++ python3 audible_cli.py wishlist add B08G9PRS1K
++ 1. `search` — find title, note the ASIN
++ 3. Confirm purchase with user verbally
++ 4. `buy <asin> --confirm` — execute purchase
++ **Never run `buy` without explicit user confirmation.**
++ - Auto-detects locale from auth file
++ - Override with `--locale` when needed (e.g. user's account is US but located in AU)
++ - Fallback purchase URL on API failure: `https://www.audible.com/pd/<asin>` (adjust domain per locale)
++ | Error | Cause | Fix |
++ | No auth file | Not set up | Run `audible_auth.py` |
++ | 401/403 | Token expired | Re-run `audible_auth.py` |
++ | 404 | Wrong ASIN or locale | Try different `--locale` |
++ | 429 | Rate limited | Wait and retry |
++ | Buy fails | API blocked | Send manual URL to user |
++ | InvalidValue on auth | Code expired | Start auth flow again |
++ - `audible` library is unofficial — Amazon may change their API without notice
++ - Auth tokens auto-refresh via device private key; re-auth only needed if device is deregistered
++ - Auth file is chmod 600 (owner-only read/write)
+
+### package.json  [code]
++ {
++   "name": "clawdible",
++   "version": "1.0.1",
++   "description": "Search, browse, and manage Audible audiobooks from OpenClaw",
++   "license": "MIT"
++ }
+
+### scripts/audible_auth.py  [code]
+- Audible authentication — remote/headless two-step flow.
+- Step 1 — generate login URL:
+-   python3 audible_auth.py
+-   Prints login URL and saves PKCE state to ~/.config/audible/auth_state.json
+- Step 2 — complete auth with redirect URL:
+-   Completes auth and saves credentials to ~/.config/audible/auth.json
+- The redirect URL starts with https://www.amazon.com.au/ap/maplanding...
+- (or amazon.com for US, amazon.co.uk for UK)
+- Default locale: au. Override with --locale us|uk|de|ca etc.
+- import os
+- import stat
+- def _get_locale(locale_code):
+-     """Return a Locale object, with friendly error on invalid code."""
+-     try:
+-         return Locale(locale_code)
+-         print(f"ERROR: Unknown locale '{locale_code}'.")
+-         print("Try: us, au, uk, de, ca, fr, in, it, jp, es")
+-         sys.exit(1)
+-         sys.exit(1)
+-         sys.exit(1)
+- def cmd_start(locale_code="au"):
+-     """Step 1: generate login URL and save PKCE state."""
+-     locale = _get_locale(locale_code)
+-     locale = _get_locale(locale_code)
+-     # Save state for step 2
+-     os.chmod(STATE_FILE, stat.S_IRUSR | stat.S_IWUSR)  # 600
+-     print("=== Audible Login — Step 1 of 2 ===")
+-     print()
+-     print()
+-     print()
+-     print()
+-     print()
+-     print("Open this URL on your phone and sign into Amazon:")
+-     print("After login, Amazon redirects to a URL starting with:")
+-     print("  https://www.amazon.com.au/ap/maplanding...  (or amazon.com for US)")
+-     print("Paste the full redirect URL back and run:")
+-     print(f"  python3 audible_auth.py --callback '<url>'")
+-     """Step 2: complete auth using the redirect URL from Amazon."""
+-     # Load saved PKCE state
+-     except Exception as e:
+-     except Exception as e:
+-         print(f"ERROR: Could not read auth state file: {e}")
+-         print("Run without --callback to start over.")
+-     locale_code = state.get("locale_code", "au")
+-     # Parse auth code from redirect URL
+-         print(f"ERROR: Could not parse the redirect URL: {e}")
+-         print("Make sure you pasted the full URL including https://")
+-     auth_code = parsed.get("openid.oa2.authorization_code", [None])[0]
+-         print("ERROR: No authorization code found in the redirect URL.")
+-         print("Possible reasons:")
+-         print("  - You pasted the URL incorrectly (missing parts)")
+-         print("  - Login was cancelled or timed out")
+-         print("  - The session expired (restart from step 1)")
+-     except httpx.NetworkError as e:
+-         print(f"ERROR: Network error during registration: {e}")
+-         print(f"ERROR: Registration failed: {e}")
+-         print("The auth code may have expired. Run step 1 again to get a fresh URL.")
+-     # Build and save authenticator
+-     # Lock down permissions — auth file contains sensitive tokens
+-     os.chmod(AUTH_FILE, stat.S_IRUSR | stat.S_IWUSR)  # 600
+-     # Clean up state file
+-     print(f"   Credentials saved to {AUTH_FILE}")
+-     print("Test with:")
+-     print("  python3 audible_cli.py status")
+-         description="Audible two-step remote auth",
+-         formatter_class=argparse.RawDescriptionHelpFormatter,
+-         epilog=__doc__,
+-         "--callback",
+-         metavar="URL",
+-         help="Step 2: redirect URL from Amazon after login",
+-         "--locale",
+-         default="au",
+-         metavar="LOCALE",
+-         help="Marketplace locale: us, au, uk, de, ca, fr, in, it, jp, es (default: au)",
+-         cmd_start(locale_code=args.locale)
++ Clawdible auth — two-step remote authentication for Audible.
++ Step 1 (generate login URL):
++   python3 audible_auth.py [--locale LOCALE]
++   → Prints a login URL. Open on any device and sign into Amazon.
++ Step 2 (complete auth with redirect URL):
++   → Completes auth, saves credentials to ~/.config/audible/auth.json
++ Locale options: us, au, uk, de, ca, fr, in, it, jp, es (default: us)
++ import subprocess
++ # ── Dependency check & auto-install ──────────────────────────────────────────
++ def ensure_deps():
++     missing = []
++     for pkg in ["audible", "httpx"]:
++         try:
++         try:
++             __import__(pkg)
++         except ImportError:
++             missing.append(pkg)
++     if missing:
++         print(f"Installing missing dependencies: {', '.join(missing)}...")
++             subprocess.check_call(
++                 [sys.executable, "-m", "pip", "install", "--quiet"] + missing
++             )
++             print("Dependencies installed.\n")
++         except subprocess.CalledProcessError as e:
++             print(f"ERROR: Failed to install dependencies: {e}")
++             print(f"Run manually: pip3 install {' '.join(missing)}")
++             sys.exit(1)
++ ensure_deps()
++ def cmd_start(locale_code):
++     locale = Locale(locale_code)
++     locale = Locale(locale_code)
++     # Save PKCE state — must be reused in step 2
++     STATE_FILE.chmod(0o600)
++     print("=== Clawdible Login ===\n")
++     print("Open this URL on your phone/browser and sign into Amazon:\n")
++     print("\nAfter signing in, copy the full redirect URL")
++     print("(starts with https://www.amazon.com/ap/maplanding...)")
++     print("and run:")
++     print(f"  python3 {__file__} --callback '<redirect URL>'")
++     except Exception:
++         print("ERROR: Auth state file is corrupt. Start again without --callback.")
++         STATE_FILE.unlink(missing_ok=True)
++     locale_code = state.get("locale_code", "us")
++     # Parse the authorization code from redirect URL
++         auth_code = parsed.get("openid.oa2.authorization_code", [None])[0]
++         auth_code = None
++         print("ERROR: Could not find authorization code in the URL.")
++         print("Make sure you copied the full redirect URL.")
++         msg = str(e)
++         if "InvalidValue" in msg or "expired" in msg.lower():
++             print("ERROR: Auth code expired or invalid.")
++             print("Auth codes are single-use and expire quickly.")
++             print("Start again: run without --callback to get a fresh URL.")
++             STATE_FILE.unlink(missing_ok=True)
++         else:
++             print(f"ERROR: Registration failed — {e}")
++     AUTH_FILE.chmod(0o600)
++     print(f"   Auth saved to: {AUTH_FILE}")
++     print(f"\nVerify with: python3 audible_cli.py status --locale {locale_code}")
++         description="Clawdible auth — Audible two-step remote login"
++         "--locale", default="us",
++         help="Marketplace locale (default: us). Options: us, au, uk, de, ca, fr, in, it, jp, es"
++         "--callback", metavar="URL",
++         help="Complete auth with the Amazon redirect URL from step 2"
++         cmd_start(args.locale)
+
+### scripts/audible_cli.py  [code]
+- Audible CLI for OpenClaw skill.
+- try:
+-     import audible
+-     import httpx
+- except ImportError:
+-     print("ERROR: Missing dependencies. Run: pip3 install audible httpx")
+-     sys.exit(1)
+-     sys.exit(1)
+- # ─── Auth ────────────────────────────────────────────────────────────────────
+- def load_auth(locale_override=None):
+-     """Load authenticator from auth file."""
+-     if not AUTH_FILE.exists():
+-         _die(
+-         _die(
+-             f"No auth file at {AUTH_FILE}.\n"
+-             "Run audible_auth.py to authenticate first."
+-         )
+-         )
+-     try:
+-         auth = audible.Authenticator.from_file(AUTH_FILE, password=None)
+-         _die(f"Failed to load auth file: {e}")
+-     # Determine locale: CLI flag > auth file > fallback us
+-     locale_code = locale_override
+-     if not locale_code:
+-             raw = json.loads(AUTH_FILE.read_text())
+-             raw = json.loads(AUTH_FILE.read_text())
+-             locale_code = raw.get("locale_code") or "us"
+-         except Exception:
+-             locale_code = "us"
+-         auth.locale = locale_code
+-     except Exception:
+-         auth.locale = "us"
+-     return auth, locale_code
+- def get_client(locale_override=None):
+-     """Return an authenticated Audible client."""
+-     auth, locale_code = load_auth(locale_override)
+-     return audible.Client(auth=auth), locale_code
+- # ─── Helpers ─────────────────────────────────────────────────────────────────
+- def _die(msg):
+-     print(f"ERROR: {msg}", file=sys.stderr)
+- def _format_duration(minutes):
+-     if not minutes:
+-         return "Unknown"
+-     h, m = divmod(int(minutes), 60)
+-     return f"{h}h {m}m"
+- def _handle_api_error(e, context=""):
+-     """Map known audible exceptions to friendly messages."""
+-     name = type(e).__name__
+-     msg = str(e)
+-     if "NetworkError" in name or isinstance(e, httpx.NetworkError):
+-         _die(f"Network error{' (' + context + ')' if context else ''}: {msg}")
+-     elif "NotFoundError" in name or "404" in msg:
+-         _die(f"Not found{' (' + context + ')' if context else ''}. Check the ASIN is correct.")
+-     elif "Unauthorized" in name or "401" in msg or "403" in msg:
+-         _die("Auth error — token may be expired. Re-run audible_auth.py to refresh.")
+-     elif "RateLimit" in name or "429" in msg or "throttl" in msg.lower():
+-         _die("Rate limited by Audible. Wait a moment and try again.")
+-         _die(f"API error{' (' + context + ')' if context else ''}: {msg}")
+- # ─── Commands ────────────────────────────────────────────────────────────────
+-     """Show auth status and account info."""
+-         data = {"authenticated": False, "auth_file": str(AUTH_FILE)}
+-         if args.json:
+-         if args.json:
+-         if args.json:
+-         if args.json:
+-         if args.json:
+-         if args.json:
+-             print(json.dumps(data))
+-         else:
+-         else:
+-             print("Not authenticated. Run audible_auth.py first.")
+-         return
+-         return
+-         return
+-         return
+-     raw = json.loads(AUTH_FILE.read_text())
+-     customer = raw.get("customer_info", {})
+-     locale_code = args.locale or raw.get("locale_code", "unknown")
+-     # Verify auth works by fetching 1 library item
+-     lib_count = None
+-     auth_ok = False
+-     auth_error = None
+-         client, _ = get_client(args.locale)
+-         client, _ = get_client(args.locale)
+-         client, _ = get_client(args.locale)
+-         client, _ = get_client(args.locale)
+-         client, _ = get_client(args.locale)
+-         client, _ = get_client(args.locale)
+-         with client:
+-         with client:
+-         with client:
+-         with client:
+-         with client:
+-         with client:
+-             result = client.get(
+-             result = client.get(
+-                 "1.0/library",
+-                 num_results=500,
+-                 response_groups="product_desc",
+-                 response_groups="product_desc",
+-                 sort_by="-PurchaseDate",
+-             )
+-             )
+-             items = result.get("items", [])
+-             lib_count = len(items)
+-             auth_ok = True
+-         auth_error = str(e)
+-     data = {
+-         "authenticated": auth_ok,
+-         "account_name": customer.get("name"),
+-         "user_id": customer.get("user_id"),
+-         "locale": locale_code,
+-         "library_count": lib_count,
+-         "auth_file": str(AUTH_FILE),
+-     if auth_error:
+-         data["auth_error"] = auth_error
+-     if args.json:
+-         print(json.dumps(data, indent=2))
+-         status = "✅ Authenticated" if auth_ok else f"❌ Auth failed: {auth_error}"
+-         print(f"Status:        {status}")
+-         print(f"Account:       {data['account_name'] or 'Unknown'}")
+-         print(f"Locale:        {locale_code}")
+-         if lib_count is not None:
+-             print(f"Library:       {lib_count} titles")
+-         print(f"Auth file:     {AUTH_FILE}")
+-     """Search Audible catalogue."""
+-         _handle_api_error(e, "search")
+-         _handle_api_error(e, "search")
+-             print(json.dumps([]))
+-             print(json.dumps([]))
+-             print("No results found.")
+-         print(json.dumps(products, indent=2, default=str))
+-     for i, p in enumerate(products, 1):
+-         title = p.get("title", "Unknown")
+-         authors = ", ".join(a.get("name", "") for a in p.get("authors", []))
+-         asin = p.get("asin", "")
+-         duration = _format_duration(p.get("runtime_length_min", 0))
+-         print(f"{i}. {title}")
+-         print(f"{i}. {title}")
+-         print(f"   Author: {authors}")
+-         print(f"   ASIN: {asin}  |  Length: {duration}")
+-         print()
+-         print()
+-     """List audiobooks in your library."""
+-         _handle_api_error(e, "library")
+-         _handle_api_error(e, "library")
+-             print("Library is empty.")
+-         print(json.dumps(items, indent=2, default=str))
+-     print(f"Library ({len(items)} items shown):\n")
+-     for i, item in enumerate(items, 1):
+-         title = item.get("title", "Unknown")
+-         authors = ", ".join(a.get("name", "") for a in item.get("authors", []))
+-         asin = item.get("asin", "")
+-         print(f"   Author: {authors}  |  ASIN: {asin}")
+-     """Get details for a specific ASIN."""
+-                 f"1.0/catalog/products/{args.asin}",
+-         _handle_api_error(e, f"info/{args.asin}")
+-         _handle_api_error(e, f"info/{args.asin}")
+-         print(json.dumps(p, indent=2, default=str))
+-     duration = _format_duration(p.get("runtime_length_min", 0))
+-     print(f"Title:     {title}")
+-     print(f"Author:    {authors}")
+-     print(f"Narrator:  {narrators}")
+-     print(f"Length:    {duration}")
+-     print(f"ASIN:      {args.asin}")
+-     if summary:
+-         # Strip basic HTML tags
+-         import re
+-         clean = re.sub(r"<[^>]+>", "", summary).strip()
+-         print(f"\nSummary: {clean}")
+-     """Purchase an audiobook by ASIN. Requires --confirm flag."""
+-             "Add --confirm to proceed with purchase.\n"
+-             f"  buy {args.asin} --confirm\n"
+-             "Always confirm with the user before purchasing."
+-     # Look up title first
+-     title = args.asin
+-             title = result.get("product", {}).get("title", args.asin)
+-         pass  # Non-fatal — proceed with ASIN
+-     print(f"Purchasing: {title} ({args.asin})...")
+-             client.post(
+-                 "1.0/orders",
+-                 body={"asin": args.asin, "audibleCreditApplied": True},
+-         result_data = {"success": True, "asin": args.asin, "title": title}
+-             print(json.dumps(result_data))
+-             print(f"✅ Purchased! '{title}' is now in your library.")
+-         _handle_api_error(e, "buy")
+-         err_str = str(e)
+-         # Fallback instructions
+-         locale_code = "au"
+-             locale_code = raw.get("locale_code", "au")
+-         domain_map = {"au": "audible.com.au", "us": "audible.com", "uk": "audible.co.uk"}
+-         domain = domain_map.get(locale_code, "audible.com")
+-         fallback_url = f"https://www.{domain}/pd/{args.asin}"
+-             print(json.dumps({"success": False, "error": err_str, "manual_url": fallback_url}))
+-             print(f"Purchase via API failed: {err_str}")
+-             print(f"Complete manually: {fallback_url}")
+-     """Show or modify wishlist."""
+-     if getattr(args, "wish_action", None) == "add":
+-         if not args.asin:
+-             _die("Provide an ASIN: wishlist add <asin>")
+-             client, _ = get_client(args.locale)
+-             client, _ = get_client(args.locale)
+-             with client:
+-             with client:
+-         except audible.exceptions.NetworkError as e:
+-         except audible.exceptions.NetworkError as e:
+-             _handle_api_error(e, "wishlist add")
+-             _handle_api_error(e, "wishlist add")
+-             print(json.dumps({"added": args.asin}))
+-                 result = client.get(
+-                     "1.0/wishlist",
+-                     num_results=50,
+-                     response_groups="product_desc,contributors",
+-                 )
+-             _handle_api_error(e, "wishlist")
+-             _handle_api_error(e, "wishlist")
+-                 print(json.dumps([]))
+-                 print("Wishlist is empty.")
+-             return
+-             print(json.dumps(items, indent=2, default=str))
+-         print(f"Wishlist ({len(items)} items):\n")
+-         for i, p in enumerate(items, 1):
+- # ─── CLI ─────────────────────────────────────────────────────────────────────
+-         description="Audible CLI for OpenClaw",
+-         formatter_class=argparse.RawDescriptionHelpFormatter,
+-     # Shared flags added to every subparser via parents
+-     shared = argparse.ArgumentParser(add_help=False)
+-     shared.add_argument("--locale", help="Marketplace locale (e.g. us, au, uk)")
+-     shared.add_argument("--json", action="store_true", help="Output as JSON")
+-     # status
+-     subparsers.add_parser("status", parents=[shared], help="Show auth status and account info")
+-     # search
+-     p_search = subparsers.add_parser("search", parents=[shared], help="Search Audible catalogue")
+-     p_search.add_argument("query", nargs="+", help="Search query")
+-     # library
+-     p_lib = subparsers.add_parser("library", parents=[shared], help="List your library")
+-     # info
+-     p_info = subparsers.add_parser("info", parents=[shared], help="Get book details by ASIN")
+-     p_info.add_argument("asin", help="Book ASIN")
+-     # buy
+-     p_buy = subparsers.add_parser("buy", parents=[shared], help="Purchase a book by ASIN")
+-     p_buy.add_argument("asin", help="Book ASIN")
+-     p_buy.add_argument("--confirm", action="store_true", help="Required to confirm purchase")
+-     # wishlist
+-     p_wish = subparsers.add_parser("wishlist", parents=[shared], help="View or modify wishlist")
+-     p_wish.add_argument("wish_action", nargs="?", choices=["add"], metavar="action")
+-     p_wish.add_argument("asin", nargs="?", help="ASIN (for wishlist add)")
+-     if args.command == "status":
+-         cmd_status(args)
+-     elif args.command == "search":
+-         cmd_search(args)
+-     elif args.command == "library":
+-         cmd_library(args)
+-     elif args.command == "info":
+-         cmd_info(args)
+-     elif args.command == "buy":
+-         cmd_buy(args)
+-     elif args.command == "wishlist":
+-         cmd_wishlist(args)
++ Clawdible CLI — Audible management for OpenClaw.
++ import subprocess
++ # ── Dependency check & auto-install ──────────────────────────────────────────
++ def ensure_deps():
++     missing = []
++     for pkg in ["audible", "httpx"]:
++         try:
++             __import__(pkg)
++         except ImportError:
++             missing.append(pkg)
++     if missing:
++         print(f"Installing missing dependencies: {', '.join(missing)}...")
++             subprocess.check_call(
++                 [sys.executable, "-m", "pip", "install", "--quiet"] + missing
++             print("Dependencies installed.\n")
++         except subprocess.CalledProcessError as e:
++             print(f"ERROR: Failed to install dependencies: {e}")
++             print(f"Run manually: pip3 install {' '.join(missing)}")
++             sys.exit(1)
++             sys.exit(1)
++             sys.exit(1)
++ ensure_deps()
++ import audible
++ import httpx
++ from urllib.parse import parse_qs
++ # ── Constants ─────────────────────────────────────────────────────────────────
++ MARKETPLACE_DOMAINS = {
++     "us": "audible.com",
++     "au": "audible.com.au",
++     "uk": "audible.co.uk",
++     "de": "audible.de",
++     "ca": "audible.ca",
++     "fr": "audible.fr",
++     "in": "audible.in",
++     "it": "audible.it",
++     "jp": "audible.co.jp",
++     "es": "audible.es",
++ }
++ # ── Auth helpers ──────────────────────────────────────────────────────────────
++ def load_auth():
++         print(f"ERROR: No auth file found at {AUTH_FILE}")
++         print("Run the auth setup script first:")
++         print("  python3 <skill_dir>/scripts/audible_auth.py")
++         sys.exit(1)
++         sys.exit(1)
++         sys.exit(1)
++         sys.exit(1)
++         sys.exit(1)
++         sys.exit(1)
++         sys.exit(1)
++         sys.exit(1)
++         sys.exit(1)
++         sys.exit(1)
++         sys.exit(1)
++         sys.exit(1)
++         return audible.Authenticator.from_file(AUTH_FILE)
++         print(f"ERROR: Failed to load auth: {e}")
++         print("Try re-authenticating: python3 <skill_dir>/scripts/audible_auth.py")
++ def detect_locale():
++     """Read locale from auth file, default to 'us'."""
++     if AUTH_FILE.exists():
++             data = json.loads(AUTH_FILE.read_text())
++             return data.get("locale_code", "us")
++     return "us"
++ def get_client(locale):
++     auth = load_auth()
++         auth.locale = locale
++         pass
++     return audible.Client(auth=auth)
++ def fallback_url(asin, locale):
++     domain = MARKETPLACE_DOMAINS.get(locale, "audible.com")
++     return f"https://www.{domain}/pd/{asin}"
++ # ── Output helpers ────────────────────────────────────────────────────────────
++ def output(data, as_json=False):
++     if as_json:
++         print(json.dumps(data, indent=2, ensure_ascii=False))
++     else:
++     else:
++         if isinstance(data, str):
++             print(data)
++         elif isinstance(data, list):
++             for item in data:
++                 print(item)
++ # ── Commands ──────────────────────────────────────────────────────────────────
++     locale = args.locale or detect_locale()
++     locale = args.locale or detect_locale()
++     locale = args.locale or detect_locale()
++     locale = args.locale or detect_locale()
++     locale = args.locale or detect_locale()
++     locale = args.locale or detect_locale()
++         with get_client(locale) as client:
++         with get_client(locale) as client:
++         with get_client(locale) as client:
++         with get_client(locale) as client:
++         with get_client(locale) as client:
++             result = client.get("1.0/library", num_results=1, response_groups="product_desc")
++             # Try to get account info
++             customer = {}
++             try:
++             try:
++                 me = client.get("1.0/customer/information", response_groups="migration_details")
++                 customer = me.get("customer_information", {})
++             except Exception:
++             except Exception:
++                 pass
++             total = result.get("total_count", "unknown")
++             name = customer.get("given_name") or customer.get("name") or "Unknown"
++                 output({"status": "authenticated", "account": name,
++                         "locale": locale, "library_count": total}, as_json=True)
++                 print(f"Status:        ✅ Authenticated")
++                 print(f"Locale:        {locale}")
++                 print(f"Library:       {total} titles")
++                 print(f"Auth file:     {AUTH_FILE}")
++         print(f"ERROR: Network error — {e}")
++         print(f"ERROR: Network error — {e}")
++         print(f"ERROR: Network error — {e}")
++         print(f"ERROR: Network error — {e}")
++         msg = str(e)
++         msg = str(e)
++         msg = str(e)
++         if "401" in msg or "403" in msg:
++         if "401" in msg or "403" in msg:
++             print("ERROR: Auth token expired. Re-run audible_auth.py to re-authenticate.")
++             print(f"ERROR: {e}")
++             print(f"ERROR: {e}")
++             print(f"ERROR: {e}")
++             print(f"ERROR: {e}")
++             print(f"ERROR: {e}")
++         print(f"ERROR: Search failed — {e}")
++         print("No results found.")
++         out = []
++         for p in products:
++             out.append({
++                 "title": p.get("title"),
++                 "authors": [a.get("name") for a in p.get("authors", [])],
++                 "asin": p.get("asin"),
++                 "runtime_min": p.get("runtime_length_min", 0),
++             })
++         output(out, as_json=True)
++         output(out, as_json=True)
++         for i, p in enumerate(products, 1):
++             runtime = p.get("runtime_length_min", 0)
++             h, m = divmod(runtime, 60)
++             print(f"{i}. {title}")
++             print(f"   Author: {authors}")
++             print(f"   ASIN: {asin}  |  Length: {h}h {m}m")
++             print()
++             print("ERROR: Auth token expired. Re-run audible_auth.py.")
++         print("Library is empty or no items returned.")
++         out = [{"title": i.get("title"), "authors": [a.get("name") for a in i.get("authors", [])],
++                 "asin": i.get("asin")} for i in items]
++         print(f"Library ({len(items)} items shown):\n")
++         for i, item in enumerate(items, 1):
++             title = item.get("title", "Unknown")
++             authors = ", ".join(a.get("name", "") for a in item.get("authors", []))
++             asin = item.get("asin", "")
++         if "404" in msg:
++             print(f"ERROR: ASIN '{args.asin}' not found in {locale} marketplace.")
++             print(f"Try a different --locale or check the ASIN.")
++     # Strip HTML tags
++     import re
++     summary = re.sub(r"<[^>]+>", "", summary).strip()
++     runtime = p.get("runtime_length_min", 0)
++     h, m = divmod(runtime, 60)
++         output({"title": title, "authors": authors, "narrators": narrators,
++                 "length_min": runtime, "asin": args.asin, "summary": summary}, as_json=True)
++         print(f"Title:    {title}")
++         print(f"Author:   {authors}")
++         print(f"Narrator: {narrators}")
++         print(f"Length:   {h}h {m}m")
++         print(f"ASIN:     {args.asin}")
++         if summary:
++             print(f"\n{summary[:500]}{'...' if len(summary) > 500 else ''}")
++         print("ERROR: Purchase requires --confirm flag.")
++         print(f"  buy {args.asin} --confirm")
++         print("\nAlways confirm with the user before purchasing.")
++             # Get title first for confirmation
++                 r = client.get(f"1.0/catalog/products/{args.asin}", response_groups="product_desc")
++                 title = r.get("product", {}).get("title", args.asin)
++                 print(f"Purchasing: {title}")
++                 print(f"Purchasing ASIN: {args.asin}")
++             client.post("1.0/orders", body={"asin": args.asin, "audibleCreditApplied": True})
++             print(f"✅ Purchased successfully! Check your library.")
++         url = fallback_url(args.asin, locale)
++         url = fallback_url(args.asin, locale)
++         print(f"Try purchasing manually: {url}")
++         print(f"ERROR: Purchase failed — {e}")
++         print(f"Purchase manually at: {url}")
++     if getattr(args, "action", None) == "add" and getattr(args, "asin", None):
++             with get_client(locale) as client:
++             with get_client(locale) as client:
++                 result = client.get("1.0/wishlist", num_results=50,
++                                     response_groups="product_desc,contributors")
++             print("Wishlist is empty.")
++             out = [{"title": p.get("title"), "asin": p.get("asin")} for p in items]
++             output(out, as_json=True)
++             print(f"Wishlist ({len(items)} items):\n")
++             for i, p in enumerate(items, 1):
++                 title = p.get("title", "Unknown")
++                 authors = ", ".join(a.get("name", "") for a in p.get("authors", []))
++                 print(f"{i}. {title}")
++                 print(f"   Author: {authors}  |  ASIN: {p.get('asin', '')}")
++                 print()
++ # ── Argument parser ───────────────────────────────────────────────────────────
++     common = argparse.ArgumentParser(add_help=False)
++     common.add_argument("--locale", default=None,
++                         help="Marketplace locale: us, au, uk, de, ca, fr, in, it, jp, es")
++     common.add_argument("--json", action="store_true", help="Output as JSON")
++         description="Clawdible — Audible CLI for OpenClaw",
++         parents=[common],
++     p_status = subparsers.add_parser("status", parents=[common], add_help=True)
++     p_search = subparsers.add_parser("search", parents=[common], add_help=True)
++     p_search.add_argument("query", nargs="+")
++     p_lib = subparsers.add_parser("library", parents=[common], add_help=True)
++     p_info = subparsers.add_parser("info", parents=[common], add_help=True)
++     p_info.add_argument("asin")
++     p_buy = subparsers.add_parser("buy", parents=[common], add_help=True)
++     p_buy.add_argument("asin")
++     p_buy.add_argument("--confirm", action="store_true")
++     p_wish = subparsers.add_parser("wishlist", parents=[common], add_help=True)
++     p_wish.add_argument("action", nargs="?", choices=["add"])
++     p_wish.add_argument("asin", nargs="?")
++     dispatch = {
++         "status": cmd_status,
++         "search": cmd_search,
++         "library": cmd_library,
++         "info": cmd_info,
++         "buy": cmd_buy,
++         "wishlist": cmd_wishlist,
++     if args.command in dispatch:
++         dispatch[args.command](args)

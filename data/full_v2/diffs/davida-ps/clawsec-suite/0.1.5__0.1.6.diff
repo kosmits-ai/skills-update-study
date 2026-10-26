@@ -1,0 +1,273 @@
+davida-ps/clawsec-suite  0.1.5 -> 0.1.6
+change_type: instructions+docs+code   changelog: Release 0.1.6 via CI
+
+### CHANGELOG.md  [docs]
++ ## [0.1.6] - 2026-04-14
++ ### Added
++ - Runtime and operator-review metadata covering hook installation, optional cron persistence, guarded install flows, and feed URL overrides.
++ - Preflight disclosure in `scripts/setup_advisory_hook.mjs` and `scripts/setup_advisory_cron.mjs`.
++ - Regression coverage for setup disclosure behavior in `test/setup_disclosure.test.mjs`.
++ ### Changed
++ - Declared `node`, `npx`, `openclaw`, and `unzip` in the suite runtime metadata to match the documented setup and install flows.
++ - Updated catalog messaging for `openclaw-audit-watchdog` to reflect DM delivery with optional email instead of implying email-only reporting.
++ - Marked local advisory signature/checksum SBOM entries as optional until those companion artifacts are bundled in the repository.
++ - Removed legacy pre-OpenClaw naming from the suite catalog compatibility metadata.
++ ### Security
++ - Hook and cron setup now announce their persistence and approval boundaries before enabling host-side automation.
++ - Clarified that the suite can recommend removal or block risky installs, but destructive actions remain approval-gated.
+
+### SKILL.md  [instructions]
+- version: 0.1.5
+-     bins: [curl, jq, shasum, openssl]
++ version: 0.1.6
++     bins: [node, npx, openclaw, curl, jq, shasum, openssl, unzip]
++ ## Operational Notes
++ - Required runtime: `node`, `npx`, `openclaw`, `curl`, `jq`, `shasum`, `openssl`, `unzip`
++ - Side effects: setup scripts install an advisory hook under `~/.openclaw/hooks`, optionally create an unattended `openclaw cron` job, and use `npx clawhub@latest install` for guarded installs
++ - Network behavior: fetches signed advisory feed artifacts and remote catalog metadata unless you pin local paths
++ - Trust model: the suite can recommend removal or block risky installs, but removal/install overrides stay approval-gated
++ The setup script prints a preflight review before it installs and enables the persistent hook.
++ The cron setup script prints a preflight review before it creates or updates the unattended job.
+
+### scripts/setup_advisory_cron.mjs  [code]
++ }
++ function printPreflightSummary() {
++   const lines = [
++     "Preflight review:",
++     "- This setup creates or updates an unattended openclaw cron job in the main session.",
++     "- Required runtime: openclaw CLI, node.",
++     `- Schedule: every ${JOB_EVERY}`,
++     "- The system event triggers an advisory scan and must request explicit approval before any removal.",
++   ];
++   process.stdout.write(lines.join("\n") + "\n\n");
++   printPreflightSummary();
+
+### scripts/setup_advisory_hook.mjs  [code]
++ }
++   ];
++ function printPreflightSummary() {
++   const lines = [
++     "Preflight review:",
++     `- This setup installs a persistent OpenClaw hook under ${TARGET_HOOK_DIR} and enables it globally.`,
++     "- Required runtime: openclaw CLI, node.",
++     "- The installed hook fetches signed advisory feed data and may recommend removal of risky skills, but destructive actions remain approval-gated.",
++     `- Source hook files: ${SOURCE_HOOK_DIR}`,
++     "- Restart your OpenClaw gateway process after setup so the hook loads intentionally.",
++   process.stdout.write(lines.join("\n") + "\n\n");
++   printPreflightSummary();
+
+### skill.json  [code]
+-   "version": "0.1.5",
+-         "required": true,
+-         "required": true,
+-         "required": true,
+-         "description": "Detached Ed25519 signature for advisory feed"
+-         "description": "SHA-256 checksum manifest for advisory artifacts"
+-         "description": "Detached Ed25519 signature for checksum manifest"
+-           "moltbot",
+-           "clawdbot",
+-           "clawdbot",
+-           "clawdbot",
+-         "description": "Automated daily audits with email reporting",
+-           "clawdbot"
+-         "openssl"
++   "version": "0.1.6",
++         "required": false,
++         "required": false,
++         "required": false,
++         "description": "Detached Ed25519 signature for advisory feed when bundled with the local suite seed"
++         "description": "SHA-256 checksum manifest for advisory artifacts when bundled with the local suite seed"
++         "description": "Detached Ed25519 signature for checksum manifest when bundled with the local suite seed"
++         "description": "Automated daily audits with DM delivery and optional email reporting",
++           "moltbot"
++         "node",
++         "npx",
++         "openclaw",
++         "openssl",
++         "unzip"
++       ]
++     },
++     },
++     "runtime": {
++       "required_env": [],
++       "optional_env": [
++         "CLAWSEC_FEED_URL",
++         "CLAWSEC_FEED_SIG_URL",
++         "CLAWSEC_FEED_CHECKSUMS_URL",
++         "CLAWSEC_FEED_CHECKSUMS_SIG_URL",
++         "CLAWSEC_LOCAL_FEED",
++         "CLAWSEC_LOCAL_FEED_SIG",
++         "CLAWSEC_LOCAL_FEED_CHECKSUMS",
++         "CLAWSEC_LOCAL_FEED_CHECKSUMS_SIG",
++         "CLAWSEC_FEED_PUBLIC_KEY",
++         "CLAWSEC_ALLOW_UNSIGNED_FEED",
++         "CLAWSEC_VERIFY_CHECKSUM_MANIFEST",
++         "CLAWSEC_HOOK_INTERVAL_SECONDS",
++         "CLAWSEC_ADVISORY_CRON_NAME",
++         "CLAWSEC_ADVISORY_CRON_EVERY"
++     "execution": {
++       "always": false,
++       "persistence": "Setup scripts install and enable an OpenClaw advisory hook, and can optionally create a recurring openclaw cron job.",
++       "network_egress": "Fetches signed advisory feed artifacts and uses npx/clawhub for guarded skill install flows."
++     "operator_review": [
++       "Review the advisory hook and optional cron setup before enabling them because they create persistent host-side automation.",
++       "The suite may recommend removal of risky skills, but destructive actions remain approval-gated.",
++       "Verify feed signing keys and any CLAWSEC_* URL overrides before relying on remote feed data."
++     ],
+
+### test/setup_disclosure.test.mjs  [code]
++ #!/usr/bin/env node
++ import fs from "node:fs/promises";
++ import path from "node:path";
++ import { spawn } from "node:child_process";
++ import { fileURLToPath } from "node:url";
++ import { createTempDir, pass, fail, report, exitWithResults } from "./lib/test_harness.mjs";
++ const __dirname = path.dirname(fileURLToPath(import.meta.url));
++ const NODE_BIN = process.execPath;
++ const SETUP_CRON_SCRIPT = path.resolve(__dirname, "..", "scripts", "setup_advisory_cron.mjs");
++ const SETUP_HOOK_SCRIPT = path.resolve(__dirname, "..", "scripts", "setup_advisory_hook.mjs");
++ async function writeExecutable(filePath, content) {
++   await fs.writeFile(filePath, content, { encoding: "utf8", mode: 0o755 });
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ async function createOpenClawFixture() {
++   const tmp = await createTempDir();
++   const binDir = path.join(tmp.path, "bin");
++   const capturePath = path.join(tmp.path, "openclaw-calls.json");
++   await fs.mkdir(binDir, { recursive: true });
++   await writeExecutable(
++     path.join(binDir, "openclaw"),
++     `#!/usr/bin/env node
++ import fs from "node:fs";
++ const capturePath = process.env.OPENCLAW_CAPTURE_PATH;
++ const args = process.argv.slice(2);
++ let entries = [];
++ if (capturePath && fs.existsSync(capturePath)) {
++   entries = JSON.parse(fs.readFileSync(capturePath, "utf8"));
++ entries.push(args);
++ if (capturePath) {
++   fs.writeFileSync(capturePath, JSON.stringify(entries), "utf8");
++ if (args[0] === "--version") {
++   process.stdout.write("openclaw test\\n");
++   process.exit(0);
++   process.exit(0);
++   process.exit(0);
++   process.exit(0);
++   process.exit(0);
++ if (args[0] === "cron" && args[1] === "list") {
++   process.stdout.write(JSON.stringify({ jobs: [] }) + "\\n");
++ if (args[0] === "cron" && args[1] === "add") {
++   process.stdout.write(JSON.stringify({ id: "cron-123" }) + "\\n");
++ if (args[0] === "cron" && args[1] === "edit") {
++   process.stdout.write("{}\\n");
++ if (args[0] === "hooks" && args[1] === "enable") {
++   process.stdout.write("enabled\\n");
++ process.stderr.write("unexpected args: " + JSON.stringify(args) + "\\n");
++ process.exit(1);
++ `,
++   );
++   return { tmp, binDir, capturePath };
++ async function runNodeScript(scriptPath, env) {
++   return await new Promise((resolve) => {
++     const proc = spawn(NODE_BIN, [scriptPath], {
++       env,
++       stdio: ["ignore", "pipe", "pipe"],
++     });
++     });
++     });
++     });
++     });
++     });
++     let stdout = "";
++     let stderr = "";
++     proc.stdout.on("data", (data) => {
++       stdout += data.toString();
++     proc.stderr.on("data", (data) => {
++       stderr += data.toString();
++     proc.on("close", async (code) => {
++       resolve({ code, stdout, stderr });
++   });
++ async function testAdvisoryCronPreflight() {
++   const testName = "setup_advisory_cron: prints preflight review before creating unattended cron";
++   const fixture = await createOpenClawFixture();
++   const fixture = await createOpenClawFixture();
++   try {
++   try {
++     const result = await runNodeScript(SETUP_CRON_SCRIPT, {
++       ...process.env,
++       ...process.env,
++       PATH: `${fixture.binDir}:${process.env.PATH || ""}`,
++       PATH: `${fixture.binDir}:${process.env.PATH || ""}`,
++       OPENCLAW_CAPTURE_PATH: fixture.capturePath,
++       OPENCLAW_CAPTURE_PATH: fixture.capturePath,
++       CLAWSEC_ADVISORY_CRON_EVERY: "6h",
++     if (result.code !== 0) {
++     if (result.code !== 0) {
++       fail(testName, `script failed: ${result.stderr}`);
++       fail(testName, `script failed: ${result.stderr}`);
++       return;
++       return;
++     }
++     }
++     }
++     }
++     const captures = JSON.parse(await fs.readFile(fixture.capturePath, "utf8"));
++     const captures = JSON.parse(await fs.readFile(fixture.capturePath, "utf8"));
++     const sawAdd = captures.some((args) => args[0] === "cron" && args[1] === "add");
++     if (
++     if (
++       sawAdd &&
++       result.stdout.includes("Preflight review:") &&
++       result.stdout.includes("Preflight review:") &&
++       result.stdout.includes("unattended openclaw cron job") &&
++       result.stdout.includes("Schedule: every 6h") &&
++       result.stdout.includes("request explicit approval before any removal")
++     ) {
++     ) {
++       pass(testName);
++       pass(testName);
++     } else {
++     } else {
++       fail(testName, `missing preflight details: ${result.stdout}`);
++   } finally {
++   } finally {
++     await fixture.tmp.cleanup();
++     await fixture.tmp.cleanup();
++   }
++   }
++ async function testAdvisoryHookPreflight() {
++   const testName = "setup_advisory_hook: prints preflight review before installing persistent hook";
++   const homeDir = path.join(fixture.tmp.path, "home");
++     await fs.mkdir(homeDir, { recursive: true });
++     const result = await runNodeScript(SETUP_HOOK_SCRIPT, {
++       HOME: homeDir,
++     const installedHook = path.join(homeDir, ".openclaw", "hooks", "clawsec-advisory-guardian", "HOOK.md");
++     const sawEnable = captures.some((args) => args[0] === "hooks" && args[1] === "enable");
++     await fs.access(installedHook);
++       sawEnable &&
++       result.stdout.includes("persistent OpenClaw hook") &&
++       result.stdout.includes("fetches signed advisory feed data") &&
++       result.stdout.includes("Restart your OpenClaw gateway process")
++       fail(testName, `missing hook preflight details: ${result.stdout}`);
++   } catch (error) {
++     fail(testName, error);
++ async function runAllTests() {
++   await testAdvisoryCronPreflight();
++   await testAdvisoryHookPreflight();
++   report();
++   exitWithResults();
++ runAllTests().catch((err) => {
++   console.error("Test runner failed:", err);
++   process.exit(1);
++ });

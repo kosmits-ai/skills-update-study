@@ -1,0 +1,77 @@
+ade5791/thinkforce  2.0.9 -> 2.0.11
+change_type: instructions   changelog: - Removed outdated file: skill-card.md - Updated documentation in SKILL.md (likely clarification and improvements to agent assignment and mission management instructions) - No functional API or interface changes—this update is documentation and cleanup only
+
+### SKILL.md  [instructions]
+- PATCH /api/missions/<id>/subtasks/<sid>
+- 4. GET /api/missions/<id> → read the embedded `subtasks[]` to confirm IDs + titles
+- | List subtasks                         | `GET /api/missions/<id>?companyId=...` → returns `{ mission, subtasks }` (embedded). The `/subtasks` path is **POST-only** — there is no `GET` on it. |
+- | Follow-up / refine + re-run a step    | `PATCH …/subtasks/<sid>` (append to `runInstructions` + reset state) then `POST …/run` — see §8.6 |
+- POST /api/missions/<id>/subtasks/<sid>/run
+- 5. Returns immediately; the run is **asynchronous**. You poll via `GET /api/missions/<id>`, which embeds the live `subtasks[]`.
+- ## 8.6. Follow-ups — refine a step and re-run it
+- To give an already-run step new direction (the "follow-up" the dashboard exposes on an open step), you do **not** create a new subtask. You **append to the step's `runInstructions` and re-run it** — the agent re-executes seeing the original brief followed by each stacked follow-up as a conversation, plus the rebuilt outputs of its `dependsOn` steps. There is no dedicated follow-up endpoint; it's two public calls.
+- ### 1. PATCH the step — append the follow-up + reset terminal state
+-   "runInstructions": "<existing runInstructions>\n\n## Follow-up (2026-06-04T12:00:00Z)\n<your new instruction>",
+-   "status": "assigned",      // "queued" if the step has no assignedAgentId yet
+-   "output": "",
+-   "lastError": null,
+-   "completedAt": null,
+-   "lockedBy": null,
+-   "lockedAt": null,
+-   "runDispatching": false,
+-   "backgroundTaskId": null,
+-   "lastRunTaskId": null,
+-   "retryCount": 0
+- - **Append, don't replace.** First read the current `runInstructions` (from the embedded `subtasks[]` in `GET /api/missions/<id>`), then append `\n\n## Follow-up (<ISO timestamp>)\n<text>`. Stacking preserves the audit trail and lets the agent see the whole thread, original brief first.
+- - **Reset the terminal + lock fields in the same PATCH.** A `done`/`failed` step won't re-fire, and a leftover `lockedBy`/`lockedAt` blocks the new run. The block above is the exact set the dashboard wipes for a follow-up re-run.
+- - Use `status: "queued"` only if the step has no `assignedAgentId` yet — then assign one before running.
+- ### 2. Re-run the step
+- { "companyId": "<id>", "initiatedByUser": true }
+- `initiatedByUser: true` flags it as an explicit human re-run (bypasses the wall-clock idle / auto-chain guards).
+- **Cascade caveat:** auto-chain re-fires this step's `nextSubtaskIds` on success, so a follow-up on a step that already has downstream work can re-trigger that work on the new output. If you want to refine just this one step in isolation, temporarily clear its `nextSubtaskIds` (`PATCH { nextSubtaskIds: [] }`), re-run, then restore them.
+- **Not the same as coordinator follow-ups.** The mission *coordinator* (§12) can auto-add brand-new follow-up *subtasks* to close goal gaps when `coordinatorAutoFollowups` is `true` — that creates new steps. This section is the manual, per-step refine-and-re-run, which edits an existing step.
+- This returns `{ mission, subtasks }` — the full `subtasks[]` is **embedded** in this one read, so you don't need (and there is no) separate list call. Key fields you'll read on `mission`:
+- Subtasks (read from the embedded `subtasks[]` in the mission GET above — the `/api/missions/<id>/subtasks` path is **POST-only** for creation and returns 405 on GET). Each subtask exposes:
+- 4. GET /api/missions/M1 → read the embedded `subtasks[]` to confirm subtask IDs + titles
+- 10. On completion, GET /api/missions/M1 (embeds `subtasks[]`), summarize S4.output
++ ```
++ ```json
++   ],
++ 4. GET /api/missions/<id>/subtasks → confirm IDs + titles
++ | List subtasks                         | `GET /api/missions/<id>/subtasks?companyId=...`                |
++ ## 3.5. The one-call `manager` endpoint (and its auto-dispatch caveat)
++ Everything in the catalog above is the **granular REST flow** — create, then decompose/add subtasks, then assign, then wire the DAG, then run the root. There is also a single action-dispatch endpoint that does create-with-subtasks-and-launch in one POST:
++ POST /api/missions/manager
++ | `action`            | What it does                                                                 |
++ | ------------------- | --------------------------------------------------------------------------- |
++ | `create_mission`    | Create a mission + (optionally) its subtasks in one call.                   |
++ | `add_subtask`       | Append a subtask to an existing mission.                                    |
++ | `update_subtask`    | Write a subtask's `status` / `output` (agents call this to record results). |
++ | `complete_mission`  | Mark complete + trigger the debrief.                                        |
++ | `list_missions`     | List recent missions.                                                       |
++ | `get_mission`       | Read one mission + its subtasks.                                            |
++ | `dispatch_subtask`  | Re-dispatch an existing subtask to its assigned agent.                      |
++ `create_mission` body:
++   "action": "create_mission",
++   "title": "<short title>",
++   "description": "<one-paragraph problem statement>",
++   "priority": "high",
++   "subtasks": [
++     { "title": "<step>", "assignedAgentId": "<agent id OR agentName>", "workstationKey": "working" }
++   "maxSteps": 45            // optional per-subtask step budget, forwarded to the runner
++ `assignedAgentId` resolves by **agent id OR `agentName`** (the server looks it up). Auth is the same company-scoped `X-TF-API-Key` (or a Firebase token); reads allow viewers, writes require editor.
++ ### ⚠️ Caveat: assigned subtasks auto-dispatch IMMEDIATELY, in PARALLEL
++ `create_mission` (and `add_subtask`) **fires `/run` on every subtask that has a resolved `assignedAgentId` the moment it's created — all at once, with NO sequencing and NO `dependsOn` wiring.** This endpoint does not build a DAG. So if you create a "generate frames" step and a "stitch the frames" step together, both launch simultaneously and the stitch step races ahead with nothing to stitch and fails.
++ **Rules:**
++ - Use `manager.create_mission` only when the subtasks are **independent** (safe to run in parallel), or when you pass **exactly one** subtask.
++ - For **sequential / dependent** work, do one of:
++   1. Make it a **single end-to-end subtask** (one agent does step A then step B in one run) — simplest and race-free; or
++   2. Use the **REST flow**: `POST /api/missions` (no subtasks) → add subtasks → PATCH `dependsOn`/`nextSubtaskIds` → `POST .../subtasks/<root>/run`. Only the REST flow gives you DAG ordering.
++ - `manager` is a convenience for fan-out; the granular REST flow (§4–§8) is the controllable path. When in doubt, prefer REST.
++ 5. Returns immediately; the run is **asynchronous**. You poll via `GET /api/missions/<id>` and `GET /api/missions/<id>/subtasks`.
++ Key fields you'll read:
++ Subtasks:
++ GET /api/missions/<id>/subtasks?companyId=<id>
++ Each subtask exposes:
++ 4. GET /api/missions/M1/subtasks → confirm subtask IDs + titles
++ 10. On completion, GET /api/missions/M1/subtasks, summarize S4.output

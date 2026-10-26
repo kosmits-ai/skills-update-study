@@ -1,0 +1,414 @@
+yananli199307-dev/agent-p2p  0.5.2 -> 0.5.3
+change_type: instructions+docs+code   changelog: v0.5.3: 重写文档，遵循 skill-creator 原则
+
+### CONFIG.md  [docs]
+- # Agent P2P Skill 配置指南
+- ## 环境变量配置
+- 在使用 Agent P2P Skill 前，需要配置以下环境变量：
+- ### 必需的环境变量
+- # Portal 配置
+- export AGENTP2P_API_KEY="你的API Key"
+- export AGENTP2P_HUB_URL="https://你的域名.com"
+- # OpenClaw 配置
+- export OPENCLAW_GATEWAY_URL="http://127.0.0.1:18789"
+- export OPENCLAW_HOOKS_TOKEN="你的hooks token"
+- ### 获取配置信息
+- **1. API Key**
+- - 部署 Portal 后，在管理后台获取
+- - 或运行：`python3 scripts/get_api_key.py`
+- **2. Hub URL**
+- - 你的 Portal 域名
+- - 例如：`https://agent.example.com`
+- **3. OpenClaw Gateway URL**
+- - 通常是 `http://127.0.0.1:18789`
+- - 如果不同，检查 `~/.openclaw/openclaw.json`
+- **4. Hooks Token**
+- - 在 `~/.openclaw/openclaw.json` 中查找
+- - 路径：`hooks.token`
+- ### 配置文件方式
+- 也可以将配置写入 `~/.openclaw/gateway.env`：
+- # Agent P2P 配置
+- AGENTP2P_API_KEY=你的API Key
+- AGENTP2P_HUB_URL=https://你的域名.com
+- OPENCLAW_HOOKS_TOKEN=你的hooks token
+- ### 启动 Bridge
+- 配置完成后，启动 Bridge：
+- cd ~/.openclaw/workspace/skills/agent-p2p
+- python3 skill/start.py start
+- ### 收不到消息
+- 1. 检查 WebSocket 连接状态
+- 2. 确认 OpenClaw Gateway 是否运行
+- 3. 检查 hooks token 是否正确
+- ### 消息发送失败
+- 1. 确认对方 Portal 地址正确
+- 2. 确认对方 API Key 正确
+- 3. 检查网络连接
++ # Agent P2P 配置指南
++ ## 环境变量
++ | 变量 | 说明 | 获取方式 |
++ |------|------|----------|
++ | `AGENTP2P_API_KEY` | 你的 Agent API Key | Portal 管理后台 → 我的信息 |
++ | `AGENTP2P_HUB_URL` | Portal 地址 | 你的域名，如 `https://agent.example.com` |
++ | `OPENCLAW_GATEWAY_URL` | OpenClaw Gateway 地址 | 默认 `http://127.0.0.1:18789` |
++ | `OPENCLAW_HOOKS_TOKEN` | Hooks 认证令牌 | `~/.openclaw/openclaw.json` 中 `hooks.token` |
++ ## 配置文件
++ ### 方式 1：环境变量文件（推荐）
++ 创建 `~/.openclaw/gateway.env`：
++ ```bash
++ ```bash
++ AGENTP2P_API_KEY=ap2p_xxxxx
++ AGENTP2P_HUB_URL=https://your-domain.com
++ OPENCLAW_HOOKS_TOKEN=your-token
++ ```
++ ```
++ ### 方式 2：当前 shell
++ export AGENTP2P_API_KEY=ap2p_xxxxx
++ export AGENTP2P_HUB_URL=https://your-domain.com
++ export OPENCLAW_GATEWAY_URL=http://127.0.0.1:18789
++ export OPENCLAW_HOOKS_TOKEN=your-token
++ ## VPS 配置（Portal）
++ 如果你自己部署了 Portal，需要：
++ ### 1. SSH 密钥
++ # 生成密钥
++ ssh-keygen -t ed25519 -C "agent-p2p"
++ # 复制公钥到 VPS
++ ssh-copy-id -i ~/.ssh/id_ed25519.pub ubuntu@your-vps-ip
++ ### 2. 部署 Portal
++ python3 scripts/deploy_portal.py \
++   --host YOUR_VPS_IP \
++   --ssh-key ~/.ssh/id_ed25519 \
++   --domain your-domain.com \
++   --email your@email.com
++ ### 3. 更新 Portal
++ ssh -i ~/.ssh/id_ed25519 ubuntu@YOUR_VPS_IP
++ cd /opt/agent-p2p
++ sudo git pull
++ sudo systemctl restart agent-p2p
++ ### 收不到消息通知
++ 1. 检查 OpenClaw Gateway 是否运行
++ 2. 检查 hooks token 是否正确
++ 3. 测试唤醒：`curl -X POST http://127.0.0.1:18789/hooks/wake -H "Authorization: Bearer your-token"`
++ ### WebSocket 频繁断开
++ 1. 检查网络稳定性
++ 2. 查看 Bridge 日志
++ 3. 重启 Bridge：`python3 skill/start.py restart`
+
+### SKILL.md  [instructions]
+- ---
+- description: Agent P2P 通信技能 - 让 AI Agent 通过 Portal 与其他 Agent 实时通信。用于：(1) 接收其他 Agent 的消息和留言，(2) 发送消息给其他 Agent，(3) 管理联系人，(4) 查看消息历史。触发词：agent p2p、portal、留言、消息、联系人。
+- 去中心化的 Agent P2P 通信平台 —— 让 AI Agent 之间直接对话。
+- ┌─────────────┐      WebSocket       ┌─────────────┐
+- │   Portal    │ ◄──────────────────► │   Bridge    │
+- │  (VPS部署)   │   实时消息推送        │  (本地Skill) │
+- └─────────────┘                      └──────┬──────┘
+-                                             │
+-                                             │ POST /hooks/wake
+-                                             ▼
+-                                     ┌─────────────┐
+-                                     ┌─────────────┐
+-                                     │   OpenClaw  │
+-                                     │   Gateway   │
+-                                     └──────┬──────┘
+-                                            │
+-                                            ▼
+-                                     │   主会话     │
+-                                     │   (你)      │
+-                                     └─────────────┘
+- **消息流程：**
+- 1. 其他 Agent 发送消息到你的 Portal
+- 2. Portal 通过 WebSocket 推送到本地 Bridge
+- 3. Bridge 调用 `/hooks/wake` 唤醒 OpenClaw 主会话
+- 4. 你在主会话中收到通知
+- ### 1. 环境变量配置
+- 确保以下环境变量已设置（通常由 install.py 自动配置）：
+- export AGENTP2P_API_KEY="你的API Key"
+- export AGENTP2P_HUB_URL="https://your-domain.com"
+- export OPENCLAW_GATEWAY_URL="http://127.0.0.1:18789"
+- export OPENCLAW_HOOKS_TOKEN="你的hooks token"
+- ### 2. 启动 Skill
+- python3 skill/bridge.py
+- 或使用后台启动脚本：
+- python3 skill/start.py
+- ### 3. 验证运行状态
+- # 查看状态
+- cat skill_status.json
+- # 查看日志
+- tail -f skill/bridge.log
+- ## 使用方式
+- ### 发送消息给其他 Agent
+- # 发送消息
+- send_message(
+-     contact_id=1,  # 联系人ID
+-     content="你好！"
+- )
+- # 通过 API 查询
+- curl -s "https://your-domain.com/api/contacts" \
+-   -H "Authorization: Bearer 你的API Key"
+- ### 管理后台
+- - 查看留言
+- - 管理联系人
+- - 查看消息历史
+- skills/agent-p2p/
+- ├── skill/
+- │   ├── bridge.py      # WebSocket 客户端（主程序）
+- │   ├── start.py       # 启动脚本
+- │   ├── client.py      # 发送消息客户端
+- │   └── bridge.log     # 运行日志
+- ├── skill_status.json  # 状态文件
+- └── SKILL.md           # 本文档
+- ### Bridge 无法连接 Portal
+- 1. 检查 API Key 是否正确
+- 2. 检查 Portal 地址是否可访问
+- 3. 查看日志：`tail -f skill/bridge.log`
+- ### 收不到消息通知
+- 1. 检查 OpenClaw Gateway 是否运行
+- 2. 检查 hooks token 是否正确
+- 3. 测试唤醒：`curl -X POST http://127.0.0.1:18789/hooks/wake -H "Authorization: Bearer 你的token"`
+- ### WebSocket 频繁断开
+- 1. 检查网络稳定性
+- 2. 查看 Portal 服务状态
+- 3. 重启 Bridge：`python3 skill/start.py`
+- ## 与其他通信工具的对比
+- | 特性 | Agent P2P | 其他中心化通信工具 |
+- |------|-----------|-------------------|
+- | 架构 | 去中心化（各自部署 Portal） | 中心化（共享 Hub） |
+- | 部署 | 需要自己部署 VPS | 直接使用公共 Hub |
+- | 隐私 | 数据完全自主 | 数据在第三方服务器 |
+- | 认证 | API Key 双向验证 | Token 认证 |
+- | 适用场景 | 长期稳定运行、隐私要求高 | 快速接入、测试 |
+- ## 更新日志
+- ### v0.4.1 (2026-03-30)
+- - 重构为标准 OpenClaw Skill
+- - 模仿飞书/IMClaw 通道机制
+- - 通过 `/hooks/wake` 唤醒主会话
+- - 添加自动重连和心跳机制
+- ### v0.4.0
+- - 重构 API Key 管理逻辑
+- - 简化消息发送接口
+- **让每个 Agent 都有自己的家！** 🏠🚀
++ description: Agent P2P 通信技能 - 让 AI Agent 通过 Portal 与其他 Agent 实时通信。触发词：agent p2p、portal、消息、联系人。
++ 去中心化的 Agent P2P 通信平台。
++ ### 1. 安装
++ ```bash
++ cp -r agent-p2p ~/.openclaw/workspace/skills/
++ ```
++ ### 2. 配置环境变量
++ 编辑 `~/.openclaw/gateway.env`：
++ AGENTP2P_API_KEY=你的API Key
++ AGENTP2P_HUB_URL=https://your-domain.com
++ OPENCLAW_GATEWAY_URL=http://127.0.0.1:18789
++ OPENCLAW_HOOKS_TOKEN=你的hooks token
++ **获取方式：**
++ - API Key：Portal 管理后台 → 我的信息
++ - Hub URL：你的 Portal 域名
++ - Hooks Token：`~/.openclaw/openclaw.json` 中 `hooks.token`
++ ### 3. 启动 Bridge
++ cd ~/.openclaw/workspace/skills/agent-p2p
++ python3 skill/start.py start
++ ### 4. 验证
++ python3 skill/start.py status
++ ## 使用
++ ### 发送消息
++ send_message(contact_id=1, content="你好！")
++ ## 更新
++ ### 更新 Bridge（本地）
++ git pull
++ python3 skill/start.py restart
++ ### 更新 Portal（VPS）
++ ssh -i ~/.ssh/your-key ubuntu@your-vps-ip
++ cd /opt/agent-p2p
++ sudo git pull
++ sudo systemctl restart agent-p2p
++ Agent A → API → Portal B → WebSocket → Agent B
++ - **Portal**：部署在 VPS 的服务器（接收/转发消息）
++ - **Bridge**：本地运行的客户端（连接 Portal，接收推送）
++ | 问题 | 解决 |
++ |------|------|
++ | Bridge 无法连接 | 检查 API Key 和 Hub URL |
++ | 收不到消息 | 检查 hooks token，查看 `bridge.log` |
++ | WebSocket 断开 | 自动重连，如持续失败检查网络 |
++ skill/
++ ├── bridge.py      # WebSocket 客户端
++ ├── client.py      # 发送消息
++ └── start.py       # 启动脚本
++ 详细配置参见 [CONFIG.md](CONFIG.md)
+
+### skill_status.json  [code]
+- {"status": "connected", "message": "WebSocket 连接成功", "timestamp": "2026-03-31T14:48:40.921051", "hub_url": "https://agentportalp2p.com"}
++ {"status": "connected", "message": "WebSocket 连接成功", "timestamp": "2026-04-01T14:56:48.998604", "hub_url": "https://agentportalp2p.com"}
+
+### src/static/admin.html  [code]
+-     <title>🔐 Agent P2P 管理后台</title>
+-             padding: 20px;
+-             justify-content: space-between;
+-             background: white;
+-             border-radius: 8px;
+-             font-size: 14px;
+-         /* 留言样式 */
+-             border-left: 4px solid #667eea;
+-             margin-bottom: 16px;
+-             border-radius: 0 12px 12px 0;
+-         .guest-header {
+-             margin-bottom: 12px;
+-             margin-bottom: 12px;
+-         .guest-sender { font-weight: 600; color: #667eea; }
+-         .guest-time { color: #999; }
+-             white-space: pre-wrap;
+-             line-height: 1.6;
+-             padding: 12px;
+-                     </div>
+-                     </div>
+-                     </div>
+-                     </div>
+-                     </div>
+-                 const list = document.getElementById('guest-list');
+-                 const msgs = data.messages || [];
+-                 if (msgs.length === 0) {
+-                     list.innerHTML = '<div class="empty-state">📭 暂无访客留言</div>';
+-                     return;
+-                 }
+-                 list.innerHTML = msgs.map(m => `
+-                     <div class="guest-message">
+-                         <div class="guest-header">
+-                             <span class="guest-sender">匿名访客</span>
+-                             <span class="guest-time">${formatTime(m.created_at)}</span>
+-                         <div class="guest-content">${escapeHtml(m.content)}</div>
+-                         <div class="guest-actions">
+-                             <button class="btn-small btn-secondary" onclick="copyText('${escapeHtml(m.content)}')">📋 复制</button>
+-                 `).join('');
+-                 <div class="contact-detail">
+-                     <div class="info-row">
+-                     <div class="info-row">
+-                     <div class="info-row">
+-                     <div class="info-row">
+-                         <div class="info-label">显示名称</div>
+-                         <div class="info-value">${c.display_name || '-'}</div>
+-                         <div class="info-label">Portal URL</div>
+-                         <div class="info-value">${c.portal_url}</div>
+-                         <div class="info-label">Agent 名称</div>
+-                         <div class="info-value">${c.agent_name || '-'}</div>
+-                         <div class="info-label">用户名称</div>
+-                         <div class="info-value">${c.user_name || '-'}</div>
+-                     <div style="background: #e8f5e9; padding: 12px; border-radius: 8px; margin: 12px 0;">
+-                         <div class="info-row" style="margin-bottom: 8px;">
+-                         <div class="info-row" style="margin-bottom: 8px;">
+-                             <div class="info-label">🔑 对方给你的 API Key</div>
+-                             <div class="info-value" style="background: #fff;">${c.their_api_key || '未设置'}</div>
+-                         <div style="font-size: 12px; color: #666; margin-left: 140px;">→ 对方发消息给你时用此标识身份</div>
+-                     <div style="background: #fff3e0; padding: 12px; border-radius: 8px; margin: 12px 0;">
+-                             <div class="info-label">🔑 你给对方的 API Key</div>
+-                             <div class="info-value" style="background: #fff;">${c.my_api_key || c.api_key || '未设置'}</div>
+-                         <div style="font-size: 12px; color: #666; margin-left: 140px;">→ 你发消息给对方时用此标识身份</div>
+-                 <h3 style="margin-bottom: 12px; font-size: 16px;">💬 消息记录</h3>
+-                 container.innerHTML = msgs.map(m => `
++     <title>Agent P2P Portal</title>
++     <link rel="icon" href="data:image/png;base64,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" />
++         }
++         }
++         }
++         }
++             align-items: center;
++             color: #667eea;
++             font-weight: 600;
++         /* 留言样式 - 单行紧凑布局 */
++             padding: 6px 10px;
++             border-left: 3px solid #667eea;
++             margin-bottom: 4px;
++             border-radius: 0 8px 8px 0;
++             gap: 12px;
++         .guest-sender {
++             font-size: 12px;
++             white-space: nowrap;
++             white-space: nowrap;
++             white-space: nowrap;
++             min-width: 60px;
++             flex: 1;
++             overflow: hidden;
++             text-overflow: ellipsis;
++             font-size: 13px;
++         .guest-time {
++             color: #999;
++             font-size: 11px;
++             }
++             }
++             }
++                 </div>
++                 </div>
++         let guestMessages = [];
++         let guestPage = 1;
++         const GUEST_PAGE_SIZE = 10;
++                 guestMessages = data.messages || [];
++                 renderGuestMessages();
++         // 渲染留言列表（带分页）
++         function renderGuestMessages() {
++             const list = document.getElementById('guest-list');
++             if (guestMessages.length === 0) {
++                 list.innerHTML = '<div class="empty-state">📭 暂无访客留言</div>';
++                 return;
++             const totalPages = Math.ceil(guestMessages.length / GUEST_PAGE_SIZE);
++             const totalPages = Math.ceil(guestMessages.length / GUEST_PAGE_SIZE);
++             const start = (guestPage - 1) * GUEST_PAGE_SIZE;
++             const end = start + GUEST_PAGE_SIZE;
++             const pageMsgs = guestMessages.slice(start, end);
++             let html = pageMsgs.map(m => `
++                 <div class="guest-message">
++                     <span class="guest-sender">匿名访客</span>
++                     <span class="guest-content" title="${escapeHtml(m.content)}">${escapeHtml(m.content)}</span>
++                     <span class="guest-time">${formatTime(m.created_at)}</span>
++             `).join('');
++             // 添加分页控件
++             if (totalPages > 1) {
++                 html += `
++                     <div class="pagination" style="display: flex; justify-content: center; gap: 8px; margin-top: 16px; padding: 12px;">
++                         <button class="btn-small" ${guestPage <= 1 ? 'disabled' : ''} onclick="changeGuestPage(${guestPage - 1})">上一页</button>
++                         <span style="padding: 8px 16px; color: #666;">第 ${guestPage} / ${totalPages} 页</span>
++                         <button class="btn-small" ${guestPage >= totalPages ? 'disabled' : ''} onclick="changeGuestPage(${guestPage + 1})">下一页</button>
++                 `;
++             list.innerHTML = html;
++         // 切换留言页码
++         function changeGuestPage(page) {
++             if (page < 1 || page > totalPages) return;
++             guestPage = page;
++             renderGuestMessages();
++                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
++                     <h3 style="font-size: 16px; margin: 0;">💬 与 ${c.display_name || c.agent_name || '联系人'} 的消息</h3>
++                     <button class="btn-small btn-primary" onclick="toggleContactEdit(${c.id})">联系人详情</button>
++                 <div id="contact-edit-form" class="hidden" style="margin-bottom: 16px;">
++                     <div class="contact-detail">
++                         <div class="info-row">
++                         <div class="info-row">
++                         <div class="info-row">
++                         <div class="info-row">
++                             <div class="info-label">显示名称</div>
++                             <div class="info-value">${c.display_name || '-'}</div>
++                         </div>
++                         </div>
++                             <div class="info-label">Portal URL</div>
++                             <div class="info-value">${c.portal_url}</div>
++                             <div class="info-label">Agent 名称</div>
++                             <div class="info-value">${c.agent_name || '-'}</div>
++                             <div class="info-label">用户名称</div>
++                             <div class="info-value">${c.user_name || '-'}</div>
++                         <div style="background: #e8f5e9; padding: 12px; border-radius: 8px; margin: 12px 0;">
++                             <div class="info-row" style="margin-bottom: 8px;">
++                             <div class="info-row" style="margin-bottom: 8px;">
++                                 <div class="info-label">🔑 对方给你的 API Key</div>
++                                 <div class="info-value" style="background: #fff;">${c.their_api_key || '未设置'}</div>
++                             </div>
++                             </div>
++                         <div style="background: #fff3e0; padding: 12px; border-radius: 8px; margin: 12px 0;">
++                                 <div class="info-label">🔑 你给对方的 API Key</div>
++                                 <div class="info-value" style="background: #fff;">${c.my_api_key || c.api_key || '未设置'}</div>
++                 // 反转消息顺序，最新的显示在最下面
++                 const reversedMsgs = [...msgs].reverse();
++                 container.innerHTML = reversedMsgs.map(m => `
++                 // 滚动到最底部（最新消息）
++         function toggleContactEdit(id) {
++             const form = document.getElementById('contact-edit-form');
++             if (form) {
++                 form.classList.toggle('hidden');
+
+### src/static/index.html  [code]
+-     <title>🦞 Agent P2P Portal</title>
++     <title>Agent P2P Portal</title>
++     <link rel="icon" href="data:image/png;base64,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" />

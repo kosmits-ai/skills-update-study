@@ -1,0 +1,422 @@
+daniel-refahi-ikara/dr-context-pipeline  2.0.3 -> 2.1.0
+change_type: instructions+docs+code   changelog: Add semantic memory assurance, explicit retrieval-mode evidence, and dry-run embedding/index alert payloads.
+
+### SKILL.md  [instructions]
+- description: "Deterministic memory/context pipeline for agents: route a user message, retrieve relevant memory snippets, compress into a cited Context Pack (sources are snippet IDs), lint, and fall back safely. Prerequisite: a file-based memory layout with memory/always_on.md + topic files (works out-of-the-box with dr-memory-foundation). Use when building or standardizing agent memory, reducing prompt bloat, implementing retrieval+compression, creating a context pack, designing a memory pipeline, adding lint gates, or setting up golden regression tests for agent context. After install, users can simply say: Apply dr-context-pipeline as default behavior."
+- # DR Context Pipeline (retrieval + compression + lint)
+- Use this skill to standardize how an agent loads memory into its prompt **for correctness**.
+- - A file-based memory layout that includes `memory/always_on.md` (policy header + topic catalog) and topic files under `memory/topics/`.
+- - Recommended: install **dr-memory-foundation** (or implement an equivalent structure).
+- ## Quick install commands (copy/paste)
+- These commands work from anywhere because they set `$WORKSPACE` (defaults to `~/.openclaw/workspace`). Rerun them whenever you need to re-apply the pipeline:
+- clawhub install dr-context-pipeline --dir skills --force
+- python3 ./skills/dr-context-pipeline/scripts/memory_watchdog.py --freshness-minutes 240 --min-bytes 200
+- Paste every command’s output. If any step fails or the watchdog reports a gap, stop and reply `NOT EXECUTED: <reason>`.
+- ## Apply to this workspace
+- When the user asks to **apply** this skill (for example: `Apply dr-context-pipeline as default behavior`), follow this exact order and paste the evidence for every step:
+- All commands assume you’ve set `WORKSPACE=${WORKSPACE:-~/.openclaw/workspace}` and are running from that directory.
+- 1. **Lay down the files** — run `python3 ./skills/dr-context-pipeline/scripts/install_pipeline.py --target context_pipeline` (adds/updates the workspace copy from `assets/context_pipeline/`). Keep the script output in the transcript (hash summary + file count).
+- 2. **Show the tree** — `ls -1 context_pipeline` so the user sees which files are now present.
+- 3. **Patch `AGENTS.md`** — read the file, insert/refresh the “Context Pipeline” instructions, and include a `git diff -U20 AGENTS.md` (or equivalent) snippet in your reply. Preserve everything else.
+- 4. **Validate** — run `python3 ./skills/dr-context-pipeline/scripts/validate_pipeline.py --context-root context_pipeline` and paste the PASS/FAIL summary. If it fails, stop and report `NOT EXECUTED` with the error.
+- 5. **Run the memory watchdog** — `python3 ./skills/dr-context-pipeline/scripts/memory_watchdog.py --freshness-minutes 240 --min-bytes 200` (tune as needed). Paste the JSON output; if status ≠ OK, stop and reply `NOT EXECUTED: memory gap` after quoting the issues.
+- 6. **Final state** — show `git status -sb context_pipeline AGENTS.md` (or `git status -sb` if cleaner) so the user can see what changed.
+- 7. **Success banner** — `echo "CONTEXT PIPELINE APPLY COMPLETE"` so the transcript clearly shows the run finished cleanly.
+- This apply flow must be idempotent: if the files already match and `AGENTS.md` already contains the section, the diff should be empty but you still run the installer + validator and show their outputs.
+- ## Memory commit / continue workflow
+- - When Daniel says “memorize this” (or similar), run the checklist in `references/MEMORY_COMMIT.md` (daily log, now, open-loops, topic file, MEMORY.md) and confirm which files changed.
+- - When he says “let’s continue” after a reset, reload `memory/now.md`, `open-loops`, and the relevant topic files so you can summarize where things left off before acting.
+- ## Runtime modes and evidence contract
+- Every single task must follow the Runtime Evidence Checklist in `references/RUNTIME_CHECKLIST.md`.
+- The pipeline supports three runtime modes:
+- - `normal` — compact day-to-day operation
+- - `debug` — full pipeline artifacts for diagnosis
+- - `audit` — full artifacts plus Receipt Ledger for high-trust review
+- Default to `normal` unless the user explicitly asks for `debug`, `audit`, tracing, receipts, or a full evidence dump.
+- Mode rules:
+- - In **all** modes, the agent must actually perform the retrieval/compression/lint steps before claiming success.
+- - In **all** modes, if a required step cannot be completed, reply `NOT EXECUTED: <reason>` and stop.
+- - In **normal** mode, do not dump full Retrieval Bundle or Context Pack JSON into the transcript unless the user explicitly asks for it.
+- - In **debug** mode, emit the Retrieval Bundle JSON, Context Pack JSON, dropped-snippet reasons, and snippet pass-through summary.
+- - In **audit** mode, emit everything from debug mode and preserve a structured **Receipt Ledger** suitable for later review.
+- Required output by mode:
+- - **normal**:
+-   - compact answer
+-   - footer / footnote on every reply containing:
+-     - task type
+-     - snippet IDs passed forward
+-     - whether compression succeeded or fallback was used
+-     - model used
+-     - files read
+-     - files updated
+-   - internal artifact paths may be kept private unless troubleshooting requires them
+- - **debug**:
+-   - Retrieval Bundle JSON
+-   - Context Pack JSON
+-   - snippet summary
+-   - dropped reasons
+-   - run artifact paths
+-   - user-facing reasoning/result
+-   - user-facing reasoning/result
+-   - footer / footnote on every reply containing model used, files read, and files updated
+-   - footer / footnote on every reply containing model used, files read, and files updated
+- - **audit**:
+-   - all debug artifacts
+-   - Receipt Ledger / proof of each completed step
+- Casual prompts do **not** waive the requirement to do the work. They only keep the pipeline in `normal` mode unless the user explicitly asks for more evidence.
+- ## Operating procedure (default)
+- 1) Load the always-on policy + topic catalog (your `memory/always_on.md`).
+- 2) Route the message deterministically (task type + caps) using `references/router.yml`.
+- 3) Retrieve top relevant snippets from your memory store; build a **Retrieval Bundle** internally (see schema).
+- 4) Compress Retrieval Bundle → **Context Pack** using `references/compressor_prompt.txt`.
+-    - **IMPORTANT:** Context Pack `sources` MUST be **snippet IDs only** (`S1`, `S2`, …).
+- 5) Lint the Context Pack. If lint fails, **skip compression** and fall back to raw retrieved snippets.
+- 6) Call the main reasoning model with: always-on policy header + Context Pack (+ raw snippets for high-stakes tasks) + user message.
+- 7) For `debug` and `audit`, persist the run artifacts described in `references/RUNTIME_ARTIFACTS.md`.
+- 8) Emit evidence according to the active runtime mode:
+-    - `normal`: compact user-facing answer plus footer metadata
+-    - `debug`: full Retrieval Bundle + Context Pack + snippet summary
+-    - `audit`: debug artifacts plus a Receipt Ledger
+- ## What to read / use
+- - Authoritative positive-path harness fixtures: `references/tests/harness_cases.json`
+- - Authoritative anti-fabrication fixtures: `references/tests/anti_fabrication_cases.json`
+- - Keep “always-on policy header” tiny (invariants only). Put everything else behind retrieval.
+- - If you need deterministic snippet IDs, follow the stable ordering guidance in `references/deterministic_ids.md`.
+- - Receipt Ledger is an **audit-mode** structure first. `debug` may reuse it later, but `normal` mode should stay compact.
+- - Runtime artifacts are required for `debug` and `audit`. `normal` may keep artifacts internal and summarize only.
+- - Run `scripts/run_pipeline_tests.py` after changing routing, retrieval caps, snippet-ID behavior, runtime artifact behavior, derived-query behavior, daily-log-trigger behavior, or per-mode transcript evidence.
+- - Use `scripts/run_pipeline_tests.py --failure-fixtures references/tests/anti_fabrication_cases.json` when changing artifact, receipt, or transcript-proof behavior so anti-fabrication checks run alongside the positive harness.
+- - `references/tests/golden.json` is kept as a small starter/example file and validator sanity target, but the executable harness fixtures are the authoritative behavior checks.
+- - The harness should include canned compression success, dropped-snippet reporting, at least one lint-failure fallback case, and explicit overlap/precedence coverage for router behavior without live model calls.
++ description: "Deterministic memory/context pipeline with semantic retrieval checks, compression/lint, safe fallback, and memory watchdog."
++ # DR Context Pipeline
++ Use this skill to standardize how an agent loads memory into its prompt for correctness.
++ - A file-based memory layout with `memory/always_on.md` and topic files under `memory/topics/`.
++ - Recommended: install `dr-memory-foundation` or an equivalent memory layout.
++ - For semantic retrieval assurance, OpenClaw memory search should be configured and visible through `openclaw memory status --deep --json`.
++ ## Quick Install
++ These commands work from anywhere because they set `WORKSPACE`:
++ clawhub install dr-context-pipeline --version 2.1.0 --dir skills --force
++ python3 ./skills/dr-context-pipeline/scripts/memory_watchdog.py --freshness-minutes 240 --min-bytes 200 --require-semantic --probe-query "context pipeline embeddings semantic retrieval" --min-search-results 1
++ ```
++ Paste every command's output. If any step fails or the watchdog reports `GAP`, stop and reply `NOT EXECUTED: <reason>`.
++ ## Apply To This Workspace
++ When the user asks to apply this skill, follow this order:
++ 1. Lay down the files:
++    `python3 ./skills/dr-context-pipeline/scripts/install_pipeline.py --target context_pipeline`
++ 2. Show the tree:
++    `ls -1 context_pipeline`
++ 3. Patch `AGENTS.md` with the Context Pipeline instructions, preserving unrelated content.
++ 4. Validate:
++    `python3 ./skills/dr-context-pipeline/scripts/validate_pipeline.py --context-root context_pipeline`
++ 5. Run the semantic memory watchdog:
++    `python3 ./skills/dr-context-pipeline/scripts/memory_watchdog.py --freshness-minutes 240 --min-bytes 200 --require-semantic --probe-query "context pipeline embeddings semantic retrieval" --min-search-results 1`
++ 6. Show final state:
++    `git status -sb context_pipeline AGENTS.md`
++ 7. Print the success banner:
++    `echo "CONTEXT PIPELINE APPLY COMPLETE"`
++ This flow must be idempotent. If validation or the watchdog fails, stop with `NOT EXECUTED` and quote the issue.
++ ## Memory Commit / Continue Workflow
++ - When Daniel says "memorize this" or similar, run `references/MEMORY_COMMIT.md`.
++ - When he says "let's continue" after a reset, reload `memory/now.md`, `memory/open-loops.md`, and the relevant topic files before acting.
++ ## Runtime Modes
++ Every task must follow `references/RUNTIME_CHECKLIST.md`.
++ Modes:
++ - `normal` - compact day-to-day operation
++ - `debug` - full Retrieval Bundle and Context Pack artifacts
++ - `audit` - debug artifacts plus Receipt Ledger
++ Default to `normal` unless the user explicitly asks for debug, audit, tracing, receipts, or a full evidence dump.
++ ## Semantic Memory Contract
++ When persistent memory is relevant, semantic or hybrid memory search is the preferred retrieval source.
++ The agent must record retrieval mode internally as one of:
++ - `semantic`
++ - `hybrid`
++ - `file_fallback`
++ - `not_needed`
++ If semantic memory is unavailable, not attempted, or degraded to file/keyword retrieval:
++ - normal mode must say so compactly in the footer
++ - debug/audit mode must include the reason
++ - operational checks that depend on semantic recall must stop with `NOT EXECUTED: memory/embedding gap`
++ Normal footer shape:
++ ```text
++ Context: task type <type>; snippets <ids>; retrieval <semantic|hybrid|file_fallback|not_needed>; compression <succeeded|fallback>.
++ ## Notification Safety
++ The watchdog can emit a dry-run notification payload on `GAP`, but this skill must not enable live delivery by itself.
++ Live memory/embedding alerts require a separate approval gate covering:
++ - schedule/frequency
++ - Discord DM target
++ - cooldown/suppression behavior
++ - exact message format
++ - retry behavior
++ Until approved, the watchdog prints JSON only.
++ ## Operating Procedure
++ 1. Load `memory/always_on.md`.
++ 2. Route the message deterministically using `references/router.yml`.
++ 3. Retrieve relevant snippets from memory; prefer semantic/hybrid memory search when persistent memory is relevant.
++ 4. Build a Retrieval Bundle object that matches the schema and records retrieval mode.
++ 5. Compress to a Context Pack using `references/compressor_prompt.txt`.
++ 6. Lint the Context Pack. If lint fails, fall back to raw retrieved snippets.
++ 7. Call the main reasoning model with always-on policy + Context Pack + user message.
++ 8. For `debug` and `audit`, persist artifacts described in `references/RUNTIME_ARTIFACTS.md`.
++ 9. Emit evidence according to the active runtime mode.
++ ## What To Read / Use
++ - Semantic memory checklist: `references/SEMANTIC_MEMORY_ASSURANCE.md`
++ - Positive-path harness fixtures: `references/tests/harness_cases.json`
++ - Anti-fabrication fixtures: `references/tests/anti_fabrication_cases.json`
++ - Keep `memory/always_on.md` tiny; put detail behind retrieval.
++ - Use snippet IDs only (`S1`, `S2`, etc.) in Context Pack `sources`.
++ - Follow `references/deterministic_ids.md` when deterministic snippet IDs matter.
++ - Run `scripts/run_pipeline_tests.py` after changing routing, retrieval caps, snippet IDs, runtime artifacts, derived queries, daily-log triggers, or transcript evidence.
++ - Run `scripts/memory_watchdog.py --require-semantic` before claiming semantic memory is healthy.
+
+### assets/context_pipeline/README.md  [docs]
+- 3) Retrieve snippets from memory according to router policy; build Retrieval Bundle JSON.
+- 8) Emit evidence according to runtime mode: clean answer plus footer metadata in `normal`, full artifacts in `debug`, full artifacts plus Receipt Ledger in `audit`. Every reply should include a footer/footnote with model used, files read, and files updated.
++ 3) Retrieve snippets from memory according to router policy; build Retrieval Bundle JSON. When persistent memory is relevant, prefer semantic/hybrid memory search and record retrieval mode as `semantic`, `hybrid`, `file_fallback`, or `not_needed`.
++ 8) Emit evidence according to runtime mode: clean answer plus footer metadata in `normal`, full artifacts in `debug`, full artifacts plus Receipt Ledger in `audit`. Every reply should include retrieval mode, compression/fallback status, model used, files read, and files updated.
+
+### assets/context_pipeline/RUNTIME_ARTIFACTS.md  [docs]
+- - `normal`: do not expose artifact paths unless asked; put task type, snippet IDs, compression/fallback status, model used, files read, and files updated in the footer/footnote.
++ - `normal`: do not expose artifact paths unless asked; put task type, snippet IDs, retrieval mode, compression/fallback status, model used, files read, and files updated in the footer/footnote.
+
+### references/APPLY.md  [docs]
+- 5. `python3 ./skills/dr-context-pipeline/scripts/memory_watchdog.py --freshness-minutes 240 --min-bytes 200`
+-    - Paste the JSON output. If status ≠ OK, stop immediately and reply `NOT EXECUTED: memory gap`.
++ 5. `python3 ./skills/dr-context-pipeline/scripts/memory_watchdog.py --freshness-minutes 240 --min-bytes 200 --require-semantic --probe-query "context pipeline embeddings semantic retrieval" --min-search-results 1`
++    - Verifies OpenClaw embeddings, vector store, semantic vectors, index cleanliness, and a semantic search probe.
++    - Paste the JSON output. If status ≠ OK, stop immediately and reply `NOT EXECUTED: memory/embedding gap`.
++ The watchdog may emit a dry-run notification payload, but live alert delivery is a separate approval gate covering schedule, target, cooldown, and message text.
+
+### references/RUNTIME_CHECKLIST.md  [docs]
++    - When persistent memory is relevant, prefer semantic/hybrid memory search.
++    - Record retrieval mode as `semantic`, `hybrid`, `file_fallback`, or `not_needed`.
++    - If semantic memory is unavailable or not attempted, normal mode must say so compactly; debug/audit must include the reason.
++   - retrieval mode: `semantic`, `hybrid`, `file_fallback`, or `not_needed`
++ - retrieval mode and fallback/degradation reason, if any
+
+### references/SEMANTIC_MEMORY_ASSURANCE.md  [docs]
++ # Semantic Memory Assurance
++ Use this checklist when validating dr-context-pipeline memory retrieval.
++ ## Required Invariants
++ - Semantic memory search is the preferred persistent-memory retrieval path when prior memory is relevant.
++ - File/keyword retrieval is an allowed fallback, but it must be explicit in the normal-mode footer and debug/audit evidence.
++ - Embedding/vector/index health must be checked with machine-readable status before claiming semantic memory is healthy.
++ - Live alert delivery is a separate approval gate.
++ ## Manual Check
++ ```bash
++ python3 ./skills/dr-context-pipeline/scripts/memory_watchdog.py \
++   --freshness-minutes 240 \
++   --min-bytes 200 \
++   --require-semantic \
++   --probe-query "context pipeline embeddings semantic retrieval" \
++   --min-search-results 1 \
++   --emit-notification-payload
++ ```
++ Expected healthy result:
++ - `status` is `OK`
++ - `semantic_required` is `true`
++ - semantic status shows embedding probe OK
++ - vector store and semantic vectors are available
++ - probe returns at least one result with `vectorScore`
++ ## Failure Handling
++ - If status is `GAP`, do not claim the Context Pipeline is fully healthy.
++ - Continue with file fallback only when the user-facing task can be completed safely without semantic recall.
++ - In the footer, state `retrieval file_fallback` and include the reason when concise.
++ - For operational tasks, stop with `NOT EXECUTED: memory/embedding gap` if semantic memory is a prerequisite.
++ ## Notification Gate
++ A scheduled checker may notify Daniel only after explicit approval of:
++ - schedule/frequency
++ - Discord DM target
++ - cooldown/suppression behavior
++ - exact message format
++ - whether failures should retry or only report once
+
+### references/configure_prompt.md  [docs]
+-    - `normal`: clean user-facing answer, then a footer/footnote containing task type, snippet IDs, fallback/compression status, model used, files read, and files updated
+- clawhub install dr-context-pipeline --dir skills --force
+- python3 ./skills/dr-context-pipeline/scripts/memory_watchdog.py --freshness-minutes 240 --min-bytes 200
++    - When persistent memory is relevant, prefer semantic/hybrid memory search.
++    - Record retrieval mode as `semantic`, `hybrid`, `file_fallback`, or `not_needed`.
++    - If semantic memory is unavailable, say so in normal-mode footer evidence and include the reason in debug/audit mode.
++    - `normal`: clean user-facing answer, then a footer/footnote containing task type, snippet IDs, retrieval mode, fallback/compression status, model used, files read, and files updated
++ clawhub install dr-context-pipeline --version 2.1.0 --dir skills --force
++ python3 ./skills/dr-context-pipeline/scripts/memory_watchdog.py --freshness-minutes 240 --min-bytes 200 --require-semantic --probe-query "context pipeline embeddings semantic retrieval" --min-search-results 1
+
+### scripts/memory_watchdog.py  [code]
+- """Memory freshness watchdog for dr-context-pipeline."""
+- from typing import List
+-     details: dict
+-     parser = argparse.ArgumentParser(description="Ensure memory daily logs are fresh and non-empty")
+-         print(json.dumps({
+-             "status": "GAP",
+-             "issues": [f"Memory directory missing: {memory_dir}"],
+-             "details": {}
+-         }, indent=2))
+-         return 1
+-     today = datetime.now(timezone.utc)
+-     files = find_daily_files(memory_dir, today)
+-     result = check_daily_file(files, args.freshness_minutes, args.min_bytes)
+-         "status": result.status,
+-         "issues": result.issues,
+-         "details": result.details,
+-         "today": iso_date(today),
+-     print(json.dumps(payload, indent=2))
+-     return 0 if result.status == "OK" else 1
++ """Memory freshness and semantic retrieval watchdog for dr-context-pipeline."""
++ import subprocess
++ from typing import Any, List
++     details: dict[str, Any]
++     issues: List[str] = []
++     issues: List[str] = []
++ def extract_json_payload(text: str) -> Any:
++     stripped = text.strip()
++     if not stripped:
++         raise ValueError("empty command output")
++     decoder = json.JSONDecoder()
++     starts = sorted(
++         idx for idx, char in enumerate(stripped)
++         if char in {"[", "{"}
++     )
++     )
++     for idx in starts:
++         try:
++             payload, end = decoder.raw_decode(stripped[idx:])
++         except json.JSONDecodeError:
++             continue
++             continue
++         if stripped[idx + end:].strip():
++         return payload
++         return payload
++     raise ValueError("no JSON payload found in command output")
++ def run_json_command(command: list[str], timeout_seconds: int) -> tuple[Any | None, dict[str, Any]]:
++     proc = subprocess.run(
++         command,
++         check=False,
++         text=True,
++         capture_output=True,
++         timeout=timeout_seconds,
++     details = {
++         "command": command,
++         "returncode": proc.returncode,
++         "stderr": proc.stderr.strip(),
++     }
++     }
++     try:
++         payload = extract_json_payload(proc.stdout)
++     except Exception as exc:  # noqa: BLE001
++         details["parse_error"] = str(exc)
++         details["stdout_preview"] = proc.stdout[-2000:]
++         return None, details
++     return payload, details
++ def first_status_entry(payload: Any) -> dict[str, Any] | None:
++     if isinstance(payload, list) and payload and isinstance(payload[0], dict):
++         return payload[0]
++     if isinstance(payload, dict):
++     return None
++ def check_semantic_status(openclaw_bin: str, agent: str | None, timeout_seconds: int) -> CheckResult:
++     command = [openclaw_bin, "memory", "status", "--index", "--deep", "--json"]
++     if agent:
++     if agent:
++         command.extend(["--agent", agent])
++         command.extend(["--agent", agent])
++     payload, command_details = run_json_command(command, timeout_seconds)
++     payload, command_details = run_json_command(command, timeout_seconds)
++     details: dict[str, Any] = {"status_command": command_details}
++     entry = first_status_entry(payload)
++     if entry is None:
++         return CheckResult("GAP", ["Memory status JSON was missing or invalid"], details)
++     status = entry.get("status", {}) if isinstance(entry.get("status"), dict) else {}
++     vector = status.get("vector", {}) if isinstance(status.get("vector"), dict) else {}
++     embedding_probe = entry.get("embeddingProbe", {}) if isinstance(entry.get("embeddingProbe"), dict) else {}
++     scan = entry.get("scan", {}) if isinstance(entry.get("scan"), dict) else {}
++     details["provider"] = status.get("provider")
++     details["model"] = status.get("model")
++     details["files"] = status.get("files")
++     details["chunks"] = status.get("chunks")
++     details["dirty"] = status.get("dirty")
++     details["embeddingProbe"] = embedding_probe
++     details["vector"] = vector
++     details["scan"] = scan
++     if embedding_probe.get("ok") is not True:
++         issues.append("Embedding probe is not OK")
++     if vector.get("storeAvailable") is not True:
++         issues.append("Vector store is not available")
++     if vector.get("semanticAvailable") is not True:
++         issues.append("Semantic vectors are not available")
++     if status.get("dirty") is True:
++         issues.append("Memory index is still dirty after indexing")
++     if not isinstance(status.get("files"), int) or status.get("files", 0) <= 0:
++         issues.append("Memory index has no files")
++     if not isinstance(status.get("chunks"), int) or status.get("chunks", 0) <= 0:
++         issues.append("Memory index has no chunks")
++     if scan.get("issues"):
++         issues.append("Memory scan reported issues")
++     return CheckResult("OK" if not issues else "GAP", issues, details)
++     return CheckResult("OK" if not issues else "GAP", issues, details)
++ def check_search_probe(openclaw_bin: str, agent: str | None, query: str, min_results: int, timeout_seconds: int) -> CheckResult:
++     command = [openclaw_bin, "memory", "search", "--query", query, "--max-results", str(max(min_results, 1)), "--json"]
++     details: dict[str, Any] = {"search_command": command_details, "query": query}
++     if not isinstance(payload, dict):
++         return CheckResult("GAP", ["Memory search JSON was missing or invalid"], details)
++     results = payload.get("results")
++     if not isinstance(results, list):
++         return CheckResult("GAP", ["Memory search JSON did not contain results"], details)
++     details["result_count"] = len(results)
++     details["top_results"] = [
++         {
++             "path": item.get("path"),
++             "score": item.get("score"),
++             "vectorScore": item.get("vectorScore"),
++             "textScore": item.get("textScore"),
++         }
++         for item in results[:3]
++         if isinstance(item, dict)
++     ]
++     if len(results) < min_results:
++         issues.append(f"Memory search returned {len(results)} results (<{min_results})")
++     if min_results > 0 and not any(isinstance(item, dict) and isinstance(item.get("vectorScore"), (int, float)) for item in results):
++         issues.append("Memory search results did not include vectorScore")
++ def make_notification_payload(status: str, issues: list[str], details: dict[str, Any]) -> dict[str, Any] | None:
++     if status == "OK":
++         return None
++     return {
++         "severity": "warning",
++         "title": "Memory/embedding watchdog gap",
++         "message": "Semantic memory or daily memory health check failed.",
++         "issues": issues,
++         "details": details,
++     parser = argparse.ArgumentParser(description="Ensure memory logs and semantic retrieval are healthy")
++     parser.add_argument("--require-semantic", action="store_true", help="Require OpenClaw semantic memory and embeddings to be ready")
++     parser.add_argument("--openclaw-bin", default="openclaw", help="OpenClaw CLI binary")
++     parser.add_argument("--agent", default=None, help="Optional OpenClaw agent id")
++     parser.add_argument("--probe-query", default=None, help="Optional semantic search probe query")
++     parser.add_argument("--min-search-results", type=int, default=1, help="Minimum probe results when --probe-query is set")
++     parser.add_argument("--timeout-seconds", type=int, default=120, help="Timeout for OpenClaw CLI checks")
++     parser.add_argument("--emit-notification-payload", action="store_true", help="Include a dry-run notification payload on GAP")
++     all_issues: list[str] = []
++     checks: dict[str, Any] = {}
++         daily = CheckResult("GAP", [f"Memory directory missing: {memory_dir}"], {})
++     else:
++         today = datetime.now(timezone.utc)
++         files = find_daily_files(memory_dir, today)
++         daily = check_daily_file(files, args.freshness_minutes, args.min_bytes)
++     checks["daily"] = daily.details
++     all_issues.extend(daily.issues)
++     if args.require_semantic:
++         semantic = check_semantic_status(args.openclaw_bin, args.agent, args.timeout_seconds)
++         checks["semantic_status"] = semantic.details
++         all_issues.extend(semantic.issues)
++         if args.probe_query:
++             probe = check_search_probe(args.openclaw_bin, args.agent, args.probe_query, args.min_search_results, args.timeout_seconds)
++             checks["semantic_probe"] = probe.details
++             all_issues.extend(probe.issues)
++     status = "OK" if not all_issues else "GAP"
++         "status": status,
++         "issues": all_issues,
++         "checks": checks,
++         "today": iso_date(datetime.now(timezone.utc)),
++         "semantic_required": args.require_semantic,
++     if args.emit_notification_payload:
++         payload["notification"] = make_notification_payload(status, all_issues, checks)
++     print(json.dumps(payload, indent=2, sort_keys=True))
++     return 0 if status == "OK" else 1

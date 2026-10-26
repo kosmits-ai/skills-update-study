@@ -1,0 +1,129 @@
+drumrobot/backlog  0.3.0 -> 0.3.1
+change_type: docs+code   changelog: Version 0.3.1  - Improved integration with external trackers (notably Plane) in scripts and issue creation workflows. - Updated and expanded documentation in create.md and CHANGELOG.md. - Removed legacy or redundant files (skill-card.md) for cleaner project organization. - Refined client logic in scripts/plane_client.py and scripts/plane_create_issue.py for better external issue creation support.
+
+### CHANGELOG.md  [docs]
++ ## [0.3.1](https://github.com/es6kr/skills/compare/backlog-v0.3.0...backlog-v0.3.1) (2026-09-08)
++ ### Bug Fixes
++ * **backlog:** stop forwarding the Plane API key across redirects ([c43c474](https://github.com/es6kr/skills/commit/c43c474f590861101ec68221cfbcf85f5ca87937))
++ * **tdd:** scope the Red-only commit ban to shared branches ([fc2e6ec](https://github.com/es6kr/skills/commit/fc2e6ecdd1906c41d47955226e247aeb03a6f367))
+
+### create.md  [docs]
++ ## Route Selection: Intake vs Regular Issue
++ **Intake is the default route.** A new backlog item lands in the triage inbox
++ (`POST .../intake-issues/`) so a human classifies and admits it before it reaches the active
++ tracker. Calling the plain issue endpoint for an untriaged item bypasses that admission step.
++ **Exception — P0 and P1 items register directly as regular issues (`--no-intake`).** Urgent and
++ high-priority work cannot absorb triage latency, and an item already classified P0/P1 has had its
++ priority decided, so routing it through the inbox adds a waiting step without adding a decision.
++ P2/P3 and unclassified items keep the intake default.
++ | Priority | Route | Flag |
++ |----------|-------|------|
++ | P0 (urgent) | Regular issue, direct | `--no-intake -p P0` |
++ | P1 (high) | Regular issue, direct | `--no-intake -p P1` |
++ | P2 (medium) | Intake (triage inbox) | *(default)* `-p P2` |
++ | P3 (low) | Intake (triage inbox) | *(default)* `-p P3` |
++ | Unclassified | Intake (triage inbox) | *(default)* |
++ | # | Don't | Do |
++ |---|-------|-----|
++ | 1 | Call the regular-issue route for an item whose priority has not been established | Unclassified means intake — the inbox is where the priority gets decided |
++ | 2 | Route a P0/P1 item through intake because "intake is the default" | The exception exists precisely because the triage step is already satisfied for these |
++ | 3 | Offer a creation option to the user without naming which route it takes | State the route and the priority in the option text — they determine whether a human triage step exists |
++ | 4 | Infer the route from how urgent the work feels | Read the priority off the source tracker entry, then apply the table |
++ **Self-check (before every `plane_create_issue.py` call)**: what priority does the source tracker
++ entry carry? P0/P1 takes `--no-intake`; everything else omits the flag. If the source carries no
++ priority, the route is intake.
+
+### scripts/plane_client.py  [code]
+-         or os.environ.get("DGS_PLANE_API_KEY")
++     # Token precedence: the profile-resolved token (workspace_profile.get_profile
++     # sources it from the profile's token_env / PLANE_API_KEY / token_file), then
++     # the generic env keys. A previous hardcoded `DGS_PLANE_API_KEY` tail was
++     # removed: baking one specific workspace's env var into this vendor-agnostic
++     # client silently routed *other* workspaces' calls out under the wrong key
++     # whenever their own token was unset (HTTP 403 "token is not valid"),
++     # defeating the per-workspace isolation this client is supposed to enforce.
+
+### scripts/plane_create_issue.py  [code]
+-         "x-api-key": token,
+-             intake_registered = False
+-             if is_intake:
+-                 intake_url = f"{plane_host}/api/v1/workspaces/{workspace_slug}/projects/{prj_id}/intake-issues/"
+-                 try:
+-                     intake_req = urllib.request.Request(intake_url, data=json.dumps({"issue": issue_id}).encode("utf-8"), headers=headers, method="POST")
+-                     urllib.request.urlopen(intake_req, timeout=30)
+-                     intake_registered = True
+-                 except Exception as e:
+-                     sys.stderr.write(f"WARN: Failed to register intake issue: {e}\n")
+-                     intake_registered = False
+-                 "intake": intake_registered if is_intake else False
++     """
++     """
++         )
++     }
++     }
++ def build_intake_payload(title: str, description: str = "", priority: str = None) -> dict:
++     """Build the request body for Plane's intake endpoint.
++     Plane's intake view reads `request.data["issue"]["name"]`, so `issue` must
++     be a nested mapping describing the issue to create — the endpoint creates
++     the issue itself. Passing an already-created issue's id (a bare string)
++     makes the server call `.get()` on a str and return an opaque HTTP 500.
++     tiptap_doc, html_desc, plain_desc = markdown_to_tiptap_and_html(description)
++     issue = {
++         "name": title,
++         "description": tiptap_doc,
++         "description_html": html_desc,
++         "description_stripped": plain_desc,
++     if priority:
++         issue["priority"] = normalize_priority(priority)
++     return {"issue": issue}
++         return {
++         return {
++             "success": False,
++             "success": False,
++         }
++         }
++     # Refuse to send the API key to a non-HTTPS host (CWE-319 hardening —
++     # cleartext transmission of sensitive information).
++     if not plane_host.lower().startswith("https://"):
++             "reason": f"Refusing to send credentials to a non-HTTPS plane_host: {plane_host!r}",
++     # x-api-key is deliberately NOT in this dict — see add_unredirected_header
++     # below. urllib forwards headers passed via Request(headers=...) to any
++     # redirect target (even a downgraded http:// or a cross-origin host);
++     # add_unredirected_header keeps a header on the original request only.
++     if is_intake:
++         return _create_intake_via_rest_api(
++             plane_host, workspace_slug, prj_id, headers, token, title, description, priority
++     try:
++         req.add_unredirected_header("x-api-key", token)
++         req.add_unredirected_header("x-api-key", token)
++         with urllib.request.urlopen(req, timeout=30) as resp:
++             data = json.loads(resp.read().decode("utf-8"))
++                 "intake": False
++     except urllib.error.HTTPError as e:
++     except Exception as e:
++ def _create_intake_via_rest_api(plane_host, workspace_slug, prj_id, headers, token, title, description, priority):
++     """POST to the intake endpoint, which creates the issue in the triage inbox.
++     Errors are returned to the caller with status and response body. The old
++     code swallowed them into a one-line stderr WARN and still reported
++     success, which is why a server-side 500 went unnoticed.
++     intake_url = f"{plane_host}/api/v1/workspaces/{workspace_slug}/projects/{prj_id}/intake-issues/"
++     body = json.dumps(build_intake_payload(title, description, priority)).encode("utf-8")
++         req = urllib.request.Request(intake_url, data=body, headers=headers, method="POST")
++         try:
++             detail = e.read().decode("utf-8", "replace")
++         except Exception:
++             detail = ""
++             "reason": f"Intake HTTP Error {e.code}: {e.reason} {detail}".strip(),
++         return {"success": False, "reason": f"Intake request failed: {e}"}
++     detail = data.get("issue_detail") if isinstance(data.get("issue_detail"), dict) else {}
++     issue_ref = data.get("issue")
++     issue_id = detail.get("id") or (issue_ref if isinstance(issue_ref, str) else None) or data.get("id")
++     seq_id = detail.get("sequence_id") or data.get("sequence_id")
++     return {
++         "success": True,
++         "method": "REST API (intake)",
++         "id": issue_id,
++         "sequence_id": seq_id,
++         "title": title,
++         "url": f"{plane_host}/{workspace_slug}/projects/{prj_id}/issues/{issue_id}",
++         "intake": True,

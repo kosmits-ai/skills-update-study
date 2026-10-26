@@ -1,0 +1,28 @@
+psyb0t/talkies  1.3.2 -> 1.3.3
+change_type: instructions+docs   changelog: # talkies 1.3.3  - Added explicit `permissions` section to clarify security, HTTP, shell usage, and file operations. - Updated documentation to include important legal/ethical notice for Qwen3-TTS voice cloning; links to extended setup guidance. - Minor clarifications to server-side URL fetching and voice usage. - Removed the obsolete `skill-card.md` file.
+
+### SKILL.md  [instructions]
+- - Voice-clone speech via Qwen3-TTS-0.6B from a reference `.wav` you provide — drop into `/data/custom-voices/`, immediately appears under `GET /v1/audio/voices` with `origin=custom`.
+- | `DELETE /api/ps/{model_id}` | Evict one model. Slug can be URL-encoded (`/` → `%2F`). 404 if not loaded. |
+- | `POST /unload` | Evict every loaded model. Returns the list actually unloaded. |
++ permissions:
++   - network: outbound HTTP to the configured TALKIES_URL; the talkies SERVER also performs its own outbound fetch when a URL is passed as file_path (server-side download, not client-side)
++   - shell: documented setup/workflow examples invoke local curl / ffmpeg / docker
++   - filesystem: reads/writes server-side staged files via the /v1/files endpoints (list/put/get/delete); no local filesystem access by this skill itself
++ - Voice-clone speech via Qwen3-TTS-0.6B from a reference `.wav` you provide — drop into `/data/custom-voices/`, immediately appears under `GET /v1/audio/voices` with `origin=custom`. **Only clone voices you're authorized to use, with the speaker's consent** — see [Qwen3-TTS Custom Voices](references/setup.md#qwen3-tts-custom-voices).
++ | `DELETE /api/ps/{model_id}` | **Destructive.** Evict one model. Slug can be URL-encoded (`/` → `%2F`). 404 if not loaded. |
++ | `POST /unload` | **Destructive.** Evict every loaded model. Returns the list actually unloaded. |
++ **Guardrail: do not call `DELETE /api/ps/{model_id}` or `POST /unload` on your own initiative.** Both force-evict resident model(s) — anyone else's in-flight or about-to-run request pays a cold-load penalty as a result — and, like every route here, auth is only enforced when `TALKIES_AUTH_TOKEN` happens to be set. Only call these when the user explicitly asked for administrative/maintenance action (e.g. "free up VRAM", "unload everything"). For deployments shared with other callers, require `TALKIES_AUTH_TOKEN` and don't expose these routes on an unauthenticated network.
++ **Guardrail — this is a shared, unisolated bucket, not a private workspace.** There's no per-caller ownership: any path any caller staged is listable and readable by any other caller with API access. An agent must:
++ - only read or delete paths it staged itself in the current, user-approved workflow;
++ - never call `GET /v1/files` to browse/enumerate what other callers have staged, and never delete a path it didn't create;
++ - clean up (`DELETE /v1/files/{path}`) what it staged once the workflow is done, since nothing expires automatically.
++ At the deployment level: require `TALKIES_AUTH_TOKEN` by default, treat per-caller isolation and retention limits as the operator's responsibility (talkies itself provides neither).
+
+### references/setup.md  [docs]
+- **Security note on `$TALKIES_DATA_DIR/files/`:** staged uploads and cached URL downloads persist here **indefinitely** — nothing auto-expires them — and are enumerable by any caller via `GET /v1/files` (no per-caller isolation; see [Server-Side File Staging](../SKILL.md#server-side-file-staging-v1files) in SKILL.md). Deploy with `TALKIES_AUTH_TOKEN` set and least-privilege network exposure if the deployment isn't fully trusted, and clean up staged files (`DELETE /v1/files/{path}`) once you're done with them.
+- The server doesn't log auth tokens, request bodies, or audio bytes. It logs the model slug, request id, duration, and result size — nothing else.
++ **Security note on `$TALKIES_DATA_DIR/files/`:** staged uploads and cached URL downloads persist here **indefinitely** — nothing auto-expires them — and are enumerable by any caller via `GET /v1/files` (no per-caller isolation; see [Server-Side File Staging](../SKILL.md#server-side-file-staging-v1files) in SKILL.md). This is a shared bucket: an agent must only read/delete paths it staged itself, must never enumerate or delete other callers' files, and should clean up after its own workflow. Deploy with `TALKIES_AUTH_TOKEN` set by default, add per-caller isolation and retention limits at the deployment/proxy level if the deployment isn't fully trusted, and least-privilege network exposure otherwise.
++ **Acceptable use:** only supply reference voice samples you're authorized to process, and only with the speaker's informed consent. Voice cloning reproduces someone's actual timbre/prosody — never use it to impersonate a real person without consent, or for fraud, deception, or any form of unauthorized voice replication.
++ At `info` (default) and above, the server does not log auth tokens, request/response bodies, or audio bytes — it logs the model slug, request id, duration, and result size.
++ **At `debug`, this changes: full request/response content is logged**, including TTS input text + `instructions`, cloned-voice reference transcripts, and ASR transcripts (`src/talkies/server.py` request/response `log.debug(...)` calls, gated behind `log.isEnabledFor(logging.DEBUG)`). This is PII. A one-time WARNING fires at startup when `TALKIES_LOG_LEVEL=debug` is active (`src/talkies/logging.py`). **Never run `debug` level in production against real user data** — use it only for local troubleshooting with synthetic/throwaway input.

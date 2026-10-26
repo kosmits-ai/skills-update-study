@@ -1,0 +1,47 @@
+zack-dev-cm/openclaw-cws-publisher  0.2.1 -> 0.2.2
+change_type: instructions+code   changelog: Add reviewer-gate preflight and pending-review safeguards.
+
+### SKILL.md  [instructions]
+- description: Package a Chrome extension, scan tracked files for public-surface leaks, and render GitHub or ClawHub release metadata with explicit tags.
++ description: OpenClaw CWS Publisher is a public ClawHub Chrome Web Store publisher skill. Use it when the user says "chrome web store publisher", "extension release publisher", "CWS publisher", or wants to package a Chrome extension, scan tracked files for public-surface leaks, and render GitHub or ClawHub release metadata with explicit tags.
++ version: 0.2.2
++ Search intent: `chrome web store publisher`, `extension release publisher`, `cws publisher`, `chrome extension publish`
++ - detect repo-local reviewer gates
++ - Inspect the ZIP intended for upload, not only the source tree, before calling a Chrome Web Store package ready.
++ - Do not publish when the target repo has a reviewer gate and it fails.
++ - If a Chrome Web Store draft is already pending review, do not recommend canceling or replacing it unless a verified acceptance blocker exists.
+
+### agents/openai.yaml  [code]
+-   default_prompt: "Use $openclaw-cws-publisher to package the target extension directory, scan tracked files for public-surface leaks, generate launch metadata for the target repo, and render GitHub or ClawHub publish commands with explicit topics and tags. If the extension has a dedicated public privacy/support site, pass --public-site-base or set CWS_PUBLIC_SITE_BASE so reviewer-facing links do not default to repo blobs or issue pages."
++   default_prompt: "Use $openclaw-cws-publisher to package the target extension directory, scan tracked files for public-surface leaks, detect any repo-local reviewer gate, generate launch metadata for the target repo, and render GitHub or ClawHub publish commands with explicit topics and tags. If the extension has a dedicated public privacy/support site, pass --public-site-base or set CWS_PUBLIC_SITE_BASE so reviewer-facing links do not default to repo blobs or issue pages."
+
+### scripts/generate_launch_manifest.py  [code]
++ def detect_reviewer_gate(repo_root: Path) -> dict[str, str | bool]:
++     script_path = repo_root / "scripts" / "reviewer_gate.py"
++     hook_path = repo_root / ".githooks" / "pre-push"
++     return {
++         "detected": script_path.exists() or hook_path.exists(),
++         "script": "scripts/reviewer_gate.py" if script_path.exists() else "",
++         "pre_push_hook": ".githooks/pre-push" if hook_path.exists() else "",
++     }
++         "reviewer_gate": detect_reviewer_gate(repo_root),
+
+### scripts/render_publish_commands.py  [code]
+-     manifest = load_json(args.manifest)
+-     dump_text(args.out, "\n".join(sections))
++ def render_reviewer_gate_section(manifest: dict) -> str:
++     gate = manifest.get("reviewer_gate") or {}
++     lines = ["## Reviewer Gate", "", "```bash"]
++     if gate.get("script"):
++         lines.append(f"python3 {gate['script']} --repo-root . --skip-codex")
++     if gate.get("pre_push_hook"):
++         lines.append("git config core.hooksPath .githooks")
++         lines.append("# The full gate will run on push through .githooks/pre-push")
++     if not gate.get("script") and not gate.get("pre_push_hook"):
++         lines.append("# no repo-local reviewer gate detected")
++     lines.append("```")
++     return "\n".join(lines)
++ def render_commands(manifest: dict) -> str:
++ {render_reviewer_gate_section(manifest)}
++     return "\n".join(sections)
++     dump_text(args.out, render_commands(load_json(args.manifest)))

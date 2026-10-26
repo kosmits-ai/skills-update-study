@@ -1,0 +1,88 @@
+hitman86r/share-onetime-link  1.0.0 -> 1.1.0
+change_type: instructions+code   changelog: Security fix: /generate and /status endpoints now protected by SHARE_SECRET; declare required env vars in SKILL.md; add warning when secret is not set
+
+### SKILL.md  [instructions]
+- - ✅ **One-shot links** — token is invalidated after the first download
+- - ✅ **Auto-cleanup** — file is deleted from `shared/` after download or expiry
+- - ✅ **No login required** — anyone with the link can download once
+- SHARE_PUBLIC_URL="https://share.yourdomain.com" node skills/share-onetime-link/scripts/server.js
+- Or use the provided start script (edit `SHARE_PUBLIC_URL` first):
+- # Copies file to shared/, returns a public link valid for 30 minutes
+- The agent will:
+- 1. Copy the file to `shared/`
+- 2. Call `POST /generate` on the local server
+- 3. Return the public link with expiry info
+- curl http://localhost:5050/status
+- ## How it works
+- 1. `share-file.js` copies the file to `shared/` and calls `POST /generate`
+- 2. The server generates a random 64-char hex token and stores `{ filename, filePath, expiresAt }`
+- 3. On `GET /dl/:token`: validates token, streams the file, marks as downloaded, deletes file + token
+- 4. A cleanup interval runs every 60s to remove expired tokens and files
+- | Variable | Default | Description |
+- |----------|---------|-------------|
+- | `SHARE_PUBLIC_URL` | `http://localhost:5050` | Public base URL for generated links |
+- | `SHARE_PORT` | `5050` | Local server port |
+- | `SHARED_DIR` | `workspace/shared/` | Directory for shared files |
+- - Links are single-use: once downloaded, the token is immediately invalidated
+- - No directory listing — only direct token access works
++ - ✅ **One-shot links** — token invalidated after first download
++ - ✅ **Auto-cleanup** — file deleted from `shared/` after download or expiry
++ - ✅ **Protected endpoints** — `/generate` and `/status` require `SHARE_SECRET`
++ - ✅ **No login required for download** — anyone with the link can download once
++ - Set `SHARE_SECRET` to a strong random string (recommended)
++ SHARE_PUBLIC_URL="https://share.yourdomain.com" \
++ SHARE_SECRET="your-strong-random-secret" \
++ node skills/share-onetime-link/scripts/server.js
++ Or use `start.sh` (edit variables first):
++ SHARE_SECRET="your-secret" \
++ # Returns a public link valid for 30 minutes
++ curl -H "x-share-secret: your-secret" http://localhost:5050/status
++ | Variable | Required | Default | Description |
++ |----------|----------|---------|-------------|
++ | `SHARE_PUBLIC_URL` | **Yes** | `http://localhost:5050` | Public base URL for generated links |
++ | `SHARE_SECRET` | Recommended | *(none)* | Secret key for `/generate` and `/status` endpoints |
++ | `SHARE_PORT` | No | `5050` | Local server port |
++ | `SHARED_DIR` | No | `workspace/shared/` | Directory for shared files |
++ - `/dl/:token` is **public by design** — anyone with the link can download once
++ - `/generate` and `/status` are **protected by `SHARE_SECRET`** — set it before exposing publicly
++ - If `SHARE_SECRET` is not set, a warning is logged and endpoints are unprotected
++ - Never put sensitive files in `SHARED_DIR` unless you intend to share them
+
+### scripts/server.js  [code]
+- app.post('/generate', (req, res) => {
+- app.get('/status', (req, res) => {
++ const API_SECRET = process.env.SHARE_SECRET || null;
++ if (!API_SECRET) {
++   console.warn('[warn] SHARE_SECRET not set — /generate and /status are unprotected!');
++ }
++ }
++ // Auth middleware for protected endpoints
++ function requireSecret(req, res, next) {
++   if (!API_SECRET) return next(); // no secret configured, allow (with warning)
++   const provided = req.headers['x-share-secret'] || req.query.secret;
++   if (provided !== API_SECRET) {
++     return res.status(401).json({ error: 'Unauthorized: missing or invalid secret' });
++   }
++   next();
++ app.post('/generate', requireSecret, (req, res) => {
++ app.get('/status', requireSecret, (req, res) => {
+
+### scripts/share-file.js  [code]
+-   headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
++ }
++ const headers = {
++   'Content-Type': 'application/json',
++   'Content-Length': Buffer.byteLength(body),
++ };
++ if (process.env.SHARE_SECRET) {
++   headers['x-share-secret'] = process.env.SHARE_SECRET;
++   headers
+
+### scripts/start.sh  [code]
+- # Edit SHARE_PUBLIC_URL to match your Cloudflare Tunnel public hostname
++ # Configure these variables before running:
++ export SHARE_SECRET="${SHARE_SECRET:-}"   # Recommended: set a strong random secret
++ # export SHARED_DIR="/custom/path/to/shared"   # Optional
++ if [ -z "$SHARE_SECRET" ]; then
++   echo "[warn] SHARE_SECRET not set — /generate and /status are unprotected!"
++ fi

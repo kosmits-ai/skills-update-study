@@ -1,0 +1,31 @@
+byungkyu/reducto  1.1.0 -> 1.2.0
+change_type: instructions   changelog: CLI-first rewrite with the Maton SDK examples; clarify that the CLI and SDKs keep separate credential stores, and reword webhook egress warnings
+
+### SKILL.md  [instructions]
+-   version: "1.1"
+- Reducto has no typed accessor yet, so calls go through the `api` passthrough, which takes the app and the path after it. `login()` opens a browser once per machine and writes the session to the SDK's own store — `maton login` does not carry over, and the SDK never signs in implicitly.
+- Calling `https://api.maton.ai/` directly means holding a long-lived Maton API key in the process environment, where it is readable by every child process and easy to leak into logs, crash dumps, shell history, and pasted output. Handle it accordingly:
+- - **Do not pass it on a command line** (`-H "Authorization: Bearer $MATON_API_KEY"`), where it lands in `ps` output and shell history. Feed the header in on stdin instead, as below.
+- `curl --config -` reads the header from stdin, so the key is never a command-line argument and never reaches `ps` or shell history. Query values must be URL-encoded (`is:unread` becomes `is%3Aunread`).
+- curl --config - "https://api.maton.ai/reducto/jobs" <<EOF
+- header = "Authorization: Bearer $MATON_API_KEY"
+- header = "User-Agent: maton-reducto-skill/1.1"
+- # Pin a specific connection when the account has more than one:
+- # header = "Maton-Connection: {connection_id}"
+- EOF
++   version: "1.2"
++ The CLI above is this skill's documented path; the SDKs are an optional way to call the same gateway from application code. The two modes keep separate credential stores: the CLI uses the profile from `maton login`, while an SDK program signs in once with `login()`, which opens a browser and stores a session that `Maton()` reads. Reducto has no typed accessor yet, so calls go through the `api` passthrough, which takes the app and the path after it.
++ Calling `api.maton.ai` directly means holding a long-lived Maton API key in the process environment, where it is readable by every child process and easy to leak into logs, crash dumps, shell history, and pasted output. Handle it accordingly:
++ - **Do not pass it on a command line**, where it lands in `ps` output and shell history. Read it from the environment inside the process that makes the request, as below.
++ The request is a plain HTTPS call to host `api.maton.ai` at path `/reducto/{native-api-path}` with a bearer token; the gateway swaps in the connected app's credential. Add a `Maton-Connection: {connection_id}` header to pin a specific connection when the account has more than one. Query values must be URL-encoded. The Python standard library is enough — the key is read from the environment inside the process, so it never appears on a command line:
++ python3 - <<'PY'
++ import json, os, urllib.request
++ GATEWAY = "https://api.maton.ai"
++ req = urllib.request.Request(GATEWAY + "/reducto/jobs")
++ req.add_header("Authorization", "Bearer " + os.environ["MATON_API_KEY"])
++ req.add_header("User-Agent", "maton-reducto-skill/1.2")
++ # req.add_header("Maton-Connection", "{connection_id}")
++ with urllib.request.urlopen(req) as resp:
++     print(json.dumps(json.load(resp), indent=2))
++ PY
++ For a write, set `method="POST"` (or `PUT`/`DELETE`) on the `Request`, pass the JSON-encoded body as `data=`, and add a `Content-Type: application/json` header.

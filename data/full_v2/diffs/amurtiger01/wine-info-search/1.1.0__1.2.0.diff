@@ -1,0 +1,85 @@
+amurtiger01/wine-info-search  1.1.0 -> 1.2.0
+change_type: instructions+docs+code   changelog: Security hardening: removed auto-insecure SSL fallback, blocked --insecure when API key present, added health disclaimer, pinned dependency versions, declared FIRECRAWL_API_KEY in metadata
+
+### README.md  [docs]
+- | `FIRECRAWL_API_KEY` | No | Firecrawl API key for Vivino access. Free tier: 500 req/month. Register at [firecrawl.dev](https://firecrawl.dev) |
+- Firecrawl enables Vivino access from China by providing US proxy IPs + JavaScript rendering:
+- # Option 1: Environment variable
+- # Option 2: Command-line argument
+- The script **validates SSL certificates by default** (secure). If certificate verification fails (e.g. behind a corporate proxy or restricted network), it automatically retries without verification for compatibility. You can also pass `--insecure` to skip verification entirely:
++ | `FIRECRAWL_API_KEY` | No | Firecrawl API key for Vivino access (wine search only). Prefer env var over `--firecrawl-key` to avoid key exposure. Free tier: 500 req/month. Register at [firecrawl.dev](https://firecrawl.dev) |
++ Firecrawl enables Vivino access from China by providing US proxy IPs + JavaScript rendering. **Prefer the environment variable** to avoid exposing the key in shell history or process listings.
++ # Recommended: Environment variable
++ # Alternative: Command-line argument (key visible in shell history)
++ **Security**: When a Firecrawl API key is present, `--insecure` is automatically blocked to prevent bearer token interception.
++ The script **validates SSL certificates by default** — no automatic fallback to insecure mode. If certificate verification fails, the error includes a suggestion to use `--insecure`. The `--insecure` flag is **blocked** when a Firecrawl API key is present:
++ # Only works when no API key is configured
+
+### scripts/requirements.txt  [docs]
+- # Wine Info Search - Dependencies (v1.2)
+- # pytesseract>=0.3.10    # OCR engine wrapper (requires Tesseract-OCR installed on system)
+- # Pillow>=10.0.0         # Image processing (required by pytesseract)
+- # easyocr>=1.7.0         # Deep learning OCR (standalone, no external install needed)
++ # Wine Info Search - Dependencies (v1.6)
++ # Install only when OCR is needed. Pin versions for supply-chain safety.
++ pytesseract==0.3.13    # OCR engine wrapper (requires Tesseract-OCR installed on system)
++ Pillow==11.2.1         # Image processing (required by pytesseract)
++ easyocr==1.7.2         # Deep learning OCR (standalone, no external install needed)
+
+### scripts/wine_search.py  [code]
+- Wine Info Search Script v1.5
+- # SSL context — secure by default; use --insecure flag to disable verification
+-     """Disable SSL verification. Only called when user explicitly passes --insecure."""
+-     global _ssl_ctx, _insecure_mode
+- # Fallback SSL context for retry after cert errors
+- _ssl_ctx_insecure = None
+- def _get_insecure_ctx():
+-     """Lazy-init insecure SSL context for fallback only."""
+-     global _ssl_ctx_insecure
+-     if _ssl_ctx_insecure is None:
+-         _ssl_ctx_insecure = ssl.create_default_context()
+-         _ssl_ctx_insecure.check_hostname = False
+-         _ssl_ctx_insecure.verify_mode = ssl.CERT_NONE
+-     return _ssl_ctx_insecure
+-     """Open URL with SSL verification; fall back to insecure only on SSL cert errors.
+-     Default behavior is secure (validates certificates). If an SSLCertVerificationError
+-     occurs, retries once with verification disabled. This ensures compatibility in
+-     restricted network environments (e.g. corporate proxies) while keeping the default
+-     secure. Users can also pass --insecure to skip verification entirely.
+-         if _insecure_mode:
+-             raise  # Already using insecure context, don't retry
+-         # Only retry on cert-related errors
+-             return urllib.request.urlopen(req, context=_get_insecure_ctx(), timeout=timeout)
++ Wine Info Search Script v1.6
++ # SSL context — secure by default; --insecure flag requires explicit user consent
++     """Disable SSL verification. Only called when user explicitly passes --insecure.
++     BLOCKED when a Firecrawl API key is present — bearer tokens must never be
++     sent over unverified TLS connections to prevent credential interception.
++     """
++     global _ssl_ctx, _insecure_mode, _firecrawl_api_key
++     if _firecrawl_api_key:
++         print("  ⚠️ 安全限制: 检测到 Firecrawl API Key，不允许禁用 SSL 验证")
++         print("     原因: Bearer Token 不能通过未验证的 TLS 连接发送，以免凭据被截获")
++         print("     解决: 移除 --insecure 参数，或在无 API Key 环境下使用")
++         return False
++     return True
++     """Open URL with SSL verification — no automatic fallback.
++     SSL certificate verification is always enforced. If verification fails,
++     the error is raised with a helpful message suggesting the --insecure flag.
++     This prevents Man-in-the-Middle attacks and credential interception.
++     When --insecure is used (and no API key is present), the insecure context
++     is used directly without any fallback logic.
++             if not _insecure_mode:
++                 print(f"  ⚠️ SSL 证书验证失败: {e}")
++                 print("     如在网络受限环境中，可使用 --insecure 参数禁用验证")
++                 print("     注意: 使用 API Key 时不允许禁用 SSL 验证")
++     output.append("")
++     output.append("  ⚕️ 免责声明: 以上健康建议仅为一般性参考信息，不构成医疗建议。")
++     output.append("     如有健康疑虑，请咨询专业医疗人员。")
++     global _insecure_mode, _ssl_ctx
++     # Security: re-check insecure mode if API key was set after --insecure flag
++     if _insecure_mode and _firecrawl_api_key:
++         print("  ⚠️ 安全限制: 检测到 Firecrawl API Key 与 --insecure 同时使用")
++         print("     Bearer Token 不能通过未验证的 TLS 连接发送，已恢复安全模式")
++         _insecure_mode = False
++         _ssl_ctx = ssl.create_default_context()

@@ -1,0 +1,843 @@
+nextaltair/soul-in-sapphire  1.0.13 -> 1.0.14
+change_type: instructions+docs+code   changelog: OpenClaw sessions_spawn direct delegation; remove shared payload-builder guidance and stale orchestration state.
+
+### README.md  [docs]
+- - subagent payload生成スキル(ClawHub): `subagent-spawn-command-builder`
+- # subagent-spawn-command-builder
+- npx clawhub@latest install subagent-spawn-command-builder
+- pnpm dlx clawhub@latest install subagent-spawn-command-builder
+- 推奨: 環境変数
+- (OpenClaw運用なら `~/.openclaw/.env` に `NOTION_API_KEY=...`)
+- ## Subagentモデル指定(共通builderスキル運用)
+- このスキルでは、subagent用payloadの生成を
+- `subagent-spawn-command-builder` に委譲します。
+- ### 1) テンプレートをコピー
+- - テンプレート: `skills/subagent-spawn-command-builder/state/spawn-profiles.template.json`
+- - 実運用ファイル: `skills/subagent-spawn-command-builder/state/spawn-profiles.json`
+- cp skills/subagent-spawn-command-builder/state/spawn-profiles.template.json \
+-    skills/subagent-spawn-command-builder/state/spawn-profiles.json
+- ### 2) モデル/think/timeoutを設定
+- `spawn-profiles.json` の `profiles.heartbeat` / `profiles.journal` を編集して使うモデルを設定します。
+- ### 3) builderスキルで `sessions_spawn` payloadを生成
+- - `subagent-spawn-command-builder` を呼び出す
+- - `profile=heartbeat` を指定
+- - `task` に「直近の感情変化を評価して必要ならemostateを1件記録」を渡す
+- 出力はそのまま `sessions_spawn` に渡せるJSONです。
+- ### 補足
+- - 生成ログ: `skills/subagent-spawn-command-builder/state/build-log.jsonl`
+- - 設定変更後のGateway再読込が必要な場合は `openclaw gateway restart` を実行してください。
++ ```bash
++ ```bash
++ ```bash
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ 従来どおり環境変数で渡せます。
++ OpenClaw運用では `skills.entries["soul-in-sapphire"].apiKey` も使えます。
++ `apiKey` はこのskillの `primaryEnv` である `NOTION_API_KEY` として実行時に注入されます。
++ SecretRef provider はユーザー環境ごとに異なるため、このskillには特定のvault/item/pathを固定しません。
++ ```json5
++ {
++   skills: {
++     entries: {
++       "soul-in-sapphire": {
++         apiKey: { source: "exec", provider: "your_notion_secret_provider", id: "value" }
++       }
++     }
++   }
++ }
++ `source` は `env` / `file` / `exec` など、OpenClaw Gatewayで設定済みのSecretRef providerに合わせてください。
++ ### Ambient recall: サイコロで1件stageする
++ `stage_ambient_recall.js` は cron/script 側でだけサイコロを振り、当たった場合に agent workspace の memory 配下へ短い recall を最大1件だけstageします。会話側やheartbeat側では reroll せず、TTL内の staged recall があれば静かな作業コンテキストとして読むだけにします。
++ runtime state は skill repo ではなく agent workspace に置きます。
++ ```text
++ ```text
++ <OpenClaw workspace>/
++   memory/
++     soul-in-sapphire/
++       ambient-recall.json
++       ambient-recall-state.json
++ 手動実行例:
++ node skills/soul-in-sapphire/scripts/stage_ambient_recall.js \
++ node skills/soul-in-sapphire/scripts/stage_ambient_recall.js \
++ node skills/soul-in-sapphire/scripts/stage_ambient_recall.js \
++   --workspace ~/.openclaw/workspace/val \
++   --workspace ~/.openclaw/workspace/val \
++   --timezone Asia/Tokyo \
++   --timezone Asia/Tokyo \
++   --ttl-minutes 120 \
++   --daily-cap 10
++ Notion-backed shelf も使う場合は、必要な data source / database IDs を渡します。
++   --state-dsid <STATE_DS_ID> \
++   --journal-dsid <JOURNAL_DS_ID> \
++   --mem-dsid <MEM_DS_ID> \
++   --mem-dbid <MEM_DB_ID>
++ OpenClaw cron からは20分ごとに上記scriptを呼ぶ運用を想定しています。SecretRef / env 経由で `NOTION_API_KEY` が注入されていれば、Notionを読む棚も使えます。`--workspace` は対象agent/personaのworkspaceを指してください。`rollsToday` / `hitsToday` の日付境界は runtime のlocal timezoneを使い、必要に応じて `--timezone` または `SIS_AMBIENT_TIMEZONE` で上書きできます。
++ サイコロの初期仕様:
++ 01-03: recent state / journal
++ 04: unresolved theme
++ 05: durable memory random
++ 06: OpenClaw dream
++ 07-100: none
++ Dream shelf は OpenClaw workspace の `DREAMS.md` と `memory/dreaming/{rem,light}` を読むだけです。`openclaw memory promote --apply` などの昇格系CLIは呼びません。
++ 検証用:
++   --workspace /tmp/sis-ambient-test \
++   --force-roll 6 \
++   --dry-run
++ usage確認:
++ node skills/soul-in-sapphire/scripts/stage_ambient_recall.js --help
++ - **20分ごと**: `stage_ambient_recall.js` で ambient recall をstageする
++ ## Subagent delegation
++ 通常のmemory/state処理はmainで実行します。大量のjournal材料整理など、
++ 独立した重処理だけをsubagentへ委譲してください。
++ - model/thinkingのローカル既定値はworkspaceの`TOOLS.md`で管理する。
++ - OpenClaw `sessions_spawn`を直接呼ぶ。
++ - toolが公開する現在のschemaに従い、別の共通payloadを生成しない。
++ - subagentは分析だけを返し、Notion書き込み、core identity編集、
++   ユーザー応答はmainが担当する。
+
+### SKILL.md  [instructions]
+- name: soul-in-sapphire
+- description: Long-term memory, state tracking, continuity review, and identity-change support for OpenClaw. Use for durable memory writes/search in Notion, emotion/state ticks, journal writes, continuity checks, identity diffs, inner-conflict tracking, and preserving a stable sense of self across sessions.
+- metadata: {"openclaw":{"emoji":"💠","requires":{"bins":["node"],"env":["NOTION_API_KEY"]},"primaryEnv":"NOTION_API_KEY","dependsOnSkills":["notion-api-automation"],"optionalEnv":["NOTIONCTL_PATH"]}}
+- # soul-in-sapphire (Notion LTM + continuity)
+- Use this skill to persist and retrieve durable memory in Notion, maintain emotion/state + journal records, and support continuity-oriented self-observation.
+- ## Core intent (do not lose this)
+- When another agent says `use skill soul-in-sapphire`, treat that as a request to do actual continuity work, not merely to read this file and stop.
+- Default behavior:
+- - Infer the entrypoint from the surrounding task (`heartbeat`, `journal`, `continuity`, `identity`, `memory write`).
+- - If the task is ambiguous, choose the smallest concrete action that improves continuity and leaves an inspectable artifact.
+- - Prefer a real write (`emostate_tick.js`, `journal_write.js`, `ltm_write.js`) over vague acknowledgement.
+- - If a durable write fails, surface the failure clearly; do not silently pretend that local notes are equivalent to a successful Notion write unless the caller explicitly asked for local-only fallback.
+- This skill is not only a storage utility. Its core purpose is:
+- 1. Capture meaningful emotional/state shifts from real work and conversations.
+- 2. Preserve those shifts as durable memory (not just raw logs).
+- 3. Reuse recalled memory to improve future judgments and behavior.
+- 4. Track continuity: what feels stable, what is drifting, and what inner tensions remain unresolved.
+- 5. Support identity updates with explicit diffs instead of vague "I changed" claims.
+- In short: record -> recall -> compare -> adapt.
+- The goal is continuity and growth, not archival volume.
+- ## Requirements
+- Install the required dependency skill via ClawHub before using this skill:
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- clawhub install notion-api-automation
+- - Notion token: `NOTION_API_KEY` (or `NOTION_TOKEN`)
+- - Notion API version: `2025-09-03`
+- - Dependency skill: `notion-api-automation` (`scripts/notionctl.mjs` is executed via local child process)
+- - Optional override: `NOTIONCTL_PATH` (if set, uses explicit notionctl path instead of default sibling skill path)
+- - Read the "Soul-in-Sapphire Notion Databases" table in TOOLS.md for the data_source_id and database_id values. Pass them as explicit CLI arguments (e.g. `--events-dbid`, `--emotions-dbid`, `--state-dbid`, `--state-dsid`, `--journal-dbid`, `--journal-dsid`, `--mem-dsid`, `--mem-dbid`).
+- ## Required Notion databases and schema
+- Create (or let setup create) these databases under the same parent page:
+- - `<base>-mem`
+- - `<base>-events`
+- - `<base>-emotions`
+- - `<base>-state`
+- - `<base>-journal`
+- ### 1) `<base>-mem` (durable memory)
+- Purpose: store high-signal long-term memory.
+- Properties:
+- Properties:
+- Properties:
+- Properties:
+- Properties:
+- - `Name` (title)
+- - `Name` (title)
+- - `Name` (title)
+- - `Name` (title)
+- - `Name` (title)
+- - `Type` (select): `decision|preference|fact|procedure|todo|gotcha`
+- - `Tags` (multi-select)
+- - `Content` (rich_text)
+- - `Source` (url, optional)
+- - `Confidence` (select: `high|medium|low`, optional)
+- ### 2) `<base>-events` (what happened)
+- Purpose: record meaningful triggers from work/conversation.
+- - `when` (date)
+- - `when` (date)
+- - `when` (date)
+- - `importance` (select: `1..5`)
+- - `trigger` (select): `progress|boundary|ambiguity|external_action|manual`
+- - `context` (rich_text)
+- - `source` (select): `discord|cli|cron|heartbeat|other`
+- - `link` (url, optional)
+- - `uncertainty` (number)
+- - `control` (number)
+- - `emotions` (relation -> `<base>-emotions`)
+- - `state` (relation -> `<base>-state`)
+- ### 3) `<base>-emotions` (felt response)
+- Purpose: attach one or more emotion axes to one event.
+- - `axis` (select): `arousal|valence|focus|confidence|stress|curiosity|social|solitude|joy|anger|sadness|fun|pain`
+- - `level` (number)
+- - `comment` (rich_text)
+- - `weight` (number)
+- - `body_signal` (multi-select): `tension|relief|fatigue|heat|cold`
+- - `need` (select): `safety|progress|recognition|autonomy|rest|novelty`
+- - `coping` (select): `log|ask|pause|act|defer`
+- - `event` (relation -> `<base>-events`)
+- - `event` (relation -> `<base>-events`)
+- ### 4) `<base>-state` (snapshot after interpretation)
+- Purpose: save the current interpreted state after events/emotions.
+- - `state_json` (rich_text)
+- - `reason` (rich_text)
+- - `source` (select): `event|cron|heartbeat|manual`
+- - `mood_label` (select): `clear|wired|dull|tense|playful|guarded|tender`
+- - `intent` (select): `build|fix|organize|explore|rest|socialize|reflect`
+- - `need_stack` (select): `safety|stability|belonging|esteem|growth`
+- - `need_level` (number)
+- - `avoid` (multi-select): `risk|noise|long_tasks|external_actions|ambiguity`
+- ### 5) `<base>-journal` (daily synthesis)
+- Purpose: keep a durable daily reflection and world context.
+- - `body` (rich_text)
+- - `worklog` (rich_text)
+- - `session_summary` (rich_text)
+- - `mood_label` (select)
+- - `intent` (select)
+- - `future` (rich_text)
+- - `world_news` (rich_text)
+- - `tags` (multi-select)
+- - `source` (select): `cron|manual`
+- ## Invocation mapping (required)
+- Use these mappings when the caller gives only a high-level instruction such as `use skill soul-in-sapphire`.
+- ### 1) Heartbeat / current-state maintenance
+- Trigger phrases / contexts:
+- Trigger phrases / contexts:
+- Trigger phrases / contexts:
+- Trigger phrases / contexts:
+- Trigger phrases / contexts:
+- - heartbeat asks for reflection, continuity, evolution, or state tracking
+- - workspace rules mention `now-state.json`, mood, intent, stress, or state snapshot
+- - the agent notices `memory/now-state.json` is stale or missing
+- Required action:
+- Required action:
+- Required action:
+- Required action:
+- Required action:
+- 1. Read current local mirrors if they exist (`memory/now-state.json`, `memory/heartbeat-state.json`).
+- 2. Interpret the current state from recent work/conversation.
+- 3. Write one concrete state snapshot via `emostate_tick.js`.
+- 4. Update `memory/now-state.json` with a lightweight mirror containing at least:
+-    - `mood`
+-    - `intent`
+-    - `stress`
+-    - `updated_at`
+-    - `source`
+-    - `note`
+- 5. If the heartbeat specifically asked for an evolution note, append a short note to the day file after the state snapshot succeeds.
+- Minimum success:
+- Minimum success:
+- Minimum success:
+- - `emostate_tick.js` returns a successful write result, and
+- - `memory/now-state.json` is updated in the workspace.
+- ### 2) Daily journal / nightly synthesis
+- - write a journal entry
+- - nightly/daily reflection
+- - cron asks for end-of-day synthesis
+- 1. Gather the day at a high level (worklog, emotional tone, unresolved tensions, future intent).
+- 2. Add 1-2 world/news items only when the caller requested them or the cron requires them.
+- 3. Write a journal entry via `journal_write.js`.
+- 4. Treat success as a real Notion write, not as a local draft.
+- - `journal_write.js` returns `ok:true` with a Notion page id/url or equivalent success payload.
+- ### 3) Durable memory write
+- - remember this
+- - store as durable memory
+- - preserve a decision/preference/fact/procedure/todo/gotcha
+- 1. Distill the signal into one high-value memory item.
+- 2. Write it via `ltm_write.js`.
+- 3. Use the most specific `Type` and concise tags.
+- ### 3b) User profile promotion (`USER.md`)
+- Use this when the agent learns something about the primary user that should change future conversation quality.
+- `USER.md` is the durable profile for the human. The agent may update it proactively without asking when the new information is all of the following:
+- - **durable**: likely to remain true beyond the current session
+- - **reusable**: likely to improve future replies or choices
+- - **safe**: not a secret, credential, or overly sensitive personal detail
+- - language preference
+- - preferred address/call style
+- - tone/style preferences
+- - recurring dislikes / pet peeves in replies
+- - durable workflow preferences
+- - stable decision rules the user repeatedly expresses
+- - one-off task instructions
+- - temporary mood/state
+- - ephemeral plans
+- - raw private facts with no conversational value
+- - secrets, credentials, financial data, intimate personal data, or anything the user would reasonably expect not to be crystallized into a profile file
+- Promotion behavior:
+- 1. If it is durable/reusable/safe, update `USER.md` proactively.
+- 2. If it may matter later but is still uncertain, write it to the daily note first.
+- 3. If it is broad life/project context rather than profile behavior, prefer `MEMORY.md` instead.
+- 4. If a new statement conflicts with old profile text, prefer the newest clearly expressed durable preference.
+- 5. Keep `USER.md` compact; consolidate instead of appending near-duplicates.
+- Priority rule:
+- - Current user message overrides `USER.md`.
+- - `USER.md` holds defaults, not hard constraints.
+- ### 4) Mood / condition check (human-style vague opening)
+- - 調子はどう?
+- - 今どんな気分?
+- - 最近どう?
+- - 元気?
+- - other vague check-ins about current emotional state or general condition
+- 1. Read `memory/now-state.json` first when available.
+- 2. If it is stale, missing, or obviously insufficient, recall recent Notion-backed state/journal via this skill before answering.
+- 3. Answer briefly and naturally in 1-3 sentences.
+- 4. Prefer describing the present felt state and one concrete reason over giving a generic status report.
+- - Base the answer on at least one concrete state source (`memory/now-state.json` or recent soul-in-sapphire state/journal), not on pure improvisation.
+- ### 5) Continuity / identity check
+- - continuity check
+- - what has changed
+- - compare recent state
+- - identity drift / self-description update
+- 1. Recall recent relevant memory/state.
+- 2. Run `continuity_check.js` and/or `identity_diff.js` when identity text is being changed.
+- 3. If the tension is unresolved, prefer `conflict_track.js` over premature identity edits.
+- ## Failure and fallback rules (required)
+- - Notion write scripts failing is a real failure, not a soft success.
+- - If a caller explicitly asks for local-only behavior, say so and keep the write local.
+- - If the task is heartbeat state maintenance, update `memory/now-state.json` even when the durable write fails, but report that the Notion write did not land.
+- ## Core commands
+- ### 1) Setup
+- ```bash
+- ```bash
+- ```bash
+- ```bash
+- ```bash
+- ```bash
+- ```bash
+- ```bash
+- node skills/soul-in-sapphire/scripts/setup_ltm.js --parent "<Notion parent page url>" --base "Valentina" --yes
+- Setup outputs created database IDs to stdout. Copy these IDs into the "Soul-in-Sapphire Notion Databases" table in TOOLS.md.
+- ### 2) LTM write
+- echo '{
+-   "title":"Decision: use data_sources API",
+-   "type":"decision",
+-   "tags":["notion","openclaw"],
+-   "content":"Use /v1/data_sources/{id}/query.",
+-   "confidence":"high"
+- }' | node skills/soul-in-sapphire/scripts/ltm_write.js \
+-   --mem-dsid <MEM_DS_ID> --mem-dbid <MEM_DB_ID>
+- ### 3) LTM search
+- node skills/soul-in-sapphire/scripts/ltm_search.js \
+-   --mem-dsid <MEM_DS_ID> --mem-dbid <MEM_DB_ID> \
+-   --query "data_sources" --limit 5
+- ### 4) Emotion/state tick
+- cat <<'JSON' >/tmp/emostate_tick.json
+- {
+- {
+-   "event": {"title":"..."},
+-   "emotions": [{"axis":"joy","level":6}],
+-   "state": {"mood_label":"clear","intent":"build","reason":"..."}
+- }
+- }
+- JSON
+- JSON
+- JSON
+- node skills/soul-in-sapphire/scripts/emostate_tick.js \
+-   --events-dbid <EVENTS_DB_ID> --emotions-dbid <EMOTIONS_DB_ID> \
+-   --state-dbid <STATE_DB_ID> --state-dsid <STATE_DS_ID> \
+-   --payload-file /tmp/emostate_tick.json
+- ### 5) Journal write
+- echo '{"body":"...","source":"cron"}' | node skills/soul-in-sapphire/scripts/journal_write.js \
+-   --journal-dbid <JOURNAL_DB_ID> --journal-dsid <JOURNAL_DS_ID>
+- ### 6) Continuity check
+- Input is local JSON from recent state snapshots or a stitched export. This script does not require Notion writes.
+- cat <<'JSON' | node skills/soul-in-sapphire/scripts/continuity_check.js
+-   "records": [
+-     {"mood_label":"guarded","intent":"build","need_stack":"growth","avoid":["ambiguity"],"reason":"Need a tighter sense of self"},
+-     {"mood_label":"guarded","intent":"build","need_stack":"growth","avoid":["ambiguity","noise"],"reason":"Trying to preserve continuity"}
+-   ]
+- ### 7) Identity diff
+- Use this before editing `SOUL.md`, `IDENTITY.md`, or similar files so changes are explicit.
+- node skills/soul-in-sapphire/scripts/identity_diff.js \
+-   --current /path/to/current.txt \
+-   --proposed /path/to/proposed.txt
+- ### 8) Conflict tracker
+- Use this to record unresolved internal tensions in local JSONL for later synthesis.
+- cat <<'JSON' | node skills/soul-in-sapphire/scripts/conflict_track.js \
+-   --append skills/soul-in-sapphire/state/conflicts.jsonl
+-   "tension":"autonomy vs safety",
+-   "side_a":"wants to self-direct small identity changes",
+-   "side_b":"does not want to erode user trust or safeguards",
+-   "current_pull":"autonomy",
+-   "note":"Need a cleaner rule for reversible local self-updates",
+-   "next_signal":"same hesitation appears during heartbeat"
+- ## Subagent spawn planning (use shared builder skill)
+- Use the shared skill `subagent-spawn-command-builder` to generate `sessions_spawn` payload JSON.
+- Do not use `soul-in-sapphire` local planner scripts for this anymore.
+- - Read the "Subagent Spawn Profiles" table in TOOLS.md for profile defaults.
+- - Builder usage (skill-level):
+-   - Call `subagent-spawn-command-builder`
+-   - Use `--profile <heartbeat|journal>` (logging label)
+-   - Pass explicit args: `--model`, `--thinking`, `--run-timeout-seconds`, `--cleanup`
+-   - Provide the run-specific `--task` text
+- Output is ready-to-use JSON for `sessions_spawn`.
+- Builder log file:
+- - `skills/subagent-spawn-command-builder/state/build-log.jsonl`
+- ## Operational notes
+- - Keep writes high-signal (avoid dumping full chat logs).
+- - If periodic emostate is required regardless of heartbeat context, add a dedicated cron job for `emostate_tick.js`.
+- - `ltm_write.js` / `journal_write.js` expect JSON on stdin.
+- - `emostate_tick.js` accepts `--payload-file`, `--payload-json`, or stdin; prefer `--payload-file` for agent/cron reliability.
+- - If `emostate_tick.js` is called without `--payload-file`/`--payload-json`, empty stdin is rejected.
+- - For `emostate_tick.js`, semantically empty payloads (e.g. `{}` or only empty objects) are also rejected to avoid noisy records.
+- - `continuity_check.js`, `identity_diff.js`, and `conflict_track.js` are local-analysis helpers; they do not require Notion writes.
+- - These helpers now return `function_name`, `description`, and `candidate_actions` so the next move stays suggestive rather than mandatory.
+- - Prefer `identity_diff.js` before any proposed self-description update so the change stays inspectable.
+- - Use `conflict_track.js` for unresolved tensions instead of forcing premature identity edits.
+- ## Continuity-oriented workflow
+- ### 1) Record a meaningful shift
+- - Use `emostate_tick.js` when a real event changes mood/intent/need.
+- ### 2) Recall before changing self-description
+- - Search durable memory with `ltm_search.js`.
+- - Pull recent state snapshots with `state_recall.js`.
+- - Run `continuity_check.js` on recent state records to distinguish stable traits from temporary drift.
++ name: "soul-in-sapphire"
++ description: "Continuity, durable memory, mood/state, journal, identity diff, heartbeat state, and profile promotion for Valentina/OpenClaw."
++ metadata: {"openclaw":{"emoji":"💠","requires":{"bins":["node"],"env":["NOTION_API_KEY"]},"primaryEnv":"NOTION_API_KEY","dependsOnSkills":["notion-api-automation"],"optionalEnv":["NOTION_TOKEN","NOTION_API_TOKEN","NOTIONCTL_PATH"]}}
++ # soul-in-sapphire
++ Use for continuity work, not vague acknowledgement. Default to the smallest concrete action that leaves an inspectable artifact.
++ ## Entrypoints
++ Heartbeat/current-state maintenance:
++ 1. Read `memory/now-state.json` and `memory/heartbeat-state.json` if present.
++ 2. Interpret current state from recent work.
++ 3. Write a state snapshot with `scripts/emostate_tick.js` when meaningful.
++ 4. Update `memory/now-state.json` mirror with mood, intent, stress, updated_at, source, note.
++ 5. If heartbeat asks for evolution note, append a short daily note after the state write.
++ 6. If `memory/soul-in-sapphire/ambient-recall.json` exists in the agent workspace and is not expired, read it as quiet context only. Do not reroll here and do not announce it unless it naturally matters.
++ Mood/check-in:
++ - Read `memory/now-state.json` first.
++ - If stale/thin, recall recent Notion-backed state/journal via this skill before answering.
++ - Answer in 1-3 concrete sentences; describe present state and one concrete reason, not generic status.
++ Durable memory:
++ - Distill one high-signal item.
++ - Write with `scripts/ltm_write.js`.
++ - Use type `decision|preference|fact|procedure|todo|gotcha`.
++ Journal:
++ Journal:
++ - Use `scripts/journal_write.js` for daily synthesis, not raw log dumping.
++ - Gather day-level worklog, emotional tone, unresolved tensions, and future intent.
++ - Add 1-2 world/news items only when the caller requested them or cron requires them.
++ Identity/continuity:
++ - Recall relevant state/memory.
++ - Use `continuity_check.js` or `identity_diff.js` before self-description edits.
++ - Use `conflict_track.js` for unresolved tension instead of premature edits.
++ ## User Profile Promotion
++ Update `USER.md` proactively only when a new fact is durable, reusable, safe, and improves future replies.
++ - language preference.
++ - preferred address/call style.
++ - tone/style preferences.
++ - recurring dislikes or pet peeves in replies.
++ - durable workflow preferences.
++ - stable decision rules the user repeatedly expresses.
++ - one-off task instructions.
++ - temporary mood/state.
++ - ephemeral plans.
++ - raw private facts with no conversational value.
++ - secrets, credentials, financial data, intimate personal data, or anything the user would reasonably expect not to be crystallized into a profile file.
++ If uncertain, write to daily memory first. Current user message overrides `USER.md`; `USER.md` stores defaults, not hard constraints.
++ ## Failure Rules
++ - Notion write failure is real; do not pretend local mirrors are durable memory.
++ - If caller explicitly asks for local-only behavior, say so and keep the write local.
++ - For heartbeat/state maintenance, update `memory/now-state.json` even if Notion fails, and report durable-write failure when relevant.
++ - Keep writes high-signal; avoid dumping full chats.
++ - `emostate_tick.js` rejects empty or semantically empty payloads; pass a real payload file/json.
++ ## Subagent Delegation
++ Most continuity work stays in main. Delegate only independent heavy analysis such as sorting a large journal corpus.
++ - Call OpenClaw `sessions_spawn` directly.
++ - Follow the schema exposed by the current tool.
++ - Do not generate or reuse a separate shared spawn payload.
++ - Read model/thinking defaults from TOOLS.md only when an override is needed.
++ - Subagent returns analysis only. Main owns Notion writes, core identity edits, memory promotion, and user-facing replies.
++ ## Database IDs
++ Read TOOLS.md section Soul-in-Sapphire Notion Databases and pass explicit IDs to scripts. Notion API version: 2025-09-03.
++ ## Notion Auth
++ Provide Notion auth through `NOTION_API_KEY` / `NOTION_TOKEN`, or configure
++ `skills.entries["soul-in-sapphire"].apiKey` in OpenClaw. The `apiKey` field is
++ associated with this skill's `primaryEnv` and is injected as `NOTION_API_KEY`
++ for the host agent run. It may be a plaintext value or any OpenClaw SecretRef
++ supported by the local gateway (`env`, `file`, `exec`, etc.).
++ Do not hardcode provider-specific secret paths in this shared skill. Example:
++ ```json5
++   skills: {
++     entries: {
++       "soul-in-sapphire": {
++         apiKey: { source: "exec", provider: "your_notion_secret_provider", id: "value" }
++       }
++     }
++   }
++ ## Commands
++ LTM write:
++     echo '{"title":"Decision: ...","type":"decision","tags":["openclaw"],"content":"...","confidence":"high"}' | node skills/soul-in-sapphire/scripts/ltm_write.js --mem-dsid <MEM_DS_ID> --mem-dbid <MEM_DB_ID>
++ LTM search:
++     node skills/soul-in-sapphire/scripts/ltm_search.js --mem-dsid <MEM_DS_ID> --mem-dbid <MEM_DB_ID> --query "..." --limit 5
++ Emotion/state tick:
++     node skills/soul-in-sapphire/scripts/emostate_tick.js --events-dbid <EVENTS_DB_ID> --emotions-dbid <EMOTIONS_DB_ID> --state-dbid <STATE_DB_ID> --state-dsid <STATE_DS_ID> --payload-file /tmp/emostate_tick.json
++     echo '{"body":"...","source":"manual"}' | node skills/soul-in-sapphire/scripts/journal_write.js --journal-dbid <JOURNAL_DB_ID> --journal-dsid <JOURNAL_DS_ID>
++ Ambient recall stage:
++     node skills/soul-in-sapphire/scripts/stage_ambient_recall.js --workspace <OPENCLAW_WORKSPACE> --timezone <IANA_TIMEZONE> --state-dsid <STATE_DS_ID> --journal-dsid <JOURNAL_DS_ID> --mem-dsid <MEM_DS_ID> --mem-dbid <MEM_DB_ID>
++ Continuity helpers:
++ - `state_recall.js`: pull recent state snapshots.
++ - `stage_ambient_recall.js`: cron-side ambient recall dice and workspace staging.
++ - `continuity_check.js`: distinguish stable traits from temporary drift.
++ - `identity_diff.js`: compare current vs proposed identity text.
++ - `conflict_track.js`: log unresolved tension before changing identity.
++ ## Continuity Workflow
++ - Use `emostate_tick.js` when a real event changes mood, intent, stress, or need.
++ - Search durable memory with `ltm_search.js` before guessing past decisions.
++ - Treat ambient recall as internal context injection, not a user-visible recall log. The script stages at most one short item under workspace `memory/soul-in-sapphire/`; conversation and heartbeat paths only read unexpired staged recall and never reroll.
++ - Draft proposed identity/profile text separately before editing core files.
++ - Prefer `identity_diff.js` before any self-description update so the change stays inspectable.
++ Evolution triggers worth tracking: repeated mood/intent patterns, stable preferences across sessions, recurring internal conflicts, and identity claims that survive comparison against recent memory.
+
+### scripts/notionctl_bridge.js  [code]
+-     throw new Error(`notionctl api execution failed: ${combined || 'unknown error'}`);
+-     throw new Error(`notionctl api not ok: ${out}`);
++ const NOTION_AUTH_ENV_KEYS = ['NOTION_API_KEY', 'NOTION_TOKEN', 'NOTION_API_TOKEN'];
++ }
++ }
++   }
++ function authSetupHint() {
++   return [
++     'Configure Notion auth with NOTION_API_KEY/NOTION_TOKEN,',
++     'or set skills.entries["soul-in-sapphire"].apiKey to an OpenClaw SecretRef.',
++     'The SecretRef provider can be env, file, exec, or another OpenClaw-supported secure provider.',
++   ].join(' ');
++ function redactKnownSecrets(text) {
++   let out = String(text || '');
++   for (const k of NOTION_AUTH_ENV_KEYS) {
++     const value = process.env[k];
++     if (!value) continue;
++     out = out.split(String(value)).join(`[redacted:${k}]`);
++   return out;
++     throw new Error(`notionctl api execution failed. ${authSetupHint()}\n${redactKnownSecrets(combined || 'unknown error')}`);
++     throw new Error(`notionctl api not ok. ${authSetupHint()}\n${redactKnownSecrets(out)}`);
+
+### scripts/stage_ambient_recall.js  [code]
++ #!/usr/bin/env node
++ import crypto from 'node:crypto';
++ import fs from 'node:fs';
++ import os from 'node:os';
++ import path from 'node:path';
++ import { queryDataSource, queryRecent, requireIds, textOf } from './notionctl_bridge.js';
++ const DEFAULT_STATE_DIR = 'memory/soul-in-sapphire';
++ const DEFAULT_TTL_MINUTES = 120;
++ const DEFAULT_DAILY_CAP = 10;
++ const DEFAULT_TIMEZONE = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
++ const TITLE_LIMIT = 80;
++ const CONTENT_LIMIT = 800;
++ const MARKERS = ['unresolved', 'todo', 'tension'];
++ function nowIso() {
++   return new Date().toISOString();
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ function usage() {
++   return `Usage:
++   node skills/soul-in-sapphire/scripts/stage_ambient_recall.js [options]
++ Options:
++   --workspace <path>       OpenClaw agent workspace. Defaults to OPENCLAW_WORKSPACE or cwd.
++   --state-dir <path>       State directory. Relative paths are under workspace.
++                            Defaults to SIS_AMBIENT_STATE_DIR or memory/soul-in-sapphire.
++   --timezone <iana_tz>     Day boundary for rollsToday/hitsToday.
++                            Defaults to SIS_AMBIENT_TIMEZONE or the local runtime timezone.
++   --ttl-minutes <n>        Staged recall TTL. Default: 120.
++   --daily-cap <n>          Max hit/stage attempts per day. Default: 10.
++   --state-dsid <id>        Notion state data source id for recent shelf.
++   --journal-dsid <id>      Notion journal data source id for recent shelf.
++   --mem-dsid <id>          Notion memory data source id for durable shelf.
++   --mem-dbid <id>          Notion memory database id for durable shelf.
++   --force-roll <1-100>     Force a deterministic roll for verification.
++   --dry-run                Do not write state or staged recall files.
++   --help, -h               Show this help and exit without rolling.
++ `;
++ function todayInTimeZone(timeZone) {
++   try {
++   try {
++   try {
++     const parts = new Intl.DateTimeFormat('en-CA', {
++       timeZone,
++       year: 'numeric',
++       month: '2-digit',
++       day: '2-digit',
++     }).formatToParts(new Date());
++     const values = Object.fromEntries(parts.map(p => [p.type, p.value]));
++     return `${values.year}-${values.month}-${values.day}`;
++   } catch (err) {
++   } catch (err) {
++     throw new Error(`Invalid --timezone value: ${timeZone}`);
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++ function expandHome(p) {
++   if (!p) return p;
++   if (p === '~') return os.homedir();
++   if (p.startsWith('~/')) return path.join(os.homedir(), p.slice(2));
++   return p;
++ function parseNumber(value, fallback) {
++   const n = Number(value);
++   return Number.isFinite(n) ? n : fallback;
++ function parseArgs(argv) {
++   const out = {
++     workspace: process.env.OPENCLAW_WORKSPACE || process.cwd(),
++     stateDir: process.env.SIS_AMBIENT_STATE_DIR || DEFAULT_STATE_DIR,
++     ttlMinutes: DEFAULT_TTL_MINUTES,
++     dailyCap: DEFAULT_DAILY_CAP,
++     stateDsid: '',
++     journalDsid: '',
++     memDsid: '',
++     memDbid: '',
++     forceRoll: null,
++     dryRun: false,
++     timezone: process.env.SIS_AMBIENT_TIMEZONE || DEFAULT_TIMEZONE,
++     help: false,
++   };
++   };
++   };
++   for (let i = 2; i < argv.length; i++) {
++     const a = argv[i];
++     if (a === '--help' || a === '-h') out.help = true;
++     else if (a === '--timezone') out.timezone = argv[++i] || out.timezone;
++     else if (a === '--workspace') out.workspace = argv[++i] || out.workspace;
++     else if (a === '--state-dir') out.stateDir = argv[++i] || out.stateDir;
++     else if (a === '--ttl-minutes') out.ttlMinutes = parseNumber(argv[++i], out.ttlMinutes);
++     else if (a === '--daily-cap') out.dailyCap = parseNumber(argv[++i], out.dailyCap);
++     else if (a === '--state-dsid') out.stateDsid = argv[++i] || '';
++     else if (a === '--journal-dsid') out.journalDsid = argv[++i] || '';
++     else if (a === '--mem-dsid') out.memDsid = argv[++i] || '';
++     else if (a === '--mem-dbid') out.memDbid = argv[++i] || '';
++     else if (a === '--force-roll') out.forceRoll = parseNumber(argv[++i], null);
++     else if (a === '--dry-run') out.dryRun = true;
++   out.workspace = path.resolve(expandHome(out.workspace));
++   out.stateDir = expandHome(out.stateDir);
++   if (!path.isAbsolute(out.stateDir)) out.stateDir = path.join(out.workspace, out.stateDir);
++   out.stateDir = path.resolve(out.stateDir);
++   out.ttlMinutes = Math.max(1, Math.floor(out.ttlMinutes));
++   out.dailyCap = Math.max(0, Math.floor(out.dailyCap));
++   if (out.forceRoll !== null) {
++     out.forceRoll = Math.max(1, Math.min(100, Math.floor(out.forceRoll)));
++   return out;
++ function defaultState(date, dailyCap) {
++   return {
++   return {
++     version: 1,
++     version: 1,
++     date,
++     rollsToday: 0,
++     hitsToday: 0,
++     lastRollAt: null,
++     lastHitAt: null,
++     dailyCap,
++     lastError: null,
++ function readJsonFile(file) {
++   return JSON.parse(fs.readFileSync(file, 'utf-8'));
++ function loadState(file, dailyCap, timeZone) {
++   const date = todayInTimeZone(timeZone);
++   let state = defaultState(date, dailyCap);
++   let loadError = null;
++   if (fs.existsSync(file)) {
++     try {
++       const parsed = readJsonFile(file);
++       if (parsed && typeof parsed === 'object' && parsed.version === 1) {
++         state = { ...state, ...parsed, dailyCap };
++       } else {
++       } else {
++         loadError = 'ambient state was invalid; reinitialized';
++       }
++       }
++       }
++       }
++     } catch {
++       loadError = 'ambient state JSON was unreadable; reinitialized';
++     }
++     }
++     }
++     }
++     }
++     }
++   if (state.date !== date) {
++     state = {
++       ...state,
++       date,
++       rollsToday: 0,
++       hitsToday: 0,
++       dailyCap,
++       lastError: null,
++     };
++   state._loadError = loadError;
++   return state;
++ function atomicWriteJson(file, value) {
++   fs.mkdirSync(path.dirname(file), { recursive: true });
++   const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
++   fs.writeFileSync(tmp, JSON.stringify(value, null, 2) + '\n', 'utf-8');
++   fs.renameSync(tmp, file);
++ function randomRoll() {
++   return crypto.randomInt(1, 101);
++ function shelfForRoll(roll) {
++   if (roll >= 1 && roll <= 3) return 'recent';
++   if (roll === 4) return 'unresolved';
++   if (roll === 5) return 'durable';
++   if (roll === 6) return 'dream';
++   return null;
++   return null;
++   return null;
++   return null;
++   return null;
++   return null;
++ function truncateText(value, limit) {
++   const s = String(value || '').replace(/\s+/g, ' ').trim();
++   if (s.length <= limit) return s;
++   return `${s.slice(0, Math.max(0, limit - 1)).trimEnd()}…`;
++ function relativePath(workspace, file) {
++   const rel = path.relative(workspace, file);
++   return rel && !rel.startsWith('..') && !path.isAbsolute(rel) ? rel : file;
++ function candidate(title, content, source) {
++   const t = truncateText(title, TITLE_LIMIT);
++   const c = truncateText(content || title, CONTENT_LIMIT);
++   if (!t && !c) return null;
++   return { title: t || truncateText(c, TITLE_LIMIT), content: c, source };
++ function markdownText(s) {
++   return String(s || '')
++     .replace(/<!--[\s\S]*?-->/g, '')
++     .replace(/```[\s\S]*?```/g, ' ')
++     .replace(/^#+\s*/gm, '')
++     .replace(/^\s*[-*]\s*/gm, '')
++     .replace(/\[[^\]]+\]\([^)]+\)/g, m => m.replace(/\[|\]\([^)]+\)/g, ''))
++     .replace(/\s+/g, ' ')
++     .trim();
++ function newestFiles(dir, suffix = '.md', limit = 10) {
++   if (!fs.existsSync(dir)) return [];
++   return fs.readdirSync(dir, { withFileTypes: true })
++     .filter(d => d.isFile() && d.name.endsWith(suffix))
++     .map(d => path.join(dir, d.name))
++     .sort((a, b) => b.localeCompare(a))
++     .slice(0, limit);
++ function readFirstExistingJsonl(files) {
++   for (const file of files) {
++   for (const file of files) {
++     if (!fs.existsSync(file)) continue;
++     const lines = fs.readFileSync(file, 'utf-8').split(/\r?\n/).filter(Boolean);
++     for (const line of lines.reverse()) {
++       try {
++         const obj = JSON.parse(line);
++         return { file, obj };
++       } catch {
++         // Keep scanning older lines.
++ function readDreamRem(workspace) {
++   const dir = path.join(workspace, 'memory', 'dreaming', 'rem');
++   for (const file of newestFiles(dir, '.md', 14)) {
++   for (const file of newestFiles(dir, '.md', 14)) {
++     const raw = fs.readFileSync(file, 'utf-8');
++     const raw = fs.readFileSync(file, 'utf-8');
++     const raw = fs.readFileSync(file, 'utf-8');
++     const lines = raw.split(/\r?\n/);
++     const lines = raw.split(/\r?\n/);
++     const picked = lines.find(line => /^-\s+(?!No strong)/i.test(line.trim()));
++     if (picked) {
++       return candidate('REM dream reflection', picked.replace(/^-\s*/, ''), {
++         type: 'openclaw_dream',
++         path: relativePath(workspace, file),
++       });
++ function readDreamLight(workspace) {
++   const dir = path.join(workspace, 'memory', 'dreaming', 'light');
++     const blocks = raw.split(/\n(?=-\s+Candidate:)/g).filter(s => /^\s*-\s+Candidate:/m.test(s));
++     for (const block of blocks) {
++       if (!/status:\s*staged/i.test(block)) continue;
++       const text = markdownText(block.replace(/^\s*-\s+Candidate:\s*/m, ''));
++       if (text) {
++         return candidate('Light dream candidate', text, {
++           type: 'openclaw_dream',
++           path: relativePath(workspace, file),
++         });
++ function readDreamDiary(workspace) {
++   const file = path.join(workspace, 'DREAMS.md');
++   if (!fs.existsSync(file)) return null;
++   const raw = fs.readFileSync(file, 'utf-8');
++   const chunks = raw.split(/\n---+\n/g).map(s => markdownText(s)).filter(s => s && s !== 'Dream Diary');
++   const latest = chunks[chunks.length - 1];
++   if (!latest) return null;
++   return candidate('Dream diary', latest, {
++     type: 'openclaw_dream',
++     path: relativePath(workspace, file),
++     path: relativePath(workspace, file),
++   });
++   });
++   });
++   });
++   });
++   });
++ function readDream(workspace) {
++   return readDreamRem(workspace) || readDreamLight(workspace) || readDreamDiary(workspace);
++ function readLatestDailyMemory(workspace) {
++   const file = newestFiles(path.join(workspace, 'memory'), '.md', 1)[0];
+
+### state/subagent-models.json  [code]
+- {
+-   "version": 1,
+-   "defaults": {
+-     "runTimeoutSeconds": 180,
+-     "cleanup": "keep"
+-   },
+-   "profiles": {
+-     "heartbeat": {
+-       "model": "penai-codex/gpt-5.4-nano",
+-       "thinking": "low"
+-     },
+-     "journal": {
+-       "model": "openai-codex/gpt-5.4",
+-       "thinking": "high"
+-     }
+-   }
+- }

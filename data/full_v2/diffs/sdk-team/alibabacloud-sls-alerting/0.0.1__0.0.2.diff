@@ -1,0 +1,195 @@
+sdk-team/alibabacloud-sls-alerting  0.0.1 -> 0.0.2
+change_type: instructions+docs+code   changelog: - Added support for temporarily muting and unmuting alert rules. - New documentation: how to mute alert rules and related mute operations. - Updated manage alert rules section to include mute/unmute instructions. - Improved scripts and references for rule and resource validations. - Removed deprecated skill-card.md file.
+
+### SKILL.md  [instructions]
+-   update, disable, enable, or delete rules.
++   update, disable, enable, delete, or temporarily mute/unmute rules.
+
+### references/manifest.json  [code]
+- {"version":"0.0.1"}
++ {"version":"0.0.2"}
+
+### references/notifications/api/resource-records.md  [docs]
++ If `jq` is unavailable, use a Python script instead.
+
+### references/related-apis.md  [docs]
+- - [Alert rules](rules/manage-alert-rules.md): find, inspect, enable, disable, delete, create, and update.
++ - [Alert rules](rules/manage-alert-rules.md): find, inspect, enable, disable, delete, create, update, and temporarily mute/unmute.
+
+### references/rules/create-update-alert-rule.md  [docs]
++ To temporarily mute a rule or cancel its mute, follow [mute or unmute a rule](mute-alert-rule.md).
++ If `jq` is unavailable, use a Python script instead.
+
+### references/rules/manage-alert-rules.md  [docs]
++ - To temporarily mute a rule or cancel its mute, follow [mute or unmute a rule](mute-alert-rule.md).
+
+### references/rules/mute-alert-rule.md  [docs]
++ # Temporarily mute or unmute an alert rule
++ Use [mute_alert.py](../../scripts/mute_alert.py) (Python 3.7+, standard library
++ only) to set `configuration.muteUntil` to an integer Unix timestamp in **seconds**.
++ Cancel a mute by removing the field; do not set it to `0`, `null`, or a past time.
++ Complete the skill prerequisites and resolve `SLS_ALERT_USER_AGENT` according to
++ the skill's Observability section. Set `SLS_SKILL_DIR` to the skill's absolute
++ root directory.
++ Optional `--region`, `--endpoint`, and `--profile` override the CLI's configured
++ defaults; see [region and endpoint routing](../regions.md).
++ Exit `0` indicates success, `1` an operation or verification failure, and `2`
++ invalid arguments.
++ ## Mute
++ Determine `--mute-until` from the requested duration or end time as a future
++ Unix timestamp in seconds, and set `SLS_MUTE_UNTIL` to that value. Ask for missing
++ timing information; do not invent a duration.
++ ```bash
++ ```bash
++ python3 "$SLS_SKILL_DIR/scripts/mute_alert.py" \
++ python3 "$SLS_SKILL_DIR/scripts/mute_alert.py" \
++   --project "$SLS_PROJECT" --alert-name "$SLS_ALERT_ID" \
++   --project "$SLS_PROJECT" --alert-name "$SLS_ALERT_ID" \
++   --mute-until "$SLS_MUTE_UNTIL" \
++   --user-agent "$SLS_ALERT_USER_AGENT"
++ ```
++ ```
++ ## Unmute
++ Cancel the mute with `--unmute`; no end time is needed.
++   --unmute --user-agent "$SLS_ALERT_USER_AGENT"
+
+### references/rules/scheduling.md  [docs]
+- ```
+- The complete schedule is passed to create/update as compact JSON:
+- ```bash
+- --schedule "$(jq -c '.schedule' "$SLS_ALERT_FILE")"
++ When creating or updating a rule, serialize the complete `schedule` object from
++ the prepared rule document as a JSON string and pass it to `--schedule`. Preserve
++ all schedule fields unrelated to the requested change.
+
+### scripts/mute_alert.py  [code]
++ #!/usr/bin/env python3
++ """Mute or unmute an SLS rule via GetAlert/UpdateAlert, then verify the change.
++ Usage:
++   python3 scripts/mute_alert.py --project PROJECT --alert-name ID --mute-until UNIX_SECONDS --user-agent UA
++   python3 scripts/mute_alert.py --project PROJECT --alert-name ID --unmute --user-agent UA
++ Optional: --region REGION --endpoint ENDPOINT --profile PROFILE
++ """
++ import argparse
++ import copy
++ import json
++ from pathlib import Path
++ import re
++ import subprocess
++ import sys
++ import time
++ def call_cli(args, action, body=None):
++     command = [
++         "aliyun", "sls", action,
++         "--project", args.project, "--alertName", args.alert_name,
++         "--user-agent", args.user_agent,
++     ]
++     for option in ("region", "endpoint", "profile"):
++     for option in ("region", "endpoint", "profile"):
++         value = getattr(args, option)
++         if value:
++             command.extend(["--" + option, value])
++     if body is not None:
++         command.extend(["--body", json.dumps(body, ensure_ascii=False)])
++     result = subprocess.run(command, capture_output=True, text=True)
++     if result.returncode:
++         # Do not print the command, which contains the complete rule body.
++         raise RuntimeError("{} failed (exit {}): {}".format(
++             action, result.returncode, result.stderr.strip()))
++     if action == "GetAlert":
++         try:
++             rule = json.loads(result.stdout)
++         except ValueError as exc:
++             raise RuntimeError("GetAlert returned invalid JSON") from exc
++         if not isinstance(rule, dict) or not isinstance(rule.get("configuration"), dict):
++             raise RuntimeError("GetAlert must return a rule with a configuration object")
++         if rule.get("name") != args.alert_name:
++             raise RuntimeError("GetAlert returned a different rule ID")
++         if not isinstance(rule.get("schedule"), dict) or not isinstance(rule.get("displayName"), str):
++             raise RuntimeError("GetAlert response is missing schedule or displayName")
++         return rule
++ def update_mute(args):
++     before = call_cli(args, "GetAlert")
++     # Only send UpdateAlert body fields; identity/status/timestamps are read-only.
++     body = {key: copy.deepcopy(before[key]) for key in
++             ("displayName", "description", "schedule", "configuration") if key in before}
++     configuration = body["configuration"]
++     if args.unmute:
++         if "muteUntil" not in configuration:
++             return {"changed": False, "muted": False, "verified": True}
++         del configuration["muteUntil"]
++     else:
++         if args.mute_until <= time.time():
++             raise RuntimeError("mute end time has passed; resolve a new end time before updating")
++         configuration["muteUntil"] = args.mute_until
++     call_cli(args, "UpdateAlert", body)
++     try:
++     try:
++         after = call_cli(args, "GetAlert")
++     except (OSError, RuntimeError) as exc:
++         raise RuntimeError("UpdateAlert succeeded but read-back failed: {}".format(exc)) from exc
++     mismatches = [key for key, value in body.items() if after.get(key) != value]
++     mismatches.extend(key for key in ("name", "status") if after.get(key) != before.get(key))
++     if mismatches:
++         raise RuntimeError("UpdateAlert succeeded but read-back differs: " + ", ".join(mismatches))
++     result = {"changed": True, "muted": not args.unmute, "verified": True}
++     if not args.unmute:
++         result["muteUntil"] = args.mute_until
++     return result
++ def main(argv=None):
++     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
++     parser.add_argument("--project", required=True)
++     parser.add_argument("--alert-name", required=True, help="Stable rule ID")
++     operation = parser.add_mutually_exclusive_group(required=True)
++     operation.add_argument("--mute-until", type=int, help="Future Unix timestamp in seconds")
++     operation.add_argument("--unmute", action="store_true", help="Remove configuration.muteUntil")
++     parser.add_argument("--user-agent", required=True, help="Resolved skill User-Agent from SKILL.md")
++         parser.add_argument("--" + option, help="Optional Aliyun CLI override")
++     args = parser.parse_args(argv)
++     # A timestamp beyond year 9999 is invalid and usually indicates milliseconds.
++     if args.mute_until is not None and not time.time() < args.mute_until <= 253402300799:
++         parser.error("--mute-until must be a future Unix timestamp in seconds, not milliseconds")
++         manifest = Path(__file__).resolve().parent.parent / "references" / "manifest.json"
++         metadata = json.loads(manifest.read_text())
++         version = metadata.get("version") if isinstance(metadata, dict) else None
++         if not isinstance(version, str) or not version.strip():
++             raise ValueError("manifest must contain a non-empty string version")
++         pattern = (r"AlibabaCloud-Agent-Skills/alibabacloud-sls-alerting/[0-9a-f]{32} "
++                    r"skill-version/" + re.escape(version))
++         if not re.fullmatch(pattern, args.user_agent):
++             raise ValueError("--user-agent must contain this skill's session ID and manifest version")
++         result = update_mute(args)
++         result.update(project=args.project, alertName=args.alert_name)
++         print(json.dumps(result))
++         return 0
++     except (OSError, ValueError, RuntimeError) as exc:
++         print("Error: {}".format(exc), file=sys.stderr)
++         return 1
++ if __name__ == "__main__":
++     sys.exit(main())
+
+### scripts/validate_alert.py  [code]
+- """Offline checks for CLI-bound direct SLS log alert documents (Python 3.7+).
+- Usage: validate_alert.py [--json] FILE (or - for stdin).
+- Checks structure, identity byte limits, schedule shape, query/join cardinality,
+- severity and JSON types, and known CLI incompatibility. Does not execute or
+- parse SQL, expressions, Cron grammar, policy DSL, permissions, or templates.
+- Unknown fields are retained. Unsupported modes are warnings, not service errors.
+- Exit 0: local checks passed (inspect warnings); 1: invalid; 2: CLI usage error.
++ """Validate an SLS alert rule JSON document locally.
++ Usage: python3 scripts/validate_alert.py [--json] FILE
++ Use - as FILE to read JSON from stdin.
+
+### scripts/validate_resource.py  [code]
+- """Offline SLS ResourceRecord validation (Python 3.7+, standard library only).
+- Usage: validate_resource.py --input-kind value|record --resource-name NAME FILE
+- Add --purpose read for service responses; the default custom-write mode also
+- rejects built-in markers and reserved custom-policy fields. Record mode accepts
+- an outer record or {"record": {...}} wrapper and checks single JSON encoding and
+- ID/name mapping. --json reports errors and warnings without echoing the payload.
+- Exit 0: local checks passed; 1: invalid input; 2: invalid CLI arguments.
+- No DSL parsing, resource lookup, rendering, or service acceptance is tested.
+- Unknown resource and Webhook types produce warnings and skip type-specific checks.
++ """Validate an SLS notification resource value or ResourceRecord locally.
++ Usage: python3 scripts/validate_resource.py --input-kind value|record --resource-name NAME [--purpose custom-write|read] [--json] FILE
++ Use - as FILE to read JSON from stdin.

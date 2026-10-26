@@ -1,0 +1,692 @@
+sheepxux/skills-forge  0.4.3 -> 0.5.0
+change_type: instructions+code   changelog: v0.5.0 Signed Gate: replace self-attested Telegram approval with HMAC-bound install approval tokens; block dry-run approvals from mutating state; add source hash and missing-source guards; compare replay baseline vs candidate for regression gating; strengthen redaction, manifest locking, runtime errors, scheduler uninstall safety, and release checks.
+
+### SKILL.md  [instructions]
+- Current version: `v0.4.3 "Safety Tightening"`.
+- Run:
+- python3 {baseDir}/scripts/propose_skill_install.py ./generated/my-skill
+- Use `--apply` only after the candidate has been reviewed.
+- Uninstall or rollback a generated skill:
+- python3 {baseDir}/scripts/propose_skill_install.py my-skill --uninstall --apply
+- python3 {baseDir}/scripts/propose_skill_install.py my-skill --uninstall --restore-backup --apply
+- - Do not call `propose_skill_install.py --apply` directly; apply is guarded for Telegram-approved pipelines.
+- - Use replay as a regression gate when feedback-derived cases exist.
++ Current version: `v0.5.0 "Signed Gate"`.
++ Plan only (safe to run anywhere, no Telegram, no secrets):
++ python3 {baseDir}/scripts/propose_skill_install.py ./generated/my-skill --json
++ `--apply` is gated by a signed approval token. Direct invocation without a token is blocked. Use the full pipeline (`forge_pipeline.py --install telegram`) for the normal install path, or call `telegram_approval.py` first and pass its `approval_token` to `propose_skill_install.py --apply --approval-token <token>`. The token is HMAC-bound to the skill name, target path, install method, source path, and a hash of the source directory's contents, so any post-approval edit invalidates it. Token issuance and install apply both require the source to be an existing skill directory containing `SKILL.md`.
++   --skill my-skill \
++   --json
++   --min-replay-improvement 0 \
++ When an installed copy of `my-skill` exists under `--target-root`, the candidate and the installed baseline are scored against the same redacted replay cases. The pipeline blocks the install when `candidate_score - baseline_score < --min-replay-improvement` (default `0`, i.e. no regression). Pass `--min-replay-improvement -100` to disable the regression check.
++ Uninstall or rollback a generated skill. Like install, `--uninstall --apply` requires a signed approval token issued by `telegram_approval.py` for the same skill, target, and method. Plan-only (no `--apply`) works without a token and just prints what would happen:
++ # Plan (no token, no mutation)
++ python3 {baseDir}/scripts/propose_skill_install.py my-skill --uninstall --json
++ # Apply (requires a fresh approval token bound to the same skill/target/method)
++ python3 {baseDir}/scripts/install/telegram_approval.py \
++   --profile workflow \
++   --validation-score 100 --validation-grade milestone \
++   --evaluation-score 100 --evaluation-passed \
++   --target "$HOME/.openclaw/workspace/skills/my-skill" \
++   --method symlink \
++   --json > approval.json
++ APPROVAL_TOKEN="$(python3 -c 'import json; print(json.load(open("approval.json"))["approval_token"])')"
++ python3 {baseDir}/scripts/propose_skill_install.py my-skill \
++   --uninstall --apply \
++   --approval-token "$APPROVAL_TOKEN" \
++   --restore-backup \
++ - Do not call `propose_skill_install.py --apply` directly; `--apply` requires a signed approval token issued by `telegram_approval.py` and bound to the skill name, target, method, source path, and source content hash. The HMAC secret is `SKILL_FORGE_APPROVAL_SECRET` if set, otherwise derived from the bot token. Tokens default to a 30-minute TTL.
++ - A dry-run approval token (`mode=dry-run`) cannot mutate state. The pipeline reports `install_status=dry-run-blocked` and only `--allow-dry-run-install` on the install script lets it through, in which case the audit field is `approved_by=dry-run`.
++ - Replay runs as a non-regression gate during evolution: baseline (currently installed) and candidate are scored against the same redacted cases, and the candidate is blocked if `score - baseline < --min-replay-improvement` (default `0`). Use `--min-replay-improvement -100` to disable. When no installed baseline exists the gate falls back to a single-skill coverage check.
+
+### agents/openai.yaml  [code]
+-   short_description: "Detect and scaffold new skills"
+-   default_prompt: "Detect repeated capability gaps and scaffold a reusable skill draft."
++   short_description: "Detect, scaffold, validate, and signed-gate skill installs"
++   default_prompt: "Turn a repeated capability gap into a reviewed skill candidate. Detect from .learnings, scaffold by profile, validate and score, run hidden smoke evaluation, and require a Telegram-issued signed approval token (HMAC-bound to skill name, target, method, source path, and source content hash) before any install or update mutation."
+
+### scripts/detect_skill_opportunities.py  [code]
+-     "skill", "agent", "users", "user", "openclaw", "request", "feature",
+-     "error", "task", "tasks", "workflow", "workflows", "ability", "capability",
+-     "fix", "using", "same", "across", "repeated", "manual", "notes", "output",
++     "skill", "agent", "users", "user", "openclaw", "request",
++     "task", "tasks", "ability", "capability",
++     "fix", "using", "same", "across", "repeated", "manual", "notes",
+
+### scripts/evolve/evolve_skill_pipeline.py  [code]
+- def run_replay(args: argparse.Namespace, candidate: str) -> Optional[dict]:
+-     replay = run_replay(args, candidate)
+-                 plan = run_json(install_args(SCRIPTS_DIR, args, candidate, apply=True, approval=approval))
+-                 install_status = "installed"
++ def run_replay(args: argparse.Namespace, candidate: str, baseline: Optional[str]) -> Optional[dict]:
++             sys.executable,
++             args.replay_cases,
++             "--skill",
++             args.skill,
++             "--json",
++     )
++     if baseline and Path(baseline).exists():
++         compare_cmd = [
++             str(SCRIPTS_DIR / "replay" / "compare_replay_outputs.py"),
++             "--baseline",
++             baseline,
++             "--candidate",
++             candidate,
++             "--cases",
++             "--min-score",
++             str(args.min_replay_score),
++             "--min-improvement",
++             str(args.min_replay_improvement),
++         ]
++         return run_json(compare_cmd, check=False)
++     parser.add_argument(
++         "--min-replay-improvement",
++         type=int,
++         default=0,
++         help="Minimum candidate-vs-baseline replay score delta. Negative values disable the regression gate.",
++     replay = run_replay(args, candidate, proposal.get("source"))
++                 claims = approval.get("approval_claims") or {}
++                 if not approval.get("approval_token"):
++                     install_status = "approval-token-missing"
++                     install_reason = approval.get("token_error") or "approved response did not include a signed approval token"
++                 elif claims.get("mode") == "dry-run":
++                     install_status = "dry-run-blocked"
++                     install_reason = "dry-run approval token is not allowed to mutate state"
++                 else:
++                     plan = run_json(install_args(SCRIPTS_DIR, args, candidate, apply=True, approval=approval), check=False)
++                     install_status = "installed" if plan.get("installed") else "install-blocked"
++                     if not plan.get("installed"):
++                         install_reason = plan.get("reason", install_reason)
+
+### scripts/evolve/propose_skill_update.py  [code]
+-     if "## Resources" in content and "References:" in content:
+-         content = content.rstrip() + f"\n{link}\n"
+-             r"(?ms)(## Trigger Cues.*?Use this skill when the user mentions:\n\n)(.*?)(\n## )",
++     pattern = re.compile(r"(?ms)^(References:\n(?:- .*\n?)*)")
++     match = pattern.search(content)
++     if match:
++         block = match.group(1).rstrip("\n") + "\n" + link + "\n"
++         content = content[: match.start()] + block + content[match.end():]
++     elif "## Resources" in content:
++             r"(?ms)(^## Resources\s*\n)",
++             lambda m: m.group(1) + "\nReferences:\n" + link + "\n",
++             content,
++             count=1,
++         )
++         )
++         pattern = re.compile(
++             r"(?ms)(## Trigger Cues.*?Use this skill when the user mentions:\n\n)(.*?)(\n## |\Z)"
++         new_content, replacements = pattern.subn(
++         if replacements == 0:
++             new_content = content.rstrip() + "\n" + insertion + "\n"
++         content = new_content
+
+### scripts/evolve/record_skill_feedback.py  [code]
+-         "agent": args.agent_name or None,
+-         handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
++         "agent": redact_text(args.agent_name) if args.agent_name else None,
++     line = json.dumps(payload, ensure_ascii=False) + "\n"
++         try:
++         try:
++             import fcntl
++             fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
++         except Exception:
++             pass
++             handle.write(line)
++             handle.flush()
++         finally:
++             try:
++                 import fcntl
++                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
++             except Exception:
++                 pass
+
+### scripts/forge_pipeline.py  [code]
+-                 plan = run_json(install_args(BASE_DIR, args, skill_dir, apply=True, approval=approval))
+-                 install_status = "installed"
++                 claims = approval.get("approval_claims") or {}
++                 if not approval.get("approval_token"):
++                     install_status = "approval-token-missing"
++                     install_reason = approval.get("token_error") or "approved response did not include a signed approval token"
++                 elif claims.get("mode") == "dry-run":
++                     install_status = "dry-run-blocked"
++                     install_reason = "dry-run approval token is not allowed to mutate state"
++                 else:
++                     plan = run_json(install_args(BASE_DIR, args, skill_dir, apply=True, approval=approval), check=False)
++                     install_status = "installed" if plan.get("installed") else "install-blocked"
++                     if not plan.get("installed"):
++                         install_reason = plan.get("reason", install_reason)
+
+### scripts/install/propose_skill_install.py  [code]
+-     target_root.mkdir(parents=True, exist_ok=True)
+-     manifest_path(target_root).write_text(
+-     target = target_root / skill_dir.name
+-     return {
+-         "skill": skill_dir.name,
+-         "source": str(skill_dir),
+-         "target": str(target),
+-         "target": str(target),
+-         "method": method,
+-     }
+-     }
+-     approved_by_telegram: bool,
+- ) -> tuple[Path, Optional[str]]:
+-     backup = backup_existing(target, target_root)
+-     if method == "symlink":
+-         target.symlink_to(skill_dir, target_is_directory=True)
+-     else:
+-         shutil.copytree(skill_dir, target)
+-     manifest = load_manifest(target_root)
+-     manifest = load_manifest(target_root)
+-     previous = manifest.setdefault("installs", {}).get(skill_dir.name, {})
+-     history = list(previous.get("versions", []))
+-     revision = len(history) + 1
+-     history.append(
+-         {
+-             "approved_by": "telegram" if approved_by_telegram else None,
+-     manifest.setdefault("installs", {})[skill_dir.name] = {
+-         "installed_at": timestamp(),
+-         "previous_backup": backup,
+-         "approved_by": "telegram" if approved_by_telegram else None,
+-         "approval_request_id": approval_request_id or None,
+-         "revision": revision,
+-         "versions": history,
+-     save_manifest(target_root, manifest)
+-     save_manifest(target_root, manifest)
+-     return target, backup
+-     installs = manifest.setdefault("installs", {})
+-     record = installs.get(skill_name, {})
+-     target = Path(record.get("target", str(target_root / skill_name)))
+-     removed = target.exists() or target.is_symlink()
+-     if removed:
+-         remove_target(target)
+-     restored_backup = None
+-     backup = record.get("previous_backup")
+-     if restore_backup and backup:
+-         backup_path = Path(backup)
+-         if backup_path.exists() or backup_path.is_symlink():
+-             backup_path.rename(target)
+-             restored_backup = str(target)
+-     installs.pop(skill_name, None)
+-         "skill": skill_name,
+-         "removed": removed,
+-         "restored_backup": restored_backup,
+-         "--approved-by-telegram",
+-         help="Required safety marker for mutations after Telegram approval.",
+-     parser.add_argument("--approval-request-id", default="", help="Telegram approval request ID for install audit records.")
+-     if args.apply and not args.approved_by_telegram:
+-             "reason": "telegram approval required before applying install changes",
+-             "installed": False,
+-         plan = uninstall_skill(skill_name, target_root, args.restore_backup) if args.apply else {
+-             "target": str(target_root / skill_name),
+-             "uninstall": True,
+-             "restore_backup": args.restore_backup,
+-             args.approved_by_telegram,
+-             args.approval_request_id,
+-         plan["approved_by"] = "telegram"
+-         plan["approval_request_id"] = args.approval_request_id or None
++ import os
++ import sys
++ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
++ from lib.approval import derive_secret, hash_skill_dir, verify_token
++ from lib.telegram_config import discover_telegram_config
++     path = manifest_path(target_root)
++     tmp = path.with_suffix(path.suffix + ".tmp")
++     tmp.write_text(
++     )
++     os.replace(tmp, path)
++ class _ManifestLock:
++     def __init__(self, target_root: Path):
++         self.target_root = target_root
++         self.handle = None
++     def __enter__(self):
++         self.target_root.mkdir(parents=True, exist_ok=True)
++         lock_path = self.target_root / ".skill-forge-installs.lock"
++         self.handle = lock_path.open("w")
++         try:
++         try:
++         try:
++             import fcntl
++             import fcntl
++             fcntl.flock(self.handle.fileno(), fcntl.LOCK_EX)
++         except Exception:
++         except Exception:
++             pass
++             pass
++         return self
++     def __exit__(self, *exc):
++             if self.handle is not None:
++                 fcntl.flock(self.handle.fileno(), fcntl.LOCK_UN)
++         if self.handle is not None:
++             self.handle.close()
++ def validate_skill_source(skill_dir: Path) -> Optional[str]:
++     if not skill_dir.is_dir():
++         return "candidate skill directory must exist"
++     if not (skill_dir / "SKILL.md").is_file():
++         return "candidate skill directory must contain SKILL.md"
++     return None
++     approved_by: str,
++ ) -> tuple:
++     with _ManifestLock(target_root):
++     with _ManifestLock(target_root):
++         target = target_root / skill_dir.name
++         backup = backup_existing(target, target_root)
++         if method == "symlink":
++             target.symlink_to(skill_dir, target_is_directory=True)
++         else:
++         else:
++             shutil.copytree(skill_dir, target)
++         manifest = load_manifest(target_root)
++         manifest = load_manifest(target_root)
++         previous = manifest.setdefault("installs", {}).get(skill_dir.name, {})
++         history = list(previous.get("versions", []))
++         revision = len(history) + 1
++         record = {
++             "skill": skill_dir.name,
++             "target": str(target),
++             "target": str(target),
++             "approved_by": approved_by or None,
++         }
++         history.append({k: v for k, v in record.items() if k != "skill"})
++         record["versions"] = history
++         manifest["installs"][skill_dir.name] = record
++         save_manifest(target_root, manifest)
++         save_manifest(target_root, manifest)
++         return target, backup
++         installs = manifest.setdefault("installs", {})
++         record = installs.get(skill_name, {})
++         target = Path(record.get("target", str(target_root / skill_name)))
++         removed = target.exists() or target.is_symlink()
++         if removed:
++             remove_target(target)
++         restored_backup = None
++         backup = record.get("previous_backup")
++         if restore_backup and backup:
++             backup_path = Path(backup)
++             if backup_path.exists() or backup_path.is_symlink():
++                 backup_path.rename(target)
++                 restored_backup = str(target)
++         history = list(record.get("versions", []))
++         history.append(
++             {
++                 "uninstalled_at": timestamp(),
++                 "target": str(target),
++                 "removed": removed,
++                 "restored_backup": restored_backup,
++             }
++             }
++         )
++         )
++         )
++         installs[skill_name] = {
++             "skill": skill_name,
++             "uninstalled_at": timestamp(),
++             "versions": history,
++             "active": False,
++         return {
++             "removed": removed,
++             "restored_backup": restored_backup,
++     parser.add_argument(
++     parser.add_argument(
++         "--approval-token",
++         default="",
++         help="Signed approval token issued by telegram_approval.py. Required for --apply.",
++         "--allow-dry-run-install",
++         help="Permit a dry-run-mode token to mutate state. Audit will record approved_by=dry-run.",
++         "--bot-token-env",
++         default="TELEGRAM_BOT_TOKEN",
++         help="Bot token env var used to derive the HMAC secret when SKILL_FORGE_APPROVAL_SECRET is unset.",
++     parser.add_argument("--env-file", default="")
++     parser.add_argument("--no-default-env-files", action="store_true")
++     def emit_blocked(reason: str, extra: Optional[dict] = None) -> int:
++             "reason": reason,
++         if extra:
++             payload.update(extra)
++     approval_claims: dict = {}
++     approved_by_label = ""
++     if args.apply:
++         if not args.approval_token:
++             return emit_blocked("approval token required (run telegram_approval.py first)")
++         config = discover_telegram_config(
++             args.bot_token_env,
++             args.bot_token_env,
++             args.env_file,
++             load_defaults=not args.no_default_env_files,
++         bot_token = os.getenv(config["token_env"] or args.bot_token_env)
++             secret = derive_secret(bot_token)
++         except RuntimeError as exc:
++             return emit_blocked(f"approval secret unavailable: {exc}")
++         if args.apply:
++         if args.apply:
++             target = str(target_root / skill_name)
++             ok, reason, claims = verify_token(
++                 args.approval_token,
++                 secret,
++                 expected={"skill": skill_name, "target": target, "method": args.method},
++             )
++             if not ok:
++                 return emit_blocked(f"approval token rejected: {reason}", {"claims": claims})
++             mode = claims.get("mode", "telegram")
++             if mode == "dry-run" and not args.allow_dry_run_install:
++                 return emit_blocked("dry-run approval cannot mutate state", {"claims": claims})
++             approved_by_label = "dry-run" if mode == "dry-run" else "telegram"
++             approval_claims = claims
++             plan = uninstall_skill(skill_name, target_root, args.restore_backup)
++             plan["approved_by"] = approved_by_label
++             plan["approval_request_id"] = approval_claims.get("request_id")
++             plan = {
++                 "skill": skill_name,
++                 "target": str(target_root / skill_name),
++                 "uninstall": True,
++                 "restore_backup": args.restore_backup,
++                 "installed": False,
++         source_error = validate_skill_source(skill_dir)
++         if source_error:
++             return emit_blocked(source_error)
++         expected_target = str(target_root / skill_dir.name)
++         expected_source = str(skill_dir)
++         expected_hash = hash_skill_dir(skill_dir)
++         ok, reason, claims = verify_token(
++             args.approval_token,
++             secret,
++             expected={
++                 "skill": skill_dir.name,
++                 "target": expected_target,
++                 "method": args.method,
++                 "source_dir": expected_source,
++                 "source_hash": expected_hash,
++             },
++         if not ok:
++             return emit_blocked(f"approval token rejected: {reason}", {"claims": claims})
++         mode = claims.get("mode", "telegram")
++         if mode == "dry-run" and not args.allow_dry_run_install:
++             return emit_blocked("dry-run approval cannot mutate state", {"claims": claims})
++         approved_by_label = "dry-run" if mode == "dry-run" else "telegram"
++             approved_by_label,
++             claims.get("request_id", ""),
++         plan["approved_by"] = approved_by_label
++         plan["approval_request_id"] = claims.get("request_id")
+
+### scripts/install/telegram_approval.py  [code]
+-     )
+-     if request_id in text:
+-     return reply.get("message_id") == approval_message_id
+-     request_id = uuid.uuid4().hex[:8]
+-     sent = post_json(
+-         token,
+-         "sendMessage",
+-         {
+-             "chat_id": chat_id,
+-             "text": approval_message(args, request_id),
+-             "disable_web_page_preview": True,
+-         },
+-     payload = wait_for_approval(token, chat_id, request_id, message_id, args.timeout)
++ from lib.approval import derive_secret, hash_skill_dir, issue_token
++     if reply.get("message_id") == approval_message_id:
++     return request_id in text
++         }
++         }
++         }
++ def build_token_claims(args: argparse.Namespace, request_id: str, mode: str) -> dict:
++     source_dir = ""
++     source_hash = ""
++     if args.source_dir:
++         source_path = Path(args.source_dir).expanduser().resolve()
++         if not source_path.is_dir():
++             raise ValueError("source-dir must be an existing skill directory")
++         if not (source_path / "SKILL.md").is_file():
++             raise ValueError("source-dir must contain SKILL.md")
++         source_dir = str(source_path)
++         source_hash = hash_skill_dir(source_path)
++     target = str(Path(args.target).expanduser().resolve()) if args.target else ""
++     return {
++         "request_id": request_id,
++         "skill": args.skill,
++         "profile": args.profile,
++         "source_dir": source_dir,
++         "source_hash": source_hash,
++         "target": target,
++         "method": args.method,
++         "mode": mode,
++     }
++ def attach_token(payload: dict, args: argparse.Namespace, secret: Optional[bytes], mode: str) -> dict:
++     if secret is None:
++         payload["approval_token"] = None
++         payload["approval_token"] = None
++         payload["token_error"] = "no-secret-available"
++         return payload
++         return payload
++     try:
++     try:
++     try:
++     try:
++         claims = build_token_claims(args, payload["request_id"], mode)
++     except ValueError as exc:
++         payload["token_error"] = f"invalid-source-dir: {exc}"
++     payload["approval_token"] = issue_token(claims, secret, ttl_seconds=args.token_ttl)
++     payload["approval_claims"] = claims
++     return payload
++     parser.add_argument("--source-dir", default="", help="Candidate skill directory; bound to the issued approval token.")
++     parser.add_argument("--token-ttl", type=int, default=1800, help="Approval token lifetime in seconds.")
++     request_id = uuid.uuid4().hex[:16]
++         secret = derive_secret(token)
++     except RuntimeError:
++         secret = None
++         if payload["approved"]:
++             payload = attach_token(payload, args, secret, mode="dry-run")
++         print(json.dumps(payload, ensure_ascii=False, indent=2) if args.json else payload["status"])
++         print(json.dumps(payload, ensure_ascii=False, indent=2) if args.json else payload["status"])
++         print(json.dumps(payload, ensure_ascii=False, indent=2) if args.json else payload["status"])
++         payload = {
++         payload = {
++         payload = {
++             "approved": False,
++             "approved": False,
++             "approved": False,
++             "request_id": request_id,
++             "request_id": request_id,
++             "request_id": request_id,
++         return 1
++         return 1
++         return 1
++         sent = post_json(
++             token,
++             "sendMessage",
++             {
++                 "chat_id": chat_id,
++                 "text": approval_message(args, request_id),
++                 "disable_web_page_preview": True,
++             },
++         )
++     except Exception as exc:
++     except Exception as exc:
++             "status": "send-error",
++             "error": str(exc),
++             "error": str(exc),
++     if not sent.get("ok"):
++             "status": "telegram-error",
++             "error": sent.get("description") or "telegram sendMessage failed",
++         payload = wait_for_approval(token, chat_id, request_id, message_id, args.timeout)
++             "status": "poll-error",
++     if payload["approved"] and secret is not None:
++         payload = attach_token(payload, args, secret, mode="telegram")
+
+### scripts/lib/approval.py  [code]
++ import base64
++ import hashlib
++ import hmac
++ import json
++ import os
++ import time
++ from pathlib import Path
++ from typing import Optional
++ APPROVAL_SECRET_ENV = "SKILL_FORGE_APPROVAL_SECRET"
++ DEFAULT_TTL_SECONDS = 30 * 60
++ def _b64url_encode(data: bytes) -> str:
++     return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
++ def _b64url_decode(text: str) -> bytes:
++     padding = "=" * (-len(text) % 4)
++     return base64.urlsafe_b64decode(text + padding)
++ def hash_skill_dir(path: Path) -> str:
++     path = path.expanduser().resolve()
++     if not path.exists():
++         return "missing"
++     hasher = hashlib.sha256()
++     if path.is_file():
++         hasher.update(b"file\0")
++         hasher.update(path.name.encode("utf-8"))
++         hasher.update(b"\0")
++         hasher.update(b"\0")
++         hasher.update(b"\0")
++         hasher.update(path.read_bytes())
++         return hasher.hexdigest()
++     for entry in sorted(p for p in path.rglob("*") if p.is_file()):
++         rel = entry.relative_to(path).as_posix().encode("utf-8")
++         hasher.update(rel)
++         hasher.update(entry.read_bytes())
++     return hasher.hexdigest()
++ def derive_secret(bot_token: Optional[str]) -> bytes:
++     explicit = os.getenv(APPROVAL_SECRET_ENV)
++     if explicit:
++         return hashlib.sha256(explicit.encode("utf-8")).digest()
++     if bot_token:
++         return hashlib.sha256(("skill-forge-approval:" + bot_token).encode("utf-8")).digest()
++     raise RuntimeError(
++         f"approval secret unavailable: set {APPROVAL_SECRET_ENV} or provide a bot token"
++     )
++     )
++ def issue_token(claims: dict, secret: bytes, ttl_seconds: int = DEFAULT_TTL_SECONDS) -> str:
++     payload = dict(claims)
++     issued = int(payload.get("issued_at") or time.time())
++     payload["issued_at"] = issued
++     payload.setdefault("expires_at", issued + ttl_seconds)
++     body = _b64url_encode(
++         json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
++     signature = hmac.new(secret, body.encode("ascii"), hashlib.sha256).digest()
++     return f"{body}.{_b64url_encode(signature)}"
++ def verify_token(token: str, secret: bytes, expected: dict, now: Optional[int] = None) -> tuple:
++     if not token or "." not in token:
++         return False, "malformed-token", {}
++     body, signature = token.rsplit(".", 1)
++     try:
++     try:
++         provided_sig = _b64url_decode(signature)
++     except Exception:
++     except Exception:
++         return False, "malformed-signature", {}
++     expected_sig = hmac.new(secret, body.encode("ascii"), hashlib.sha256).digest()
++     if not hmac.compare_digest(expected_sig, provided_sig):
++         return False, "bad-signature", {}
++         claims = json.loads(_b64url_decode(body).decode("utf-8"))
++         return False, "malformed-claims", {}
++     current = now if now is not None else int(time.time())
++     if int(claims.get("expires_at", 0)) < current:
++         return False, "expired", claims
++     for key, value in expected.items():
++         if claims.get(key) != value:
++             return False, f"claim-mismatch:{key}", claims
++     return True, "ok", claims
+
+### scripts/lib/install_flow.py  [code]
+-         command.append("--approved-by-telegram")
+-         if approval and approval.get("request_id"):
+-             command.extend(["--approval-request-id", str(approval["request_id"])])
++         if approval and approval.get("approval_token"):
++             command.extend(["--approval-token", approval["approval_token"]])
++         bot_token_env = getattr(args, "telegram_bot_token_env", "")
++         if bot_token_env:
++             command.extend(["--bot-token-env", bot_token_env])
++         env_file = getattr(args, "env_file", "")
++         if env_file:
++             command.extend(["--env-file", env_file])
++         "--source-dir",
++         plan["source"],
++         baseline = replay.get("baseline_score")
++         candidate = replay.get("candidate_score") or replay.get("score")
++         improvement = replay.get("improvement")
++         if baseline is not None and improvement is not None:
++             return False, f"replay regression: baseline={baseline} candidate={candidate} delta={improvement}"
+
+### scripts/lib/runtime.py  [code]
+-     payload = json.loads(completed.stdout)
+-     payload.setdefault("returncode", completed.returncode)
++         return {
++             "returncode": completed.returncode,
++         }
++     try:
++         payload = json.loads(completed.stdout)
++     except json.JSONDecodeError as exc:
++             "status": "invalid-json",
++             "stdout": completed.stdout.strip()[:1024],
++             "stderr": completed.stderr.strip()[:1024],
++             "error": str(exc),
++     if isinstance(payload, dict):
++         payload.setdefault("returncode", completed.returncode)
+
+### scripts/replay/replay_common.py  [code]
+- TOKEN_RE = re.compile(r"\b(?:sk|tvly|ntn|xox[baprs])-?[A-Za-z0-9_\-]{12,}\b")
+- LONG_SECRET_RE = re.compile(r"\b[A-Za-z0-9_\-]{32,}\b")
++ PHONE_RE = re.compile(
++     r"(?<!\d)(?:\+\d{1,3}[-.\s])?(?:\(\d{2,4}\)|\d{2,4})[-.\s]\d{2,4}[-.\s]\d{2,4}(?!\d)"
++ )
++ )
++ )
++ IPV4_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
++ IPV6_RE = re.compile(r"\b(?:[A-Fa-f0-9]{1,4}:){4,7}[A-Fa-f0-9]{1,4}\b")
++ TELEGRAM_BOT_RE = re.compile(r"\b\d{8,12}:[A-Za-z0-9_\-]{30,}\b")
++ TOKEN_RE = re.compile(
++     r"\b(?:sk|tvly|ntn|xox[baprs]|ghp|github_pat|gho|ghu|ghs|ghr|AKIA|ASIA|AIza)[-_A-Za-z0-9]{12,}\b"
++ JWT_RE = re.compile(r"\beyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\b")
++ PRIVATE_KEY_RE = re.compile(
++     r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----",
++     re.DOTALL,
++ LONG_SECRET_RE = re.compile(r"(?<![A-Za-z0-9_\-/.])[A-Za-z0-9_\-]{40,}(?![A-Za-z0-9_\-/.])")
++     text = PRIVATE_KEY_RE.sub("[REDACTED_PRIVATE_KEY]", text)
++     text = JWT_RE.sub("[REDACTED_JWT]", text)
++     text = TELEGRAM_BOT_RE.sub("[REDACTED_BOT_TOKEN]", text)
++     text = IPV6_RE.sub("[REDACTED_IPV6]", text)
++     text = IPV4_RE.sub("[REDACTED_IPV4]", text)
++     text = PHONE_RE.sub(lambda m: "[REDACTED_PHONE]" if sum(c.isdigit() for c in m.group(0)) >= 7 else m.group(0), text)
+
+### scripts/replay/run_replay_eval.py  [code]
+-         "status": "ok",
+-     return 0 if payload["passed"] or not results else 1
++     status = "no-cases" if not results else "ok"
++         "status": status,
++     if not results:
++         return 0
++     return 0 if payload["passed"] else 1
+
+### scripts/somnia/reporting.py  [code]
+-     with urllib.request.urlopen(request, timeout=30) as response:
+-         payload = json.loads(response.read().decode("utf-8"))
++     try:
++         with urllib.request.urlopen(request, timeout=30) as response:
++             payload = json.loads(response.read().decode("utf-8"))
++     except Exception as exc:
++         return {"sent": False, "status": "send-error", "error": str(exc)}
++     if not payload.get("ok"):
++         return {"sent": False, "status": "telegram-error", "error": payload.get("description")}
+
+### scripts/somnia/schedule_nightly_review.py  [code]
+-         result = unload(plist_path)
+-         removed = False
+-         if args.apply and plist_path.exists():
+-             plist_path.unlink()
+-             removed = True
+-         payload = {"status": "uninstalled" if removed else "planned-uninstall", "plist": str(plist_path), "launchctl": result}
++         if args.apply:
++             result = unload(plist_path)
++             removed = False
++             if plist_path.exists():
++                 plist_path.unlink()
++                 removed = True
++             payload = {"status": "uninstalled" if removed else "uninstalled-noop", "plist": str(plist_path), "launchctl": result}
++         else:
++             payload = {"status": "planned-uninstall", "plist": str(plist_path)}
+
+### scripts/templates/profile_packs.py  [code]
+-     parser = argparse.ArgumentParser(description="Replace this placeholder with deterministic skill logic.")
+-     payload = {"status": "placeholder", "next_step": "implement skill-specific logic"}
++     parser = argparse.ArgumentParser(description="Skill-specific deterministic entry point. Customize before publishing.")
++     payload = {"status": "scaffold", "next_step": "wire deterministic behavior for this skill"}

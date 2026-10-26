@@ -1,0 +1,72 @@
+kyle1373/mosaic-video-editor  1.2.0 -> 1.3.0
+change_type: instructions+docs   changelog: Fix credits/billing flow docs, correct node_type endpoint path, add credit-blocked run handling workflow
+
+### SKILL.md  [instructions]
+- GET /node_type/{id}      — get details for a specific node
++ GET /node_type/{node_type_id} — get details for a specific node
++ - If a run is credit-blocked (`needs_credits: true` or `needsCredits: true`), follow the required plan-check and upgrade flow in [workflows/credits-and-billing.md](workflows/credits-and-billing.md) before attempting resume.
++ - Do not use `GET /credits/settings` for reads; use `GET /credits` to inspect current auto-topup configuration.
++ - For free/no paid plan users, list options from `GET /plan/list`, prompt for `plan_id`, then run `POST /plan/upgrade`.
++ - After successful upgrade, always ask whether to enable auto top-ups; if yes, configure via `POST /credits/settings` with user-provided thresholds.
+
+### references/docs-endpoints.md  [docs]
+- - [`GET /credits/settings`](https://docs.mosaic.so/api/credits/get-credits-settings)
++ - [`GET /credits/usage`](https://docs.mosaic.so/api/credits/get-credits-usage)
+
+### workflows/credits-and-billing.md  [docs]
+- ## Check balance
+- ```
+- ## Auto top-up settings
+- Get current settings:
+- GET /credits/settings
+- Enable auto top-ups:
+- When credit balance drops below `threshold`, `quantity` credits are purchased automatically at your plan's rate. [Docs](https://docs.mosaic.so/api/credits/get-credits-settings)
+- ## List available plans
+- Available plans: `creator`, `creator_annual`, `professional`, `professional_annual`. [Docs](https://docs.mosaic.so/api/plan/get-plan-list)
++ ## Read credit state (balance + auto top-up)
++ This endpoint returns balance, active plan metadata, billing cycle dates, and current `auto_topup` settings in one response.
++ ## Update auto top-up settings
++ Use:
++ ```bash
++ Example body:
++ When credit balance drops below `threshold`, `quantity` credits are purchased automatically at your plan's rate.
++ Notes:
++ - Requires an eligible paid plan (Creator/Professional family); free plans receive `403`.
++ - To read current top-up values, use `GET /credits` (not `GET /credits/settings`).
++ [Docs](https://docs.mosaic.so/api/credits/post-credits-settings)
++ ## List available plans (for upgrade UX)
++ Typical plan IDs: `creator`, `creator_annual`, `professional`, `professional_annual`, `pro`.
++ [Docs](https://docs.mosaic.so/api/plan/get-plan-list)
++ Possible responses:
++ - Immediate change (`requires_checkout: false`)
++ - Checkout required (`requires_checkout: true`, with `checkout_url`)
++ ## Required flow for credit-blocked runs
++ When a run or node is marked as needing credits (`needs_credits: true` or `needsCredits: true`), do this in order:
++ 1. **Check plan first:** `GET /plan`
++ 2. **If user is on free/no paid plan:**
++    - Tell the user a paid plan is required to continue the run.
++    - Call `GET /plan/list`.
++    - Present available plans (`id`, `billing`, `price_usd`, `credits_per_month`, `top_up_rate_per_100_credits_usd`).
++    - Ask which `plan_id` to upgrade to.
++    - Call `POST /plan/upgrade` with that `plan_id`.
++ 3. **If upgrade requires checkout (`requires_checkout: true`):**
++    - Share the `checkout_url` with the user.
++    - Wait for confirmation that checkout is complete.
++    - Re-check with `GET /plan` before proceeding.
++ 4. **After upgrade succeeds:** ask whether to enable auto top-ups.
++ 5. **If yes:** collect `threshold` and `quantity` and call `POST /credits/settings`.
++ 6. **Then resume blocked work:** `POST /agent_run/{run_id}/resume`.
+
+### workflows/running-agents.md  [docs]
+- 5. **Resume:** `POST /agent_run/{run_id}/resume` to retry failed nodes.
+- 6. **Cancel:** `POST /agent_run/{run_id}/cancel` to abort a running agent.
++ 5. **Credit-block handling:** if run/node has `needs_credits: true` (or `needsCredits: true`), follow the required flow in [credits-and-billing.md](credits-and-billing.md) before resuming.
++ 6. **Resume:** `POST /agent_run/{run_id}/resume` to retry failed/blocked nodes.
++ 7. **Cancel:** `POST /agent_run/{run_id}/cancel` to abort a running agent.
++ ## Credit-blocked runs (`needs_credits`)
++ If `GET /agent_run/{run_id}` or `GET /agent_run/{run_id}/nodes` indicates the run is credit-blocked:
++ 1. Check current plan with `GET /plan`.
++ 2. If user is free/no paid plan, list options via `GET /plan/list` and run `POST /plan/upgrade`.
++ 3. Optionally enable auto top-ups via `POST /credits/settings`.
++ 4. Resume with `POST /agent_run/{run_id}/resume`.
++ For the full required sequence and user-prompt behavior, use [credits-and-billing.md](credits-and-billing.md).

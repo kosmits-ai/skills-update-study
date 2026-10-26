@@ -1,0 +1,216 @@
+{
+  "fetched_at": "2026-10-26T16:48:59.652739+00:00",
+  "status": 200,
+  "versions": [
+    {
+      "version": "0.11.1",
+      "createdAt": 1783085418192,
+      "changelog": "**Fix: `tg-reader auth` crashed at the `code_sent` stage.** The staged onboarding flow added in 0.11.0 derived the `code_type` field from the Pyrogram `SentCode.type` object, which could resolve to a non-serializable value — so emitting the stage raised `TypeError: Object of type type is not JSON serializable` and the process exited. Because the crash happened *after* `send_code`, 0.11.0 would send the login code but then die before sign-in, making the agent-driven login impossible to complete.\n\n`code_type` is now always emitted as a string. Verified live end-to-end (send code → sign in → `authorized`).",
+      "changelogSource": "user"
+    },
+    {
+      "version": "0.11.0",
+      "createdAt": 1783081176439,
+      "changelog": "## [0.11.0] - 2026-07-03\n\n**Agent-drivable onboarding — an AI agent can set up authentication *for* the user.** Until now the only way to log in was `tg-reader auth`, an interactive command whose phone/code prompts are invisible when driven from an agent or a piped/exec context (the prompt buffers and never shows). So a human always had to sit at the terminal. Now the login is a structured, staged flow an agent can run end-to-end.\n\n### What an agent can do\n\nWith the user's consent, the agent runs the whole login and asks the user only for what Telegram itself requires — the **phone number**, the **login code** Telegram sends, and (if the account has one) the **cloud 2FA password**.\n\n- New staged `tg-reader auth --phone … --code-file … --password-file …`. One live process emits one JSON object per line with a `stage` and `next_action`:\n  `need_phone` → `code_sent` (`code_type: app`/`sms`) → `need_2fa` → `authorized` (plus `already_authorized` and `error` with a `reason`). The agent reacts to each stage and asks the user the matching thing.\n- **Self-serve fallback:** `tg-reader auth --guide` prints step-by-step instructions so a user who'd rather not involve the agent can authorize themselves.\n\n### Safety / privacy\n\n- **The session is stored locally on this machine (OpenClaw)** (`~/.tg-reader-session.session`) — it never leaves the machine and is not uploaded anywhere. The agent should reassure the user of this.\n- **The login code and 2FA password are handled securely:** read from a file (`--code-file`/`--password-file`, polled) or stdin — never passed on the command line, so they don't leak into process lists or logs.\n- Never prompts via `ainput`; emits flushed JSON (and mirrors stages to `TG_AUTH_PROGRESS` if set). An existing session is backed up first; a dead/unauthorized one is moved aside (`.dead-*`, never deleted) so the fresh login starts clean. Runs under the session lock.\n\n### Compatibility\n\n`tg-reader auth` with no flags still works: it now reports `already_authorized` for a live session, or asks for `--phone`. No re-authentication required for existing sessions.\n\n---\n\n## [0.10.1] - 2026-07-03\n\n**SOCKS5 proxy support for MTProto.** Some networks/hosts filter direct MTProto (TCP 443 to Telegram DCs), surfacing as persistent `Connection timed out` even when the internet works. The skill can now route through a local SOCKS5 proxy.\n\n### Why this was broken\n\n- The skill read only `api_id`/`api_hash`/`session` from config; a `socks_proxy` setting had no effect because the value was never passed to the client. On a host with direct MTProto filtered, every run timed out and looked like a network/Telegram outage rather than a missing route.\n\n### How it works after this update\n\n- New `socks_proxy` config key (and `TG_PROXY` env override, which takes priority). Accepted forms: `host:port` (SOCKS5 by default), `socks5://host:port`, `socks5://user:pass@host:port`.\n- The parsed proxy is passed to every client on both backends — Pyrogram (`reader.py`) and Telethon (`reader_telethon.py`), fetch/info/auth paths — and to the `tg-reader-check` online probe.\n- `tg-reader-check` now reports the resolved proxy as `credentials.proxy`.\n- Fully backward compatible: with no `socks_proxy`/`TG_PROXY` set, the client connects directly exactly as before. Telethon uses the native python-socks dict form (no PySocks dependency).",
+      "changelogSource": "user"
+    },
+    {
+      "version": "0.10.0",
+      "createdAt": 1782991950156,
+      "changelog": "sergei-mikhailov-tg-channel-reader v0.10.0\n\nSession hardening — the skill can no longer destroy its own session, and can recover it when something else does.\n- Non-interactive auth check: fetch/info never prompt for a phone number, so cron and background runs no longer hang or wipe the session.\n- Honest errors: not_authorized / busy / network are reported separately — a network blip is never mislabeled as an expired session.\n- Session lock: concurrent runs can't corrupt the shared session file anymore.\n- Last-known-good backup + `tg-reader restore-session`: recover a broken session without re-authenticating.\n- `tg-reader-check --online`: verify a session is actually authorized before using it.",
+      "changelogSource": "user"
+    },
+    {
+      "version": "0.9.4",
+      "createdAt": 1778931919182,
+      "changelog": "## [0.9.4] - 2026-05-16\n\n**Recent Telegram posts come through again.** The Pyrogram backend now uses `pyrofork>=2.3.69` (a community-maintained drop-in fork) instead of the stale upstream `pyrogram`. Under 0.9.3 and earlier, recent channel posts arrived with `\"text\": \"\"`, `\"has_media\": false`, no `\"web_page\"` field — even when the same post displayed fine in the Telegram app.\n\n### Why this was broken\n\nThe PyPI `pyrogram` package has been frozen at 2.0.106 since August 2023 and does not know the Telegram `Message` TL constructor IDs introduced in May 2026. For any post encoded with one of the newer constructors, Pyrogram silently parses out only the basic metadata (`id`, `date`, `views`, `forwards`, `edit_date`) and leaves `msg.message` / `msg.media` / `msg.entities` / `msg.web_page` as `None`. The 0.9.3 `web_page` extraction logic was correct in isolation — the parsed `Message` object it read from was already empty.\n\n`pyrofork` is the maintained fork. It ships the current TL schema, installs into the **same `pyrogram` import namespace**, and uses **format-compatible session files** — so no `tg-reader auth` re-run is required.\n\n### How it works after this update\n\n- **CLI surface is unchanged.** Same commands (`tg-reader fetch`, `tg-reader info`, `tg-reader auth`, `tg-reader-check`), same flags, same JSON output schema. An agent that worked with 0.9.3 keeps working with 0.9.4 without code changes.\n- **Same session file** (`~/.tg-reader-session.session`) — no re-auth.\n- **Same config file** (`~/.tg-reader.json`) and same env vars (`TG_API_ID`, `TG_API_HASH`, `TG_USE_TELETHON`, `TG_READ_UNREAD`, `TG_STATE_FILE`) — no config migration.\n- **Same Python imports** in `reader.py` (`from pyrogram import Client`, …) — pyrofork serves the `pyrogram` namespace.\n- `tg-reader-check` now reports the backend as \"Pyrofork (pyrogram namespace) 2.3.x\" and surfaces a problem with a `fix` field if it detects a left-over upstream `pyrogram 2.0.106`.\n\n### Required user action (existing installs only)\n\n`pip` will not transparently swap `pyrogram` for `pyrofork` because they own the same import namespace. Run once after updating the skill:\n\n```bash\npip uninstall pyrogram -y\npip install --upgrade --force-reinstall sergei-mikhailov-tg-channel-reader\n```\n\nClawHub users:\n\n```bash\nclawhub update sergei-mikhailov-tg-channel-reader\npip uninstall pyrogram -y\npip install pyrofork\n```\n\nAfter the swap, run `tg-reader-check` — `backends.pyrogram.version` should read 2.3.x (pyrofork), not 2.0.106.\n\n### Fixed\n\n- Pyrogram backend: posts encoded with new TL constructor IDs (rolled out in May 2026 and later) are now parsed with their real text, media, entities, and `web_page` data — instead of arriving as empty stubs.\n\n### Changed\n\n- `setup.py`: `pyrogram>=2.0.0` → `pyrofork>=2.3.69` (drop-in fork, same import namespace). `tgcrypto>=1.2.0` and `telethon>=1.24.0` unchanged.\n- `tg_check.py` / `tg-reader-check`: detects an outdated `pyrogram 2.0.106` install and surfaces the migration command in its `problems` array and as a per-backend `outdated`/`fix` field.\n- Install-time error messages in `reader.py`, `tg_reader_unified.py`, and `tg_check.py` now recommend `pip install pyrofork tgcrypto` and explicitly warn against installing upstream `pyrogram`.\n- `setup-tg-reader.sh`: same detection logic — warns when `pyrogram 2.0.106` is found and prints the migration command.\n- `SKILL.md`, `README.md`, `README_TELETHON.md`: install commands and library-selection sections updated to reference pyrofork; setup commands include the pre-emptive `pip uninstall pyrogram` step.\n\n### Not changed (no regression risk)\n\n- Telethon backend is untouched — its TL schema is independent and was never affected.\n- The `web_page` field, text synthesis from card content, comments fetcher, and read-unread tracking — all introduced in 0.9.3 — keep working unchanged.\n- Public CLI flags, JSON output schema, session-file format, config-file format, and env-var contract are identical to 0.9.3.\n\n---",
+      "changelogSource": "user"
+    },
+    {
+      "version": "0.9.3",
+      "createdAt": 1778928044309,
+      "changelog": "## [0.9.3] - 2026-05-16\n\n**Posts with a link-preview card are no longer invisible.** Many channels (especially news outlets) publish via Telegram's Instant View — the message itself has little or no text, and the article body lives inside the link-preview card. Until now the skill dropped that card data entirely, so the agent reading the JSON saw an empty `text` field and skipped the post. Now the card's title, description, URL, and site name are exposed in a new `web_page` field, and when the message has no text of its own the reader synthesizes one from the card so the post still surfaces in summaries and `--text-only` filters.\n\n### Added\n- New `web_page` field on each message (and each comment) — present only when the post carries a Telegram link-preview card; contains `url`, `display_url`, `title`, `description`, `site_name` (whichever fields are non-empty)\n- Text synthesis: when the message has no `text` / `caption` but does have a `web_page`, the `text` field is filled from `title + description + url` so card-only posts are no longer dropped silently by downstream agents or by `--text-only`\n- Plain-text output (`--format text`) prints a `🔗 title — url` line after the post body when a card is present\n\n### Changed\n- Telethon backend: `has_media` is now `false` for messages whose only \"media\" is a link preview (`MessageMediaWebPage`), and `media_type` is no longer emitted for that case. This aligns the backend with Pyrogram, where `msg.media` was already `None` for these posts, and fixes a latent bug where `--text-only` would drop card-only posts on Telethon but keep them on Pyrogram.\n- Comment fetcher (both backends): a comment whose only content is a shared link is no longer dropped by the empty-text `continue` — the same text synthesis and `web_page` extraction now apply to comments.\n\n### Fixed\n- Pyrogram backend: `msg.web_page` is now read alongside `msg.text` / `msg.caption`. Previously the card data lived in a separate attribute the reader never touched, so even rich previews on text-bearing posts lost their structured metadata.\n- Telethon backend: `MessageMediaWebPage` is now unpacked into the structured `web_page` field. Previously only the bare class name `\"MessageMediaWebPage\"` was recorded in `media_type` and the inner `WebPage` (with the actual URL / title / description) was ignored.",
+      "changelogSource": "user"
+    },
+    {
+      "version": "0.9.2",
+      "createdAt": 1772739219252,
+      "changelog": "sergei-mikhailov-tg-channel-reader 0.9.2\n\n- Added support for enabling read_unread mode via the TG_READ_UNREAD environment variable.\n- Documented environment variable overrides for read_unread and state file location (TG_STATE_FILE).\n- Minor documentation improvements to clarify setup and configuration options.",
+      "changelogSource": "auto"
+    },
+    {
+      "version": "0.9.1",
+      "createdAt": 1772738358990,
+      "changelog": "Set correct display name; read_unread mode — only fetch new posts, no --since needed",
+      "changelogSource": "user"
+    },
+    {
+      "version": "0.9.0",
+      "createdAt": 1772736907511,
+      "changelog": "Add read_unread mode — only fetch new posts, no --since needed. Enable with read_unread: true in config.",
+      "changelogSource": "user"
+    },
+    {
+      "version": "0.8.12",
+      "createdAt": 1772694186876,
+      "changelog": "Security scan fixes round 2: restrict session discovery in reader.py and reader_telethon.py to known names only, restructure README credential examples to recommend ~/.tg-reader.json instead of ~/.bashrc",
+      "changelogSource": "user"
+    },
+    {
+      "version": "0.8.11",
+      "createdAt": 1772693326780,
+      "changelog": "Security scan fixes: remove auto-allowlisting from setup script, limit session file discovery to known names, replace insecure credential examples",
+      "changelogSource": "user"
+    },
+    {
+      "version": "0.8.10",
+      "createdAt": 1772625559343,
+      "changelog": "sergei-mikhailov-tg-channel-reader v0.8.10\n\n- Added setup-tg-reader.sh script for auto-setup: checks prerequisites, installs dependencies, and handles OpenClaw exec approvals.\n- SKILL.md and setup instructions improved for first-time users and clearer troubleshooting.\n- Description and documentation clarified support for fetching comments/discussion replies from Telegram posts.\n- Setup and approval steps are now prominently documented, with a quick install path.\n- Minor metadata, description, and formatting updates for clarity.",
+      "changelogSource": "auto"
+    },
+    {
+      "version": "0.8.9",
+      "createdAt": 1772431047152,
+      "changelog": "No changes detected in this version.\n\n- Version 0.8.9 was released with no file changes compared to the previous version.",
+      "changelogSource": "auto"
+    },
+    {
+      "version": "0.8.8",
+      "createdAt": 1772369699860,
+      "changelog": "sergei-mikhailov-tg-channel-reader 0.8.8\n\n- Added CLAUDE.md documentation file.\n- Updated CHANGELOG.md, reader.py, reader_telethon.py, and setup.py with minor revisions and improvements.\n- No breaking changes to usage or commands.",
+      "changelogSource": "auto"
+    },
+    {
+      "version": "0.8.7",
+      "createdAt": 1772346173857,
+      "changelog": "- Added section on command execution approvals, guiding users through OpenClaw exec approval workflow.\n- Expanded documentation on output formats for info and fetch commands, including sample JSON structures.\n- Added --output option to fetch command to write results directly to a file, improving token economy.\n- Improved error handling documentation with details on error_type and action fields.\n- Updated instructions for saving and tracking output files and Telegram channels.\n- Various clarifications and formatting improvements for usability.",
+      "changelogSource": "auto"
+    },
+    {
+      "version": "0.8.5",
+      "createdAt": 1772313571001,
+      "changelog": "**Adds support for fetching post comments from Telegram channels.**\n\n- New `--comments` flag for `tg-reader fetch` fetches comments on posts (single channel only, fetch limit auto-drops to 30).\n- Added comment customization options: `--comment-limit` (number of comments per post) and `--comment-delay` (delay between fetching comments).\n- Documentation and help updated to reflect new comment-fetching features.\n- Minor fixes and improvements for reliability and documentation clarity.",
+      "changelogSource": "auto"
+    },
+    {
+      "version": "0.8.3",
+      "createdAt": 1772308400594,
+      "changelog": "- Added --text-only flag to fetch command for skipping posts without text (media-only, no caption).\n- Output now includes has_media and media_type fields for each post, indicating presence and type of attached media.\n- Documentation updated to clarify that posts with media may include important text (caption) and should not be skipped automatically.\n- No changes to setup or authentication procedures.",
+      "changelogSource": "auto"
+    },
+    {
+      "version": "0.8.2",
+      "createdAt": 1772294188990,
+      "changelog": "- Documentation files updated for clarity and detail (README_TELETHON.md, SKILL.md, TESTING_GUIDE.md, CHANGELOG.md).\n- Outdated or redundant documentation removed (CLAUDE.md).\n- Minor code and packaging adjustments (debug_auth.py, setup.py).\n- No changes to user-facing commands or functionality.",
+      "changelogSource": "auto"
+    },
+    {
+      "version": "0.8.1",
+      "createdAt": 1772293511643,
+      "changelog": "- Add support for delay between sequential multi-channel fetches (default 10s, configurable with --delay flag)\n- Update documentation to reflect multi-channel fetch now includes delay options and describes new fetch behavior\n- Improve error handling: `flood_wait` errors with ≤ 60s wait are now automatically retried (longer waits return error with `wait_Ns` action)\n- Minor documentation and usage clarifications throughout SKILL.md",
+      "changelogSource": "auto"
+    },
+    {
+      "version": "0.8.0",
+      "createdAt": 1772293106902,
+      "changelog": "No changes detected in this version.",
+      "changelogSource": "auto"
+    },
+    {
+      "version": "0.7.3",
+      "createdAt": 1772291204695,
+      "changelog": "sergei-mikhailov-tg-channel-reader 0.7.3\n\n- Initial source release with all core functionality.\n- Added main Python modules and command-line utilities for Telegram channel reading.\n- Included documentation: CHANGELOG.md, TESTING_GUIDE.md, and backend-specific guides.\n- Supports both Pyrogram and Telethon MTProto backends.\n- Provides channel info, message fetching, diagnostics, and authentication commands.\n- Added basic test and debug utilities for development.",
+      "changelogSource": "auto"
+    },
+    {
+      "version": "0.7.2",
+      "createdAt": 1772291158004,
+      "changelog": "- Major cleanup: all Python source, test, and documentation files removed.\n- Core files like readers, checkers, setup scripts, and guides have been deleted.\n- SKILL.md remains, providing high-level documentation only.\n- The package no longer includes any executable code or test infrastructure.",
+      "changelogSource": "auto"
+    },
+    {
+      "version": "0.7.1",
+      "createdAt": 1772289709906,
+      "changelog": "sergei-mikhailov-tg-channel-reader 0.7.1\n\n- Enhanced error handling: fetch/info commands now include `error_type` and `action` fields, with improved actionable guidance for channel errors (e.g., access denied, banned, not found, invite expired, rate limits).\n- Updated documentation in SKILL.md to reflect new structured error responses and handling recommendations for agents.\n- Minor internal refactoring for clearer error reporting code paths.\n- No breaking changes to command-line usage.",
+      "changelogSource": "auto"
+    },
+    {
+      "version": "0.7.0",
+      "createdAt": 1772287856077,
+      "changelog": "**v0.7.0 introduces a new pre-flight diagnostic tool and improves reliability.**\n\n- Added a new `tg-reader-check` command for fast, offline diagnostics of credentials, session file, and MTProto backend availability.\n- Updated documentation with a simplified, step-by-step “Quick Start” and clearer troubleshooting.\n- Improved skill metadata to include `tg-reader-check` as a required binary.\n- Enhanced error and session handling guidance throughout the documentation.\n- Refined setup, usage instructions, and library selection advice for both interactive and automated environments.",
+      "changelogSource": "auto"
+    },
+    {
+      "version": "0.6.1",
+      "createdAt": 1772284888762,
+      "changelog": "- Improved error reporting for FloodWait exceptions in Telethon fetches, providing more detailed wait time messages.\n- Minor code cleanups in reader and Telethon integration to simplify logic.\n- Project metadata and documentation unchanged except for changelog and internal code updates.\n- Patch-level release; no changes to user-facing commands or configuration.",
+      "changelogSource": "auto"
+    },
+    {
+      "version": "0.6.0",
+      "createdAt": 1771963625950,
+      "changelog": "Version 0.6.0\n\n- Added support for explicit `--config-file` and `--session-file` flags in all commands to specify custom config and session file paths.\n- Documentation updated to include usage examples for new flags, especially for use in isolated agents and cron jobs.\n- Internal CLI argument parsing improved to allow passing these file paths to both Pyrogram and Telethon backends.\n- Minor text changes and clarifications in help and usage instructions.\n- No breaking changes; all previous usages and defaults remain supported.",
+      "changelogSource": "auto"
+    },
+    {
+      "version": "0.5.0",
+      "createdAt": 1771862743816,
+      "changelog": "**Adds channel info lookup, improves credential setup, and enhances documentation.**\n\n- New `tg-reader info @channel` command: fetches channel title, description, and subscriber count.\n- Updated credential setup: supports `~/.tg-reader.json` file for reliable use with agents and servers.\n- Skill guide now highlights the `info` command and usage examples.\n- Documentation clarifies when to use env vars vs JSON config.\n- Minor error handling and usage instructions refined.",
+      "changelogSource": "auto"
+    },
+    {
+      "version": "0.4.3",
+      "createdAt": 1771860564289,
+      "changelog": "- Added debug_auth.py script for easier troubleshooting of authentication and connectivity issues\n- Improved troubleshooting and error handling instructions in SKILL.md, including guidance for handling AUTH_KEY_UNREGISTERED and debug scenarios\n- Clarified error remediation steps and added verbose logging option for debugging authentication problems\n- Updated documentation and metadata for clarity and support of new debug features",
+      "changelogSource": "auto"
+    },
+    {
+      "version": "0.4.2",
+      "createdAt": 1771840904507,
+      "changelog": "sergei-mikhailov-tg-channel-reader v0.4.2\n\n- Expanded setup instructions for Linux: added steps for installing in a Python venv and updating PATH.\n- Clarified authentication flow: Pyrogram will prompt for phone number confirmation during login.\n- Improved documentation in SKILL.md and README.md for setup and troubleshooting.\n- No code/logic changes; documentation and install guidance only.",
+      "changelogSource": "auto"
+    },
+    {
+      "version": "0.4.1",
+      "createdAt": 1771839861130,
+      "changelog": "- Adds \"Setup & Installation\" instructions to the documentation, including installation commands and security steps.\n- Refers users to README.md for full setup options and credentials management.\n- Recommends setting strict permissions (chmod 600) on the session file after authentication.\n- Documentation clarified and reorganized; previous sections on setup split into a dedicated section for easier user guidance.",
+      "changelogSource": "auto"
+    },
+    {
+      "version": "0.4.0",
+      "createdAt": 1771839605207,
+      "changelog": "- Simplified and standardized environment variable requirements in metadata; now only TG_API_ID and TG_API_HASH are required.\n- Updated credential setup instructions to distinguish between zsh (macOS) and bash (Linux).\n- Metadata format overhauled for clarity and easier integration.\n- Added CLAUDE.md file.\n- Minor clarifications and wording improvements throughout documentation.",
+      "changelogSource": "auto"
+    },
+    {
+      "version": "0.3.1",
+      "createdAt": 1771789113693,
+      "changelog": "- Added DISCLAIMER.md to provide a formal disclaimer for users.\n- Updated README.md to reflect the presence of the new disclaimer.\n- Bumped version and updated metadata in setup.py.",
+      "changelogSource": "auto"
+    },
+    {
+      "version": "0.3.0",
+      "createdAt": 1771788111035,
+      "changelog": "- Added explicit environment variable documentation for required Telegram API credentials in SKILL.md.\n- Marked TG_API_HASH as a secret and included security warnings for sensitive variables and session files.\n- Updated metadata to specify environment requirements, improving integration and setup clarity.\n- Expanded security notes in documentation for safer credential management.",
+      "changelogSource": "auto"
+    },
+    {
+      "version": "0.2.1",
+      "createdAt": 1771779400778,
+      "changelog": "Telegram channel reader now supports both Pyrogram and Telethon libraries, offering flexible backend selection.\n\n- Added Telethon support alongside Pyrogram for fetching Telegram channel posts.\n- Users can choose the backend via environment variable, command flag, or dedicated entrypoints.\n- Updated dependencies to include Telethon.\n- Added documentation for unified interface and how to switch between Pyrogram and Telethon.\n- Introduced new scripts and guides for Telethon usage and session testing.",
+      "changelogSource": "auto"
+    },
+    {
+      "version": "0.2.0",
+      "createdAt": 1771771129018,
+      "changelog": "- Improved setup guidance: clearer credential checking instructions and user walkthrough.\n- Simplified documentation by removing duplicated install/setup sections.\n- Explicit error handling steps for missing credentials and command not found.\n- Minor rewording for clarity and accuracy.\n- Added CHANGELOG.md file.",
+      "changelogSource": "auto"
+    },
+    {
+      "version": "0.1.0",
+      "createdAt": 1771769530638,
+      "changelog": "Initial release of sergei-mikhailov-tg-channel-reader:\n\n- Fetch and summarize posts from Telegram channels using MTProto (Pyrogram)\n- Filter messages by configurable time window (e.g., last 24h, 7d)\n- Supports both public and private channels (no bot requirement)\n- Flexible output modes: JSON and human-readable text\n- Simple authentication and API credential setup instructions\n- Error handling for common Telegram API issues",
+      "changelogSource": "auto"
+    }
+  ]
+}

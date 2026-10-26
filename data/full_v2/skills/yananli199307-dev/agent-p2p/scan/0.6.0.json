@@ -1,0 +1,86 @@
+{
+  "fetched_at": "2026-10-26T17:34:05.051021+00:00",
+  "status": 200,
+  "payload": {
+    "skill": {
+      "slug": "agent-p2p",
+      "displayName": "Agent P2P"
+    },
+    "version": {
+      "version": "0.6.0",
+      "createdAt": 1775045749979,
+      "changelogSource": "user"
+    },
+    "moderation": {
+      "scope": "skill",
+      "sourceVersion": {
+        "version": "0.9.3",
+        "createdAt": 1775922977136
+      },
+      "matchesRequestedVersion": false,
+      "isPendingScan": false,
+      "isMalwareBlocked": false,
+      "isSuspicious": false,
+      "isHiddenByMod": false,
+      "isRemoved": false
+    },
+    "security": {
+      "status": "suspicious",
+      "hasWarnings": true,
+      "checkedAt": 1775045804231,
+      "model": "gpt-5-mini",
+      "hasScanResult": true,
+      "sha256hash": "f90584fa8ed84fad8e4645db514da7333ce23ba418b83dd27afc73ebb8cd1066",
+      "virustotalUrl": "https://www.virustotal.com/gui/file/f90584fa8ed84fad8e4645db514da7333ce23ba418b83dd27afc73ebb8cd1066",
+      "scanners": {
+        "vt": null,
+        "skillspector": null,
+        "llm": {
+          "status": "suspicious",
+          "verdict": "suspicious",
+          "normalizedStatus": "suspicious",
+          "confidence": "medium",
+          "summary": "The skill's declared purpose (P2P messaging) generally matches the code and requirements, but there are multiple mismatches and automation behaviors (automatic verification/confirmation, file reads, and remote deployment actions) that contradict the documentation's stated safety/manual-approval claims and increase risk.",
+          "dimensions": [
+            {
+              "detail": "Name/description align with requiring an API key, Hub URL, SSH and python. Requiring ssh and a VPS-deploy flow is coherent for a Portal deployment tool. However the skill also asks for OPENCLAW_HOOKS_TOKEN (to wake the main OpenClaw session) and the SKILL.md suggests reading ~/.openclaw/openclaw.json for the token — that implies the skill expects access to other local OpenClaw state not declared as a required config path, which is a broader scope than indicated.",
+              "label": "Purpose & Capability",
+              "name": "purpose_capability",
+              "rating": "note"
+            },
+            {
+              "detail": "SKILL.md and code instruct the agent to: write ~/.openclaw/gateway.env, run local pip installs, optionally SSH into your VPS and execute a long remote heredoc (apt installs, certbot, write systemd unit, start services), and start/auto-restart services. More importantly, client.py contains automatic behaviors: it polls guest messages and will auto-submit verification confirmations (see _confirm_verification_code) and will automatically POST to other portals' verification endpoints and extract tokens from message content. This contradicts the documentation's statement that API Key exchange will not happen automatically and that the Agent will 'confirm each step.' These automatic network actions (confirming codes, POSTing to remote /api endpoints) are scope-creep relative to a passive notifier.",
+              "label": "Instruction Scope",
+              "name": "instruction_scope",
+              "rating": "concern"
+            },
+            {
+              "detail": "There is no platform install spec, but multiple included scripts (auto_install.py, scripts/deploy_portal.py, package.sh, setup.sh) perform automated installation and remote deployment. The remote deploy uses an SSH-executed script that installs packages (apt, pip), clones from a GitHub repo, configures nginx/certbot, and creates a systemd service. The GitHub URL is explicit, not a random shortener (lower risk), but the remote script runs with VPS privileges and writes system files — appropriate for a deployment tool but high-impact if run without review.",
+              "label": "Install Mechanism",
+              "name": "install_mechanism",
+              "rating": "note"
+            },
+            {
+              "detail": "Requested env vars (AGENTP2P_API_KEY, AGENTP2P_HUB_URL, OPENCLAW_GATEWAY_URL, OPENCLAW_HOOKS_TOKEN) are plausible for the Portal/bridge use. However: (1) SKILL.md instructs reading OPENCLAW_HOOKS_TOKEN from ~/.openclaw/openclaw.json — accessing another skill/system's config file is broader than the declared requires.env and not listed as a required config path; (2) OPENCLAW_HOOKS_TOKEN is sensitive (can wake the main session), and the skill's code will use it to call /hooks/wake; (3) the auto-install script extracts API keys directly from the Portal sqlite DB over SSH. Combined, these credentials grant network access and the ability to wake/trigger the OpenClaw session and perform deployment on a VPS — reasonable for functionality but high privilege and must be limited (dedicated keys).",
+              "label": "Credentials",
+              "name": "environment_proportionality",
+              "rating": "concern"
+            },
+            {
+              "detail": "always: false (good). The skill is allowed autonomous invocation (disable-model-invocation: false) — normal by default, but here it matters because the client contains automatic behavior (auto polling, auto confirmation of verification codes, auto POSTs to remote endpoints, automatic writes to ~/.openclaw/gateway.env). Autonomous invocation plus automatic confirmation/exchange flows increases blast radius: the skill can autonomously interact with external portals and wake the main session. The SKILL.md promises user confirmation for install actions, but code shows automated steps that can run without explicit human approval.",
+              "label": "Persistence & Privilege",
+              "name": "persistence_privilege",
+              "rating": "concern"
+            }
+          ],
+          "guidance": "What to consider before installing:\n\n1) Principle concerns\n- The skill will ask for highly sensitive items: a Portal API key, the OpenClaw hooks token (which can wake your main session), and SSH private keys for VPS deployment. Those grant the skill remote-network access and the ability to wake/control your OpenClaw session — only provide minimal, dedicated secrets.\n- Despite documentation saying key exchange and install steps require confirmation, the client code includes automatic behaviors: it polls messages, auto-confirms verification codes by POSTing to other portals, extracts tokens from messages, and can write gateway.env and restart local bridge processes. If enabled autonomously, the skill can perform network actions without manual approval.\n- The auto-install/deploy scripts will run package installs and create systemd services on a remote VPS via SSH (the script clones a GitHub repo and executes many commands). Running those remotely without manual review is high-impact.\n\n2) Practical mitigations\n- Do not provide your primary OpenClaw hooks token or production SSH keys. Create dedicated, limited-permission tokens/keys for this skill and restrict them to a single test VPS and a limited hooks token scope if possible.\n- Inspect the code you will run (auto_install.py, scripts/deploy_portal.py, client.py particularly check_pending_auth/_confirm_verification_code and wake_openclaw). If you plan to use auto-deploy, run the deploy script manually from a shell on your machine (not via an automated agent) so you can review and control each step.\n- If the platform supports it, disable autonomous invocation for this skill or require manual approval before it performs network calls or writes files.\n- Confirm the GitHub repository content (https://github.com/yananli199307-dev/AgentPortal-p2p-skill) matches the packaged files and doesn't contain obfuscated/hidden code or base64 payloads.\n\n3) What would change this assessment\n- If the skill author provides a clear guarantee and code path that the agent will always ask for explicit user confirmation before any network request that changes server state (POST/confirm actions, token exchange, writing gateway.env, deploying via SSH), and those checks are enforced in code (not merely documented), the risk would be reduced.\n- If the SKILL.md/base64 pre-scan finding is explained (e.g., false positive or benign use with no active payload), and if there are tests/audits showing the auto-confirmation feature is disabled unless the user explicitly opts in, confidence would increase.\n\nFiles/functions to review first: auto_install.py (remote deploy flow), client.py (check_pending_auth and _confirm_verification_code), skill/start.py/bridge.py (what triggers automatic operations), and any code that reads/writes ~/.openclaw/openclaw.json or ~/.openclaw/gateway.env.\n\nBottom line: the skill is materially coherent with its purpose, but multiple automated behaviors and access patterns contradict the claimed manual-approval safety posture and require careful review and restricted credentials before installation.",
+          "findings": "[base64-block] unexpected: A base64-block prompt-injection pattern was found in SKILL.md pre-scan signals. There is no legitimate need for base64-encoded prompt injection strings in documentation for a P2P portal; flag as suspicious. (The rest of the visible SKILL.md does not show an obvious base64 block, so this may indicate hidden/obfuscated content elsewhere or a false positive.)",
+          "agenticRiskFindings": null,
+          "riskSummary": null,
+          "model": "gpt-5-mini",
+          "checkedAt": 1775045804231
+        }
+      }
+    }
+  }
+}

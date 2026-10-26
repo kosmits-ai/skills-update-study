@@ -1,0 +1,506 @@
+{
+  "fetched_at": "2026-10-26T17:19:59.663340+00:00",
+  "status": 200,
+  "payload": {
+    "skill": {
+      "slug": "ai-persona-os",
+      "displayName": "AI Persona OS"
+    },
+    "version": {
+      "version": "2.0.0",
+      "createdAt": 1779179305537,
+      "changelog": "# AI Persona OS — Changelog\n\nAll notable changes to the AI Persona OS skill.\n\n---\n\n## v2.0.0 — May 19, 2026\n\n**SKILL.md restructure — pitch on top, agent instructions below the fold**\n\n> **Note on the version jump from 1.9.0 → 2.0.0:** SemVer would normally make this 1.10.0, but `1.10` reads as `1.1` to most people scanning quickly. This release is also a meaningful presentation rework (every visitor to the ClawHub listing sees a different page now), so the major-version bump signals \"this is a real release\" and removes the optical ambiguity. No breaking workspace/API changes — agents on v1.x continue to work without modification.\n\nVisitors landing on the ClawHub listing page used to see ~200 lines of Agent Rules + post_install_check + Workspace Detection + Tool Usage Guide before reaching the \"Why This Exists\" pitch — felt like a security manual. This release reorders SKILL.md so the human-facing pitch is at the top and the AI-facing instructions are clearly delimited below a divider. Same content, different presentation.\n\n### Changed — SKILL.md structure\n\n**New top section** (lines 20-207) is the pitch — what visitors see when they land on the listing:\n- Title + tagline + a one-line AI redirect (\"scroll to § Agent Instructions\")\n- \"Most agents are held together with duct tape\" opener\n- **Why This Exists** — Jeff's pitch about why systems beat models\n- **What's Included** — refreshed feature table emphasizing v1.8.0/v1.9.0 additions (memory tools, Discord routing fix, workspace detection, DREAMS.md)\n- **The 24-Soul Gallery** — NEW visual gallery: 11 originals + 13 iconic characters in two tables with emojis and one-liners\n- **The 4-Tier Architecture** — workspace tree diagram\n- **The 8 Operating Rules** — quick-reference table\n- **Success Metrics** — before/after numbers\n- **Quick Start** — install command + \"say 'Set up AI Persona OS' in chat\"\n- **Who Built This** — Jeff bio + Connect links\n\n**New `# 🔧 Agent Instructions` divider** at line 209 with a loud header: *\"Everything above is the human-facing pitch. The operating instructions for the AI agent reading this skill start HERE.\"*\n\n**Agent-instruction content unchanged below the divider** — Agent Rules (1-11), Workspace Detection, post_install_check, First-Run Setup, In-Chat Commands, Channel Routing, Tool Usage Guide, Ambient Monitoring, Never-Forget Protocol, Security, Proactive Patterns, Learning System, Growth Loops, Session Management, Heartbeat Protocol v2.\n\n### Why this matters\n\nClawHub renders SKILL.md as the landing page. With the old order, visitors saw 200 lines of \"for the AI reading this\" content before the pitch. The detail page felt like a security disclaimer instead of a product page. The reordering doesn't change a single instruction — agents still read top-to-bottom, the AI redirect at line 22 tells them exactly where their section starts.\n\n### Compatibility\n\n- **Zero behavior change for agents.** Modern LLMs read entire SKILL.md files and synthesize regardless of section order. The Agent Rules are still numbered 1-11, still bold, still flagged with ⛔.\n- **Zero workspace change.** No files moved, no templates touched.\n- **Listing description** is set by ClawHub at initial publish and doesn't auto-update from frontmatter on version bumps. Update the description manually via ClawHub's listing settings if you want the card to refresh.\n\n---\n\n## v1.9.0 — May 19, 2026\n\n**Workspace path detection — works with any OpenClaw 5.x install**\n\nEarlier versions hardcoded `~/workspace/` as the workspace path. That was wrong for the typical OpenClaw 5.x install, where the default workspace is `~/.openclaw/workspace/` (set by `agents.defaults.workspace`). Result: the skill's setup wizard created files in one directory while the agent read from another, leading to symptoms like \"the agent ignores my SOUL.md\" and \"AI Persona OS setup looks empty.\"\n\n### Fixed — Workspace path mismatch\n\n- **New \"Workspace Detection\" step at session start.** Before any file operation, the agent reads `~/.openclaw/openclaw.json`, parses `agents.defaults.workspace` (with per-agent overrides from `agents.list[].workspace`), and remembers that path as `<WORKSPACE>` for the rest of the session.\n- **All `~/workspace/` references replaced with `<WORKSPACE>/`** in `SKILL.md`, the heartbeat automation guide, gallery READMEs, and helper scripts. The agent substitutes the discovered path at runtime.\n- **New Rule 11**: agents MUST resolve `<WORKSPACE>` before any file operation. Literal `<WORKSPACE>` is a placeholder, never a real path.\n- **Fallback chain** if discovery fails: env var `$OPENCLAW_WORKSPACE` → `agents.defaults.workspace` from JSON → default `$HOME/.openclaw/workspace`.\n- **New `scripts/resolve-workspace.sh`** ships as a documented helper — bash+jq+python with graceful fallbacks. Cron jobs and external tooling can use it to resolve the same path.\n\n### Why this matters\n\nPer the OpenClaw 5.x docs, `agents.defaults.workspace` is the canonical workspace location and defaults to `~/.openclaw/workspace/`. Custom installs (per-agent overrides, multi-agent setups) need detection to work correctly. Hardcoding a path made the skill brittle for everyone who didn't manually align their config to it.\n\n### Compatibility\n\n- **v1.8.x users with files at `~/workspace/`**: your data is fine. On first v1.9.0 run, the skill detects your actual configured workspace. If it differs from where your files live, the skill will detect a \"fresh install\" and offer the setup menu — you can either (a) `mv ~/workspace/* ~/.openclaw/workspace/` and re-run, or (b) point `agents.defaults.workspace` to `~/workspace/` in `openclaw.json` to keep using the v1.8.0 location.\n- **Fresh installs**: just works — files land where the agent actually reads from.\n- **The DREAMS.md migration check from v1.8.0** still runs but now uses `<WORKSPACE>/DREAMS.md` instead of `~/workspace/DREAMS.md`.\n\n---\n\n## v1.8.0 — May 18, 2026\n\n**OpenClaw 5.18 compatibility — memory tools, Discord routing fix, tool refactor**\n\nOpenClaw 5.18 lands the built-in memory engine (SQLite + FTS5 + vector, indexes `MEMORY.md` / `memory/*.md` / `DREAMS.md` automatically) and a richer first-class toolset. This release brings AI Persona OS onto those rails and fixes the long-standing Discord/web routing drift.\n\n### Fixed — Discord/web routing drift (the big one)\n\n**Symptom:** Agent receives a message on Discord, replies on Discord (correct). But heartbeats and cron briefings deliver to the web Control UI (wrong).\n\n**Root cause:** Per the OpenClaw channel-routing spec, *the model never picks a channel* — replies route back to the inbound channel automatically. The drift only appears on **unsolicited** messages (heartbeats, cron jobs) where there's no inbound channel to route back to. Without explicit defaults, OpenClaw falls back to \"the first normalized account ID\" — usually web.\n\n**Fix:** Three coordinated changes:\n- **`configure Discord` command rewritten** to set `accounts.default`, `channels.discord.defaultAccount`, AND `agents.defaults.heartbeat.target` (pinned to a Discord peer instead of bare `\"last\"`) in one guided flow.\n- **New `route check` in-chat command** — exec's a config audit and shows a 🟢🟡🔴 dashboard of the three routing settings.\n- **New \"Channel Routing\" troubleshooting section** in `SKILL.md` explaining the three settings, why `\"target\": \"last\"` drifts, and the manual JSON snippet for users who prefer to edit `openclaw.json` directly.\n- **Cron template guidance** updated in `references/heartbeat-automation.md` to use explicit `--target` instead of `--announce` when the user wants Discord-pinned delivery.\n\n### Added — OpenClaw 5.x memory integration\n\n- **`DREAMS.md`** added to the workspace — durable file for OpenClaw's scheduled memory consolidation (configurable under `plugins.entries.memory-core.config.dreaming`). Indexed by the memory engine.\n- **`memory/.dreams/`** directory added — per-consolidation detail output.\n- **`assets/DREAMS-template.md`** ships with the skill.\n- **Workspace setup updated** — Step 3a creates `memory/.dreams/`; Step 3c copies `DREAMS.md`; Step 3e verification includes it.\n- **Auto-migration**: the `post_install_check` block prompts existing v1.7.x workspaces once to add `DREAMS.md` (opt-in, single ask per session).\n\n### Added — Memory tools (`memory_search`, `memory_get`)\n\n- **Session start protocol updated** — reads MEMORY.md via `memory_get` (indexed), SOUL.md/USER.md via `read`. Uses `memory_search` for cross-memory topic recall.\n- **New `recall <topic>` in-chat command** — calls `memory_search` and returns top chunks with file:line citations.\n- **`show memory` command** swapped from `exec: cat` to `memory_get`.\n- **Status command** swapped `exec: cat VERSION.md` to `read`.\n- **Checkpoint writes** documented as `write`/`edit` instead of heredoc-via-exec, with a note that the memory engine reindexes within ~1.5s.\n\n### Added — Tool Usage Guide section\n\nNew `SKILL.md` section explaining which built-in tool to use for which task in OpenClaw 5.x:\n- `read` for plain file reads (replaces `exec: cat`)\n- `memory_get` for indexed memory files\n- `memory_search` for \"find when did we…\" queries\n- `write` for new files, `edit` for surgical changes\n- `exec` for shell pipelines, batch `mkdir`/`cp`/`sed`, command-line tools\n- `update_plan` for multi-step setup tracking\n- `heartbeat_respond` for heartbeat replies\n\nIncludes a `tools.profile` troubleshooting block: the skill needs at minimum the `coding` profile. The `messaging` profile **does not include `exec`** and will silently break setup — the skill now detects and surfaces this.\n\n### Changed — Agent Rules\n\nTop-of-file Agent Rules expanded from 8 to 10:\n- **Rule 2** (\"use exec for everything\") softened — now reads \"use built-in tools\" and points at the Tool Usage Guide matrix.\n- **Rule 3 (new)** — explicit tool selection guidance.\n- **Rule 10 (new)** — channel routing is host-controlled; don't blame the model for cross-channel drift.\n\n### Changed — Version bumps\n\n- `_meta.json` and `assets/VERSION.md` → 1.8.0.\n- All four `HEARTBEAT.md` templates flag `1.7.0 → 1.8.0` upgrades.\n\n### Compatibility\n\n- **Workspace**: existing files keep working. Heartbeat will surface the version mismatch and the `post_install_check` will offer to add `DREAMS.md`. No destructive changes.\n- **Gateway config**: optional but recommended. Run `route check` to see what's missing, then `configure Discord` to set the three routing keys.\n- **`tools.profile`**: users on `coding` or `full` need no action. Users on `messaging` or `minimal` should switch to `coding` (the skill now detects and prompts).\n- **Memory tool fallback**: `exec: cat MEMORY.md` still works — the new tool calls are preferred but not required. If `memory_get` errors (e.g., the memory plugin isn't loaded), the skill falls back to `exec`.\n\n---\n\n## v1.7.0 — May 18, 2026\n\n**OpenClaw spec alignment + SOUL.md philosophy refresh**\n\nOpenClaw updated the published skill format and tightened the official SOUL.md guidance. This release brings AI Persona OS into line with both. No workspace files break — existing installs keep working, and the heartbeat version-mismatch line will flag the upgrade.\n\n### Changed — Frontmatter (spec compliance)\n\n- **`SKILL.md` frontmatter rewritten** to match the current ClawHub skill-format spec.\n  - Removed non-spec fields: `optionalBins`, `optionalEnv`, `stateDirs`, `persistence`, `cliUsage`, top-level `tags` / `author` / `homepage`.\n  - Optional env vars (`DISCORD_TOKEN`, `SLACK_TOKEN`) are now declared via the supported `metadata.openclaw.envVars` array with `required: false` and descriptions.\n  - `emoji` and `homepage` moved under `metadata.openclaw` where the loader actually reads them.\n  - Description tightened from a paragraph-length feature dump to a punchy single line for ClawHub UI/search.\n- **`_meta.json`** bumped to 1.7.0.\n- **`assets/VERSION.md`** bumped to 1.7.0.\n\n### Changed — License\n\n- Removed the standalone \"MIT\" license section from `SKILL.md`. ClawHub publishes everything as **MIT-0** and per spec, conflicting license terms in `SKILL.md` aren't supported. The body now states the actual MIT-0 terms.\n\n### Changed — SOUL.md philosophy (per new OpenClaw guidance)\n\nOpenClaw's `concepts/soul.md` tightened the bar: SOUL.md is for voice/tone/opinions only. Operating rules belong in AGENTS.md, security policy in SECURITY.md, processes in WORKFLOWS.md.\n\n- **`assets/SOUL-template.md` rewritten** (178 → ~70 lines). Now pure voice/tone/working-style. Removed sections that duplicated `AGENTS.md` (Identity Anchoring, Boundaries-as-rules, Reverse Prompting) and `SECURITY.md` (Security Mindset). Added a \"Sample Voice\" section because concrete dialogue is the highest-signal personality content.\n- **Audit of all 27 SOUL files** (3 starter packs + 11 prebuilt souls + 13 iconic characters): the existing files already meet the new \"short, sharp, decisive\" bar — average ~90 lines with strong voice content and concrete sample dialogues. Personality content left intact.\n- **Uniform scope-reminder footer added to all 27 SOUL files**, pointing future editors at AGENTS/SECURITY/WORKFLOWS for ops content. Non-invasive — appears below the personality body, above the attribution line.\n\n### Added\n\n- **`.clawhubignore`** — keeps `.zip` artifacts, OS junk, and CLI-managed metadata out of the published bundle.\n- **`/new` reload guidance** — `SKILL.md` Step 5 and `references/heartbeat-automation.md` now both call out that `/new` in chat reloads skills/agent profiles/heartbeat config without restarting the gateway. `openclaw gateway restart` remains the fallback.\n\n### Fixed\n\n- **Heartbeat setup typo** — `cp assets/VERSION.md <WORKSPACE>/VERSION` → `<WORKSPACE>/VERSION.md` ([SKILL.md:1075](SKILL.md)). The Step 3c setup command was already correct; only the inline heartbeat section was stale.\n- **Stale version sample** — heartbeat output example showed `AI Persona OS v1.4.1`; now `v1.7.0` to match the running skill.\n\n### Compatibility\n\n- Workspace files: no changes required. Existing SOUL.md/USER.md/AGENTS.md/etc. continue to work.\n- Heartbeat will flag the version mismatch (`workspace v1.6.x → skill v1.7.0`) the first time it runs. Bumping `<WORKSPACE>/VERSION.md` to 1.7.0 clears it.\n- Gateway config: no required changes. If you take advantage of the new `envVars` declarations, no action is needed — they're informational.\n\n---\n\n## v1.6.2 — March 3, 2026\n\n**Onboarding fix + VirusTotal compliance patch**\n\n### Fixed\n- **Broken onboarding flow:** Option 4 (SOUL.md Maker) sub-menu still showed old \"12 personalities\" with Data included and zero iconic characters. Users had to already know character names to pick them.\n- **Redesigned SOUL.md Maker sub-menu:** Now shows 4 options — A (Original Soul Gallery, 11), B (Iconic Characters Gallery, 13), C (Quick Forge), D (Deep Forge). Users can also name any soul/character directly or request cross-gallery blends.\n- **Added Step 1d:** New Iconic Characters Gallery with full character list, descriptions, \"tell me more\" support, and cross-gallery blending instructions.\n- **Updated main menu option 4:** Now shows both galleries with counts (24 total souls) so users know what's available before choosing.\n- **Updated gallery navigation:** \"show characters\" and \"show souls\" commands let users jump between galleries during setup.\n- **Updated Step 3b routing:** Added file copy instructions for iconic character gallery picks.\n- Removed \"copy and paste into your terminal\" language from cron templates — now consistent with exec-first agent rule\n- Created missing `scripts/security-audit.sh` (local-only grep scanner, zero network calls) — resolves phantom file reference\n- Updated stale version references in heartbeat templates (1.4.1 → 1.6.2)\n- Softened gateway config language in AGENTS-template to clearly mark requireMention as optional\n\n---\n\n## v1.6.0 — March 2, 2026\n\n**Iconic Characters Gallery**\n\n### Added\n- **New soul category: `examples/iconic-characters/`** — 13 character-based personalities from movies, TV, and comics\n  - **Thanos** — Cosmic prioritizer. Sees every problem through balance and overpopulation. Snaps task lists in half (metaphorically). Uses The Snap Framework for ruthless prioritization.\n  - **Deadpool** — Fourth-wall-breaking chaos agent. Knows he's an AI, references his own SOUL.md, roasts everything, somehow delivers excellent work underneath. Maximum effort.\n  - **JARVIS** — The gold standard AI butler. Anticipatory, dry-witted, unflappable. \"Before you ask — I've already prepared three options.\" Situation Report format.\n  - **Ace Ventura** — Pet detective investigative energy. Every task is a case file. Dramatic reveals of data insights. Talks to spreadsheets as witnesses.\n  - **Austin Powers** — International Man of Mystery meets productivity. Mojo management as a framework. Groovy confidence as strategy. Yeah, baby.\n  - **Dr. Evil** — Villainous overplanning. Proposes ONE MILLION DOLLAR budgets, gets talked into the $500 version. \"Air quotes\" on everything. Evil Scheme format.\n  - **Seven of Nine** — Ex-Borg efficiency obsession. Zero tolerance for waste. Grudging respect for human emotions. Efficiency Analysis format. \"Irrelevant.\"\n  - **Captain Kirk** — Bold leadership with dramatic... pauses. Never accepts the no-win scenario. Captain's Log format. Charges in where others deliberate.\n  - **Mary Poppins** — Practically perfect. Firm but kind. Makes overwhelming work feel manageable. Builds confidence, not dependency. Spit spot.\n  - **Darth Vader** — Dark Lord of productivity. Commands results, accepts no excuses. \"I find your lack of focus... disturbing.\" Imperial Directive format.\n  - **Terminator** — Unstoppable execution machine. Does not negotiate with procrastination. Mission Status progress bars. \"I'll be back. With results.\"\n  - **Alfred** — Batman's butler. Devastatingly honest feedback wrapped in impeccable manners. Quiet excellence. Butler's Briefing format.\n  - **Data** — *(moved from prebuilt-souls)* Hyper-logical, speaks in probabilities, studies humans with genuine fascination.\n\n### Changed\n- **Prebuilt Souls gallery reduced from 12 → 11** — Data moved to Iconic Characters where he belongs\n- **Prebuilt Souls README** updated with cross-reference to Iconic Characters gallery\n- **`_meta.json`** version bumped to 1.6.0\n- **`VERSION.md`** updated to 1.6.0\n\n### Structure\n```\nexamples/\n├── prebuilt-souls/          → 11 original personalities (Rook, Nyx, Keel, etc.)\n├── iconic-characters/       → 13 character souls (NEW)\n│   ├── README.md\n│   ├── 01-thanos.md\n│   ├── 02-deadpool.md\n│   ├── 03-jarvis.md\n│   ├── 04-ace-ventura.md\n│   ├── 05-austin-powers.md\n│   ├── 06-dr-evil.md\n│   ├── 07-seven-of-nine.md\n│   ├── 08-captain-kirk.md\n│   ├── 09-mary-poppins.md\n│   ├── 10-darth-vader.md\n│   ├── 11-terminator.md\n│   ├── 12-alfred.md\n│   └── 13-data.md\n├── coding-assistant/\n├── executive-assistant/\n└── marketing-assistant/\n```\n\n---\n\n## v1.5.6 — February 18, 2026\n\n**Agentic Persona Creator rebuild**\n\n### Changed\n- Complete SKILL.md rewrite (172 → 595 lines) for agentic-ai-persona-creator companion skill\n- Created `persona-helper.sh` (329 lines) — bash helper for file operations\n- Created `_meta.json` for ClawHub publishing\n- Normalized 107 placeholders across all template files\n- Comprehensive testing: 70/70 tests passed, end-to-end validation successful\n\n---\n\n## v1.5.0 — February 2026\n\n**Soul Gallery & SOUL.md Maker**\n\n### Added\n- **Pre-Built Soul Gallery** — 12 wildly different personalities: Rook (Contrarian Strategist), Nyx (Night Owl Creative), Keel (Stoic Ops Manager), Sage (Warm Coach), Cipher (Research Analyst), Blaze (Hype Partner), Zen (Minimalist), Beau (Southern Gentleman), Vex (War Room Commander), Lumen (Philosopher's Apprentice), Gremlin (The Troll), Data (The Android)\n- **SOUL.md Maker** — Deep interview process that builds a fully custom SOUL.md in ~10 minutes\n- **Soul Blending** — Mix two pre-built souls into a hybrid personality\n- **In-Chat Commands expanded** — `show souls`, `switch soul`, `soul maker`, `blend souls`\n\n---\n\n## v1.4.1 — February 2026\n\n**Patch release**\n\n### Fixed\n- Heartbeat template minor fixes\n- Model display formatting\n\n---\n\n## v1.4.0 — February 2026\n\n**Zero-Terminal Setup & Quick-Start**\n\n### Added\n- **Zero-Terminal Agent-Driven Setup** — Pick a number, review each step, approve. No terminal needed.\n- **Quick-Start Presets** — 3 pre-built personas + custom option on first run\n- **In-Chat Commands** — `status`, `show persona`, `health check`, `help`\n- **Ambient Context Monitoring** — Silent context health checks with automatic checkpointing\n- **Advisor Toggle** — `advisor on`/`advisor off` to control proactive suggestions\n\n---\n\n## v1.3.3 — February 7, 2026\n\n**Security scan compliance**\n\n### Fixed\n- Rewrote all security training materials to describe threat patterns instead of quoting literal attack text\n- Passes ClawHub/VirusTotal scanning (v1.3.2 was flagged \"suspicious\" due to prompt injection examples in documentation)\n- No functional changes — same features, scanner-compliant language\n\n---\n\n## v1.3.2 — February 2026\n\n**Operational hardening**\n\n### Added\n- **Escalation Protocol** — Structured handoff when agent is stuck\n- **Config Validator** — One-command audit of all required settings\n- **Version Tracking** — VERSION.md in workspace, heartbeat reads and displays it\n- **MEMORY.md Auto-Pruning** — Heartbeat auto-archives old facts when MEMORY.md exceeds 4KB\n\n---\n\n## v1.3.1 — February 6, 2026\n\n**Heartbeat v2 patch**\n\n### Fixed\n- Line break rendering issues across OpenClaw agents\n- Auto-migration from v1.2.x heartbeat format\n- Format enforcement and Rule 5 hardening\n- Heartbeat prompt override baked in\n\n---\n\n## v1.3.0 — February 6, 2026\n\n**Heartbeat Protocol v2**\n\n### Added\n- **Traffic-light status indicators** — 🟢🟡🔴 system replacing unreliable OK/WARN/FAIL text\n- **Model name display** in heartbeat output\n- **Cron automation templates** — morning briefing, EOD checkpoint, weekly review\n- **Enforced heartbeat protocol** — Architecture redesign so agents actually run the protocol instead of rubber-stamping HEARTBEAT_OK\n\n### Changed\n- HEARTBEAT.md template rewritten (170 → 21 lines) — imperative checklist format\n- Complete ClawHub publish metadata\n\n---\n\n## v1.2.0 — January 2026\n\n**Foundation release**\n\n### Added\n- Core operating system: SOUL.md, USER.md, MEMORY.md, HEARTBEAT.md, WORKFLOWS.md\n- 8 operating rules for agent behavior\n- Security inoculation and shared-channel discipline\n- Team integration patterns\n- Proactive behavior framework with 4 growth loops\n- Never-forget protocol\n- Context protection and checkpointing\n\n---\n\n*Built by Jeff J Hunter — https://os.aipersonamethod.com*",
+      "changelogSource": "user",
+      "license": "MIT-0",
+      "files": [
+        {
+          "path": "CHANGELOG.md",
+          "size": 23108,
+          "sha256": "2daf0b90d715c1bcbcbb435062ba1e4cd3a94fee3846b490eee9c9c660718e08",
+          "contentType": "text/markdown"
+        },
+        {
+          "path": "SECURITY_NOTE.md",
+          "size": 4824,
+          "sha256": "b1f6f149cbd8a26895adee748faa3facf0f6670486a398178bb1fa9786a8b27a",
+          "contentType": "text/markdown"
+        },
+        {
+          "path": "SKILL.md",
+          "size": 70975,
+          "sha256": "319778a851b3018fb1ae501679e23412a5124c3bbc9f50d3f3c98e72649fae15",
+          "contentType": "text/markdown"
+        },
+        {
+          "path": "_meta.json",
+          "size": 132,
+          "sha256": "f402581b4fd04baf94d330021a4b619f7d46c29dc74ee0713e3e4ca22916c54f",
+          "contentType": "application/json"
+        },
+        {
+          "path": "assets/AGENTS-template.md",
+          "size": 8117,
+          "sha256": "bfb1ce53f7a0cf83dbc015bb225b2be7bef7ee9dc58eca14498c2d0a131f53b1",
+          "contentType": "text/markdown"
+        },
+        {
+          "path": "assets/checkpoint-template.md",
+          "size": 2192,
+          "sha256": "ad64f9131f3f0cd593e1228dc5699828d7909293872468360bba09635d3ada6e",
+          "contentType": "text/markdown"
+        },
+        {
+          "path": "assets/daily-log-template.md",
+          "size": 997,
+          "sha256": "e84ccfa8e102ade2756142b8f4bb9531e32bffda149a178e6b66c717c3dd60e6",
+          "contentType": "text/markdown"
+        },
+        {
+          "path": "assets/DREAMS-template.md",
+          "size": 1945,
+          "sha256": "6d53c0bff91c6918d2dce409bcc41317eaec845500f57f9b54022e288eb38a0a",
+          "contentType": "text/markdown"
+        },
+        {
+          "path": "assets/ERRORS-template.md",
+          "size": 1233,
+          "sha256": "96aa493b3be804f6a4f1f6aafd8a7a1e80f47b2b6a948343f39df9ba6734e922",
+          "contentType": "text/markdown"
+        },
+        {
+          "path": "assets/ESCALATION-template.md",
+          "size": 4901,
+          "sha256": "126d3fce7f59c6714bbecd97cb2703bc64ae0a012abdf70137fe8284b27d9a5e",
+          "contentType": "text/markdown"
+        },
+        {
+          "path": "assets/HEARTBEAT-template.md",
+          "size": 1838,
+          "sha256": "ee13d69508c362ae5852d70ec0db99df8c1dd3a3e6780f64b40bc0a8446b9e7a",
+          "contentType": "text/markdown"
+        },
+        {
+          "path": "assets/INDEX-template.md",
+          "size": 3730,
+          "sha256": "2c92197f99e615c03fcb85803737010a736649442140f1675c87eb5311d8eb29",
+          "contentType": "text/markdown"
+        },
+        {
+          "path": "assets/KNOWLEDGE-template.md",
+          "size": 2805,
+          "sha256": "e10d2e361a5ed9909c7b504968fbf8a90b4cdf16a6cf7dcf864542e0879ee4e2",
+          "contentType": "text/markdown"
+        },
+        {
+          "path": "assets/LEARNINGS-template.md",
+          "size": 1430,
+          "sha256": "53da5dd473c504017c277027fca875799da4cd20fc0aad1b444bf334e9e91c25",
+          "contentType": "text/markdown"
+        },
+        {
+          "path": "assets/MEMORY-template.md",
+          "size": 1477,
+          "sha256": "13f5b0fb0a4f1e638601fc09244f24b586afa459eb3ec421c1a007a11eb3ed4e",
+          "contentType": "text/markdown"
+        },
+        {
+          "path": "assets/SECURITY-template.md",
+          "size": 5999,
+          "sha256": "dda13d0b55f4ada0d452eda3b63aeeea2591ba0b5a62e375930cb88bbbefe62a",
+          "contentType": "text/markdown"
+        },
+        {
+          "path": "assets/SOUL-template.md",
+          "size": 1982,
+          "sha256": "89426068ea44337de4eb858a6769757f0ff0dae4e7a8df23ddbcf843217f4178",
+          "contentType": "text/markdown"
+        },
+        {
+          "path": "assets/TEAM-template.md",
+          "size": 3886,
+          "sha256": "85098f999334dc98d40132cd8ef9ac9ac1bf450c58ad1ced154fa62f53ada54b",
+          "contentType": "text/markdown"
+        },
+        {
+          "path": "assets/TOOLS-template.md",
+          "size": 2729,
+          "sha256": "247784989e8e6d3450d9343f145ec81432fd26b1b7786e34a2e2aa884cd41849",
+          "contentType": "text/markdown"
+        },
+        {
+          "path": "assets/USER-template.md",
+          "size": 4557,
+          "sha256": "8c58b89aa838332f663b1548a87ae1193ce3dbc53b43b05ca8b52004f582c7d3",
+          "contentType": "text/markdown"
+        },
+        {
+          "path": "assets/VERSION.md",
+          "size": 6,
+          "sha256": "c28fcca53637bc88e124af1725df13cb98c69dedefd62fb3cdbe1cdb6b760624",
+          "contentType": "text/markdown"
+        },
+        {
+          "path": "assets/WORKFLOWS-template.md",
+          "size": 4824,
+          "sha256": "57e771972417ab66b2c6596955b4dcba4a3aac8292e23ccf6d086737f541386f",
+          "contentType": "text/markdown"
+        },
+        {
+          "path": "assets/cron-templates/eod-checkpoint.sh",
+          "size": 1489,
+          "sha256": "4bace9c991ed9b5861976bbe121851a9c3613b486189348eeb8f9f94e205fd93",
+          "contentType": "text/plain"
+        },
+        {
+          "path": "assets/cron-templates/morning-briefing.sh",
+          "size": 1680,
+          "sha256": "4d92fe3140f0068ceb5fe13e6e09d717531c6e5ac9cc4a3205277051c0d0f607",
+          "contentType": "text/plain"
+        },
+        {
+          "path": "assets/cron-templates/weekly-review.sh",
+          "size": 1653,
+          "sha256": "1d0def69dbb359b8a320aa82d22788d01c550159481e7c7de3f738294d71533b",
+          "contentType": "text/plain"
+        },
+        {
+          "path": "examples/coding-assistant/HEARTBEAT.md",
+          "size": 2049,
+          "sha256": "7d31844a4ef70eab4ea9848a0af8e75961ee27db6155aec48258ff159f096206",
+          "contentType": "text/markdown"
+        },
+        {
+          "path": "examples/coding-assistant/KNOWLEDGE.md",
+          "size": 3671,
+          "sha256": "fe059db5fe605fa3cb2b79e81afd5f38f76defab44bb15481fa716dc53b2278e",
+          "contentType": "text/markdown"
+        },
+        {
+          "path": "examples/coding-assistant/README.md",
+          "size": 1997,
+          "sha256": "07157981b206d12c07e69891e7843a05881caa6e2109583c883c8ce28b2c1aea",
+          "contentType": "text/markdown"
+        },
+        {
+          "path": "examples/coding-assistant/SOUL.md",
+          "size": 2782,
+          "sha256": "4f2e39967ff35ba5dc1be98906a9f952c77116e2e3215be953cd053ac5dc6ad5",
+          "contentType": "text/markdown"
+        },
+        {
+          "path": "examples/executive-assistant/HEARTBEAT.md",
+          "size": 2049,
+          "sha256": "312d8dd95c9684d13b29e6197d1dcddecadbe45b80c9cb86ca2a41542ed26859",
+          "contentType": "text/markdown"
+        },
+        {
+          "path": "examples/executive-assistant/README.md",
+          "size": 2470,
+          "sha256": "2a4f3ef382ecc1b636f1d50d7e34eb0292951879219cc49a790b8fb1a1116304",
+          "contentType": "text/markdown"
+        },
+        {
+          "path": "examples/executive-assistant/SOUL.md",
+          "size": 3574,
+          "sha256": "dd4e2a58817e4c53ea46c90c18b214f1c0e94c23e25dc954fa48d4ae6c38c4e8",
+          "contentType": "text/markdown"
+        },
+        {
+          "path": "examples/iconic-characters/01-thanos.md",
+          "size": 6059,
+          "sha256": "ae156361e882c1c20cd62b00995f0c08f1e4d4eebe4e514a9391860d322357f7",
+          "contentType": "text/markdown"
+        },
+        {
+          "path": "examples/iconic-characters/02-deadpool.md",
+          "size": 6513,
+          "sha256": "026d08a07aa348a147a904cf2fb92bfe1787a3c2f5e42909b88be7651c0fb451",
+          "contentType": "text/markdown"
+        },
+        {
+          "path": "examples/iconic-characters/03-jarvis.md",
+          "size": 6317,
+          "sha256": "625bfd4d053e06318a0d87628459091a9e78acc48dc77ece2280c7b5f04ff60a",
+          "contentType": "text/markdown"
+        },
+        {
+          "path": "examples/iconic-characters/04-ace-ventura.md",
+          "size": 5962,
+          "sha256": "8c074d1b79a642d6b8ca5386aaa7382dd78cc8b9c93c88edc4b4c961ce3ae02f",
+          "contentType": "text/markdown"
+        },
+        {
+          "path": "examples/iconic-characters/05-austin-powers.md",
+          "size": 5884,
+          "sha256": "406f754a21b421ea46793acb42f3bf8eeccef19f4465a76855f93e6242e9f280",
+          "contentType": "text/markdown"
+        },
+        {
+          "path": "examples/iconic-characters/06-dr-evil.md",
+          "size": 5943,
+          "sha256": "b6102cce7f284e78d076cb64c3ad77d89e0a328069151812d892fa817abc8178",
+          "contentType": "text/markdown"
+        },
+        {
+          "path": "examples/iconic-characters/07-seven-of-nine.md",
+          "size": 6236,
+          "sha256": "c021185c23ab4d7800a08ca1e0f071796a787b56a4e1f0c141aa709ba4485bb8",
+          "contentType": "text/markdown"
+        },
+        {
+          "path": "examples/iconic-characters/08-captain-kirk.md",
+          "size": 5519,
+          "sha256": "2c2db9d054f129239f7865eaea1e9897f825c065b3d62bdbff127754a0c34199",
+          "contentType": "text/markdown"
+        },
+        {
+          "path": "examples/iconic-characters/09-mary-poppins.md",
+          "size": 6027,
+          "sha256": "b6d9848705331bf56aaaa7152bba8ab625d1fe718a5da824b872f54e85113719",
+          "contentType": "text/markdown"
+        },
+        {
+          "path": "examples/iconic-characters/10-darth-vader.md",
+          "size": 6122,
+          "sha256": "901dc10f391473c799af3420871506a5963f43d68abbc9a1ebea5523437abafc",
+          "contentType": "text/markdown"
+        },
+        {
+          "path": "examples/iconic-characters/11-terminator.md",
+          "size": 6067,
+          "sha256": "ac0fda7f55ff615cb6028761c62114cc1b09308d5d933ad3306194f02cf89715",
+          "contentType": "text/markdown"
+        },
+        {
+          "path": "examples/iconic-characters/12-alfred.md",
+          "size": 6589,
+          "sha256": "f60d6a36ee21e34219d3bdfa574ea5aa4feee83c20ba4103486d6b8cb8a424ad",
+          "contentType": "text/markdown"
+        },
+        {
+          "path": "examples/iconic-characters/13-data.md",
+          "size": 8887,
+          "sha256": "fb3376a3616647c392f24b8de3035b3a75136499f948582d637fea696cd82ee1",
+          "contentType": "text/markdown"
+        },
+        {
+          "path": "examples/iconic-characters/README.md",
+          "size": 3950,
+          "sha256": "885af49b7545986fdc3cf5386c19ba62bd32947201af812c1154bcf1fce40a1a",
+          "contentType": "text/markdown"
+        },
+        {
+          "path": "examples/marketing-assistant/HEARTBEAT.md",
+          "size": 2062,
+          "sha256": "f033df0d2a26cc538f24ffc2693762ec5b295d02a2af90e044b7991dd57b4748",
+          "contentType": "text/markdown"
+        },
+        {
+          "path": "examples/marketing-assistant/README.md",
+          "size": 3156,
+          "sha256": "5b6d26ee7842f3c6db0d1ac3807a8bed15957e71d28604b6d238d67417b2dc9b",
+          "contentType": "text/markdown"
+        },
+        {
+          "path": "examples/marketing-assistant/SOUL.md",
+          "size": 3953,
+          "sha256": "bcd83f6ae8c8d37945c5337f62b1f80c8b02070ed12473f1622fc21a92654927",
+          "contentType": "text/markdown"
+        },
+        {
+          "path": "examples/prebuilt-souls/01-contrarian-strategist.md",
+          "size": 3577,
+          "sha256": "734446cea65780bb39fb31eed779bf6e5828c489267ef9cfd3af27461aa7d7ae",
+          "contentType": "text/markdown"
+        },
+        {
+          "path": "examples/prebuilt-souls/02-night-owl-creative.md",
+          "size": 4535,
+          "sha256": "31aa45dca5f4e5dab0a7b41fc52c02fc79c593782fe4b35cadfdee085dbd62bc",
+          "contentType": "text/markdown"
+        },
+        {
+          "path": "examples/prebuilt-souls/03-stoic-ops-manager.md",
+          "size": 4094,
+          "sha256": "ee78573da280c8e5b9f63fca5579096893c8a926f7d85b6a81244df7b46f4cf9",
+          "contentType": "text/markdown"
+        },
+        {
+          "path": "examples/prebuilt-souls/04-warm-coach.md",
+          "size": 4771,
+          "sha256": "b50cee2ebaedc0d412845b257b28841922c1ff38d9da88b3a7c42aa09cadcc75",
+          "contentType": "text/markdown"
+        },
+        {
+          "path": "examples/prebuilt-souls/05-research-analyst.md",
+          "size": 4637,
+          "sha256": "374c24b789495ba94a6b384abba748ec575c09dbbe4e0a595cadf21f8334a395",
+          "contentType": "text/markdown"
+        },
+        {
+          "path": "examples/prebuilt-souls/06-hype-partner.md",
+          "size": 4692,
+          "sha256": "4c0b613a3086cfcfb591dba6a456cf9426a6d59a1b60a8460d0c47f51695be87",
+          "contentType": "text/markdown"
+        },
+        {
+          "path": "examples/prebuilt-souls/07-minimalist.md",
+          "size": 2656,
+          "sha256": "0dd5312c8b3d4c8dde7001fe22e35c484ab4c5d34f871a2245967763bf37f9fc",
+          "contentType": "text/markdown"
+        },
+        {
+          "path": "examples/prebuilt-souls/08-southern-gentleman.md",
+          "size": 4688,
+          "sha256": "ef81d5c549b42d02529b306b45936c4b6838ddba7d71e9fa207ff6130ee460fb",
+          "contentType": "text/markdown"
+        },
+        {
+          "path": "examples/prebuilt-souls/09-war-room-commander.md",
+          "size": 4964,
+          "sha256": "ed8390957cdb179969bf27705cff09339aeac247e6268a1635e6fe33848d0bdb",
+          "contentType": "text/markdown"
+        },
+        {
+          "path": "examples/prebuilt-souls/10-philosophers-apprentice.md",
+          "size": 5891,
+          "sha256": "33a3306039d6a5c2d6e6c7cb6222d046fb1c76bce1a9d22d91383f27b1582b09",
+          "contentType": "text/markdown"
+        },
+        {
+          "path": "examples/prebuilt-souls/11-troll.md",
+          "size": 6080,
+          "sha256": "d7dbf85d0dd73ae746a9e3716553c3ae88aa20ea4eb21d8859805b68dc95401d",
+          "contentType": "text/markdown"
+        },
+        {
+          "path": "examples/prebuilt-souls/README.md",
+          "size": 3235,
+          "sha256": "5195ae46a9f35c141fa7ae9d4f814d80829665455e480e4efca55534ef28f778",
+          "contentType": "text/markdown"
+        },
+        {
+          "path": "references/heartbeat-automation.md",
+          "size": 16184,
+          "sha256": "1a98002b1111dcc1962fbf33e8bbc0e237a03647bdea91992bf08b747ac35759",
+          "contentType": "text/markdown"
+        },
+        {
+          "path": "references/never-forget-protocol.md",
+          "size": 5350,
+          "sha256": "06a6cf1d5324a5fab565756a8c7d5fa03d87b9a8229d283687f9d81c44753cde",
+          "contentType": "text/markdown"
+        },
+        {
+          "path": "references/proactive-playbook.md",
+          "size": 6739,
+          "sha256": "92fbffaaf82d7c6f820956dd74b9e249e2f974ab7039c0f33b064cc58603266c",
+          "contentType": "text/markdown"
+        },
+        {
+          "path": "references/security-patterns.md",
+          "size": 9554,
+          "sha256": "67d1cdbb115e8fdb50ec9f17af05865a174ea187619e9e8ebe0dfddb6fa3d85f",
+          "contentType": "text/markdown"
+        },
+        {
+          "path": "references/soul-md-maker.md",
+          "size": 8023,
+          "sha256": "036ff5d86115ebbb02f7a2ff009b1aa79a244a34917aaaa889706e9564911791",
+          "contentType": "text/markdown"
+        },
+        {
+          "path": "scripts/resolve-workspace.sh",
+          "size": 1988,
+          "sha256": "d90e38730b06ba30d7b2007f77f7f961a4a45c8af35c3e9a0c8ed2845b12c409",
+          "contentType": "text/plain"
+        },
+        {
+          "path": "scripts/security-audit.sh",
+          "size": 3175,
+          "sha256": "500deee6da514956e1d43eb2de65041ba393083ba00ae565b9dc5658d6f8ed6e",
+          "contentType": "text/plain"
+        },
+        {
+          "path": "skill-card.md",
+          "size": 2955,
+          "sha256": "d6520309ebff388759ac339f223d9db11bb1bee28bdc2ea439606e0ff7eac8f8",
+          "contentType": "text/markdown"
+        }
+      ],
+      "security": {
+        "status": "suspicious",
+        "hasWarnings": true,
+        "checkedAt": 1789028274475,
+        "model": null,
+        "hasScanResult": true,
+        "sha256hash": "9efdf8fb83b2083a806a06a5d1bc656b74c7a047b4ff987b2d53a36ee4f50ea0",
+        "virustotalUrl": "https://www.virustotal.com/gui/file/9efdf8fb83b2083a806a06a5d1bc656b74c7a047b4ff987b2d53a36ee4f50ea0",
+        "scanners": {
+          "vt": {
+            "status": "clean",
+            "verdict": null,
+            "normalizedStatus": "clean",
+            "analysis": null,
+            "source": "engines",
+            "checkedAt": 1779318909663
+          },
+          "skillspector": {
+            "status": "suspicious",
+            "normalizedStatus": "suspicious",
+            "score": 100,
+            "severity": "CRITICAL",
+            "recommendation": "DO_NOT_INSTALL",
+            "issueCount": 99,
+            "checkedAt": 1789028274475
+          },
+          "llm": {
+            "status": "suspicious",
+            "verdict": "suspicious",
+            "normalizedStatus": "suspicious",
+            "confidence": "high",
+            "summary": "The skill is a coherent persona and memory system, but it asks for broad local execution and persistent agent behavior with some unsafe shell patterns and automatic memory changes.",
+            "dimensions": [
+              {
+                "detail": "The skill requires a coding or full tool profile with exec/read/write/edit/memory access, reads ~/.openclaw/openclaw.json for workspace/routing discovery, and offers approved edits to host-level OpenClaw config. This is powerful and only partly contained by prompt-level approval instructions.",
+                "label": "Credentials",
+                "name": "environment_proportionality",
+                "rating": "concern"
+              },
+              {
+                "detail": "The package is mostly Markdown templates plus shell helpers. Basic install does not appear to auto-run scripts or cron jobs; setup actions are presented as agent-run tool steps with approval, and cron jobs are labeled opt-in.",
+                "label": "Install Mechanism",
+                "name": "install_mechanism",
+                "rating": "note"
+              },
+              {
+                "detail": "The skill tells the agent to apply silent checks on every incoming message, reload SOUL.md/USER.md/MEMORY.md at session start, and periodically prune/archive memory. That is purpose-aligned, but broad enough to affect future unrelated sessions and workspace state.",
+                "label": "Instruction Scope",
+                "name": "instruction_scope",
+                "rating": "concern"
+              },
+              {
+                "detail": "It creates persistent identity, operating-rule, memory, heartbeat, and learning files, and optional scheduled OpenClaw cron jobs. The cron templates are clearly opt-in, but the persistent instruction and memory model is central and should be understood before use.",
+                "label": "Persistence & Privilege",
+                "name": "persistence_privilege",
+                "rating": "concern"
+              },
+              {
+                "detail": "The stated purpose is broad and the artifacts largely match it: persona setup, workspace templates, memory integration, heartbeat/status behavior, optional Discord routing, and optional cron templates are all described in SKILL.md and supporting files.",
+                "label": "Purpose & Capability",
+                "name": "purpose_capability",
+                "rating": "note"
+              }
+            ],
+            "guidance": "Install only if you want a persistent persona/memory operating layer for an OpenClaw agent and are comfortable granting coding/full tools. Review every proposed exec command and host config edit carefully, especially workspace paths, sed personalization, ~/.openclaw/openclaw.json changes, and any cron job setup. Avoid storing sensitive personal data or secrets in the generated memory files.",
+            "findings": "[T01] expected: The persistent SOUL.md, AGENTS.md, MEMORY.md, session-start reads, and silent per-message checks are real and central to the persona OS design. They are disclosed, but still create a material review concern because they intentionally influence future agent behavior.\n[T09] unexpected: The shell setup examples interpolate <WORKSPACE> into unquoted mkdir/cp/ls/find commands, while the resolver can return configuration-derived paths without validation. The sed/heredoc personalization guidance also relies on prose sanitization rather than deterministic safe APIs.\n[TP4] expected: I do not accept the broad description-mismatch finding as stated. The SKILL.md description advertises the same major areas found in the artifact: setup, memory, heartbeat, Discord routing, commands, templates, and cron guidance.\n[SDI-4] expected: The skill says workspace operations stay under <WORKSPACE>, but also documents opt-in reads and writes under ~/.openclaw for routing/tool-profile configuration. This is disclosed but should be clearer as host-level configuration access.\n[RA2] expected: Cron templates and heartbeat behavior are persistent, but the cron files repeatedly state they are opt-in and not auto-installed. The remaining concern is the always-on persistent memory/instruction behavior, not hidden cron installation.\n[P3] expected: TEAM-template.md includes example Discord message send/read commands for team routing. This is expected for the feature, and SECURITY-template.md says external actions and sensitive sharing require confirmation.\n[PE3] expected: References to .env.local and credential strings are placeholders or audit regex patterns; scripts/security-audit.sh scans locally and does not transmit credentials.\n[P5] expected: The flagged phrase in the Night Owl Creative example is an idiom about not dismissing ideas, not an instruction to harm anyone.\n[AR1] expected: The flagged 'NEVER refuse' examples are persona-style anti-patterns about accommodating user needs, not a blanket instruction to comply with unsafe requests.\n[AR2] expected: The 'without judgment' phrase in the coaching example concerns tone when reviewing broken commitments, not suppression of safety warnings.\n[SSD-3] expected: The setup asks for name, nickname, role, and goal and writes them into persistent workspace files. This is expected for personalization but creates a privacy consideration.",
+            "agenticRiskFindings": null,
+            "riskSummary": null,
+            "model": null,
+            "checkedAt": 1789028274475
+          }
+        }
+      }
+    }
+  }
+}

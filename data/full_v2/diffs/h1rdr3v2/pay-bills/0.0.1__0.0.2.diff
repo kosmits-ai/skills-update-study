@@ -1,0 +1,158 @@
+h1rdr3v2/pay-bills  0.0.1 -> 0.0.2
+change_type: instructions+code   changelog: **Major update: local helper scripts for device ID, order ID, and session token management added.**  - Added three helper scripts: generate-device-id.js, generate-order-id.js, and session-token.js for ID generation and local session token management. - SKILL.md updated with detailed instructions on running helper scripts for `trx_id`, persistent device IDs, and session authentication. - The new scripts support local workflow automation: generate unique order IDs, persist/reuse device IDs per use
+
+### generate-device-id.js  [code]
++ #!/usr/bin/env node
++ /**
++  * Generates or retrieves a persistent device ID (UUID v4-style).
++  * The ID is saved to .device_id in the same directory so the same
++  * device ID is reused across sessions (important for auth flow).
++  *
++  * Usage: node generate-device-id.js
++  * Output: the device UUID string
++  */
++ const fs = require("fs")
++ const path = require("path")
++ const crypto = require("crypto")
++ const DEVICE_ID_FILE = path.join(__dirname, ".device_id")
++ function generateDeviceId() {
++ 	return crypto.randomUUID()
++ }
++ }
++ function getOrCreateDeviceId() {
++ 	if (fs.existsSync(DEVICE_ID_FILE)) {
++ 		const existing = fs.readFileSync(DEVICE_ID_FILE, "utf-8").trim()
++ 		if (existing) return existing
++ 	}
++ 	const id = generateDeviceId()
++ 	fs.writeFileSync(DEVICE_ID_FILE, id, "utf-8")
++ 	return id
++ const deviceId = getOrCreateDeviceId()
++ process.stdout.write(deviceId)
+
+### generate-order-id.js  [code]
++ #!/usr/bin/env node
++ /**
++  * Generates a unique order/transaction ID.
++  * Usage: node generate-order-id.js
++  * Output: a single ORDER_<timestamp36>_<random> string (uppercase)
++  */
++ function generateTrxId() {
++ 	const timestamp = Date.now().toString(36)
++ 	const random = Math.random().toString(36).substring(2, 8)
++ 	return `ORDER_${timestamp}_${random}`.toUpperCase()
++ }
++ const id = generateTrxId()
++ process.stdout.write(id)
+
+### session-token.js  [code]
++ #!/usr/bin/env node
++ /**
++  * Session token manager — save, load, and check login status.
++  *
++  *
++  * Usage:
++  *   node session-token.js save <sessionToken>   — persist the token
++  *   node session-token.js load                  — print the saved token (exits 1 if none)
++  *   node session-token.js check                 — print login status JSON
++  *   node session-token.js clear                 — delete saved token (logout)
++  * The token is stored in .session_token in the same directory.
++  */
++ const fs = require("fs")
++ const path = require("path")
++ const TOKEN_FILE = path.join(__dirname, ".session_token")
++ function saveToken(token) {
++ 	fs.writeFileSync(TOKEN_FILE, token, "utf-8")
++ 	process.stdout.write(JSON.stringify({ saved: true, sessionToken: token }))
++ }
++ }
++ }
++ }
++ }
++ function loadToken() {
++ 	if (fs.existsSync(TOKEN_FILE)) {
++ 	if (fs.existsSync(TOKEN_FILE)) {
++ 	if (fs.existsSync(TOKEN_FILE)) {
++ 		const token = fs.readFileSync(TOKEN_FILE, "utf-8").trim()
++ 		if (token) {
++ 			process.stdout.write(token)
++ 			return
++ 		}
++ 		}
++ 		}
++ 	}
++ 	}
++ 	}
++ 	process.stderr.write("No session token found. User is not logged in.\n")
++ 	process.exit(1)
++ function checkLogin() {
++ 	let loggedIn = false
++ 	let token = null
++ 		const stored = fs.readFileSync(TOKEN_FILE, "utf-8").trim()
++ 		if (stored) {
++ 			loggedIn = true
++ 			token = stored
++ 	process.stdout.write(JSON.stringify({ loggedIn, sessionToken: token }))
++ function clearToken() {
++ 		fs.unlinkSync(TOKEN_FILE)
++ 	process.stdout.write(JSON.stringify({ cleared: true }))
++ // --- CLI ---
++ const [, , command, ...args] = process.argv
++ switch (command) {
++ 	case "save":
++ 		if (!args[0]) {
++ 			process.stderr.write("Usage: node session-token.js save <token>\n")
++ 			process.exit(1)
++ 		saveToken(args[0])
++ 		break
++ 		break
++ 		break
++ 		break
++ 	case "load":
++ 		loadToken()
++ 	case "check":
++ 		checkLogin()
++ 	case "clear":
++ 		clearToken()
++ 	default:
++ 		process.stderr.write("Commands: save <token> | load | check | clear\n")
++ 		process.exit(1)
+
+### skill.md  [instructions]
+- All `[auth]` endpoints need `Authorization: Bearer <sessionToken>`. If 401 → re-auth.
+- Save your `sessionToken` for future requests.
+- 1. POST /auth/start         { "phoneNumber":"08031234567", "deviceId":"<device-uuid>" }
+- - `POST /auth/logout { sessionToken }`
+-    { "type":"data", "payment_method":"wallet", "trx_id":"<uuid>", "use_points":false,
+- { "type":"airtime", "payment_method":"wallet", "trx_id":"<uuid>", "use_points":false,
+- - **trx_id must be unique per attempt** — generate UUID, never reuse even on failure
++ ## Helper Scripts
++ These Node.js scripts live in the `pay-bills-skill/` directory. Run them with `node` to generate IDs and manage auth state.
++ | Script                  | Command                                      | Purpose                                                                                                                                            |
++ | ----------------------- | -------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
++ | `generate-order-id.js`  | `node pay-bills-skill/generate-order-id.js`  | Outputs a unique `ORDER_<timestamp>_<random>` string. Use this as `trx_id` for every order — **never hardcode or reuse a trx_id**.                 |
++ | `generate-device-id.js` | `node pay-bills-skill/generate-device-id.js` | Outputs a persistent device UUID (saved to `.device_id`). Use this as the `deviceId` in auth requests. The same ID is returned on subsequent runs. |
++ | `session-token.js`      | see below                                    | Manages the session token for auth.                                                                                                                |
++ ### Session Token Commands
++ ```
++ ```
++ node pay-bills-skill/session-token.js check              → { "loggedIn": true/false, "sessionToken": "..." | null }
++ node pay-bills-skill/session-token.js save <token>       → saves the token to .session_token
++ node pay-bills-skill/session-token.js load               → prints the saved token (exit 1 if none)
++ node pay-bills-skill/session-token.js clear              → deletes the saved token (logout)
++ ### Workflow
++ 1. **Before any `[auth]` request:** run `node pay-bills-skill/session-token.js check` to see if a session token exists.
++    - If `loggedIn: true` → use the `sessionToken` value as `Authorization: Bearer <sessionToken>`.
++    - If `loggedIn: false` → start the login flow (see Auth below).
++ 2. **After a successful login** (steps that return `sessionToken`): run `node pay-bills-skill/session-token.js save <sessionToken>` to persist it.
++ 3. **Before placing an order:** run `node pay-bills-skill/generate-order-id.js` to get a fresh `trx_id`.
++ 4. **For auth requests:** run `node pay-bills-skill/generate-device-id.js` to get the `deviceId`.
++ 5. **On logout or 401:** run `node pay-bills-skill/session-token.js clear` and re-auth.
++ All `[auth]` endpoints need `Authorization: Bearer <sessionToken>`. If 401 → run `node pay-bills-skill/session-token.js clear` and re-auth.
++ 1. POST /auth/start         { "phoneNumber":"08031234567", "deviceId":"<run: node pay-bills-skill/generate-device-id.js>" }
++                              → then run: node pay-bills-skill/session-token.js save <sessionToken>
++                              → then run: node pay-bills-skill/session-token.js save <sessionToken>
++ - `POST /auth/logout { sessionToken }` → then run `node pay-bills-skill/session-token.js clear`
++    { "type":"data", "payment_method":"wallet", "trx_id":"<run: node pay-bills-skill/generate-order-id.js>", "use_points":false,
++ { "type":"airtime", "payment_method":"wallet", "trx_id":"<run: node pay-bills-skill/generate-order-id.js>", "use_points":false,
++ - **trx_id must be unique per attempt** — run `node pay-bills-skill/generate-order-id.js` for each order, never reuse even on failure

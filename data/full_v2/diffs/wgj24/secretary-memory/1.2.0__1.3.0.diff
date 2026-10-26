@@ -1,0 +1,367 @@
+wgj24/secretary-memory  1.2.0 -> 1.3.0
+change_type: instructions+code   changelog: v3d: 完善remind配置说明，补充cron定时任务文档，全模块测试通过
+
+### SKILL.md  [instructions]
+- ## Hooks 配置（v3.0 推荐）
+-     "session:end": "python3 <path>/session_summary.py --session-id {session_id} && python3 <path>/profile_miner.py --session-id {session_id}",
+-     "cron": "0 18 * * * python3 <path>/consolidate.py --verbose"
++ ---
++ ```
++ ```
++ ```
++ ```
++ ```bash
++ ## 自动触发配置（必读！）
++ 装完 skill 后，需要配置以下自动触发，记忆系统才能真正自动化运转。
++ ### 1. 定时任务（cron）- 推荐 Claude Code scheduled_tasks
++ | 功能 | 推荐时间 | 脚本 | 说明 |
++ |------|---------|------|------|
++ | 归档 consolidation | 每天 18:00 | `consolidate.py --verbose` | 将 7 天前日志归档到 archive |
++ | 记忆提醒 | 每天 9:00 | `auto_skill_generator.py --remind` | 主动建议写入记忆 |
++ **Claude Code 配置方式**：
++ # 归档任务（每天 18:00）
++ /loop 24h /path/to/consolidate.py --verbose
++ # 记忆提醒（每天 9:00）
++ /loop 24h /path/to/auto_skill_generator.py --remind
++ **或直接用 cron 表达式**（在 Claude Code settings.json 配置）：
++ ```json
++ {
++   "hooks": {
++     "session:start": "python3 <path>/auto_loader.py --hook-start --session-id {session_id} --topic {topic}",
++     "session:end": "python3 <path>/session_summary.py --session-id {session_id} && python3 <path>/profile_miner.py --session-id {session_id} && python3 <path>/skill-creator/auto_skill_generator.py --record --skill {skill_name} --success"
++   },
++   "scheduled_tasks": [
++     {"cron": "0 18 * * *", "prompt": "/path/to/consolidate.py --verbose"},
++     {"cron": "0 9 * * *", "prompt": "/path/to/auto_skill_generator.py --remind"}
++   ]
++ }
++ ### 2. session:end Hook - Skill 自我改进记录
++ 每次会话结束时，自动记录该会话中使用的 skill 执行结果：
++ # 在 session:end hook 中添加 skill 执行记录
++ python3 <path>/session_summary.py --session-id {session_id}
++ python3 <path>/profile_miner.py --session-id {session_id}
++ python3 <path>/skill-creator/auto_skill_generator.py --record --skill <skill_name> --success
++ **注意**：将 `<skill_name>` 替换为实际触发的 skill 名称。如果会话涉及多个 skill，需要多次调用 `--record`。
++ ### 3. consolidate.py - 什么时候跑？
++ | 场景 | 触发方式 | 命令 |
++ | 场景 | 触发方式 | 命令 |
++ |------|---------|------|
++ |------|---------|------|
++ | 每日自动归档 | cron 定时 | `consolidate.py --verbose` |
++ | 手动整理记忆 | 随时可跑 | `consolidate.py --verbose` |
++ | 检查容量状态 | 随时可跑 | `consolidate.py --check-capacity` |
++ | 预览归档效果 | 调试 | `consolidate.py --dry-run` |
++ ### 4. skill-creator reminder - 什么时候跑？
++ | 每日主动提醒 | cron 定时 | `auto_skill_generator.py --remind` |
++ | 手动检查 | 随时可跑 | `auto_skill_generator.py --remind --days 7` |
++ ## Hooks 配置（简化版）
++ 如果只需要最基本的自动化，配置这两个 hook 即可：
++     "session:end": "python3 <path>/session_summary.py --session-id {session_id} && python3 <path>/profile_miner.py --session-id {session_id}"
++ **定时任务需单独配置**（用 Claude Code 的 /loop 或 scheduled_tasks）
+
+### scripts/skill-creator/SKILL.md  [instructions]
+- # 自我改进
++ 5. **周期性提醒** - 主动扫描近期会话，建议写入记忆
++ 6. **执行记录** - 记录 skill 执行结果，用于后续分析改进
++ # [NEW] 周期性提醒：检查值得记住的内容
++ python3 auto_skill_generator.py --remind
++ python3 auto_skill_generator.py --remind --days 7  # 扫描近7天
++ # [NEW] 记录 Skill 执行结果（Hook: session:end 调用）
++ python3 auto_skill_generator.py --record --skill "task-tracker" --success --feedback "工作正常"
++ # [NEW] 自我改进
++ python3 auto_skill_generator.py --improve --skill "task-tracker"  # 改进指定 Skill
++ python3 auto_skill_generator.py --improve --dry-run  # 预览模式
+
+### scripts/skill-creator/auto_skill_generator.py  [code]
+-                         "timestamp": datetime.now().isoformat()
+-                     })
+-     def record_usage(self, skill_name: str, success: bool, feedback: str = ""):
+-                 if feedback:
+-                     skill["feedback"].append({
+-                         "success": success,
+-                         "feedback": feedback,
+-     def improve(self, skill_name: str = None) -> Dict:
+-             analysis = self.analyze_feedback(skill_name)
+-                 "skill_name": skill_name,
+-                 "analysis": analysis,
+-                 "improvements_applied": []
+-             analysis = self.analyze_feedback(skill["name"])
+-             if analysis.get("success_rate", 100) < 70:
+-                 results.append({
+-                     "skill_name": skill["name"],
+-                     "analysis": analysis,
+-                     "improvements_applied": []
+-             "needs_improvement": len(results),
+-             "details": results
+-         result = improver.improve(skill_name=args.skill)
+-         print("## 自我改进结果\n")
+-                 for sug in detail['analysis'].get('suggestions', []):
+-                     print(f"  - {sug}")
++ # ============== 周期性提醒器 ==============
++ class ReminderChecker:
++     """周期性检查是否有什么值得记住"""
++     # 值得记住的模式（用户可能忘记的）
++     WORTH_REMEMBERING = {
++         "decision": {
++             "keywords": ["决定", "采用", "选择", "定了", "最终方案", "结论"],
++             "weight": 2.0,
++             "suggestion": "这像个重要决策，值得写入记忆"
++         },
++         },
++         },
++         "preference": {
++             "keywords": ["喜欢", "偏好", "习惯", "不要", "避免", "宁愿"],
++             "weight": 1.8,
++             "suggestion": "这像是个用户偏好，值得记录"
++         "commitment": {
++             "keywords": ["会做", "答应", "承诺", "下次", "稍后", "回头"],
++             "weight": 1.5,
++             "suggestion": "这是个待办承诺，记得写入 agenda"
++         "complex_solution": {
++             "keywords": ["复杂", "绕路", "hack", " workaround", "临时方案"],
++             "weight": 1.3,
++             "suggestion": "这是个复杂的技术方案，值得沉淀到 knowledge"
++         }
++         }
++     }
++     def __init__(self):
++         self.memory_dir = MEMORY_DIR
++     def scan_recent_sessions(self, days: int = 3) -> List[Dict]:
++         """扫描近期会话，找出值得记住的内容
++         Args:
++             days: 扫描近几天的会话
++         Returns:
++         Returns:
++             值得记住的建议列表
++         """
++         """
++         suggestions = []
++         suggestions = []
++         daily_dir = self.memory_dir / "daily"
++         if not daily_dir.exists():
++             return suggestions
++         cutoff = datetime.now() - timedelta(days=days)
++         for f in daily_dir.glob("*.md"):
++             try:
++             try:
++             try:
++                 # 解析日期
++                 date_str = f.stem  # 如 "2026-04-30"
++                 try:
++                     file_date = datetime.strptime(date_str, "%Y-%m-%d")
++                     if file_date < cutoff:
++                         continue
++                 except ValueError:
++                     continue
++                 content = f.read_text(encoding="utf-8")
++                 file_suggestions = self._analyze_content(content, date_str)
++                 suggestions.extend(file_suggestions)
++             except Exception:
++             except Exception:
++             except Exception:
++                 pass
++                 pass
++                 pass
++         return suggestions
++         return suggestions
++     def _analyze_content(self, content: str, date: str) -> List[Dict]:
++         """分析内容，找出值得记住的部分"""
++         lines = content.split("\n")
++         for i, line in enumerate(lines):
++             line_lower = line.lower()
++             for pattern_type, pattern_info in self.WORTH_REMEMBERING.items():
++                 for kw in pattern_info["keywords"]:
++                     if kw.lower() in line_lower:
++                         # 找到上下文（前后各2行）
++                         context_start = max(0, i - 2)
++                         context_end = min(len(lines), i + 3)
++                         context = "\n".join(lines[context_start:context_end])
++                         suggestions.append({
++                             "type": pattern_type,
++                             "date": date,
++                             "keyword": kw,
++                             "suggestion": pattern_info["suggestion"],
++                             "context": context.strip()[:300],
++                             "line": i + 1
++                         })
++                         break  # 每个模式只匹配一次
++     def check_forgotten(self, days: int = 3) -> Dict:
++         """检查是否有值得记住但还没记住的内容
++             {
++                 "total_found": int,
++                 "suggestions": [...],
++                 "memory_reminders": [...]  # 格式化后可直接使用的提醒
++             }
++         suggestions = self.scan_recent_sessions(days)
++         # 去重
++         seen = set()
++         unique = []
++         for s in suggestions:
++             key = (s["type"], s["context"][:50])
++             if key not in seen:
++                 seen.add(key)
++                 unique.append(s)
++         # 格式化为提醒
++         reminders = []
++         for s in unique:
++             reminders.append({
++                 "date": s["date"],
++                 "type": s["type"],
++                 "reminder": s["suggestion"],
++                 "context": s["context"]
++             })
++         return {
++             "total_found": len(unique),
++             "suggestions": unique,
++             "memory_reminders": reminders
++         )
++     def record_usage(self, skill_name: str, success: bool, feedback: str = "", context: str = ""):
++             context: 执行上下文（用于后续分析）
++                 skill["feedback"].append({
++                     "success": success,
++                     "feedback": feedback,
++                     "context": context[:200] if context else "",
++                     "timestamp": datetime.now().isoformat()
++                 # 限制反馈数量（保留最近50条）
++                 if len(skill["feedback"]) > 50:
++                     skill["feedback"] = skill["feedback"][-50:]
++                 # 同时更新主数据库
++                 self._update_main_db(skill_name, success, feedback)
++     def _update_main_db(self, skill_name: str, success: bool, feedback: str):
++         """更新主数据库（用于自我改进分析）"""
++         db_path = MEMORY_DIR / ".skill_performance.json"
++         db_path = MEMORY_DIR / ".skill_performance.json"
++         db = {}
++         db = {}
++         if db_path.exists():
++         if db_path.exists():
++                 db = json.loads(db_path.read_text(encoding="utf-8"))
++                 db = json.loads(db_path.read_text(encoding="utf-8"))
++         if skill_name not in db:
++             db[skill_name] = {"records": [], "last_improve": None}
++         db[skill_name]["records"].append({
++             "success": success,
++             "feedback": feedback,
++             "timestamp": datetime.now().isoformat()
++         })
++         # 只保留最近100条
++         if len(db[skill_name]["records"]) > 100:
++             db[skill_name]["records"] = db[skill_name]["records"][-100:]
++         db_path.write_text(json.dumps(db, ensure_ascii=False, indent=2), encoding="utf-8")
++     def improve(self, skill_name: str = None, dry_run: bool = False) -> Dict:
++             dry_run: True 则只分析不实际改进
++         # 加载性能数据库
++         def analyze_and_improve(sname: str) -> Dict:
++             """分析单个 Skill 并应用改进"""
++             records = db.get(sname, {}).get("records", [])
++             if not records:
++                 return {"skill_name": sname, "analysis": {"success_rate": 100}, "improvements_applied": []}
++             # 统计分析
++             successful = sum(1 for r in records if r.get("success"))
++             success_rate = successful / len(records) if records else 100
++             # 分析失败原因，生成改进建议
++             issues = []
++             for r in records:
++                 if not r.get("success") and r.get("feedback"):
++                     fb = r["feedback"].lower()
++                     if any(kw in fb for kw in ["不工作", "失败", "error", "crash"]):
++                         issues.append("执行失败")
++                     if any(kw in fb for kw in ["慢", "timeout", "卡"]):
++                         issues.append("性能问题")
++                     if any(kw in fb for kw in ["缺少", "没有", "不支持"]):
++                         issues.append("功能不完整")
++             issues = list(set(issues))
++             improvements = []
++             # 根据问题应用真实改进
++             if not dry_run and issues:
++                 for issue in issues:
++                     if issue == "功能不完整":
++                         # 更新 SKILL.md，标记为 TODO
++                         skill_path = SKILLS_DIR / sname / "SKILL.md"
++                         if skill_path.exists():
++                             content = skill_path.read_text(encoding="utf-8")
++                             if "## 已知问题" not in content:
++                                 content += f"\n\n## 已知问题\n\n- 此功能有待完善\n"
++                             skill_path.write_text(content, encoding="utf-8")
++                             improvements.append("已更新 SKILL.md 标注待完善")
++                     elif issue == "性能问题":
++                         # 更新 meta 标记低分
++                         skills = self.generator.list_generated_skills()
++                         for s in skills:
++                             if s["name"] == sname:
++                                 s["performance_issue"] = True
++                                 meta_file = Path(s["path"]) / ".meta.json"
++                                 meta_file.write_text(json.dumps(s, ensure_ascii=False, indent=2), encoding="utf-8")
++                                 improvements.append("已标记性能问题")
++                                 break
++                 "skill_name": sname,
++                 "analysis": {
++                     "success_rate": round(success_rate * 100, 1),
++                     "total_runs": len(records),
++                     "common_issues": issues
++                 },
++                 "improvements_applied": improvements if not dry_run else ["(dry-run) " + i for i in improvements]
++             return analyze_and_improve(skill_name)
++             analysis_result = analyze_and_improve(skill["name"])
++             if analysis_result["analysis"].get("success_rate", 100) < 70 or analysis_result["improvements_applied"]:
++                 results.append(analysis_result)
++             # 更新最后改进时间
++             if skill_name in db:
++                 db[skill_name]["last_improve"] = datetime.now().isoformat()
++         # 保存数据库
++         if not dry_run:
++             db_path.write_text(json.dumps(db, ensure_ascii=False, indent=2), encoding="utf-8")
++             "needs_improvement": len([r for r in results if r["analysis"].get("success_rate", 100) < 70]),
++             "improvements_made": len([r for r in results if r["improvements_applied"]]),
++             "details": results,
++             "dry_run": dry_run
++     parser.add_argument("--remind", action="store_true", help="[NEW] 周期性提醒：检查值得记住的内容")
++     parser.add_argument("--days", type=int, default=3, help="提醒扫描近几天（默认3天）")
++     parser.add_argument("--dry-run", action="store_true", help="改进预览（不实际应用）")
++     parser.add_argument("--record", action="store_true", help="[NEW] 记录 Skill 执行结果")
++     parser.add_argument("--success", action="store_true", help="执行成功")
++     parser.add_argument("--feedback", help="执行反馈")
++     parser.add_argument("--context", help="执行上下文")
++                 print()
++         else:
++         else:
++         return
++         return
++             return
++     # 周期性提醒：检查值得记住的内容
++     if args.remind:
++         checker = ReminderChecker()
++         result = checker.check_forgotten(days=args.days)
++         print(f"## 记忆提醒扫描（近 {args.days} 天）\n")
++         print(f"找到 {result['total_found']} 条值得记住的内容\n")
++         if result["memory_reminders"]:
++             print("### 建议写入记忆：\n")
++             for i, r in enumerate(result["memory_reminders"], 1):
++                 print(f"**{i}. [{r['type']}] {r['date']}**")
++                 print(f"   提醒: {r['reminder']}")
++                 print(f"   内容: {r['context'][:150]}...")
++             print("[OK] 近期没有发现特别值得记住的内容")
++     # 记录 Skill 执行结果
++     if args.record:
++         if not args.skill:
++             print("[Error] 请提供 --skill 参数")
++         improver = SelfImprover()
++         improver.record_usage(
++             skill_name=args.skill,
++             success=args.success,
++             feedback=args.feedback or "",
++             context=args.context or ""
++         print(f"[OK] 已记录执行结果: {args.skill} (success={args.success})")
++         result = improver.improve(skill_name=args.skill, dry_run=args.dry_run)
++         print("## 自我改进结果")
++         if args.dry_run:
++             print(" [预览模式，不实际应用]\n")
++             print()
++             if "improvements_made" in result:
++                 print(f"已实际改进: {result['improvements_made']}")
++                 if detail['analysis'].get('total_runs'):
++                     print(f"  总执行次数: {detail['analysis'].get('total_runs')}")
++                 if detail['analysis'].get('common_issues'):
++                     print(f"  常见问题: {', '.join(detail['analysis'].get('common_issues', []))}")
++                 for imp in detail.get('improvements_applied', []):
++                     print(f"  + {imp}")

@@ -1,0 +1,347 @@
+kklouzal/sherpamind  0.1.1 -> 0.1.2
+change_type: docs+code   changelog: Add adaptive cold-bootstrap budgeting, first-full-pass tracking, slower post-bootstrap maintenance, refreshed docs, and runtime observability.
+
+### README.md  [docs]
+- - OpenClaw owns interpretation, synthesis, and user-facing reasoning.
+- - successful local automated validation with the current test suite passing (`59 passed` in the latest run)
+- - open-ticket detail coverage is strong, but whole-corpus detail coverage is still shallow
++ - OpenClaw owns interpretation, synthesis, comparative analysis, and user-facing reasoning.
++ In practice, that means SherpaMind should make questions like these possible without pre-baking the answers:
++ - what kinds of recurring issues does an account show?
++ - how do two technicians differ in ticket-writing or support style?
++ - what habits show up in client/technician back-and-forth?
++ - what routine service work should probably become scheduled/proactive?
++ Those are OpenClaw-time reasoning tasks over prepared support history, not backend-side canned conclusions.
++    - tracks whether the historical cold corpus has completed at least one full pass
++    - uses spare hourly API headroom opportunistically to accelerate cold audit/detail deepening before that first full pass completes
++    - slows cold re-audit/re-enrichment back down after the first full pass so most budget remains available for hot/warm freshness while still preserving long-tail maintenance
++ - successful local automated validation with the current test suite passing (`60 passed` in the latest run)
++ - open-ticket detail coverage is strong, but whole-corpus detail coverage is still shallow enough that some deeper comparative/history questions will surface "not enough detail yet" pressure
++ - the service now supports an explicit cold-bootstrap-versus-steady-state posture, but the exact adaptive budget heuristics are still early and should be tuned against real long-running usage
+
+### pyproject.toml  [code]
+- version = "0.1.1"
++ version = "0.1.2"
+
+### references/architecture-doctrine.md  [docs]
++ - comparative analysis across tickets/accounts/technicians
++ - user/technician/client voice analysis over retrieved ticket history
+
+### references/automation.md  [docs]
+- The service also tracks real SherpaDesk request usage in SQLite and can use rolling hourly budget utilization to defer lower-priority work before it rides the 600/hour line.
++ The service also tracks real SherpaDesk request usage in SQLite and should use that to reserve the forecast hot/warm budget first, then spend spare hourly headroom opportunistically on cold audit and enrichment work instead of throttling cold depth with only a static conservative cadence.
++ Cold-history work should run in two phases:
++ - **bootstrap mode** until the historical corpus has completed one real full cold pass and closed-ticket detail coverage catches up
++ - **steady-state mode** after that, where cold re-audit/re-enrichment continues more slowly for drift correction and enrichment evolution
++ That first full-pass completion should be durable state, not guesswork.
+
+### references/delta-sync-strategy.md  [docs]
+- - scan older closed-ticket pages in small rolling batches
+- - run daily or weekly
++ - converge historical detail coverage quickly enough for meaningful analysis
++ - scan older closed-ticket pages in rolling batches
++ - before the first full historical pass completes, use spare hourly headroom aggressively to accelerate cold auditing and enrichment
++ - after the first full historical pass completes, slow the cold lane back down and keep it as a maintenance/audit loop
++ - persist whether the cold corpus has completed at least one full pass
++ - “historical analytical depth should ramp quickly once, then settle into slower maintenance”
+
+### references/openclaw-query-model.md  [docs]
+- OpenClaw’s job is to query, inspect, summarize, and reason over SherpaMind outputs — not to burn tokens on acting like the periodic backend scheduler.
+- Use for quick human/agent inspection under `.SherpaMind/public/references/`, including:
++ OpenClaw’s job is to query, inspect, compare, summarize, and reason over SherpaMind outputs — not to burn tokens on acting like the periodic backend scheduler.
++ OpenClaw should be able to answer questions like:
++ - how does one technician's ticket handling differ from another's?
++ - what habits show up in client-versus-technician voice on a given account?
++ - what recurring work should likely become proactive or scheduled?
++ Those remain query-time reasoning problems over prepared history, not backend-side canned dashboards.
++ Use for quick human/agent inspection under `.SherpaMind/public/docs/`, including:
+
+### references/retrieval-architecture.md  [docs]
++ - what differences show up in technician habits or client/technician interaction style?
++ - what recurring operational work should probably be formalized into scheduled service?
+
+### src/sherpamind/ingest.py  [code]
+- def sync_cold_closed_audit(settings: Settings) -> DeltaSyncResult:
+-         notes=f"cold_closed_pages_per_run={settings.cold_closed_pages_per_run}",
+-         state = get_json_state(settings.db_path, "sync.cold_closed.last_state", default={"next_page": 0}) or {"next_page": 0}
+-         for page in range(start_page, start_page + settings.cold_closed_pages_per_run):
+-             next_page = start_page + settings.cold_closed_pages_per_run
+-             "pages_scanned": settings.cold_closed_pages_per_run,
++ def sync_cold_closed_audit(settings: Settings, *, pages_per_run: int | None = None) -> DeltaSyncResult:
++     pages_per_run = pages_per_run or settings.cold_closed_pages_per_run
++         notes=f"cold_closed_pages_per_run={pages_per_run}",
++         state = get_json_state(settings.db_path, "sync.cold_closed.last_state", default={"next_page": 0, "completed_cycles": 0}) or {"next_page": 0, "completed_cycles": 0}
++         completed_cycles = int(state.get("completed_cycles", 0))
++         cycle_completed = False
++         for page in range(start_page, start_page + pages_per_run):
++                 cycle_completed = True
++             next_page = start_page + pages_per_run
++         if cycle_completed:
++             completed_cycles += 1
++             "pages_scanned": pages_per_run,
++             "cycle_completed": cycle_completed,
++             "completed_cycles": completed_cycles,
+
+### src/sherpamind/observability.py  [code]
++ from .sync_state import get_json_state
++     cold_bootstrap = get_json_state(db_path, "service.cold_bootstrap", default={}) or {}
++         "",
++         "```json",
++         "```",
++         "## Cold bootstrap status",
++         json.dumps(cold_bootstrap, indent=2),
+
+### src/sherpamind/service_runtime.py  [code]
+- from dataclasses import dataclass
+- from .db import prune_api_request_events
+-         TaskSpec("cold_closed", settings.service_cold_closed_every_seconds, sync_cold_closed_audit, budget_class="deferrable"),
+- def _budget_gate(settings: Settings, usage: dict[str, Any], spec: TaskSpec) -> tuple[bool, str | None]:
+-     ratio = float(usage.get("budget_utilization_ratio", 0.0))
+-     if ratio >= settings.api_budget_critical_ratio:
+-         if spec.budget_class in {"important", "deferrable"}:
+-             return False, f"budget_critical ratio={ratio}"
+-     elif ratio >= settings.api_budget_warn_ratio:
+-         if spec.budget_class == "deferrable":
+-             return False, f"budget_warn ratio={ratio}"
+-     for spec in _task_specs(settings):
+-         allowed, reason = _budget_gate(settings, usage, spec)
+-             result = spec.runner(settings)
+-             _append_log(f"task={spec.name} status=ok")
++ from dataclasses import dataclass, replace
++ import math
++ from .db import connect, prune_api_request_events
++ from .sync_state import get_json_state, set_json_state
++ @dataclass(frozen=True)
++ @dataclass(frozen=True)
++ class BudgetPlan:
++     mode: str
++     reserve_requests: int
++     spare_requests: int
++     open_ticket_count: int
++     bootstrap_complete: bool
++     bootstrap_complete: bool
++     cold_pages_per_run: int
++     enrichment_limit: int
++     cold_every_seconds: int
++     enrichment_every_seconds: int
++     allow_important: bool
++     allow_deferrable: bool
++ class ColdBootstrapStatus:
++     total_tickets: int
++     closed_tickets: int
++     detailed_closed_tickets: int
++     remaining_closed_without_detail: int
++     detail_coverage_ratio: float
++     completed_cycles: int
++     bootstrap_started_at: str | None
++     bootstrap_completed_at: str | None
++     last_progress_at: str | None
++ def _get_cold_bootstrap_status(settings: Settings) -> ColdBootstrapStatus:
++     with connect(settings.db_path) as conn:
++         counts = conn.execute(
++             """
++             """
++             SELECT
++                 COUNT(*) AS total_tickets,
++                 SUM(CASE WHEN status = 'Closed' THEN 1 ELSE 0 END) AS closed_tickets,
++                 SUM(CASE WHEN status = 'Closed' AND td.ticket_id IS NOT NULL THEN 1 ELSE 0 END) AS detailed_closed_tickets
++             FROM tickets t
++             LEFT JOIN ticket_details td ON td.ticket_id = t.id
++         ).fetchone()
++     cold_state = get_json_state(settings.db_path, "sync.cold_closed.last_state", default={}) or {}
++     bootstrap_state = get_json_state(settings.db_path, "service.cold_bootstrap", default={}) or {}
++     closed_tickets = int(counts["closed_tickets"] or 0)
++     detailed_closed_tickets = int(counts["detailed_closed_tickets"] or 0)
++     remaining = max(0, closed_tickets - detailed_closed_tickets)
++     completed_cycles = int(cold_state.get("completed_cycles", 0) or 0)
++     bootstrap_complete = bool(bootstrap_state.get("bootstrap_complete"))
++     return ColdBootstrapStatus(
++         total_tickets=int(counts["total_tickets"] or 0),
++         closed_tickets=closed_tickets,
++         detailed_closed_tickets=detailed_closed_tickets,
++         remaining_closed_without_detail=remaining,
++         detail_coverage_ratio=round((detailed_closed_tickets / closed_tickets), 4) if closed_tickets else 1.0,
++         completed_cycles=completed_cycles,
++         bootstrap_complete=bootstrap_complete,
++         bootstrap_started_at=bootstrap_state.get("bootstrap_started_at"),
++         bootstrap_completed_at=bootstrap_state.get("bootstrap_completed_at"),
++         last_progress_at=bootstrap_state.get("last_progress_at"),
++     )
++     )
++     )
++ def _update_cold_bootstrap_status(settings: Settings) -> ColdBootstrapStatus:
++     status = _get_cold_bootstrap_status(settings)
++     now = _now_iso()
++     state = get_json_state(settings.db_path, "service.cold_bootstrap", default={}) or {}
++     changed = False
++     if status.closed_tickets > 0 and not state.get("bootstrap_started_at"):
++         state["bootstrap_started_at"] = now
++         changed = True
++         changed = True
++         changed = True
++     if status.remaining_closed_without_detail < int(state.get("remaining_closed_without_detail", status.closed_tickets) or status.closed_tickets):
++         state["last_progress_at"] = now
++     state["remaining_closed_without_detail"] = status.remaining_closed_without_detail
++     state["detail_coverage_ratio"] = status.detail_coverage_ratio
++     state["completed_cycles"] = status.completed_cycles
++     if status.completed_cycles >= 1 and status.remaining_closed_without_detail == 0 and not state.get("bootstrap_complete"):
++         state["bootstrap_complete"] = True
++         state["bootstrap_completed_at"] = now
++     if changed:
++         set_json_state(settings.db_path, "service.cold_bootstrap", state)
++     return _get_cold_bootstrap_status(settings)
++ def _estimate_reserved_requests(settings: Settings) -> int:
++     hot_runs_per_hour = max(1.0, 3600 / max(1, settings.service_hot_open_every_seconds))
++     warm_runs_per_hour = 3600 / max(1, settings.service_warm_closed_every_seconds)
++     hot_requests_per_run = max(2, settings.hot_open_pages * 2)
++     warm_requests_per_run = max(1, settings.warm_closed_pages)
++     reserve = int(math.ceil(hot_runs_per_hour * hot_requests_per_run + warm_runs_per_hour * warm_requests_per_run + 30))
++     return max(60, reserve)
++ def _build_budget_plan(settings: Settings, usage: dict[str, Any], bootstrap: ColdBootstrapStatus) -> BudgetPlan:
++     remaining = int(usage.get("remaining_hourly_budget", settings.api_hourly_limit))
++     open_count = int((get_json_state(settings.db_path, "watch.last_state", default={}) or {}).get("observed_open_ticket_count", 0) or 0)
++     reserve = _estimate_reserved_requests(settings)
++     spare = max(0, remaining - reserve)
++     if not bootstrap.bootstrap_complete:
++         if spare >= 250 and open_count <= 15:
++             mode = "bootstrap_aggressive"
++             cold_every = settings.service_cold_bootstrap_every_seconds
++             enrich_every = settings.service_enrichment_bootstrap_every_seconds
++             cold_pages = max(settings.cold_closed_bootstrap_pages_per_run, settings.cold_closed_pages_per_run)
++             enrich_limit = max(settings.service_enrichment_bootstrap_limit, settings.service_enrichment_limit)
++             allow_deferrable = True
++             allow_deferrable = True
++             allow_deferrable = True
++         elif spare >= 120:
++             mode = "bootstrap_balanced"
++             cold_every = max(settings.service_cold_bootstrap_every_seconds * 2, 1800)
++             enrich_every = max(settings.service_enrichment_bootstrap_every_seconds * 2, 1800)
++             cold_pages = max(settings.cold_closed_pages_per_run, min(settings.cold_closed_bootstrap_pages_per_run, 6))
++             enrich_limit = max(settings.service_enrichment_limit, min(settings.service_enrichment_bootstrap_limit, 120))
++         else:
++         else:
++             mode = "bootstrap_protected"
++             cold_every = settings.service_cold_closed_every_seconds
++             cold_every = settings.service_cold_closed_every_seconds
++             enrich_every = settings.service_enrichment_every_seconds
++             cold_pages = settings.cold_closed_pages_per_run
++             cold_pages = settings.cold_closed_pages_per_run
++             enrich_limit = settings.service_enrichment_limit
++             enrich_limit = settings.service_enrichment_limit
++             allow_deferrable = spare >= 40
++     else:
++         if spare >= 180 and open_count <= 15:
++             mode = "steady_opportunistic"
++             cold_every = min(max(settings.service_cold_closed_every_seconds // 4, 21600), settings.service_cold_closed_every_seconds)
++             enrich_every = min(max(settings.service_enrichment_every_seconds * 2, 14400), 21600)
++             cold_pages = max(settings.cold_closed_pages_per_run, 3)
++             enrich_limit = max(settings.service_enrichment_limit, 90)
++             mode = "steady_conservative"
++             enrich_every = max(settings.service_enrichment_every_seconds * 2, 14400)
++             allow_deferrable = spare >= 25
++     allow_important = remaining > max(20, reserve // 3)
++     return BudgetPlan(
++         mode=mode,
++         reserve_requests=reserve,
++         spare_requests=spare,
++         open_ticket_count=open_count,
++         bootstrap_complete=bootstrap.bootstrap_complete,
++         cold_pages_per_run=cold_pages,
++         enrichment_limit=enrich_limit,
++         cold_every_seconds=int(cold_every),
++         enrichment_every_seconds=int(enrich_every),
++         allow_important=allow_important,
++         allow_deferrable=allow_deferrable,
++ def _effective_settings(settings: Settings, plan: BudgetPlan) -> Settings:
++     return replace(
++         settings,
++         cold_closed_pages_per_run=plan.cold_pages_per_run,
++         service_cold_closed_every_seconds=plan.cold_every_seconds,
++         service_enrichment_every_seconds=plan.enrichment_every_seconds,
++         service_enrichment_limit=plan.enrichment_limit,
++         TaskSpec("cold_closed", settings.service_cold_closed_every_seconds, lambda s: sync_cold_closed_audit(s, pages_per_run=s.cold_closed_pages_per_run), budget_class="deferrable"),
++ def _budget_gate(plan: BudgetPlan, spec: TaskSpec) -> tuple[bool, str | None]:
++     if spec.budget_class == "important" and not plan.allow_important:
++         return False, f"budget_protected mode={plan.mode} reserve={plan.reserve_requests} spare={plan.spare_requests}"
++         return False, f"budget_protected mode={plan.mode} reserve={plan.reserve_requests} spare={plan.spare_requests}"
++     if spec.budget_class == "deferrable" and not plan.allow_deferrable:
++     bootstrap = _update_cold_bootstrap_status(settings)
++     plan = _build_budget_plan(settings, usage, bootstrap)
++     effective_settings = _effective_settings(settings, plan)
++     state["budget_plan_last_seen"] = plan.__dict__
++     state["cold_bootstrap_last_seen"] = bootstrap.__dict__
++     for spec in _task_specs(effective_settings):
++         allowed, reason = _budget_gate(plan, spec)
++             result = spec.runner(effective_settings)
++             _append_log(f"task={spec.name} status=ok mode={plan.mode}")
++             bootstrap = _update_cold_bootstrap_status(settings)
++             bootstrap = _update_cold_bootstrap_status(settings)
++             plan = _build_budget_plan(settings, usage, bootstrap)
++             plan = _build_budget_plan(settings, usage, bootstrap)
++             effective_settings = _effective_settings(settings, plan)
++             state["budget_plan_last_seen"] = plan.__dict__
++             state["budget_plan_last_seen"] = plan.__dict__
++             state["cold_bootstrap_last_seen"] = bootstrap.__dict__
++             state["cold_bootstrap_last_seen"] = bootstrap.__dict__
++         "budget_plan": plan.__dict__,
++         "cold_bootstrap": bootstrap.__dict__,
+
+### src/sherpamind/settings.py  [code]
++     service_cold_bootstrap_every_seconds: int = 1800
++     service_enrichment_bootstrap_every_seconds: int = 900
++     service_enrichment_bootstrap_limit: int = 240
++     cold_closed_bootstrap_pages_per_run: int = 10
++         service_cold_bootstrap_every_seconds=int(_env_value("SHERPAMIND_SERVICE_COLD_BOOTSTRAP_EVERY_SECONDS", file_values, "1800") or "1800"),
++         service_enrichment_bootstrap_every_seconds=int(_env_value("SHERPAMIND_SERVICE_ENRICHMENT_BOOTSTRAP_EVERY_SECONDS", file_values, "900") or "900"),
++         service_enrichment_bootstrap_limit=int(_env_value("SHERPAMIND_SERVICE_ENRICHMENT_BOOTSTRAP_LIMIT", file_values, "240") or "240"),
++         cold_closed_bootstrap_pages_per_run=int(_env_value("SHERPAMIND_COLD_CLOSED_BOOTSTRAP_PAGES_PER_RUN", file_values, "10") or "10"),
+
+### tests/test_ingest.py  [code]
++         service_cold_bootstrap_every_seconds=1800,
++         service_enrichment_bootstrap_every_seconds=900,
++         service_enrichment_bootstrap_limit=240,
++         cold_closed_bootstrap_pages_per_run=10,
+
+### tests/test_service_runtime.py  [code]
+- from sherpamind.db import initialize_db, record_api_request_event, replace_ticket_document_chunks, replace_ticket_documents, upsert_tickets
++ from sherpamind.db import initialize_db, record_api_request_event, replace_ticket_document_chunks, replace_ticket_documents, upsert_ticket_details, upsert_tickets
++         service_cold_bootstrap_every_seconds=1800,
++         service_enrichment_bootstrap_every_seconds=900,
++         service_enrichment_bootstrap_limit=240,
++         cold_closed_bootstrap_pages_per_run=10,
++     )
++     )
++     monkeypatch.setenv('SHERPAMIND_WORKSPACE_ROOT', str(tmp_path))
++     settings = make_settings(tmp_path)
++     initialize_db(settings.db_path)
++     result = run_pending_tasks(settings)
++ def test_run_pending_tasks_marks_cold_bootstrap_complete_when_closed_detail_catches_up(monkeypatch, tmp_path: Path) -> None:
++     upsert_tickets(
++         settings.db_path,
++         settings.db_path,
++         [
++         [
++             {'id': 1, 'subject': 'Cold A', 'status': 'Closed', 'created_time': '2026-03-01T01:00:00Z', 'updated_time': '2026-03-01T02:00:00Z', 'closed_time': '2026-03-01T02:00:00Z'},
++             {'id': 1, 'subject': 'Cold A', 'status': 'Closed', 'created_time': '2026-03-01T01:00:00Z', 'updated_time': '2026-03-01T02:00:00Z', 'closed_time': '2026-03-01T02:00:00Z'},
++             {'id': 2, 'subject': 'Cold B', 'status': 'Closed', 'created_time': '2026-03-02T01:00:00Z', 'updated_time': '2026-03-02T02:00:00Z', 'closed_time': '2026-03-02T02:00:00Z'},
++             {'id': 2, 'subject': 'Cold B', 'status': 'Closed', 'created_time': '2026-03-02T01:00:00Z', 'updated_time': '2026-03-02T02:00:00Z', 'closed_time': '2026-03-02T02:00:00Z'},
++         ],
++         ],
++         synced_at='2026-03-03T00:00:00Z',
++         synced_at='2026-03-03T00:00:00Z',
++     upsert_ticket_details(
++     (tmp_path / '.SherpaMind' / 'private' / 'service-state.json').parent.mkdir(parents=True, exist_ok=True)
++     from sherpamind.sync_state import set_json_state, get_json_state
++     set_json_state(settings.db_path, 'sync.cold_closed.last_state', {'next_page': 0, 'completed_cycles': 1})
++     assert result['cold_bootstrap']['bootstrap_complete'] is True
++     bootstrap_state = get_json_state(settings.db_path, 'service.cold_bootstrap')
++     assert bootstrap_state['bootstrap_complete'] is True
++     assert bootstrap_state['bootstrap_completed_at']
+
+### tests/test_settings.py  [code]
++     monkeypatch.setenv("SHERPAMIND_SERVICE_COLD_BOOTSTRAP_EVERY_SECONDS", "456")
++     monkeypatch.setenv("SHERPAMIND_SERVICE_ENRICHMENT_BOOTSTRAP_LIMIT", "222")
++     monkeypatch.setenv("SHERPAMIND_COLD_CLOSED_BOOTSTRAP_PAGES_PER_RUN", "9")
++     assert settings.service_cold_bootstrap_every_seconds == 456
++     assert settings.service_enrichment_bootstrap_limit == 222
++     assert settings.cold_closed_bootstrap_pages_per_run == 9

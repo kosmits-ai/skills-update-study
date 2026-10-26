@@ -1,0 +1,73 @@
+adamludwin/here-now  1.25.0 -> 1.26.0
+change_type: instructions+code   changelog: Stale-base protection for updates: publish.sh now records the live version in .herenow/state.json and passes baseVersionId when republishing the same slug from the same directory. If the live Site changed since (another agent, Studio, a teammate), the update fails with version_conflict naming the live version instead of silently overwriting it. New --overwrite flag for explicit unchecked replacement.
+
+### SKILL.md  [instructions]
+- **Skill version: 1.25.0**
++ **Skill version: 1.26.0**
++ **Stale-base protection.** The live Site may have changed since your local files were published — the owner can edit it from other tools (another agent, the here.now Studio, a teammate). The script records the live `versionId` in `.herenow/state.json` after each publish and sends it as `baseVersionId` on the next update of the same slug from the same directory; if the live Site moved past it, the update is rejected with `code: "version_conflict"` naming the live version and what created it. When that happens, relay the message to the user and offer to (a) fetch the current Site and reconcile local files before republishing, or (b) re-run with `--overwrite` to replace the live version anyway. Before editing local files for an authenticated Site you haven't touched recently, it's cheap to check for drift first: `GET /api/v1/publish/{slug}` returns `currentVersionId` — if it differs from your state file's `versionId`, fetch the live files before editing. Anonymous Sites can't call that endpoint; they rely on the saved state and server enforcement. Omitting `baseVersionId` (or using `--overwrite`) is an unchecked full replacement — today's default for raw API callers.
++ | `--overwrite`          | Skip the stale-base check and replace the live version |
+
+### scripts/publish.sh  [code]
+- # Save state
+- entry=$("$JQ_BIN" -n --arg s "$SITE_URL" '{siteUrl: $s}')
++ fi
++ fi
++ fi
++ OVERWRITE=0
++ BASE_VERSION_ID=""
++   --overwrite             Skip the stale-base check when updating (see below)
++   exit 1
++ }
++ # Prints an actionable version_conflict report and exits. $1 = response JSON.
++ die_version_conflict() {
++   local resp="$1"
++   local msg cur src at
++   msg=$(echo "$resp" | "$JQ_BIN" -r '.message // .error')
++   cur=$(echo "$resp" | "$JQ_BIN" -r '.details.currentVersionId // empty')
++   src=$(echo "$resp" | "$JQ_BIN" -r '.details.currentVersionSource // empty')
++   at=$(echo "$resp" | "$JQ_BIN" -r '.details.currentVersionCreatedAt // empty')
++   echo "error: $msg" >&2
++   [[ -n "$cur" ]] && echo "live version: $cur${src:+ (created by $src)}${at:+ at $at}" >&2
++   echo "publish_result.conflict=version_conflict" >&2
++   echo "The live Site changed since this directory last published it." >&2
++   echo "Options: fetch the live Site and reconcile your local files first," >&2
++   echo "or re-run with --overwrite to replace the live version anyway." >&2
++ else
++     --overwrite)    OVERWRITE=1; shift ;;
++   fi
++   fi
++   fi
++ # Absolute source path: scopes the saved base version to slug + source path,
++ # so publishing a different directory to the same slug never falsely claims
++ # its files are current.
++ if [[ -f "$TARGET" ]]; then
++   TARGET_ABS="$(cd "$(dirname "$TARGET")" && pwd)/$(basename "$TARGET")"
++   TARGET_ABS="$(cd "$TARGET" && pwd)"
++ # Optimistic concurrency (https://here.now/docs#update): when updating a slug
++ # this state file has published before from this same source path, declare
++ # that version as the base. The server rejects the update (version_conflict)
++ # if the live site moved past it — e.g. it was edited from another tool.
++ # --overwrite skips the check (an unchecked full replacement).
++ if [[ -n "$SLUG" && "$OVERWRITE" -ne 1 && -f "$STATE_FILE" ]]; then
++   stored_version=$("$JQ_BIN" -r --arg s "$SLUG" '.publishes[$s].versionId // empty' "$STATE_FILE" 2>/dev/null || true)
++   stored_path=$("$JQ_BIN" -r --arg s "$SLUG" '.publishes[$s].path // empty' "$STATE_FILE" 2>/dev/null || true)
++   if [[ -n "$stored_version" && -n "$stored_path" && "$stored_path" == "$TARGET_ABS" ]]; then
++     BASE_VERSION_ID="$stored_version"
++ if [[ -n "$BASE_VERSION_ID" ]]; then
++   BODY=$(echo "$BODY" | "$JQ_BIN" --arg v "$BASE_VERSION_ID" '.baseVersionId = $v')
++   if [[ "$(echo "$RESPONSE" | "$JQ_BIN" -r '.code // empty')" == "version_conflict" ]]; then
++     die_version_conflict "$RESPONSE"
++   if [[ "$(echo "$FIN_RESPONSE" | "$JQ_BIN" -r '.code // empty')" == "version_conflict" ]]; then
++     die_version_conflict "$FIN_RESPONSE"
++ # Save state. Merge into the existing entry (never replace it wholesale) so
++ # a previously saved claimToken survives authenticated republishes.
++ entry=$(echo "$STATE" | "$JQ_BIN" --arg s "$OUT_SLUG" '.publishes[$s] // {}')
++ entry=$(echo "$entry" | "$JQ_BIN" --arg v "$SITE_URL" '.siteUrl = $v')
++ # The live version after this publish comes from the finalize response's
++ # currentVersionId — a byte-identical republish keeps the previous live
++ # version (unchanged:true), so the staged upload versionId must never be
++ # saved as the base.
++ LIVE_VERSION_ID=$(echo "$FIN_RESPONSE" | "$JQ_BIN" -r '.currentVersionId // empty')
++ [[ -n "$LIVE_VERSION_ID" ]] && entry=$(echo "$entry" | "$JQ_BIN" --arg v "$LIVE_VERSION_ID" '.versionId = $v')
++ entry=$(echo "$entry" | "$JQ_BIN" --arg v "$TARGET_ABS" '.path = $v')
++ echo "publish_result.live_version_id=$LIVE_VERSION_ID" >&2

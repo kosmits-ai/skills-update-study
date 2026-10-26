@@ -1,0 +1,198 @@
+sciminer/molecular-docking  1.0.0 -> 1.0.1
+change_type: instructions+code   changelog: **Expanded support for automated binding-site prediction and strict API payload validation.**  - Added native and predicted binding-site detection tools (`Get Box`, `fpocket`) to workflows; now automatically suggests/uses binding sites when user input is missing. - All agent invocations must validate tool choice, parameters, and file inputs strictly against the authoritative registry (`molecular-docking/scripts/sciminer_registry.py`). - No longer accepts guessed or invented parameter keys; user 
+
+### SKILL.md  [instructions]
+- - If the user explicitly names a method (for example `AutoDock Vina`, `PackDock`, `SurfDock`, or `DiffDock`), use that method.
+- - If the user asks for flexible docking, use `PackDock`.
+- - If the user asks to compare methods, benchmark engines, or run multiple docking engines, invoke multiple engines and compare results.
+- - For pocket-centered workflows, use parameters that accept `pocket_info` and/or `reference_ligand` when available.
+- ```
+- Always invoke via SciMiner's internal API using `BASE_URL`.
+- ```python
+- headers = {
+-     "X-Auth-Token": API_KEY,
+-     "Content-Type": "application/json",
+- }
+- payload = {
+-     "provider_name": "Gnina",
+-     "tool_name": "get_gnina_result_from_pocket_center_picker_get_gnina_result_from_pocket_center_picker_post",
+-     "parameters": {
+-         "receptor": "<RECEPTOR_FILE_ID>",
+-         "ligand_to_dock": "<LIGAND_FILE_ID>",
+-         "pocket_info": "Center:1.0,2.0,3.0;Size:20",
+-         "num_modes": 10
+-     }
+- resp = requests.post(f"{BASE_URL}/v1/internal/tools/invoke", json=payload, headers=headers, timeout=30)
+- resp.raise_for_status()
+-         headers={"X-Auth-Token": API_KEY},
+- ## File upload
+- If a tool includes file parameters, upload the file first:
+- files = {"file": open("path/to/receptor.pdb", "rb")}
+-     f"{BASE_URL}/v1/internal/tools/file",
+-     files=files,
+-     headers={"X-Auth-Token": API_KEY},
+-     timeout=60,
+- file_id = resp.json()["file_id"]
+- Then place that `file_id` into the matching parameter in `payload["parameters"]`.
+- - Start with `Gnina` for standard docking unless the user requests another engine.
+- - If the user requests comparisons, run multiple engines and aggregate key metrics (pose confidence, ranking consistency, and interaction plausibility).
+- - Prefer pocket-centered inputs (`pocket_info`) when available to improve relevance and speed.
+- - Use `reference_ligand` when available for engines that support pocket-center transfer.
++ - native binding-site extraction with Get Box
++ - predicted binding-site detection with fpocket
++ Docking engines:
++ - Use the named engine when the user explicitly names one of `Gnina`, `AutoDock Vina`, `PackDock`, `SurfDock`, or `DiffDock`.
++ - Use `PackDock` for flexible (side-chain repacking) docking.
++ - Use `SurfDock` when surface-geometry awareness is requested or the pocket is shallow/cryptic.
++ - Use `DiffDock` when blind docking or no pocket is provided.
++ - For comparison, benchmarking, or "try multiple methods" requests, invoke multiple engines and aggregate metrics.
++ Binding-site acquisition (run before docking when no `pocket_info` or `reference_ligand` is supplied):
++ - Use `Get Box` to obtain the **native** ligand binding site (from a known holo structure or PDB ID).
++ - Use `fpocket` to acquire a **predicted** binding site (apo structure or no known ligand).
++ Pocket inputs:
++ - Pass `pocket_info` as `Center:x,y,z;Size:sx,sy,sz` or pass a `reference_ligand` file when the engine supports it.
++ ## Authoritative payload source (required)
++ The registry at `molecular-docking/scripts/sciminer_registry.py` is the **single source of truth** for `provider_name`, `tool_name`, allowed `parameters`, and `file_params`. The agent MUST:
++ 1. Resolve the selected tool via `get_tool_info(tool_name)` or `build_payload_from_registry(...)` before every invocation.
++ 2. Never invent payload keys from memory.
++ 3. Filter user-provided parameters against the registry's `parameters` keys.
++ 4. Validate required parameters before invoking.
++ 5. Cite `molecular-docking/scripts/sciminer_registry.py` as the payload source in summaries.
++ If a user-provided parameter is not present in the selected registry interface, ask for correction or drop it with an explanation.
++ Always invoke via SciMiner's internal API using `BASE_URL`. Construct the payload from the registry, upload any file inputs, then submit and poll.
++ # Adjust import path to runtime (e.g., sys.path or package layout)
++ from molecular_docking.scripts.sciminer_registry import build_payload_from_registry
++         )
++ auth_header = {"X-Auth-Token": API_KEY}
++ def upload_file(path: str) -> str:
++     """Upload a local file and return the SciMiner file_id."""
++     with open(path, "rb") as fh:
++         resp = requests.post(
++             f"{BASE_URL}/v1/internal/tools/file",
++             files={"file": fh},
++             headers=auth_header,
++             timeout=60,
++     resp.raise_for_status()
++     return resp.json()["file_id"]
++ # 1. Upload file inputs and collect file_ids
++ receptor_id = upload_file("path/to/receptor.pdb")
++ ligand_id = upload_file("path/to/ligand.sdf")
++ # 2. Build payload strictly from registry metadata
++ user_parameters = {
++     "receptor": receptor_id,
++     "ligand_to_dock": ligand_id,
++     "pocket_info": "Center:1.0,2.0,3.0;Size:20,20,20",
++     "num_modes": 3,
++ payload = build_payload_from_registry("Gnina", user_parameters)
++ # 3. Invoke
++     f"{BASE_URL}/v1/internal/tools/invoke",
++     json=payload,
++     headers={**auth_header, "Content-Type": "application/json"},
++     timeout=30,
++ # 4. Poll for result
++         headers=auth_header,
++ ## File upload rules
++ - Upload every parameter listed in the registry's `file_params` via `/v1/internal/tools/file` before invocation.
++ - Replace local paths in `parameters` with the returned `file_id` strings.
++ - Skip `file_params` entries that the user did not provide; only required file params must be present.
++ ### Get Box
++ - provider_name: `Get Box`
++ - `calculate_box_calculate_post` — obtain the native ligand binding site box from a binding-site description and optional PDB/CIF file
++ ### fpocket
++ - provider_name: `fpocket`
++ - `run_fpocket_run_fpocket_post` — predict protein binding pockets from an uploaded protein structure
++ Standard single-engine docking:
++ 1. If no `pocket_info` and no `reference_ligand`, run `Get Box` (native pocket known) or `fpocket` (predicted pocket) first.
++ 2. Map the resulting pocket center/size into `pocket_info` for the chosen docking engine.
++ 3. Invoke the docking engine via `build_payload_from_registry(...)`.
++ Multi-engine comparison:
++ - Build payloads for each requested engine independently from the registry.
++ - Submit in parallel; collect `task_id` and poll each.
++ - Report per-engine top pose, score, and `share_url`; flag consensus poses across engines.
++ General:
++ - Prefer registry-defined defaults; only override when the user provides a value.
++ - When `reference_ligand` is available, prefer it over manual `pocket_info` for engines that accept it.
++ - Use `molecular-docking/scripts/sciminer_registry.py` as the authoritative source for payload construction.
+
+### scripts/sciminer_registry.py  [code]
+-                     "pocket_info": {"type": "string", "required": False, "description": "Pocket details from pocket-center-picker"},
+-                     "pocket_info": {"type": "string", "required": False, "description": "Pocket information from pocket-center-picker"},
+-                     "pocket_info": {"type": "string", "required": False, "description": "Pocket information from pocket-center-picker"},
+-                     "pocket_info": {"type": "string", "required": False, "description": "Pocket information from pocket-center-picker"},
++         "interfaces": {
++         "interfaces": {
++             "default": {
++             "default": {
++                 "parameters": {
++                 "parameters": {
++                     "pocket_info": {"type": "string", "required": False, "description": "Pocket details, e.g. Center:-0.89,14.89,8.43;Size:20,20,20"},
++                     "pocket_info": {"type": "string", "required": False, "description": "Pocket details, e.g. Center:-0.89,14.89,8.43;Size:20,20,20"},
++                 },
++                 },
++             }
++             }
++         },
++         },
++     },
++     },
++                     "pocket_info": {"type": "string", "required": False, "description": "Pocket information, e.g. Center:-0.89,14.89,8.43;Size:20,20,20"},
++                     "pocket_info": {"type": "string", "required": False, "description": "Pocket information, e.g. Center:-0.89,14.89,8.43;Size:20,20,20"},
++                     "pocket_info": {"type": "string", "required": False, "description": "Pocket information, e.g. Center:-0.89,14.89,8.43;Size:20,20,20"},
++     "Get Box": {
++         "provider_name": "Get Box",
++         "description": "Obtain native ligand binding-site box parameters from natural-language site descriptions and optional structures.",
++         "category": "Binding Site Utilities",
++         "category": "Binding Site Utilities",
++                 "tool_name": "calculate_box_calculate_post",
++                 "description": "Calculate docking box center and size for a native ligand binding site.",
++                     "binding_site": {"type": "string", "required": True, "description": "Natural-language binding-site description; can include PDB ID"},
++                     "pdb_file": {"type": "file", "required": False, "description": "Optional protein structure file (pdb/cif)"},
++                 "file_params": ["pdb_file"],
++     "fpocket": {
++         "provider_name": "fpocket",
++         "description": "Predict binding pockets from protein structures when native pocket annotations are unavailable.",
++                 "tool_name": "run_fpocket_run_fpocket_post",
++                 "description": "Run fpocket to detect and score predicted pockets.",
++                     "protein_file": {"type": "file", "required": True, "description": "Protein structure file for pocket detection"},
++                     "ligand_chain": {"type": "string", "required": False, "description": "Optional ligand chain ID"},
++                     "pocket_min_size": {"type": "number", "required": False, "description": "Minimum detectable pocket size", "default": 3.4},
++                     "pocket_max_size": {"type": "number", "required": False, "description": "Maximum detectable pocket size", "default": 6.2},
++                 "file_params": ["protein_file"],
++     "get box": "Get Box",
++     "native ligand binding site": "Get Box",
++     "native binding site": "Get Box",
++     "fpocket": "fpocket",
++     "predicted binding site": "fpocket",
++     "pocket prediction": "fpocket",
++         return None
++     ]
++ def get_default_interface(tool_name: str) -> dict:
++     """Return the default interface metadata for a tool."""
++     info = get_tool_info(tool_name)
++     info = get_tool_info(tool_name)
++     if not info:
++     if not info:
++     interfaces = info.get("interfaces") or {}
++     return interfaces.get("default") or (list(interfaces.values())[0] if interfaces else None)
++ def build_payload_from_registry(tool_name: str, user_parameters: dict) -> dict:
++     """Build an invoke payload strictly from registry-defined metadata."""
++         raise ValueError(f"Unknown tool: {tool_name}")
++     interface = get_default_interface(tool_name)
++     if not interface:
++         raise ValueError(f"No interface found for tool: {tool_name}")
++     allowed_params = interface.get("parameters", {})
++     filtered_parameters = {
++         key: value
++         for key, value in (user_parameters or {}).items()
++         if key in allowed_params and value is not None
++     }
++     }
++     missing_required = [
++         key for key, meta in allowed_params.items()
++         if meta.get("required") and key not in filtered_parameters
++     if missing_required:
++         raise ValueError(f"Missing required parameters: {sorted(missing_required)}")
++     return {
++         "provider_name": info["provider_name"],
++         "tool_name": interface["tool_name"],
++         "parameters": filtered_parameters,

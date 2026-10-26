@@ -1,0 +1,147 @@
+reed1898/defi-yield-monitor  1.0.0 -> 1.1.0
+change_type: instructions+code   changelog: Standalone skill: includes setup.sh and run.sh scripts, auto proxy detection, no source code dependency. Just install and configure wallets.
+
+### SKILL.md  [instructions]
+- description: Monitor DeFi lending & savings positions across Aave v3, SparkLend, Spark Savings, and Kamino. Track balances, APY, health factors, and compute 7d/30d yield. Use when user asks to check DeFi positions, lending yields, stablecoin earnings, portfolio health, or wants automated DeFi reporting. Triggers: "check my DeFi", "lending yield", "DeFi收益", "持仓", "APY", "health factor", "stablecoin yield", "Aave positions", "Spark savings", "Kamino".
+- Cross-chain DeFi lending & savings monitor. No API keys required — all data from public endpoints.
+- ## Setup
+- cd <skill_dir>/../   # project root (parent of skill/)
+- python3 -m venv .venv && source .venv/bin/activate
+- pip install -r requirements.txt
+- cp config/config.example.json config/config.json
+- ```
+- ```
+- Edit `config/config.json`: add wallet addresses and enable desired protocols.
+- ### Config Structure
+-     "evm": ["0x..."],
+-     "solana": ["So1..."]
+- All commands run from the project root (parent of `skill/`).
+- ### Daily Report (positions + risk alerts)
+- python main.py --config config/config.json
+- ### Yield Summary (7d/30d PnL + APY)
+- python main.py --config config/config.json --yield-summary
+- ### JSON Output (programmatic)
+- python main.py --config config/config.json --json
+- ## Proxy Requirement
+- If running behind a firewall (e.g. China), detect proxy port first:
+- /usr/sbin/lsof -nP | grep quickqser | grep LISTEN   # or your proxy
+- export https_proxy=http://127.0.0.1:<port>
+- export http_proxy=http://127.0.0.1:<port>
+- DefiLlama and Aave GraphQL endpoints require internet access.
+- ## Automated Snapshots
+- Set up a cron job (or OpenClaw cron) to collect snapshots twice daily. After 7 days of data, `--yield-summary` shows actual realized returns.
+- ### OpenClaw Cron Example
+- Schedule: "13 9,21 * * *" (Asia/Shanghai)
+- Command: cd <project_root> && python main.py --config config/config.json --yield-summary
+- | Protocol | Chain | Data Source |
+- |----------|-------|------------|
+- | Aave v3 | ETH, BSC | GraphQL API |
+- | SparkLend | ETH, Base | On-chain RPC |
+- | Spark Savings | ETH | DefiLlama + ERC-4626 on-chain |
+- | Kamino | Solana | Kamino Public API |
+- Each position includes: `chain`, `protocol`, `wallet`, `supplied_usd`, `borrowed_usd`, `net_value_usd`, `apy_supply`, `apy_borrow`, `health_factor`, `timestamp`.
+- Yield summary includes: current APY per protocol, 7d/30d PnL (absolute + percentage), annualized APY from actual returns.
+- ## Interpreting Results
+- - **Health factor < threshold** → risk alert, consider repaying debt
+- - **APY = 0** for a protocol → APY data unavailable (usually SparkLend borrow/supply rate)
+- - **Insufficient data** for 7d/30d → keep collecting snapshots, data will accumulate
+- GitHub: https://github.com/reed1898/defi-yield-monitor
++ description: Monitor DeFi lending & savings positions across Aave v3, SparkLend, Spark Savings, and Kamino. Track balances, APY, health factors, and compute 7d/30d realized yield. No API keys required. Use when user asks about DeFi positions, lending yields, stablecoin earnings, portfolio health, or wants automated DeFi reporting. Triggers: "check DeFi", "lending yield", "DeFi收益", "持仓", "APY", "health factor", "stablecoin yield", "Aave", "Spark savings", "Kamino", "DeFi report".
++ Self-contained skill for cross-chain DeFi position & yield monitoring. All data from public endpoints — no API keys needed.
++ ## First-Time Setup
++ Run the setup script to clone the project, create venv, and init config:
++ bash <skill_dir>/scripts/setup.sh
++ Then edit the config with wallet addresses:
++ $EDITOR ~/.openclaw/workspace/projects/defi-yield-monitor/config/config.json
++ ### Config Template
++     "evm": ["0xYourEthWallet"],
++     "solana": ["YourSolanaWallet"]
++     { "chain": "bsc", "name": "aave" },
++     { "chain": "eth", "name": "spark" },
++ Remove protocols you don't use. Only include chains where you have positions.
++ Use the run script (auto-detects proxy):
++ # Daily report — positions + risk alerts
++ bash <skill_dir>/scripts/run.sh --text
++ # Yield summary — 7d/30d PnL + per-protocol APY
++ bash <skill_dir>/scripts/run.sh --yield-summary
++ # JSON output — for programmatic use
++ bash <skill_dir>/scripts/run.sh --json
++ Or run directly:
++ cd ~/.openclaw/workspace/projects/defi-yield-monitor
++ .venv/bin/python main.py --config config/config.json --yield-summary
++ ## Automated Daily Reports
++ Create an OpenClaw cron job to collect snapshots and report yields:
++ - **Schedule**: twice daily (e.g. `13 9,21 * * *`)
++ - **Command**: `bash <skill_dir>/scripts/run.sh --yield-summary`
++ - **Delivery**: announce to user's Telegram/Discord
++ After 7 days of snapshots, `--yield-summary` shows actual realized returns (not just APY estimates).
++ | Protocol | Chains | What It Tracks |
++ |----------|--------|---------------|
++ | Aave v3 | ETH, BSC | Supply/borrow, APY, health factor |
++ | SparkLend | ETH, Base | Supply/borrow, health factor |
++ | Spark Savings | ETH | spUSDC/spUSDT/sUSDS vault yields |
++ | Kamino | Solana | Lending obligations, APY |
++ - Per position: chain, protocol, wallet, supplied_usd, borrowed_usd, net_value_usd, apy_supply, apy_borrow, health_factor
++ - Yield summary: current APY per protocol, 7d/30d PnL (absolute + %), annualized APY from actual returns
++ - Risk alerts: health factor below threshold, daily drawdown exceeding limit
++ ## Proxy
++ The run script auto-detects QuickQ/Clash/V2Ray proxies. To set manually:
++ export https_proxy=http://127.0.0.1:10020
++ export http_proxy=http://127.0.0.1:10020
++ https://github.com/reed1898/defi-yield-monitor
+
+### scripts/run.sh  [code]
++ #!/usr/bin/env bash
++ # Run defi-yield-monitor with auto proxy detection
++ set -euo pipefail
++ DIR="${DEFI_MONITOR_DIR:-$HOME/.openclaw/workspace/projects/defi-yield-monitor}"
++ MODE="${1:---text}"  # --text | --yield-summary | --json
++ if [ ! -d "$DIR" ]; then
++   echo "❌ Project not found at $DIR. Run setup.sh first."
++   exit 1
++ fi
++ fi
++ cd "$DIR"
++ # Auto-detect proxy (QuickQ or common proxies)
++ if [ -z "${https_proxy:-}" ]; then
++   PROXY_PORT=$(lsof -nP 2>/dev/null | grep -E 'quickqser|clash|v2ray' | grep LISTEN | grep -oE '127\.0\.0\.1:[0-9]+' | head -1 || true)
++   if [ -n "$PROXY_PORT" ]; then
++     export https_proxy="http://$PROXY_PORT"
++     export http_proxy="http://$PROXY_PORT"
++   fi
++ exec .venv/bin/python main.py --config config/config.json "$MODE"
+
+### scripts/setup.sh  [code]
++ #!/usr/bin/env bash
++ # Setup defi-yield-monitor: clone repo + create venv + install deps + init config
++ set -euo pipefail
++ REPO_URL="https://github.com/reed1898/defi-yield-monitor.git"
++ DEFAULT_DIR="${DEFI_MONITOR_DIR:-$HOME/.openclaw/workspace/projects/defi-yield-monitor}"
++ DIR="${1:-$DEFAULT_DIR}"
++ if [ -d "$DIR/.git" ]; then
++   echo "✔ Project already exists at $DIR, pulling latest..."
++   cd "$DIR" && git pull --ff-only origin main 2>/dev/null || true
++ else
++ else
++   echo "Cloning $REPO_URL → $DIR"
++   git clone "$REPO_URL" "$DIR"
++ fi
++ fi
++ fi
++ cd "$DIR"
++ if [ ! -d ".venv" ]; then
++   echo "Creating virtualenv..."
++   python3 -m venv .venv
++ echo "Installing dependencies..."
++ .venv/bin/pip install -q requests>=2.32.0
++ if [ ! -f "config/config.json" ]; then
++   cp config/config.example.json config/config.json
++   echo "⚠️  Created config/config.json from example. Edit it to add your wallet addresses."
++   echo "✔ config/config.json already exists"
++ echo ""
++ echo ""
++ echo "✅ Setup complete!"
++ echo "   Project: $DIR"
++ echo "   Config:  $DIR/config/config.json"
++ echo "Next: edit config.json with your wallet addresses, then run:"
++ echo "   cd $DIR && .venv/bin/python main.py --config config/config.json"

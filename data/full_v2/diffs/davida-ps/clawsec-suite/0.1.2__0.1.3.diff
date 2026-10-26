@@ -1,0 +1,636 @@
+davida-ps/clawsec-suite  0.1.2 -> 0.1.3
+change_type: instructions+docs+code   changelog: Release 0.1.3 via CI
+
+### CHANGELOG.md  [docs]
++ ## [0.1.3]
++ ### Added
++ - Contributor credit: portability and path-hardening improvements in this release were contributed by [@aldodelgado](https://github.com/aldodelgado) in PR #62.
++ - Cross-shell path resolution support for home-directory tokens in suite path configuration (`~`, `$HOME`, `${HOME}`, `%USERPROFILE%`, `$env:HOME`).
++ - Dedicated path-resolution regression coverage (`test/path_resolution.test.mjs`) including fallback behavior for invalid explicit path values.
++ - Additional advisory/installer tests validating home-token expansion and escaped-token rejection.
++ ### Changed
++ - Advisory guardian hook now resolves configured path environment variables through a shared portability helper.
++ - Guarded install flow now resolves feed/signature/checksum/public-key path overrides through the same shared path helper for consistent behavior across shells/OSes.
++ - Advisory matching now explicitly scopes to `application: "openclaw"` when present; legacy advisories without `application` remain eligible for backward compatibility.
++ ### Fixed
++ - Prevented advisory-check bypass when a single explicit path env var is malformed: invalid explicit values now fall back to safe defaults instead of aborting the entire hook run.
++ ### Security
++ - Escaped/unexpanded home-token inputs in path config are explicitly rejected while preserving secure defaults.
+
+### SKILL.md  [instructions]
+- version: 0.1.2
++ version: 0.1.3
++ ### Cross-shell path note
++ - In `bash`/`zsh`, keep path variables expandable (for example, `INSTALL_ROOT="$HOME/.openclaw/skills"`).
++ - Do not single-quote home-variable paths (avoid `'$HOME/.openclaw/skills'`).
++ - In PowerShell, set an explicit path:
++   - `$env:INSTALL_ROOT = Join-Path $HOME ".openclaw\\skills"`
++ - If a path is passed with unresolved tokens (like `\$HOME/...`), suite scripts now fail fast with a clear error.
++ - consider advisories with `application: "openclaw"` (and legacy entries without `application` for backward compatibility),
+
+### hooks/clawsec-advisory-guardian/handler.ts  [code]
+- import { uniqueStrings } from "./lib/utils.mjs";
+- function expandHome(inputPath: string): string {
+-   if (!inputPath) return inputPath;
+-   if (inputPath === "~") return os.homedir();
+-   if (inputPath.startsWith("~/")) return path.join(os.homedir(), inputPath.slice(2));
+-   return inputPath;
+-   const installRoot = expandHome(
+-     process.env.CLAWSEC_INSTALL_ROOT || process.env.INSTALL_ROOT || path.join(os.homedir(), ".openclaw", "skills"),
+-   const suiteDir = expandHome(process.env.CLAWSEC_SUITE_DIR || path.join(installRoot, "clawsec-suite"));
+-   const localFeedPath = expandHome(process.env.CLAWSEC_LOCAL_FEED || path.join(suiteDir, "advisories", "feed.json"));
+-   const localFeedSignaturePath = expandHome(
+-     process.env.CLAWSEC_LOCAL_FEED_SIG || `${localFeedPath}.sig`,
+-   const localFeedChecksumsPath = expandHome(
+-     process.env.CLAWSEC_LOCAL_FEED_CHECKSUMS || path.join(path.dirname(localFeedPath), "checksums.json"),
+-   const localFeedChecksumsSignaturePath = expandHome(
+-     process.env.CLAWSEC_LOCAL_FEED_CHECKSUMS_SIG || `${localFeedChecksumsPath}.sig`,
+-   const feedPublicKeyPath = expandHome(
+-     process.env.CLAWSEC_FEED_PUBLIC_KEY || path.join(suiteDir, "advisories", "feed-signing-public.pem"),
+-   const stateFile = expandHome(
+-     process.env.CLAWSEC_SUITE_STATE_FILE || path.join(os.homedir(), ".openclaw", "clawsec-suite-feed-state.json"),
++ import { uniqueStrings, resolveConfiguredPath } from "./lib/utils.mjs";
++ function configuredPath(
++   explicit: string | undefined,
++   fallback: string,
++   label: string,
++ ): string {
++   return resolveConfiguredPath(explicit, fallback, {
++     label,
++     onInvalid: (error, rawValue) => {
++       console.warn(
++         `[clawsec-advisory-guardian] invalid ${label} path "${rawValue}", using default "${fallback}": ${String(error)}`,
++       );
++     },
++   });
++   const installRoot = configuredPath(
++     process.env.CLAWSEC_INSTALL_ROOT || process.env.INSTALL_ROOT,
++     path.join(os.homedir(), ".openclaw", "skills"),
++     "CLAWSEC_INSTALL_ROOT",
++   );
++   );
++   const suiteDir = configuredPath(
++     process.env.CLAWSEC_SUITE_DIR,
++     path.join(installRoot, "clawsec-suite"),
++     "CLAWSEC_SUITE_DIR",
++   const localFeedPath = configuredPath(
++     process.env.CLAWSEC_LOCAL_FEED,
++     path.join(suiteDir, "advisories", "feed.json"),
++     "CLAWSEC_LOCAL_FEED",
++   const localFeedSignaturePath = configuredPath(
++     process.env.CLAWSEC_LOCAL_FEED_SIG,
++     `${localFeedPath}.sig`,
++     "CLAWSEC_LOCAL_FEED_SIG",
++   const localFeedChecksumsPath = configuredPath(
++     process.env.CLAWSEC_LOCAL_FEED_CHECKSUMS,
++     path.join(path.dirname(localFeedPath), "checksums.json"),
++     "CLAWSEC_LOCAL_FEED_CHECKSUMS",
++   const localFeedChecksumsSignaturePath = configuredPath(
++     process.env.CLAWSEC_LOCAL_FEED_CHECKSUMS_SIG,
++     `${localFeedChecksumsPath}.sig`,
++     "CLAWSEC_LOCAL_FEED_CHECKSUMS_SIG",
++   const feedPublicKeyPath = configuredPath(
++     process.env.CLAWSEC_FEED_PUBLIC_KEY,
++     path.join(suiteDir, "advisories", "feed-signing-public.pem"),
++     "CLAWSEC_FEED_PUBLIC_KEY",
++   const stateFile = configuredPath(
++     process.env.CLAWSEC_SUITE_STATE_FILE,
++     path.join(os.homedir(), ".openclaw", "clawsec-suite-feed-state.json"),
++     "CLAWSEC_SUITE_STATE_FILE",
+
+### hooks/clawsec-advisory-guardian/lib/advisory_scope.mjs  [code]
++ const ADVISORY_APPLICATION_OPENCLAW = "openclaw";
++ const ADVISORY_APPLICATION_ALL = "all";
++ /**
++ /**
++  * @param {unknown} value
++  * @returns {string[]}
++  */
++  */
++ function normalizeApplicationValue(value) {
++   if (typeof value === "string") {
++     const normalized = value.trim().toLowerCase();
++     return normalized ? [normalized] : [];
++   }
++   }
++   }
++   }
++   if (Array.isArray(value)) {
++     return value
++       .filter((entry) => typeof entry === "string")
++       .map((entry) => entry.trim().toLowerCase())
++       .filter(Boolean);
++   return [];
++ }
++ }
++  * Decide whether an advisory should be considered by OpenClaw-facing flows.
++  *
++  *
++  * Backward compatibility rule:
++  * - Advisories without `application` remain eligible.
++  * @param {{ application?: unknown }} advisory
++  * @returns {boolean}
++ export function advisoryAppliesToOpenclaw(advisory) {
++   const application = advisory?.application;
++   if (application === undefined || application === null) {
++     return true;
++     return true;
++   const applications = normalizeApplicationValue(application);
++   if (applications.length === 0) {
++   return (
++     applications.includes(ADVISORY_APPLICATION_OPENCLAW) ||
++     applications.includes(ADVISORY_APPLICATION_ALL)
++   );
+
+### hooks/clawsec-advisory-guardian/lib/matching.ts  [code]
++ import { advisoryAppliesToOpenclaw } from "./advisory_scope.mjs";
++     if (!advisoryAppliesToOpenclaw(advisory)) continue;
+
+### hooks/clawsec-advisory-guardian/lib/suppression.mjs  [code]
+- import { isObject, normalizeSkillName } from "./utils.mjs";
+-     const config = await loadConfigFromPath(configPath);
+-     if (!config) throw new Error(`Advisory suppression config not found: ${configPath}`);
+-     const config = await loadConfigFromPath(envPath.trim());
++ import { isObject, normalizeSkillName, resolveUserPath } from "./utils.mjs";
++     const resolved = resolveUserPath(configPath, { label: "advisory suppression config path" });
++     const config = await loadConfigFromPath(resolved);
++     const config = await loadConfigFromPath(resolved);
++     if (!config) throw new Error(`Advisory suppression config not found: ${resolved}`);
++     const resolved = resolveUserPath(envPath.trim(), { label: "OPENCLAW_AUDIT_CONFIG" });
+
+### hooks/clawsec-advisory-guardian/lib/types.ts  [code]
++   application?: string | string[];
+
+### hooks/clawsec-advisory-guardian/lib/utils.mjs  [code]
++ import os from "node:os";
++ import path from "node:path";
++ /**
++ /**
++ /**
++ /**
++  */
++  */
++  */
++  */
++ }
++ }
++ }
++ }
++ }
++  * @param {string} value
++  * @param {string} value
++  * @returns {string}
++  * @returns {string}
++  * @returns {string}
++ function detectHomeDirectory(env = process.env) {
++   if (typeof env.HOME === "string" && env.HOME.trim()) return env.HOME.trim();
++   if (typeof env.USERPROFILE === "string" && env.USERPROFILE.trim()) return env.USERPROFILE.trim();
++   if (
++     typeof env.HOMEDRIVE === "string" &&
++     env.HOMEDRIVE.trim() &&
++     typeof env.HOMEPATH === "string" &&
++     env.HOMEPATH.trim()
++   ) {
++     return `${env.HOMEDRIVE.trim()}${env.HOMEPATH.trim()}`;
++   }
++   }
++   }
++   }
++   }
++   return os.homedir();
++ const UNEXPANDED_HOME_TOKEN_PATTERN =
++   /(?:^|[\\/])(?:\\?\$HOME|\\?\$\{HOME\}|\\?\$USERPROFILE|\\?\$\{USERPROFILE\}|%HOME%|%USERPROFILE%|\$env:HOME|\$env:USERPROFILE)(?:$|[\\/])/i;
++ function expandKnownHomeTokens(value) {
++   const homeDir = detectHomeDirectory(process.env);
++   if (!homeDir) return value;
++   let expanded = String(value ?? "");
++   if (expanded === "~") {
++     expanded = homeDir;
++   } else if (expanded.startsWith("~/") || expanded.startsWith("~\\")) {
++     expanded = path.join(homeDir, expanded.slice(2));
++   expanded = expanded
++     .replace(/(?<!\\)\$\{HOME\}/g, homeDir)
++     .replace(/(?<!\\)\$HOME(?=$|[\\/])/g, homeDir)
++     .replace(/(?<!\\)\$\{USERPROFILE\}/gi, homeDir)
++     .replace(/(?<!\\)\$USERPROFILE(?=$|[\\/])/gi, homeDir)
++     .replace(/%HOME%/gi, homeDir)
++     .replace(/%USERPROFILE%/gi, homeDir)
++     .replace(/(?<!\\)\$env:HOME/gi, homeDir)
++     .replace(/(?<!\\)\$env:USERPROFILE/gi, homeDir);
++   return expanded;
++  * @returns {boolean}
++ export function hasUnexpandedHomeToken(value) {
++   return UNEXPANDED_HOME_TOKEN_PATTERN.test(String(value ?? "").trim());
++  * Expand `~` and known home env var patterns in user-provided path-like strings.
++  * Also fails fast when unresolved home tokens remain.
++  *
++  *
++  * @param {string} inputPath
++  * @param {{label?: string}} [options]
++ export function resolveUserPath(inputPath, { label = "path" } = {}) {
++   const raw = String(inputPath ?? "").trim();
++   if (!raw) return raw;
++   const expanded = expandKnownHomeTokens(raw);
++   const normalized = path.normalize(expanded);
++   if (hasUnexpandedHomeToken(normalized)) {
++     throw new Error(
++       `Unexpanded home token detected in ${label}: ${raw}. ` +
++         "Use an absolute path or an unquoted home-path expression.",
++     );
++   return normalized;
++  * Resolve an optional explicit path; if invalid, fall back to a default path.
++  * @param {string | undefined} explicitPath
++  * @param {string} fallbackPath
++  * @param {{label?: string, onInvalid?: (error: unknown, rawValue: string) => void}} [options]
++ export function resolveConfiguredPath(
++   explicitPath,
++   fallbackPath,
++   { label = "path", onInvalid } = {},
++ ) {
++   const explicit = typeof explicitPath === "string" ? explicitPath.trim() : "";
++   if (!explicit) {
++     return resolveUserPath(fallbackPath, { label });
++     return resolveUserPath(fallbackPath, { label });
++   try {
++     return resolveUserPath(explicit, { label });
++   } catch (error) {
++     if (typeof onInvalid === "function") {
++       onInvalid(error, explicit);
++     }
+
+### scripts/guarded_skill_install.mjs  [code]
+- import { normalizeSkillName, uniqueStrings } from "../hooks/clawsec-advisory-guardian/lib/utils.mjs";
+-   const localFeedPath = process.env.CLAWSEC_LOCAL_FEED || DEFAULT_LOCAL_FEED;
+-   const localFeedSigPath = process.env.CLAWSEC_LOCAL_FEED_SIG || DEFAULT_LOCAL_FEED_SIG;
+-   const localFeedChecksumsPath = process.env.CLAWSEC_LOCAL_FEED_CHECKSUMS || DEFAULT_LOCAL_FEED_CHECKSUMS;
+-   const localFeedChecksumsSigPath = process.env.CLAWSEC_LOCAL_FEED_CHECKSUMS_SIG || DEFAULT_LOCAL_FEED_CHECKSUMS_SIG;
+-   const feedPublicKeyPath = process.env.CLAWSEC_FEED_PUBLIC_KEY || DEFAULT_FEED_PUBLIC_KEY;
++ import { normalizeSkillName, uniqueStrings, resolveUserPath } from "../hooks/clawsec-advisory-guardian/lib/utils.mjs";
++ function envPathOrDefault(name, fallback, label) {
++   const envValue = process.env[name];
++   const candidate = typeof envValue === "string" && envValue.trim() ? envValue.trim() : fallback;
++   return resolveUserPath(candidate, { label });
++ }
++   );
++   );
++   const localFeedPath = envPathOrDefault("CLAWSEC_LOCAL_FEED", DEFAULT_LOCAL_FEED, "CLAWSEC_LOCAL_FEED");
++   const localFeedSigPath = envPathOrDefault("CLAWSEC_LOCAL_FEED_SIG", DEFAULT_LOCAL_FEED_SIG, "CLAWSEC_LOCAL_FEED_SIG");
++   const localFeedChecksumsPath = envPathOrDefault(
++     "CLAWSEC_LOCAL_FEED_CHECKSUMS",
++     "CLAWSEC_LOCAL_FEED_CHECKSUMS",
++     DEFAULT_LOCAL_FEED_CHECKSUMS,
++   const localFeedChecksumsSigPath = envPathOrDefault(
++     "CLAWSEC_LOCAL_FEED_CHECKSUMS_SIG",
++     "CLAWSEC_LOCAL_FEED_CHECKSUMS_SIG",
++     DEFAULT_LOCAL_FEED_CHECKSUMS_SIG,
++   const feedPublicKeyPath = envPathOrDefault("CLAWSEC_FEED_PUBLIC_KEY", DEFAULT_FEED_PUBLIC_KEY, "CLAWSEC_FEED_PUBLIC_KEY");
+
+### skill.json  [code]
+-   "version": "0.1.2",
+-   "license": "MIT",
++   "version": "0.1.3",
++   "license": "AGPL-3.0-or-later",
+
+### test/advisory_application_scope.test.mjs  [code]
++ #!/usr/bin/env node
++ /**
++  * Advisory application scope tests:
++  * - openclaw advisories are considered
++  * - nanoclaw advisories are ignored
++  * - legacy advisories without application remain eligible
++  *
++  * Run: node skills/clawsec-suite/test/advisory_application_scope.test.mjs
++  */
++ import path from "node:path";
++ import { fileURLToPath } from "node:url";
++ const __dirname = path.dirname(fileURLToPath(import.meta.url));
++ const LIB_PATH = path.resolve(__dirname, "..", "hooks", "clawsec-advisory-guardian", "lib");
++ const { advisoryAppliesToOpenclaw } = await import(`${LIB_PATH}/advisory_scope.mjs`);
++ let passCount = 0;
++ let failCount = 0;
++ function pass(name) {
++   passCount += 1;
++   console.log(`\u2713 ${name}`);
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ function fail(name, error) {
++   failCount += 1;
++   console.error(`\u2717 ${name}`);
++   console.error(`  ${String(error)}`);
++ function testFindMatchesFiltersByApplicationScope() {
++   const testName = "advisoryAppliesToOpenclaw: openclaw + legacy advisories are considered";
++   const inputs = [
++     { id: "ADV-OPENCLAW-001", application: "openclaw", expect: true },
++     { id: "ADV-NANOCLAW-001", application: "nanoclaw", expect: false },
++     { id: "ADV-LEGACY-001", expect: true },
++   ];
++   for (const input of inputs) {
++     const result = advisoryAppliesToOpenclaw({ application: input.application });
++     if (result !== input.expect) {
++       fail(testName, `Unexpected result for ${input.id}: expected ${input.expect}, got ${result}`);
++       return;
++     }
++   }
++   }
++   }
++   }
++   }
++   pass(testName);
++   pass(testName);
++   pass(testName);
++   pass(testName);
++ function testApplicationAllAccepted() {
++   const testName = "advisoryAppliesToOpenclaw: application=all is considered";
++   const result = advisoryAppliesToOpenclaw({ application: "all" });
++   if (!result) {
++   if (!result) {
++   if (!result) {
++     fail(testName, "Expected true for application=all");
++     return;
++     return;
++     return;
++ function testFindMatchesAcceptsApplicationArray() {
++   const testName = "advisoryAppliesToOpenclaw: application array containing openclaw is considered";
++   const result = advisoryAppliesToOpenclaw({ application: ["nanoclaw", "openclaw"] });
++     fail(testName, "Expected true for application array containing openclaw");
++ function testInvalidApplicationValueFallsBackCompat() {
++   const testName = "advisoryAppliesToOpenclaw: invalid application values keep legacy compatibility";
++   const result = advisoryAppliesToOpenclaw({ application: { invalid: true } });
++     fail(testName, "Expected true for non-string application to preserve backward compatibility");
++ function runTests() {
++   console.log("=== ClawSec Advisory Application Scope Tests ===\n");
++   testFindMatchesFiltersByApplicationScope();
++   testApplicationAllAccepted();
++   testFindMatchesAcceptsApplicationArray();
++   testInvalidApplicationValueFallsBackCompat();
++   console.log(`\n=== Results: ${passCount} passed, ${failCount} failed ===`);
++   if (failCount > 0) {
++     process.exit(1);
++ runTests();
+
+### test/advisory_suppression.test.mjs  [code]
++ }
++ }
++   }
++   }
++   try {
++   try {
++     }
++     }
++   } catch (error) {
++   } catch (error) {
++     fail(testName, error);
++     fail(testName, error);
++     await fs.writeFile(configFile, JSON.stringify({
++       enabledFor: ["advisory"],
++       suppressions: [{
++         checkId: "CVE-2026-25593",
++         skill: "clawsec-suite",
++         suppressedAt: "2026-02-15",
++       }],
++     }));
++     const savedEnv = process.env.OPENCLAW_AUDIT_CONFIG;
++     try {
++     try {
++       const config = await loadAdvisorySuppression();
++         pass(testName);
++         pass(testName);
++       } else {
++       } else {
++       }
++       }
++     } finally {
++     } finally {
++       if (savedEnv !== undefined) process.env.OPENCLAW_AUDIT_CONFIG = savedEnv;
++       else delete process.env.OPENCLAW_AUDIT_CONFIG;
++       else delete process.env.OPENCLAW_AUDIT_CONFIG;
++ async function testEnvPathHomeExpansion() {
++   const testName = "loadAdvisorySuppression: OPENCLAW_AUDIT_CONFIG expands $HOME";
++     const configFile = path.join(tempDir, "env-home.json");
++         reason: "Env home expansion",
++     const savedConfig = process.env.OPENCLAW_AUDIT_CONFIG;
++     const savedHome = process.env.HOME;
++     process.env.HOME = tempDir;
++     process.env.OPENCLAW_AUDIT_CONFIG = "$HOME/env-home.json";
++       if (config.suppressions.length === 1 && config.source === configFile) {
++         fail(testName, `Expected env-expanded config, got: ${JSON.stringify(config)}`);
++       if (savedConfig !== undefined) process.env.OPENCLAW_AUDIT_CONFIG = savedConfig;
++       if (savedHome !== undefined) process.env.HOME = savedHome;
++       else delete process.env.HOME;
++ async function testEscapedHomeTokenRejected() {
++   const testName = "loadAdvisorySuppression: escaped home token is rejected";
++     process.env.OPENCLAW_AUDIT_CONFIG = "\\$HOME/not-real.json";
++       await loadAdvisorySuppression();
++       fail(testName, "Expected error for escaped token");
++     } catch (error) {
++       if (String(error).includes("Unexpanded home token")) {
++         fail(testName, `Unexpected error: ${error}`);
++     await testEnvPathHomeExpansion();
++     await testEscapedHomeTokenRejected();
+
+### test/guarded_install.test.mjs  [code]
++ }
++ }
++   }
++   }
++     });
++     });
++ // -----------------------------------------------------------------------------
++ // -----------------------------------------------------------------------------
++ // -----------------------------------------------------------------------------
++ // -----------------------------------------------------------------------------
++   try {
++   try {
++     const keyPair = generateEd25519KeyPair();
++     const result = await runGuardedInstall(["--skill", "test-skill", "--dry-run"], {
++     const result = await runGuardedInstall(["--skill", "test-skill", "--dry-run"], {
++       pass(testName);
++       pass(testName);
++     } else {
++     } else {
++     }
++     }
++   } catch (error) {
++   } catch (error) {
++     fail(testName, error);
++     fail(testName, error);
++       CLAWSEC_FEED_URL: "file:///nonexistent",
++ // Test: $HOME path expansion for local feed paths
++ async function testHomeExpansionForLocalFeedPaths() {
++   const testName = "guarded_install: expands $HOME in local feed env paths";
++     await setupSignedFeed([], keyPair);
++       HOME: tempDir,
++       CLAWSEC_LOCAL_FEED: "$HOME/advisories/feed.json",
++       CLAWSEC_LOCAL_FEED_SIG: "$HOME/advisories/feed.json.sig",
++       CLAWSEC_LOCAL_FEED_CHECKSUMS: "$HOME/advisories/checksums.json",
++       CLAWSEC_LOCAL_FEED_CHECKSUMS_SIG: "$HOME/advisories/checksums.json.sig",
++       CLAWSEC_FEED_PUBLIC_KEY: "$HOME/advisories/feed-signing-public.pem",
++     if (result.code === 0 && result.stdout.includes("Advisory source: local:")) {
++       fail(testName, `Expected local feed success, got ${result.code}: ${result.stdout} ${result.stderr}`);
++ // Test: escaped home token is rejected
++ async function testEscapedHomeTokenRejected() {
++   const testName = "guarded_install: escaped $HOME token is rejected";
++       CLAWSEC_LOCAL_FEED: "\\$HOME/advisories/feed.json",
++     if (result.code === 1 && result.stderr.includes("Unexpanded home token")) {
++       fail(testName, `Expected token validation error, got ${result.code}: ${result.stderr || result.stdout}`);
++     await testHomeExpansionForLocalFeedPaths();
++     await testEscapedHomeTokenRejected();
+
+### test/path_resolution.test.mjs  [code]
++ #!/usr/bin/env node
++ /**
++  * Path resolution tests for shared home-path expansion logic.
++  *
++  * Run: node skills/clawsec-suite/test/path_resolution.test.mjs
++  */
++ import path from "node:path";
++ import { fileURLToPath } from "node:url";
++ const __dirname = path.dirname(fileURLToPath(import.meta.url));
++ const LIB_PATH = path.resolve(__dirname, "..", "hooks", "clawsec-advisory-guardian", "lib");
++ const { resolveUserPath, resolveConfiguredPath } = await import(`${LIB_PATH}/utils.mjs`);
++ let passCount = 0;
++ let failCount = 0;
++ function pass(name) {
++   passCount += 1;
++   console.log(`\u2713 ${name}`);
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ function fail(name, error) {
++   failCount += 1;
++   console.error(`\u2717 ${name}`);
++   console.error(`  ${String(error)}`);
++ async function withEnv(key, value, fn) {
++   const oldValue = process.env[key];
++   try {
++   try {
++   try {
++   try {
++     if (value === undefined) {
++       delete process.env[key];
++       delete process.env[key];
++     } else {
++     } else {
++     } else {
++     } else {
++     } else {
++     } else {
++     } else {
++       process.env[key] = value;
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     return await fn();
++   } finally {
++     if (oldValue === undefined) {
++       process.env[key] = oldValue;
++   }
++   }
++   }
++   }
++   }
++ async function testTildeExpansion() {
++   const testName = "resolveUserPath: expands leading tilde";
++   await withEnv("HOME", "/tmp/clawsec-home", async () => {
++   await withEnv("HOME", "/tmp/clawsec-home", async () => {
++     const resolved = resolveUserPath("~/skills/clawsec-suite", { label: "test tilde" });
++     const expected = path.normalize("/tmp/clawsec-home/skills/clawsec-suite");
++     if (resolved === expected) {
++     if (resolved === expected) {
++       pass(testName);
++       pass(testName);
++       pass(testName);
++       pass(testName);
++       pass(testName);
++       fail(testName, `Expected ${expected}, got ${resolved}`);
++       fail(testName, `Expected ${expected}, got ${resolved}`);
++   });
++   });
++   });
++ async function testHomeVariableExpansion() {
++   const testName = "resolveUserPath: expands $HOME and ${HOME}";
++     const resolved1 = resolveUserPath("$HOME/skills", { label: "test $HOME" });
++     const resolved2 = resolveUserPath("${HOME}/skills", { label: "test ${HOME}" });
++     const expected = path.normalize("/tmp/clawsec-home/skills");
++     if (resolved1 === expected && resolved2 === expected) {
++       fail(testName, `Expected ${expected}, got ${resolved1} / ${resolved2}`);
++ async function testUserProfileExpansion() {
++   const testName = "resolveUserPath: expands USERPROFILE syntaxes";
++   await withEnv("HOME", undefined, async () => {
++     await withEnv("USERPROFILE", "C:\\Users\\clawsec", async () => {
++       const resolved1 = resolveUserPath("%USERPROFILE%\\skills", { label: "test %USERPROFILE%" });
++       const resolved2 = resolveUserPath("$env:USERPROFILE\\skills", { label: "test $env:USERPROFILE" });
++       const expected = path.normalize("C:\\Users\\clawsec\\skills");
++       if (resolved1 === expected && resolved2 === expected) {
++         pass(testName);
++       } else {
++         fail(testName, `Expected ${expected}, got ${resolved1} / ${resolved2}`);
++       }
++     });
++     });
++     });
++ async function testEscapedTokenFails() {
++   const testName = "resolveUserPath: rejects escaped or unresolved home tokens";
++     resolveUserPath("\\$HOME/skills", { label: "test escaped token" });
++     fail(testName, "Expected error for escaped token");
++   } catch (error) {
++   } catch (error) {
++   } catch (error) {
++     if (String(error).includes("Unexpanded home token")) {
++       fail(testName, `Unexpected error: ${error}`);
++ async function testConfiguredPathFallbackOnInvalidExplicit() {
++   const testName = "resolveConfiguredPath: falls back when explicit env value is invalid";
++     let fallbackReason = "";
++     const resolved = resolveConfiguredPath("\\$HOME/skills", "/tmp/clawsec-default", {
++       label: "CLAWSEC_LOCAL_FEED_SIG",
++       onInvalid: (error, rawValue) => {
++         fallbackReason = `${rawValue} :: ${String(error)}`;
++       },
++       },
++     const expected = path.normalize("/tmp/clawsec-default");
++     if (
++       resolved === expected &&
++       fallbackReason.includes("\\$HOME/skills") &&
++       fallbackReason.includes("Unexpanded home token")
++     ) {
++       fail(testName, `Expected fallback ${expected}, got ${resolved} (${fallbackReason})`);
++     fail(testName, error);
++     fail(testName, error);
++ async function testConfiguredPathUsesValidExplicit() {
++   const testName = "resolveConfiguredPath: keeps valid explicit value";
++     const resolved = resolveConfiguredPath("$HOME/skills", "/tmp/clawsec-default", {
++       label: "CLAWSEC_INSTALL_ROOT",
++       onInvalid: () => {
++         throw new Error("onInvalid should not run for a valid explicit path");
++     const expected = path.normalize(`${process.env.HOME || ""}/skills`);
++ async function runTests() {
++   console.log("=== ClawSec Path Resolution Tests ===\n");
++   await testTildeExpansion();
++   await testHomeVariableExpansion();
++   await testUserProfileExpansion();
++   await testEscapedTokenFails();
++   await testConfiguredPathFallbackOnInvalidExplicit();
++   await testConfiguredPathUsesValidExplicit();
++   console.log(`\n=== Results: ${passCount} passed, ${failCount} failed ===`);
++   if (failCount > 0) {
++     process.exit(1);
++ runTests().catch((error) => {
++   console.error("Test runner failed:", error);
++   process.exit(1);
++ });

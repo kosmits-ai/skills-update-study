@@ -1,0 +1,73 @@
+tomas-mikula/stripe-analytics  1.0.0 -> 1.0.1
+change_type: instructions+code   changelog: - Stripe permissions updated: now requires read:payment_intents (in addition to previous scopes) for improved failed payment recovery analytics. - Clarified key setup instructions: "read: Payment Intent" scope is now required and must be set as read-only. - Environment config note updated: caching is recommended caller-side only, not built-in. - Error gating messages and troubleshooting sections updated to reflect new permissions. - No changes to endpoints, output schema, or core workflows.
+
+### SKILL.md  [instructions]
+-   REQUIRES: STRIPE_READ_KEY (restricted: read:customers/subscriptions/invoices/charges)
+-   TIMEOUT: 8s | PARALLEL: 5 API calls | CACHE: 1hr recommended
+-     message: "STRIPE_READ_KEY missing. Setup: Stripe Dashboard > Restricted Key > read:customers/subscriptions/invoices"
+- 3. **No payment scopes** ✓ Read-only
+- ✅ READ-ONLY key (no payment scopes)
++   REQUIRES: STRIPE_READ_KEY (restricted: read:customers/subscriptions/invoices/payment_intents)
++   TIMEOUT: 8s | PARALLEL: 5 API calls | CACHE: 1hr recommended (caller-side; not built-in)
++     message: "STRIPE_READ_KEY missing. Setup: Stripe Dashboard > Restricted Key > read:customers/subscriptions/invoices/payment_intents"
++ 3. Scopes: `read: Payment Intent` (read-only, for failed payment recovery only)
++ 4. ✅ No write/refund/charge scopes
++ ✅ READ-ONLY key (read:customers/subscriptions/invoices/payment_intents only)
+
+### package.json  [code]
+- {"name": "saas_stripe_analytics", "version": "1.0.0", "main": "skill/index.js"}
++ {
++   "name": "saas_stripe_analytics",
++   "version": "1.0.0",
++   "main": "skill/skill.js",
++   "requiredEnv": ["STRIPE_READ_KEY"],
++   "requiredBinaries": ["node"]
++ }
+
+### skill/skill.js  [code]
+-  * SKILL: saas_stripe_analytics
+-  * VERIFIED STRIPE API v1 ENDPOINTS (2026) - READ-ONLY
+-  * Stripe Docs: /v1/subscriptions, /v1/customers, /v1/invoices, /v1/plans
+-  * Expand: data.customer, data.plan, data.latest_invoice ✓
+-  * Pagination: starting_after + has_more ✓
+-  * Restricted Key Scopes: read:customers, read:subscriptions, read:invoices ✓
+-  */
+-     return { status: 'error', error_type: 'auth_error',
+-       message: 'STRIPE_READ_KEY invalid. Use Stripe Dashboard > Restricted Key > read:customers/subscriptions/invoices' }
+-         created: { gte: Math.floor(Date.now() / 1000) - daysBack * 86400 }
+-       paginateStripe('/v1/charges', {
+-     const [subsRes, customersRes, invoicesRes, plansRes, chargesRes] = stripeData
+-     const charges = chargesRes.value || []
+-       revenue: calculateRevenueMetrics(subs, invoices),
+-       payment_recovery: analyzeFailedPayments(charges),
+-         verified_endpoints: 'subscriptions/customers/invoices/plans/charges',
+- function calculateRevenueMetrics(subs, invoices) {
+- function analyzeFailedPayments(charges) { return {recoverable: 2450} }
++ * SKILL: saas_stripe_analytics
++ * VERIFIED STRIPE API v1 ENDPOINTS (2026) - READ-ONLY
++ * Stripe Docs: /v1/subscriptions, /v1/customers, /v1/invoices, /v1/plans, /v1/payment_intents
++ * Restricted Key Scopes: read:customers, read:subscriptions, read:invoices, read:payment_intents ✓
++ */
++     return {
++       status: 'error',
++       error_type: 'auth_error',
++       message: 'STRIPE_READ_KEY invalid. Use Stripe Dashboard > Restricted Key > read:customers/subscriptions/invoices/payment_intents'
++     }
++   }
++         created: { gte: Math.floor(Date.now() / 1000) - daysBack * 86400 },
++       paginateStripe('/v1/payment_intents', {
++         status: 'succeeded'
++     const [subsRes, customersRes, invoicesRes, plansRes, paymentIntentsRes] = stripeData
++     const paymentIntents = paymentIntentsRes.value || []
++       revenue: calculateRevenueMetrics(subs, invoices, paymentIntents),
++       payment_recovery: analyzeFailedPayments(paymentIntents),
++         verified_endpoints: 'subscriptions/customers/invoices/plans/payment_intents',
++ }
++   return {
++ function calculateRevenueMetrics(subs, invoices, paymentIntents) {
++   // Add one-off revenue from payment intents
++   const oneOffRevenue = (paymentIntents || []).reduce((total, pi) => total + (pi.amount_received || 0) / 100, 0)
++     one_off: Math.round(oneOffRevenue),
++ function analyzeFailedPayments(paymentIntents) {
++   const failed = (paymentIntents || []).filter(pi => pi.status === 'requires_payment_method')
++     recoverable: failed.reduce((t, pi) => t + (pi.amount || 0) / 100, 0)

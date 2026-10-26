@@ -1,0 +1,159 @@
+drumrobot/web-browser  0.2.9 -> 0.2.10
+change_type: instructions+docs   changelog: web-browser v0.2.10  - Added explicit privacy gate: always ask for user approval before capturing any credential-input or sign-in screen (accessibility snapshot, screenshot, or full content read). - Clarified self-checks and table guidance for credential field leaks (browser autofill → accessibility tree plaintext). - Condensed and focused top-level skill description for quicker understanding. - Updated documentation for credential-issue: hardened workflow routing and visibility priorities. - Re
+
+### CHANGELOG.md  [docs]
++ ## [0.2.10](https://github.com/es6kr/skills/compare/web-browser-v0.2.9...web-browser-v0.2.10) (2026-10-04)
++ ### Bug Fixes
++ * **web-browser:** resolve host OS layer before backend, scope CDP-hostile table per host ([#571](https://github.com/es6kr/skills/issues/571)) ([1bd3d66](https://github.com/es6kr/skills/commit/1bd3d662c7b29a82322476f36c9aba7dfb485295))
+
+### SKILL.md  [instructions]
+-   Environment-aware browser operations. Detects wmux/cmux/tmux and routes to the right backend
+-   (wmux/cmux panel → user-visible, plain → Playwright MCP, chrome-devtools → reuse the user's
+-   real logged-in session). Topics:
+-   ui-test - snapshots, click/fill/verify, closed shadow DOM cascade diagnosis (cdp-trace)
+-   [ui-test.md, cdp-trace.md].
+-   credential-issue - open service login via detected backend → wait for user sign-in → issue
+-   OR refresh an access key / token / secret / OAuth scope → hand off to follow-up automation
+-   (aws-cli, gh secret set, gh auth refresh, etc.) [credential-issue.md]. Covers both new
+-   issuance and existing-token scope expansion (PAT scope add, OAuth re-authorize, device-code).
+-   Use for: "UI check", "browser test", "screen verify", "Playwright test", "shadow DOM cascade",
+-   "::part not working", "CDP trace", "issue token", "service credential", "open login screen",
+-   "PAT refresh", "scope expansion", "device-code auth", "browser device-code".
+- ## Step 0: Environment Detection (MANDATORY — before any browser action)
+- Check environment variables AND CLI presence to determine the browser backend:
+- # wmux
+- echo "WMUX=$WMUX"
+- # cmux — detect via ANY of these (cmux app does NOT set CMUX_SESSION; use multi-var OR)
+- echo "CMUX_BUNDLE_ID=$CMUX_BUNDLE_ID"
+- echo "CMUX_PANEL_ID=$CMUX_PANEL_ID"
+- echo "CMUX_BUNDLED_CLI_PATH=$CMUX_BUNDLED_CLI_PATH"
+- # CLI fallback (env may be unset in nested shells but CLI still works)
+- command -v cmux && echo "cmux CLI present"
+- command -v wmux && echo "wmux CLI present"
++   Environment-aware browser operations. Detects wmux/cmux/tmux and routes to backend. Topics — ui-test (snapshots, click/fill, shadow DOM), credential-issue (login via backend -> wait sign-in -> issue/refresh token/secret). Use when: "browser", "web-browser", "ui-test", "credential-issue", "playwright", "chrome-devtools", "UI check", "browser test", "screen verify", "Playwright test", "shadow DOM cascade", "::part not working", "CDP trace", "issue token", "service credential", "open login screen", "PAT refresh", "scope expansion", "device-code auth", "browser device-code", "GitHub social login".
++ ```
++ ## CRITICAL — capturing a credential-input screen requires an explicit ask (HARD STOP)
++ **Before capturing a sign-in / credential-input screen — accessibility snapshot, screenshot, or any
++ full page-content read — call `AskUserQuestion` and get explicit approval.** Applies to every topic
++ in this skill and to every backend.
++ The reason is not privacy etiquette, it is a measured leak path: a browser profile's saved-password
++ autofill populates the password field, and the accessibility tree renders that field's **value in
++ plaintext**. The capture therefore carries a live credential into the transcript even though nothing
++ was typed and no screenshot of characters was taken. `document.body.innerText` does not expose input
++ values, but the accessibility snapshot does.
++ | # | Don't | Do |
++ | # | Don't | Do |
++ |---|-------|-----|
++ |---|-------|-----|
++ | 1 | Snapshot a sign-in page to "see what step we're on" | Read only `location.href` and `document.title`, or specific marker booleans. Ask before any fuller capture |
++ | 2 | Assume an empty-looking form is safe because you typed nothing | Profile autofill fills fields without any typing. Emptiness is not verifiable before the capture that would leak it |
++ | 3 | Redact only the field you expected to carry the secret | Apply redaction to **every** returned field — element text, `aria-label`, `title`, `placeholder`, `value`. A secret leaked through an unredacted sibling field is the common failure |
++ | 4 | Return page values when a count or boolean answers the question | Prefer structure over content: `hasPasswordField: true`, `blockMarkers: {...}`, `buttonCount: 3` |
++ | 5 | Treat "the user asked me to test the login" as approval to capture the screen | Testing the flow and capturing the credential screen are separate permissions. Ask for the second one explicitly |
++ **Self-check (before every snapshot / screenshot / full-text read)**: does the current page accept a
++ password, token, secret, or OTP? → If yes, or if unsure, restrict to URL + title and ask before
++ capturing more.
++ ## Step 0: Environment & Tool Priority Resolution (MANDATORY — before any browser action)
++ Resolve which browser capability backend to invoke based on the current environment, prioritizing native/editor plugins over MCP servers.
++ ### Step 0a: Host OS layer — WSL detection (MANDATORY, runs before the Tool Priority Matrix)
++ The multiplexer matrix below answers *which tool* drives the browser. It does not answer *which OS
++ the browser process runs on* — and for the CDP-hostile services in
++ [credential-issue.md](./credential-issue.md) that second axis decides whether automation works at
++ all. A Playwright MCP server started inside WSL drives a **Linux** Chrome, a different fingerprint
++ surface from `chrome-devtools-mcp` attaching to the user's **Windows** Chrome. Resolve this layer
++ first, record the result, and never carry a CDP-hostile verdict across it.
++ ```bash
++ # WSL detection — either signal is sufficient
++ [[ -n "$WSL_DISTRO_NAME" ]] && echo "host=wsl"
++ grep -qi microsoft /proc/version 2>/dev/null && echo "host=wsl"
++ | Host layer | Record as | Consequence for CDP-hostile services |
++ |---|---|---|
++ | WSL (either signal true) | `host=wsl` | Playwright MCP (Linux Chrome) is a **first-class candidate**, not a skipped backend — measure before escalating |
++ | Windows, no WSL signal | `host=windows` | The documented Windows `chrome-devtools-mcp` findings apply as written |
++ | macOS / Linux native | `host=native` | Unmeasured for these services — treat as unknown and measure before asserting |
++ | 1 | Jump straight to the Tool Priority Matrix and pick a backend | Resolve `host=` first — it gates the CDP-hostile escalation ladder |
++ | 2 | Apply a CDP-hostile verdict recorded on one host layer to another | Verdicts are per host layer. A Windows block is not a WSL block |
++ | 3 | Escalate a CDP-hostile service to wmux/cmux/OS-launch while `host=wsl` is untested | On `host=wsl`, try Playwright MCP first and record the outcome before escalating |
++ ### Tool Priority Matrix
++ | Environment | 1st Priority (Native Plugin / CLI) | 2nd Priority (MCP Server Fallback) |
++ |-------------|------------------------------------|------------------------------------|
++ | **wmux** | `wmux browser` commands via Bash (User-visible) | Playwright MCP (`mcp__playwright__*`) |
++ | **cmux** | `cmux browser` commands via Bash (User-visible) | Playwright MCP (`mcp__playwright__*`) |
++ | **Plain / tmux** | Playwright MCP (`mcp__playwright__*`) (Headless default) | Headless Playwright CLI via Bash |
++ ### Backend Availability Check
++ # wmux check
++ [[ -n "$WMUX" ]] || command -v wmux >/dev/null 2>&1
++ # cmux check (detect via ANY of these; CMUX_SESSION is NOT set by cmux app)
++ [[ -n "$CMUX_BUNDLE_ID" || -n "$CMUX_PANEL_ID" || -n "$CMUX_BUNDLED_CLI_PATH" ]] || command -v cmux >/dev/null 2>&1
+
+### credential-issue.md  [docs]
+- | Service | Symptom | Confirmed working alternative | Notes |
+- |---------|---------|-------------------------------|-------|
+- | Cloudflare (dash.cloudflare.com and any Cloudflare-fronted site) | Turnstile "Verifying you are human" interstitial that does not clear, or clears then re-triggers | **wmux/cmux panel**, when detected (see Backend selection table above) | Self-referential — Cloudflare's own dashboard sits behind Cloudflare's bot protection |
+- | Google (accounts.google.com and Google-account-gated consoles) | "Couldn't sign you in — this browser or app may not be secure" | **wmux/cmux panel**, when detected | Google explicitly blocks non-standard/automation-flagged browser sessions for account sign-in |
+-    report success from the click alone — some consoles show a stale row until a refresh, or the click
+-    can silently fail.
++ **Scope: this table is per host OS layer (SKILL.md Step 0a), not per service alone.** Every row below
++ was recorded on `host=windows` with `chrome-devtools-mcp` attached to the user's Windows Chrome. A
++ verdict here does not transfer to `host=wsl`, where Playwright MCP drives a separate Linux Chrome —
++ see "WSL measurements" immediately after the table.
++ | Service | Symptom (`host=windows`, chrome-devtools) | Confirmed working alternative | Notes |
++ |---------|-------------------------------------------|-------------------------------|-------|
++ | Cloudflare (dash.cloudflare.com and any Cloudflare-fronted site) | Turnstile "Verifying you are human" interstitial that does not clear, or clears then re-triggers | **wmux/cmux panel**, when detected (see Backend selection table above); on `host=wsl` the login form is reachable — see below | Self-referential — Cloudflare's own dashboard sits behind Cloudflare's bot protection |
++ | Google (accounts.google.com and Google-account-gated consoles) | "Couldn't sign you in — this browser or app may not be secure" | **`host=wsl` + Playwright MCP** (measured end-to-end, see below); **wmux/cmux panel**, when detected | The flag is attached to the browser instance, so a separate Linux Chrome is not covered by the Windows finding |
++ #### WSL measurements (`host=wsl`, Playwright MCP / Linux Chrome)
++ | Service | Result | Evidence scope |
++ |---------|--------|----------------|
++ | Google (accounts.google.com → console.cloud.google.com) | **Sign-in completed; console fully drivable** | Reached `signin/challenge/pwd`, completed reauth, then created *and* deleted an OAuth client through the console UI — including the confirm-word delete dialog. No "browser may not be secure" screen at any point |
++ | Cloudflare (dash.cloudflare.com/login) | **Login form reached; no interstitial** | Email + password fields present, no `challenges.cloudflare.com` iframe, and none of "Verifying you are human" / "Checking your browser" / "Access denied" present. **Sign-in completion not verified** (no credential submitted) — do not read this row as "login succeeds" |
++ **Consequence for the escalation rule below**: while `host=wsl`, do not treat a listed service as
++ pre-blocked. Try Playwright MCP first and record what actually happens; escalate only on an observed
++ block. The ladder applies unchanged on `host=windows`.
++ 3.5. **Expect a confirm-word gate on the delete dialog** — several consoles (Google Cloud's credential
++    delete among them) keep the dialog's delete button `disabled` until a literal confirmation word is
++    typed into a text field. A text-matched click (`button:has-text("Delete")`, or its localized
++    equivalent) then resolves to a disabled element and **silently no-ops** — no error, no exception,
++    and the row is still there. Before clicking: read the dialog's buttons and check each one's
++    `disabled` state; if the delete button is disabled, look for the confirm field, read the exact word
++    the dialog demands **off the dialog's own text** and type that, then re-check the button became
++    enabled. Do not assume the word is `Delete`: the console localizes it, so on a non-English locale
++    the required string is the translated verb, and typing the English one leaves the button disabled.
++    report success from the click alone — some consoles show a stale row until a refresh, the click can
++    silently fail, or (per 3.5) it can land on a disabled button. A no-op delete that is reported as
++    done leaves a credential the caller believes is dead — the worst outcome of this flow.
+
+### ui-test.md  [docs]
++ ```
++ - **Auto-save drafts after filling a form (HARD STOP)** — after completing a form fill, immediately trigger the form's own draft/temporary-save action (when one exists) so the input is not lost. Only the final submit is the user's call; filling a form and leaving it unsaved risks losing the entered data on navigation/timeout.
++ ### Custom dropdown widgets (react-select and similar) — ref-based click/type unreliable
++ Multi-instance custom-select components (react-select is the most common; the same applies to any JS-rendered listbox that isn't a native `<select>`) frequently break ref-based automation in a specific way: **the accessibility tree exposes only one "active" combobox node at a time, and its ref gets reused/reassigned across the page's multiple visually-distinct dropdown instances** as focus moves. Clicking a snapshot ref that visually pointed at dropdown #3 can silently reopen dropdown #2's menu instead, and `type`/`fill` on the ref's underlying input can appear to succeed (`OK` returned) while the value never actually changes (the framework's controlled-input state resets the DOM value on next render because no real keyboard event reached its event handler).
++ **Symptoms that indicate this is happening**:
++ - A `click` on a ref opens the wrong dropdown's option list (visually confirm via screenshot, not just the tool's return code)
++ - `fill`/`type` returns `OK`, but `get value` on the same selector reads back empty or unchanged
++ - The same ref number, reused across snapshots, corresponds to different screen positions each time
++ | # | Don't (forbidden) | Do (correct alternative) |
++ |---|-------------------|--------------------------|
++ | 1 | Trust a `click`/`fill` tool call's `OK` return as proof the intended element was affected | Take a screenshot (or `get value`) immediately after and visually/programmatically confirm the actual UI state changed as expected |
++ | 2 | Keep retrying the same ref-based `click`/`type` when the visible result doesn't match | Switch to direct DOM query + synthetic event dispatch via `eval` (see pattern below) |
++ | 3 | Assume a filterable dropdown always needs a typed search string | Some dropdowns show a single relevant option immediately on open with no typing needed (e.g. a picker scoped to one existing resource) — screenshot after opening before assuming you must type |
++ **Fallback pattern — locate by bounding box, then dispatch real mouse events**:
++ ```javascript
++ // 1. Enumerate all instances of the control class + their screen position
++ // (use whatever class the framework renders — e.g. '.react-select__control')
++ const els = Array.from(document.querySelectorAll('.react-select__control'));
++ els.map(el => { const r = el.getBoundingClientRect(); return {x: r.x, y: r.y, text: el.textContent}; });
++ // 2. Pick the instance by its rendered position/text (NOT by DOM order alone —
++ //    verify against a screenshot's visible layout first), then open it with a
++ //    full mousedown/mouseup/click sequence (a plain .click() does not open
++ //    react-select's menu, since it listens for mousedown)
++ const target = els.find(el => el.textContent === 'Select...');
++ const r = target.getBoundingClientRect();
++ ['mousedown', 'mouseup', 'click'].forEach(type =>
++   target.dispatchEvent(new MouseEvent(type, {bubbles: true, cancelable: true, clientX: r.x + 5, clientY: r.y + 5}))
++ );
++ // 3. Select an option the same way — options often render as plain <div>
++ // with no distinguishing class; match by trimmed text content instead
++ const opt = Array.from(document.querySelectorAll('.react-select__menu-list *'))
++   .find(el => el.children.length === 0 && el.textContent.trim() === 'desired option text');
++ ['mousedown', 'mouseup', 'click'].forEach(type => opt.dispatchEvent(new MouseEvent(type, {bubbles: true, cancelable: true})));
++ Typing into the underlying input (for filterable dropdowns) has the same "looks like it worked but didn't" trap when done via the ref-based `fill`/`type`. If typing is genuinely required, focus the actual `<input>` first (`el.querySelector('input')`), then use the backend's `type` command against a fresh CSS id selector obtained from that specific input (`input.id`) — re-derive the id after every open, since these frameworks commonly remount the input (new generated id) on each render.

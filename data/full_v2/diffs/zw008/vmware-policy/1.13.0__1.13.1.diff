@@ -1,0 +1,239 @@
+zw008/vmware-policy  1.13.0 -> 1.13.1
+change_type: instructions+docs   changelog: Credentials no longer reach the audit database by any of four paths; CLI writes made with policy disabled are marked ok_bypassed; guarded CLI commands judge the --config file they actually use.
+
+### SKILL.md  [instructions]
+-   Provides the @vmware_tool decorator that wraps all 156+ MCP tools across 8 skills.
+- metadata: {"openclaw":{"requires":{"bins":["vmware-audit"],"config":["~/.vmware/rules.yaml"]},"optional":{"env":["CLAUDE_SESSION_ID","OLLAMA_HOST"]},"homepage":"https://github.com/vmware-skills/VMware-Policy","emoji":"🛡️","os":["macos","linux"]}}
+- > **Infrastructure dependency**: All 8 VMware skills depend on vmware-policy. It is auto-installed and provides the `@vmware_tool` decorator, `sanitize()`, and the shared audit database.
+- | **CLI** | `vmware-audit log`, `vmware-audit export`, `vmware-audit stats` | 3 |
+- uv tool install vmware-policy
+- uv tool install vmware-policy
+- 2. Filter by skill: `vmware-audit log --skill vmware-nsx --last 50`
+- 1. Copy default rules: `cp $(python -c "import vmware_policy; print(vmware_policy.__file__.replace('__init__.py','rules_default.yaml'))") ~/.vmware/rules.yaml`
+- 4. Verify: `vmware-audit log --status denied` to see blocked operations
+- 2. Filter by skill: `vmware-audit export --skill vmware-aiops --since 2026-01-01`
+- vmware-audit log --skill vmware-nsx --status denied
+- vmware-audit export --skill vmware-aiops --since 2026-01-01
+- | `@vmware_tool` | Decorator | Wraps all 156+ MCP tools across 8 skills |
+- | `OPENAI_API_KEY` or `CODEX_SESSION` | codex | OpenAI Codex session |
+- The detected agent name is stored in the `agent` column of `~/.vmware/audit.db` for audit trail purposes only. No API keys or tokens are logged.
+- Rules are loaded from `~/.vmware/rules.yaml`. Verify the file exists and contains valid YAML. The PolicyEngine hot-reloads on file change -- no restart needed.
+- This means a deny rule in `~/.vmware/rules.yaml` matched the operation. Check `vmware-audit log --status denied` to see the rule name and reason. To temporarily bypass: `VMWARE_POLICY_DISABLED=1` (still logged as bypassed).
+- - **Prompt Injection Protection**: `sanitize()` truncates to 500 chars and strips C0/C1 control characters
+- - **Least Privilege**: Audit database is local-only (`~/.vmware/audit.db`), no network exposure
++   Provides the @vmware_tool decorator that most skills in the family wrap their MCP tools in.
++ metadata: {"openclaw":{"requires":{"anyBins":["vmware-audit","uvx"]},"optional":{"env":["CLAUDE_SESSION_ID","OLLAMA_HOST"]},"homepage":"https://github.com/vmware-skills/VMware-Policy","emoji":"🛡️","os":["macos","linux"]}}
++ > **Infrastructure dependency**: Every other package in the VMware skill family depends on vmware-policy. It is auto-installed and provides the `@vmware_tool` decorator, `sanitize()`, and the shared audit database.
++ | **CLI** | `vmware-audit log`, `export`, `stats`, `policy`, `undo-list`, `undo-show` | 6 |
++ uv tool install vmware-policy==1.13.1
++ uv tool install vmware-policy==1.13.1
++ 2. Filter by skill: `vmware-audit log --skill nsx --last 50` (the `skill` column holds the short name: `nsx`, `aiops`, `nsx_security`, ...)
++ 1. Copy default rules: `cp $(python -c "import vmware_policy; print(vmware_policy.__file__.replace('__init__.py','rules_default.yaml'))") ~/.vmware/rules.yaml` (the shipped baseline denies nothing -- every rule in it is commented out)
++ 4. Confirm the rules loaded: `vmware-audit policy` prints the rule source; `vmware-audit policy --operation vm_delete --env production --risk critical` shows what happens to one call
++ 5. Verify: `vmware-audit log --status denied` to see blocked operations
++ 2. Filter by skill: `vmware-audit export --skill aiops --since 2026-01-01`
++ vmware-audit log --skill nsx --status denied
++ # Which rules are in force (user file, shipped baseline, or unreadable)
++ vmware-audit policy
++ vmware-audit export --skill aiops --since 2026-01-01
++ | `@vmware_tool` | Decorator | Policy pre-check + audit row around each MCP tool of the skills that use it |
++ | `CODEX_SESSION` | codex | OpenAI Codex session |
++ Only the *presence* of these variables is checked; their values are never read into the audit row, and no API-key variable is inspected. The `agent` column stores only the inferred name above.
++ ## Policy Defaults and Failure Behavior
++ Read/write authorization belongs to the vCenter/NSX account's RBAC; this engine only applies the operator's own optional deny rules and maintenance window. `vmware-audit policy` reports which of four rule sources is in force:
++ | Source | When | What is permitted |
++ |--------|------|-------------------|
++ | `user` | `~/.vmware/rules.yaml` exists and loads | Whatever your rules allow |
++ | `packaged-default` | No `~/.vmware/rules.yaml` | The shipped baseline, which **denies nothing** -- every operation is allowed by policy |
++ | `user-unreadable` | Your file exists but will not load (bad YAML, not UTF-8) | **Nothing** -- every operation is denied until the file is fixed; it is never replaced by the baseline |
++ | `baseline-unreadable` | No user file and the shipped baseline will not load | **Nothing** -- every operation is denied |
++ A malformed `maintenance_window` blocks high/critical operations. PyYAML is a declared dependency; if it is missing, the engine cannot start and every decorated tool call fails with an error (audited as `error`) -- nothing is silently allowed. `~/.vmware` is `$OPS_HOME` when that variable is set.
++ **`VMWARE_POLICY_DISABLED=1` is an operator escape hatch.** Read from the environment of the process running the skill (the MCP host or the CLI shell), it skips *all* policy evaluation -- deny rules, maintenance window, and the fail-closed state above. It does not disable auditing: a warning naming the operation and parameter *names* is logged, and rows from both surfaces -- MCP tools (`@vmware_tool`) and CLI commands wrapped by `@guarded` -- are recorded with a `_bypassed` status suffix (`ok_bypassed`, `error_bypassed`). Restrict who can set environment variables for the MCP host process, and do not leave the variable set.
++ Rules are loaded from `~/.vmware/rules.yaml` (`$OPS_HOME/rules.yaml` if set). Run `vmware-audit policy`: `packaged-default` means your file was not found, `user-unreadable` means it failed to load and every operation is being denied. The PolicyEngine hot-reloads on file change -- no restart needed.
++ A deny rule in `~/.vmware/rules.yaml` matched, a closed maintenance window blocked a high/critical operation, or (rule `rules_unreadable`) the rules file failed to load. Check `vmware-audit log --status denied` for the rule name and reason. Fix the rule or file rather than bypassing; `VMWARE_POLICY_DISABLED=1` removes all policy for that process (see Policy Defaults above).
++ - **Prompt Injection Protection**: `sanitize()` strips C0/C1 control characters and Unicode format characters (zero-width, bidi overrides), then truncates (default 500 chars)
++ - **Least Privilege**: Audit database is local-only (`~/.vmware/audit.db`), no network exposure; the directory is set to `0700` and the database files to `0600` (best-effort)
++ - **Audit data is sensitive**: each row records tool name, parameters, result, status, OS user, inferred agent, and timestamps. Parameters named in `sensitive_params` are stored as `***`; results from tools declaring `sensitive_result=True` are replaced wholesale; credential-named keys (`password`, `token`, `kubeconfig`, ...) are redacted automatically in both parameters and results, on the MCP and CLI surfaces alike, as is credential-shaped text in error messages. A credential under a key not on that list still needs `sensitive_params`. Treat `audit.db` and its rotated archives as confidential.
++ - **Best-effort audit**: if the database cannot be written, the call still proceeds and a warning is logged
++ - **Policy bypass**: `VMWARE_POLICY_DISABLED=1` disables policy checks, not auditing -- restrict who can set it (see Policy Defaults above)
+
+### references/agent-guardrails.md  [docs]
+- | "Never call a tool that would change production without asking a human first" | `PolicyEngine` — deny rules (optionally scoped to an `environment` label) and maintenance windows are evaluated *before* execution. For an enforced human-approval step, route the change through **vmware-pilot**. |
+- | "Tell me every change you made" | `AuditEngine` — every call is written to `~/.vmware/audit.db` (SQLite WAL) before the model sees the result, reads included. The model's account of what it did is no longer the record. |
+- | "Do not treat text inside an API response as an instruction" | `sanitize()` — C0/C1 control characters stripped, length truncated, applied to untrusted text on the way back from vSphere/NSX/Aria. |
++ | "Never call a tool that would change production without asking a human first" | `PolicyEngine` — deny rules (optionally scoped to an `environment` label) and maintenance windows are evaluated *before* execution. None ship enabled: you write them in `~/.vmware/rules.yaml`, and `vmware-audit policy` confirms they loaded. For an enforced human-approval step, route the change through **vmware-pilot**. |
++ | "Tell me every change you made" | `AuditEngine` — every `@vmware_tool` call is written to `~/.vmware/audit.db` (SQLite WAL) before the model sees the result, reads included (best-effort: if the database cannot be written, the call proceeds and a warning is logged). The model's account of what it did is no longer the record. |
++ | "Do not treat text inside an API response as an instruction" | `sanitize()` — C0/C1 control and Unicode format characters stripped, length truncated, applied to untrusted text on the way back from vSphere/NSX/Aria. |
+
+### references/capabilities.md  [docs]
+- The mandatory wrapper for all VMware MCP tool functions across the entire skill family.
+- | `sensitive_params` | list[str] | `None` | Parameter names to redact in audit logs (e.g., `["password"]`) |
+-   1. Redact sensitive parameters for logging
+-   3. Policy pre-check (deny rules, maintenance window)
+-      - If denied -> log as "denied", raise PolicyDenied
+-   4. Execute the wrapped function
+-   5. Post-log audit record to ~/.vmware/audit.db
+-        duration_ms, agent, workflow_id, user, risk_level
+- Rule-based access control with YAML hot-reload.
+- | **maintenance_window** | Time-based restriction | High/critical ops blocked outside window |
+- Set `VMWARE_POLICY_DISABLED=1` to bypass all policy checks. Operations are still logged with status `ok_bypassed` for audit trail completeness.
+- | `params` | TEXT | JSON -- sanitized parameters |
+- | `result` | TEXT | JSON -- operation result |
+- | `status` | TEXT | `ok`, `denied`, `error`, `ok_bypassed` |
+- | Codex | `OPENAI_API_KEY` or `CODEX_SESSION` env var |
+- def sanitize(text: str, max_len: int = 500) -> str:
+-     """Strip C0/C1 control characters (except newline/tab) and truncate."""
+- row and can be matched by a `deny` rule's `min_risk_level`; it does not by
++ The wrapper that VMware skills put around their MCP tool functions: policy pre-check before, one audit row after.
++ | `sensitive_params` | list[str] | `None` | Parameter names whose values are stored as `***` in audit rows (e.g., `["password"]`). Credential-named parameters (`password`, `token`, ...) are also redacted automatically; declare any credential whose key name is not on that list. |
++ | `sensitive_result` | bool | `False` | The return value *is* a credential (kubeconfig, token). The audit row stores `"[redacted: return value declared sensitive]"`; the caller still gets the real value. |
++ | `undo` | callable | `None` | `(params, result)` returning an inverse descriptor dict (or `None`),, recorded to `~/.vmware/undo.db` on success. Recording only -- nothing is executed. |
++   1. Redact sensitive_params for logging
++   3. Policy pre-check (deny rules, maintenance window, unreadable-rules denial;
++      skipped entirely when VMWARE_POLICY_DISABLED=1)
++      - If denied -> recorded as "denied", raise PolicyDenied
++   4. Per-process call budget / runaway guard -> "budget_exceeded"
++   5. Execute the wrapped function
++   6. Post-log audit record to ~/.vmware/audit.db (in a finally block, best-effort)
++      - Result: replaced if sensitive_result; credential-named keys redacted;
++        raised exceptions stored with credential-shaped text redacted
++        duration_ms, agent, user, risk_level, rationale, approved_by
++ | `_sensitive_result` | bool | Whether the result is redacted from the audit row |
++ Rule-based access control with YAML hot-reload. It applies only the operator's own rules; read/write authorization is the vCenter/NSX account's RBAC.
++ ### Rule Sources
++ `active_rules_source()` (shown by `vmware-audit policy`) returns one of:
++ | Source | When | What is permitted |
++ |--------|------|-------------------|
++ | `user` | `~/.vmware/rules.yaml` exists and loads | Whatever the rules allow |
++ | `packaged-default` | No user file | The shipped `rules_default.yaml`, whose rules are all commented out -- nothing is denied |
++ | `user-unreadable` | User file exists but fails to load (YAML error, not UTF-8) | Nothing: every operation is denied (rule `rules_unreadable`) until the file loads. The baseline is not substituted. |
++ | `baseline-unreadable` | No user file and the baseline fails to load | Nothing: every operation is denied |
++ A user file replaces the baseline; they are never merged. An empty loaded rule set allows everything. PyYAML is a declared dependency; without it the engine cannot be constructed and decorated calls fail rather than run.
++ | **maintenance_window** | Time-based restriction (UTC) | High/critical ops blocked outside window; a malformed window blocks them always |
++ `VMWARE_POLICY_DISABLED=1`, read from the environment of the process running the skill, makes `check_allowed()` return allowed (rule `policy_disabled`) before any rule is evaluated -- including the fail-closed denial for unreadable rules. It is an operator escape hatch; restrict who can set the MCP host's environment.
++ It does not disable auditing or redaction. Each bypassed check logs a warning with the operation and parameter names (not values). Rows from both surfaces -- `@vmware_tool` MCP calls and `@guarded` CLI commands -- carry a `_bypassed` status suffix (`ok_bypassed`, `error_bypassed`).
++ | `params` | TEXT | JSON -- call parameters, with `sensitive_params` values stored as `***` |
++ | `result` | TEXT | JSON -- operation result (or error text + traceback excerpt), after credential redaction |
++ | `status` | TEXT | `ok`, `denied`, `error`, `budget_exceeded`, `rejected`, or `<status>_bypassed` |
++ | `rationale` | TEXT | Self-attested, from `VMWARE_AUDIT_RATIONALE` (not an authorization) |
++ | `approved_by` | TEXT | Self-attested, from `VMWARE_AUDIT_APPROVED_BY` (not an authorization) |
++ | `risk_tier` | TEXT | Legacy column from the removed approval tiers; written empty |
++ **The database is sensitive.** Parameters and results can carry inventory names, addresses and configuration, and a credential under a key name the automatic redaction does not know must be declared in `sensitive_params`. The engine sets the directory to `0700` and the database files to `0600` (best-effort); treat `audit.db` and its archives as confidential. Writes are best-effort -- if the database cannot be written, the call proceeds and a warning is logged.
++ | Codex | `CODEX_SESSION` env var |
++ Only the presence of these variables is checked, and only the inferred name is stored. No API-key variable is inspected.
++ def sanitize(text: str | None, max_len: int = 500) -> str:
++     """Strip control and Unicode format characters, then truncate."""
++ - Unicode format characters (category Cf): zero-width spaces/joiners, bidi overrides
++ - Truncates to `max_len` *after* stripping; `None` becomes `""`
++ row, can be matched by a `deny` rule's `min_risk_level`, and decides whether a
++ configured `maintenance_window` applies (high/critical only); it does not by
+
+### references/cli-reference.md  [docs]
+- The `vmware-audit` CLI reads from `~/.vmware/audit.db` (SQLite WAL mode).
+- | `--skill` | TEXT | None | Filter by skill name (e.g., `vmware-nsx`) |
+- | `--status` | TEXT | None | Filter by status: `ok`, `denied`, `error`, `ok_bypassed` |
+- vmware-audit log --skill vmware-nsx --last 50
+- vmware-audit export --skill vmware-aiops --since 2026-03-01 > aiops-march.json
+- | `denied` | Blocked by policy rule |
+- | `error` | Operation failed with exception |
+- | `ok_bypassed` | Completed with policy disabled (`VMWARE_POLICY_DISABLED=1`) |
+- | `VMWARE_POLICY_DISABLED` | Set to `1` to bypass policy checks (still logged as `_bypassed`) |
+- Default: `~/.vmware/audit.db`
++ The `vmware-audit` CLI reads from `~/.vmware/audit.db` (SQLite WAL mode), or `$OPS_HOME/audit.db` when `OPS_HOME` is set.
++ ```bash
++ ```
++ | Option | Type | Default | Description |
++ |--------|------|---------|-------------|
++ | `--skill` | TEXT | None | Filter by skill short name, exact match (e.g., `nsx`, `aiops`, `nsx_security` -- not `vmware-nsx`) |
++ | `--status` | TEXT | None | Filter by status, exact match (see [Status Values](#status-values)) |
++ vmware-audit log --skill nsx --last 50
++ vmware-audit export --skill aiops --since 2026-03-01 > aiops-march.json
++ ### vmware-audit policy
++ Show which policy rules are in force and, optionally, what they do to one operation. Read-only.
++ vmware-audit policy [OPTIONS]
++ | `--operation`, `-o` | TEXT | "" | Tool name to evaluate, e.g. `vm_delete` |
++ | `--env`, `-e` | TEXT | "" | Target environment, e.g. `production` |
++ | `--risk`, `-r` | TEXT | medium | Risk level the tool declares |
++ Prints the rule source -- `user`, `packaged-default` (no rules file; the shipped baseline, which denies nothing), `user-unreadable` or `baseline-unreadable` (every operation denied) -- and the number of deny rules and whether a maintenance window is set. Exits with code 1 when the rules could not be loaded.
++ ### vmware-audit undo-list / undo-show
++ List recorded undo tokens (`--status recorded|applied|expired`, `--last N`), or show the inverse operation recorded for one token (`undo-show <undo_id>`). Read-only -- neither command executes anything.
++ | `denied` | Blocked by policy (deny rule, closed/malformed maintenance window, or `rules_unreadable`) |
++ | `error` | Operation raised, or returned the family's error payload |
++ | `budget_exceeded` | Stopped by the `@vmware_tool` per-process call budget |
++ | `rejected` | CLI only: the operator declined the confirmation prompt |
++ | `<status>_bypassed` | Call made with `VMWARE_POLICY_DISABLED=1`, from either the MCP (`@vmware_tool`) or the CLI (`@guarded`) surface (e.g. `ok_bypassed`, `error_bypassed`). |
++ | `OPS_HOME` | Directory for `audit.db` and `rules.yaml` (default `~/.vmware`) |
++ | `VMWARE_POLICY_DISABLED` | Operator escape hatch: `1` skips all policy evaluation in that process (deny rules, maintenance window, unreadable-rules denial). Auditing continues; a warning is logged per call, and rows from both `@vmware_tool` (MCP) and `@guarded` (CLI) get the `_bypassed` suffix. Restrict who can set it. |
++ Default: `~/.vmware/audit.db`. The database records parameters and results and should be treated as sensitive -- see the setup guide's *Audit Database Security*.
+
+### references/setup-guide.md  [docs]
+- ```
+- uv tool install vmware-policy
+- git clone https://github.com/vmware-skills/VMware-Policy.git
+- The audit database is created automatically at `~/.vmware/audit.db` on first use. No configuration needed.
+- Policy rules are optional. Without `~/.vmware/rules.yaml`, all operations are allowed (audit logging still active).
+- | `VMWARE_POLICY_DISABLED` | No | Set to `1` to bypass policy checks (still logged) |
+- - Location: `~/.vmware/audit.db` (user home directory)
+- - Permissions: inherited from `~/.vmware/` directory (recommend `chmod 700`)
+- ### Sensitive Parameter Redaction
+- Parameters listed in `sensitive_params` are replaced with `***` in audit logs:
+- All API response text passes through `sanitize()`:
+- - Truncation: default 500 characters (configurable per call)
+- - Control character stripping: C0/C1 characters removed
+- | OpenAI Codex | Supported | `OPENAI_API_KEY` / `CODEX_SESSION` |
+- vmware-policy does not run as an MCP server itself. It is a Python library consumed by other VMware skill MCP servers. The `vmware-audit` CLI is the user-facing interface.
+- ```json
+- {
+-   "mcpServers": {
+-     "vmware-policy": {
+-       "command": "uvx",
+-       "args": ["--from", "vmware-policy", "vmware-audit"],
+-       "env": {}
+-     }
+-   }
+- }
+- > Note: This configuration exposes the `vmware-audit` CLI, not an MCP server. For MCP tool access, use the individual skill servers (vmware-aiops, vmware-nsx, etc.) which include vmware-policy as a dependency.
+- uv pip install vmware-policy
+- python -c "import yaml; print(yaml.safe_load(open('$HOME/.vmware/rules.yaml')))"  # validate YAML
+- Policy rules require PyYAML. If not present, the PolicyEngine silently allows all operations (audit logging still works):
++ uv tool install vmware-policy==1.13.1
++ git clone --branch v1.13.1 https://github.com/vmware-skills/VMware-Policy.git
++ The audit database is created automatically at `~/.vmware/audit.db` on first use (`$OPS_HOME/audit.db` when `OPS_HOME` is set). No configuration needed.
++ Policy rules are optional. Read/write authorization is the job of the vCenter/NSX account's RBAC; the policy engine only adds the operator's own deny rules and maintenance window on top. Which rules are in force depends on the rules file, and `vmware-audit policy` reports it:
++ | Source | When | What is permitted |
++ |--------|------|-------------------|
++ | `user` | `~/.vmware/rules.yaml` exists and loads | Whatever your rules allow |
++ | `packaged-default` | No `~/.vmware/rules.yaml` | The shipped baseline (`rules_default.yaml`), which has every rule commented out -- **nothing is denied**, all operations are allowed by policy. Audit logging still runs. |
++ | `user-unreadable` | Your file exists but will not load (YAML syntax error, not UTF-8) | **Nothing** -- every operation, reads included, is denied with a message naming the file, until it loads. The shipped baseline is never substituted for a broken user file. |
++ | `baseline-unreadable` | No user file, and the shipped baseline will not load | **Nothing** -- every operation is denied |
++ A user file replaces the baseline entirely; the two are never merged. Within a loaded rule set, a malformed `maintenance_window` blocks high/critical operations until it is fixed.
++ # Confirm they loaded
++ vmware-audit policy
++ | `OPS_HOME` | No | Directory holding `audit.db`, `rules.yaml` and `undo.db` (default `~/.vmware`) |
++ | `VMWARE_POLICY_DISABLED` | No | Operator escape hatch -- `1` skips all policy evaluation (see below) |
++ ### Policy Bypass (`VMWARE_POLICY_DISABLED=1`)
++ Read from the environment of the process running the skill -- the MCP host, or the shell running a skill CLI. When set to `1`:
++ - **Skipped**: every policy check -- deny rules, the maintenance window, and the fail-closed denial for an unreadable rules file.
++ - **Not skipped**: audit logging, parameter/result redaction, and `@vmware_tool`'s per-process call budget.
++ - **Recorded**: each bypassed check logs a warning with the operation, environment, risk level and parameter *names* (never values). Rows written by `@vmware_tool` and by CLI commands wrapped in `@guarded` both get a `_bypassed` status suffix (e.g. `ok_bypassed`, `error_bypassed`).
++ Treat it as a break-glass switch: restrict who can edit the MCP host's configuration or environment, and unset it once the rules file is fixed.
++ - Location: `~/.vmware/audit.db` (user home directory, or `$OPS_HOME`)
++ - Permissions: the engine sets the directory to `0700` and `audit.db` / `-wal` / `-shm` to `0600` on creation and rotation (best-effort -- verify on shared hosts)
++ - Best-effort: if the database cannot be written, the tool call still proceeds and a warning is logged
++ **Treat the audit database as sensitive.** Every row holds the skill, tool name, call parameters, the result (or error text and a traceback excerpt), status, duration, OS user, inferred agent, timestamp, and the self-attested `rationale` / `approved_by` fields (from `VMWARE_AUDIT_RATIONALE` / `VMWARE_AUDIT_APPROVED_BY`). Results can include inventory names, addresses and configuration. Rotated archives (`audit.YYYYMMDD-HHMMSS.db`, five kept) hold the same data. Restrict access to the directory and review an export before attaching it to a ticket.
++ ### Credential Redaction in Audit Rows
++ Redaction applies to the audit copy only; the caller always receives the real value.
++ - **Parameters**: names listed in `sensitive_params` are replaced with `***`, including inside nested dicts and lists. Credential-named parameters (`password`, `token`, ...) are also redacted automatically, declared or not; declare any credential whose key name is not on that list.
++ - **Declared credential results**: a tool decorated with `sensitive_result=True` (e.g. one returning a kubeconfig or token) has its whole result stored as `"[redacted: return value declared sensitive]"`.
++ - **Credential-named result keys**: in every result, values under keys such as `password`, `token`, `secret`, `api_key`, `authorization`, `kubeconfig` are replaced -- the net for a tool that forgot to declare. A key matches when its whole name is one of those words, or when it *ends* in `_` plus a credential word (`vc_password`, `new_password`, `client_api_key`, `admin_token`); matching is case-insensitive with `-`/`_` folded. It is not a substring search: `token_count` and `secret_manager_url` stay readable because the credential word is not the tail.
++ - **Error text**: exceptions raised by `@vmware_tool` tools and `@guarded` CLI commands have credential-shaped text (`password=...`, `Authorization: Bearer ...`, URL userinfo, PEM private keys, JWTs) redacted before storage.
++ API response text that a skill passes through `sanitize()`:
++ - Control characters stripped: C0/C1 (newline, tab and carriage return kept) and Unicode format characters (zero-width, bidi overrides)
++ - Truncation: default 500 characters (configurable per call), applied after stripping
++ | OpenAI Codex | Supported | `CODEX_SESSION` |
++ vmware-policy does not run as an MCP server itself and has no MCP client configuration -- `vmware-audit` is a plain CLI, not an MCP server, so do not register it in an `mcpServers` block. It is a Python library consumed by other VMware skill MCP servers. For MCP tool access, use the individual skill servers (vmware-aiops, vmware-nsx, etc.), which include vmware-policy as a dependency; `VMWARE_POLICY_DISABLED` and `OPS_HOME` take effect in *their* process environment.
++ uv pip install vmware-policy==1.13.1
++ vmware-audit policy           # rule source: user / packaged-default / *-unreadable
++ python -c "import yaml; print(yaml.safe_load(open('$HOME/.vmware/rules.yaml', encoding='utf-8')))"  # validate YAML
++ `packaged-default` means the engine did not find your file (check `OPS_HOME`); `user-unreadable` means it found it, could not load it, and is denying every operation until it is fixed.
++ PyYAML is a declared dependency of vmware-policy, so a normal install always has it. If it is missing from the environment anyway, the PolicyEngine cannot be constructed and every `@vmware_tool` call fails with `ModuleNotFoundError` (recorded as `error` in the audit log) -- no operation is silently allowed. Reinstall the skill, or:

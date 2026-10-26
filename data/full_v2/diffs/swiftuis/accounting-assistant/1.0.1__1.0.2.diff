@@ -1,0 +1,667 @@
+swiftuis/accounting-assistant  1.0.1 -> 1.0.2
+change_type: instructions+code   changelog: - Chart generation now outputs PNG images instead of SVG, and responses will prioritize sending images as attachments. - Chart script API updated: use `png_markdown`, `png_data_uri`, or `png_path` for image output. - Data model version downgraded from 2.1 to 2.0, removing USD conversion fields. - Report aggregation and chart currency display are now consistently based on `default_currency`, with missing exchange rates triggering warnings. - Documentation streamlined with a focus on key commands 
+
+### SKILL.md  [instructions]
+-   Bilingual expense tracking & bookkeeping skill — "Accounting Assistant / 记账助手".
+-   "version": "2.1",
+-       "amount_usd": null,
+-   ],
+-   "exchange_rates": {
+-     "USD_CNY": 7.25,
+-     "EUR_CNY": 7.85
+-   }
+- 支持三种可视化图表，均为 SVG 格式可直接嵌入聊天：
+- Claude 会把图表作为附件发送给用户（支持直接渲染 SVG）。
+- **双栏报表：** 月报/年报默认同时显示 CNY 和 USD（使用配置的汇率）。
++ expense tracking & bookkeeping skill — "Accounting Assistant / 记账助手".
++   "version": "2.0",
++   ]
++ 支持三种可视化图表：饼图 / 柱状图 / 趋势图；图表会生成 PNG 图片，并优先以“图片”形式发给用户（不要直接粘贴 SVG 代码）：
++ 当调用 `scripts/charts.py` 后，优先使用返回值里的 `png_markdown` / `png_data_uri`（或 `png_b64`）来直接发送图片；若返回了 `png_path`，也可以作为图片附件发送。
++ **报表汇总规则：** 月报/年报/周期报表会把所有金额按配置的 `default_currency` 统一换算后再汇总与出图（图表符号随 `default_currency` 变化）。
++ 如果缺少对应汇率，系统会在返回结果里带 `warnings`（并按默认币种原样计入），你可以提示用户补充汇率。
+
+### scripts/charts.py  [code]
+- Expense Charts — Visual Chart Generator
+- Generates SVG-based charts (pie, bar, line) embedded in standalone HTML.
+- Works in any browser / chat embed context.
+- Run: python3 charts.py <chart_type> [json_args]
+- import json
+- import sys
+- import math
+- # ─── Color Palettes ──────────────────────────────────────────────────────────
+- PALETTE = [
+-     "#FF6B6B", "#4ECDC4", "#45B7D1", "#96CEB4", "#FFEAA7",
+-     "#DDA0DD", "#98D8C8", "#F7DC6F", "#BB8FCE", "#85C1E9",
+-     "#F0A500", "#2ECC71", "#E74C3C", "#3498DB", "#9B59B6",
+- ]
+-     "food":       "#FF6B6B",
+-     "shopping":    "#4ECDC4",
+-     "housing":     "#45B7D1",
+-     "transport":  "#96CEB4",
+-     "comm":       "#FFEAA7",
+-     "medical":    "#DDA0DD",
+-     "social":     "#98D8C8",
+-     "entertain":  "#F7DC6F",
+-     "education":  "#BB8FCE",
+-     "childcare":  "#85C1E9",
+-     "travel":     "#F0A500",
+-     "investment": "#2ECC71",
+-     "other":      "#BDC3C7",
+-     "food":       "🍽️",
+-     "shopping":    "🛒",
+-     "housing":     "🏠",
+-     "transport":  "🚗",
+-     "comm":       "📡",
+-     "medical":    "🏥",
+-     "social":     "❤️",
+-     "entertain":  "🎮",
+-     "education":  "📚",
+-     "childcare":  "👶",
+-     "travel":     "✈️",
+-     "investment": "📈",
+-     "other":      "📦",
+- CATEGORY_ZH = {
+-     "food": "餐饮", "shopping": "购物", "housing": "住房", "transport": "交通",
+-     "comm": "通讯", "medical": "医疗", "social": "人情", "entertain": "娱乐",
+-     "education": "学习", "childcare": "育儿", "travel": "旅行",
+-     "investment": "投资", "other": "其他",
+- # ─── SVG Helpers ──────────────────────────────────────────────────────────────
+- def polar_to_xy(cx, cy, r, angle_deg):
+-     rad = math.radians(angle_deg - 90)
+- def describe_arc(cx, cy, r, start_angle, end_angle):
+-     if end_angle - start_angle >= 359.9:
+-         # Full circle
+-         return f"M {cx} {cy - r} A {r} {r} 0 1 1 {cx - 0.001} {cy - r} Z"
+-     x1, y1 = polar_to_xy(cx, cy, r, start_angle)
+-     x2, y2 = polar_to_xy(cx, cy, r, end_angle)
+-     large = 1 if (end_angle - start_angle) > 180 else 0
+-     return f"M {cx} {cy} L {x1} {y1} A {r} {r} 0 {large} 1 {x2} {y2} Z"
+- def wrap_text(text, max_chars=14):
+-     """Wrap text into lines of max_chars."""
+-     lines, cur = [], ""
+-     for w in text.split():
+-         if len(cur) + len(w) + 1 <= max_chars:
+-             cur = (cur + " " + w).strip()
+-             if cur:
+-                 lines.append(cur)
+-             cur = w
+-     if cur:
+-         lines.append(cur)
+-     return lines
+- # ─── Pie Chart ────────────────────────────────────────────────────────────────
+- def pie_chart(data: dict, title: str, lang: str = "zh", size=400) -> str:
+-     """
+-     """
+-     """
+-     """
+-     """
+-     """
+-     data: { "category_id": amount }
+-     data: { "category_id": amount }
+-     Returns SVG string.
+-     Returns SVG string.
+-     Returns SVG string.
+-     if total == 0:
+-     if total == 0:
+-         return "<svg/>"
+-         return "<svg/>"
+-         return "<svg/>"
+-     cx, cy = size // 2, size // 2
+-     outer_r = size * 0.38
+-     inner_r = size * 0.22  # donut hole
+-     svg_parts = [
+-     svg_parts = [
+-     svg_parts = [
+-         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {size} {size}" width="{size}" height="{size}">',
+-         f'<style>',
+-         f'<style>',
+-         f'<style>',
+-         f'  text {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }}',
+-         f'  text {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }}',
+-         f'  text {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }}',
+-         f'  .title {{ font-size: 16px; font-weight: 700; fill: #2C3E50; }}',
+-         f'  .total {{ font-size: 22px; font-weight: 800; fill: #2C3E50; }}',
+-         f'  .pct {{ font-size: 11px; fill: #555; }}',
+-         f'  .legend {{ font-size: 12px; fill: #333; }}',
+-         f'</style>',
+-         f'</style>',
+-         f'</style>',
+-     ]
+-     ]
+-     ]
+-     # Title
+-     # Title
+-     svg_parts.append(f'<text x="{cx}" y="28" text-anchor="middle" class="title">{title}</text>')
+-     svg_parts.append(f'<text x="{cx}" y="50" text-anchor="middle" class="total">¥{total:,.2f}</text>')
+-     # Donut slices
+-     sorted_data = sorted(data.items(), key=lambda x: -x[1])
+-     sorted_data = sorted(data.items(), key=lambda x: -x[1])
+-     legend_items = []
+-     label_lines = []
+-     for i, (cat, amt) in enumerate(sorted_data):
+-         pct = amt / total * 100
+-         pct = amt / total * 100
+-         sweep = pct * 3.6
+-         color = CATEGORY_COLORS.get(cat, PALETTE[i % len(PALETTE)])
+-         emoji = CATEGORY_EMOJI.get(cat, "📦")
+-         emoji = CATEGORY_EMOJI.get(cat, "📦")
+-         label = CATEGORY_ZH.get(cat, cat)
+-         label = CATEGORY_ZH.get(cat, cat)
+-         cat_name = f"{emoji} {label}"
+-         if sweep > 2:  # Only draw if visible
+-             path = describe_arc(cx, cy + 18, outer_r, angle, angle + sweep - 0.5)
+-             svg_parts.append(
+-             svg_parts.append(
+-             svg_parts.append(
+-                 f'<path d="{path}" fill="{color}" stroke="white" stroke-width="2">'
+-                 f'<title>{cat_name}: ¥{amt:,.2f} ({pct:.1f}%)</title></path>'
+-             )
+-             )
+-             )
+-             cat_name = f"{emoji} {label}"
+-         legend_items.append((cat_name, color, pct, amt))
+-         label_lines.append(wrap_text(cat_name))
+-     # Center donut text
+-     count = len(data)
+-     svg_parts.append(
+-         f'<text x="{cx}" y="{cy + 10}" text-anchor="middle" class="total" font-size="14">'
+-         f'{count} 类 / cats</text>'
+-     )
+-     svg_parts.append("</svg>")
+-     svg_parts.append("</svg>")
+-     svg_parts.append("</svg>")
+-     return "\n".join(svg_parts)
+-     return "\n".join(svg_parts)
+-     return "\n".join(svg_parts)
+- # ─── Horizontal Bar Chart ─────────────────────────────────────────────────────
+- def bar_chart(data: dict, title: str, lang: str = "zh", width=560, bar_height=32, padding=48) -> str:
+-     chart_height = len(sorted_data) * (bar_height + 8) + padding + 20
+-     max_val = sorted_data[0][1]
+-     bar_width_max = width - 160  # space for labels
+-         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {chart_height}" width="{width}">',
+-         f'  .chart-title {{ font-size: 16px; font-weight: 700; fill: #2C3E50; }}',
+-         f'  .bar-label {{ font-size: 13px; fill: #333; }}',
+-         f'  .bar-value {{ font-size: 12px; fill: #555; }}',
+-         f'  .axis {{ font-size: 11px; fill: #999; }}',
+-     svg_parts.append(f'<text x="12" y="28" class="chart-title">{title}</text>')
+-     # Grid lines
+-     grid_steps = 4
+-     for g in range(grid_steps + 1):
+-         x = 148 + (bar_width_max / grid_steps) * g
+-         val = max_val * g / grid_steps
+-         svg_parts.append(
+-         svg_parts.append(
+-         svg_parts.append(
+-         svg_parts.append(
+-         svg_parts.append(
+-         svg_parts.append(
+-         svg_parts.append(
+-         svg_parts.append(
+-         svg_parts.append(
+-             f'<line x1="{x}" y1="{padding}" x2="{x}" y2="{chart_height - 20}" '
+-             f'stroke="#eee" stroke-width="1"/>'
+-             f'stroke="#eee" stroke-width="1"/>'
+-         )
+-         )
+-         )
+-         )
+-         )
+-         )
+-             f'<text x="{x}" y="{chart_height - 6}" text-anchor="middle" class="axis">'
+-             f'¥{val:,.0f}</text>'
+-     y = padding
+-         color = CATEGORY_COLORS.get(cat, PALETTE[0])
+-         bar_w = max(4, (amt / max_val) * bar_width_max)
+-         # Category label
+-             f'<text x="4" y="{y + bar_height * 0.65}" class="bar-label">'
+-             f'{emoji} {label}</text>'
+-         # Bar background
+-             f'<rect x="148" y="{y + 4}" width="{bar_width_max}" height="{bar_height - 6}" '
+-             f'rx="4" fill="#f0f0f0"/>'
+-         # Bar fill
+-         if bar_w > 4:
+-                 f'<rect x="148" y="{y + 4}" width="{bar_w}" height="{bar_height - 6}" '
+-                 f'rx="4" fill="{color}"><title>{label}: ¥{amt:,.2f} ({pct:.1f}%)</title></rect>'
+-         # Value label
+-             f'<text x="{148 + bar_w + 6}" y="{y + bar_height * 0.65}" class="bar-value">'
+-             f'¥{amt:,.0f} ({pct:.0f}%)</text>'
+-         y += bar_height + 8
+- # ─── Line / Trend Chart ───────────────────────────────────────────────────────
+- def line_chart(daily_data: dict, title: str, lang: str = "zh", width=560, height=220) -> str:
+-     daily_data: { "YYYY-MM-DD": amount }
+-     if not daily_data:
+-     sorted_days = sorted(daily_data.items())
+-     values = [v for _, v in sorted_days]
+-     max_val = max(values) if values else 1
+-     min_val = 0
+-     pad_left, pad_right, pad_top, pad_bottom = 55, 20, 30, 40
+-     chart_w = width - pad_left - pad_right
+-     chart_h = height - pad_top - pad_bottom
+-     # Build SVG
+-         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" width="{width}">',
+-         f'  .ctitle {{ font-size: 14px; font-weight: 700; fill: #2C3E50; }}',
+-         f'  .val {{ font-size: 10px; fill: #999; }}',
+-     svg_parts.append(f'<text x="{pad_left}" y="22" class="ctitle">{title}</text>')
+-     step_x = chart_w / max(n - 1, 1)
+-     # Grid
+-         y = pad_top + (chart_h / 4) * g
+-         val = max_val - (max_val / 4) * g
+-             f'<line x1="{pad_left}" y1="{y}" x2="{width - pad_right}" y2="{y}" '
+-             f'<text x="{pad_left - 6}" y="{y + 4}" text-anchor="end" class="val">¥{val:,.0f}</text>'
+-     # Area fill
+-         points = []
+-         for i, (_, v) in enumerate(sorted_days):
+-             x = pad_left + i * step_x
+-             x = pad_left + i * step_x
+-             y = pad_top + chart_h - (v / max_val) * chart_h
+-             y = pad_top + chart_h - (v / max_val) * chart_h
+-             points.append(f"{x},{y}")
+-         area_pts = (f"{pad_left},{pad_top + chart_h} " +
+-                     " ".join(points) +
+-                     f" {pad_left + (n-1)*step_x},{pad_top + chart_h}")
+-             f'<polygon points="{area_pts}" fill="#4ECDC4" opacity="0.12"/>'
+-         # Line
+-             f'<polyline points="{" ".join(points)}" fill="none" '
+-             f'stroke="#4ECDC4" stroke-width="2.5" stroke-linejoin="round"/>'
+-         # Dots + labels
+-         for i, (day, v) in enumerate(sorted_days):
+-                 f'<circle cx="{x}" cy="{y}" r="4" fill="#4ECDC4"/>'
+-             # Date label (show every 2nd or so)
+-             if n <= 10 or i % math.ceil(n / 7) == 0:
+-                 short = day[5:] if len(day) > 5 else day  # MM-DD
+-                 svg_parts.append(
+-                     f'<text x="{x}" y="{height - 8}" text-anchor="middle" '
+-                     f'class="val" font-size="10">{short}</text>'
+-                 )
+- # ─── Full HTML Report ─────────────────────────────────────────────────────────
+- def build_report_html(report_data: dict, period_label: str, lang: str = "zh") -> str:
+-     """Build a complete HTML visual report with all charts."""
+-     by_cat = report_data.get("by_category", {})
+-     daily = report_data.get("daily", {})
+-     total = report_data.get("total", 0)
+-     top_cat = report_data.get("top_category", "")
+-     top_pct = report_data.get("top_pct", 0)
+-     pie_svg  = pie_chart(by_cat, "支出占比 | Category %", lang)
+-     bar_svg  = bar_chart(by_cat, "分类明细 | Breakdown", lang)
+-     line_svg = line_chart(daily, "日趋势 | Daily Trend", lang)
+-     emoji = CATEGORY_EMOJI.get(top_cat, "📊")
+-     top_zh = CATEGORY_ZH.get(top_cat, top_cat)
+-     return f"""<!DOCTYPE html>
+- <html lang="{lang}">
+- <head>
+- <meta name="viewport" content="width=device-width, initial-scale=1">
+-   * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+-   body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+-          background: #f8f9fa; padding: 16px; }}
+-   .card {{ background: white; border-radius: 16px; padding: 20px; margin-bottom: 16px;
+-           box-shadow: 0 2px 12px rgba(0,0,0,0.08); }}
+-   .header {{ text-align: center; }}
+-   .period {{ font-size: 18px; font-weight: 700; color: #2C3E50; }}
+-   .total {{ font-size: 32px; font-weight: 800; color: #2C3E50; margin: 6px 0; }}
+-   .sub {{ font-size: 13px; color: #888; }}
+-   .charts {{ display: flex; flex-wrap: wrap; gap: 16px; justify-content: center; }}
+-   .chart-wrap {{ background: white; border-radius: 16px; padding: 16px;
+-                 box-shadow: 0 2px 12px rgba(0,0,0,0.08); text-align: center; flex: 1 1 300px; }}
+-   .chart-wrap svg {{ max-width: 100%; height: auto; }}
+-   .highlight {{ background: linear-gradient(135deg, #667eea, #764ba2);
+-                border-radius: 16px; padding: 20px; color: white; text-align: center; margin-bottom: 16px; }}
+-   .highlight .hl-label {{ font-size: 13px; opacity: 0.85; }}
+-   .highlight .hl-value {{ font-size: 28px; font-weight: 800; margin: 4px 0; }}
+-   .highlight .hl-pct {{ font-size: 14px; opacity: 0.8; }}
+-   .footer {{ text-align: center; font-size: 11px; color: #bbb; margin-top: 12px; }}
+- </style>
+- </head>
+- <body>
+- <div class="card header">
+-   <div class="period">{period_label}</div>
+-   <div class="total">¥{total:,.2f}</div>
+-   <div class="sub">{report_data.get('count', 0)} 笔记录 | {len(by_cat)} 个分类</div>
+- <div class="highlight">
+-   <div class="hl-label">🏆 最高消费类别 | Top Category</div>
+-   <div class="hl-value">{emoji} {top_zh}</div>
+-   <div class="hl-pct">占比 {top_pct:.1f}%</div>
+- <div class="charts">
++ Expense Charts — Visual Chart Generator (PNG output)
++ Generates PNG charts (pie, bar, line) + full HTML report, sends as image.
++ Run: python3 charts.py <pie|bar|line|report|png> [json_args]
++ import json, sys, math, subprocess, os, io, base64
++ from typing import Optional
++ LEDGER_DIR = Path.home() / ".qclaw" / "workspace" / "expense-ledger"
++ CHART_DIR  = LEDGER_DIR / "charts"
++ CHART_DIR.mkdir(parents=True, exist_ok=True)
++ CONFIG_FILE = LEDGER_DIR / "config.json"
++ # ─── Palette ────────────────────────────────────────────────────────────────
++ CURRENCY_SYMBOL = {
++     "CNY": "¥",
++     "USD": "$",
++     "EUR": "€",
++     "GBP": "£",
++ }
++ }
++     "food":"#FF6B6B","shopping":"#4ECDC4","housing":"#45B7D1",
++     "transport":"#96CEB4","comm":"#FFEAA7","medical":"#DDA0DD",
++     "social":"#98D8C8","entertain":"#F7DC6F","education":"#BB8FCE",
++     "childcare":"#85C1E9","travel":"#F0A500","investment":"#2ECC71",
++     "other":"#BDC3C7",
++     "food":"🍽️","shopping":"🛒","housing":"🏠","transport":"🚗",
++     "comm":"📡","medical":"🏥","social":"❤️","entertain":"🎮",
++     "education":"📚","childcare":"👶","travel":"✈️","investment":"📈","other":"📦",
++ CAT_ZH = {
++     "food":"餐饮","shopping":"购物","housing":"住房","transport":"交通",
++     "comm":"通讯","medical":"医疗","social":"人情","entertain":"娱乐",
++     "education":"学习","childcare":"育儿","travel":"旅行",
++     "investment":"投资","other":"其他",
++ CAT_EN = {
++     "food":"Food & Drink","shopping":"Shopping","housing":"Housing",
++     "transport":"Transport","comm":"Communication","medical":"Medical",
++     "social":"Social","entertain":"Entertainment","education":"Education",
++     "childcare":"Baby & Child","travel":"Travel",
++     "investment":"Investment","other":"Others",
++ # ─── SVG generators ─────────────────────────────────────────────────────────
++ def polar_xy(cx, cy, r, deg):
++     rad = math.radians(deg - 90)
++ def arc_path(cx, cy, r, start, end):
++     if end - start >= 359.5:
++         return f"M {cx} {cy-r} A {r} {r} 0 1 1 {cx-0.001} {cy-r} Z"
++     x1,y1 = polar_xy(cx,cy,r,start)
++     x2,y2 = polar_xy(cx,cy,r,end)
++     large = 1 if (end-start) > 180 else 0
++     return f"M {cx} {cy} L {x1} {1} A {r} {r} 0 {large} 1 {x2} {y2} Z"
++ def svg_pie(data, title, currency_symbol="¥", size=480):
++     if total == 0: return None
++     if total == 0: return None
++     W = H = size
++     cx = cy = size//2
++     outer_r, inner_r = size*0.36, size*0.22
++     svg = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {W} {H}" width="{W}" height="{H}">']
++     svg.append('<defs><style>text{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}</style></defs>')
++     svg.append('<defs><style>text{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}</style></defs>')
++     svg.append('<defs><style>text{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}</style></defs>')
++     svg.append(f'<rect width="{W}" height="{H}" fill="white" rx="16"/>')
++     svg.append(f'<text x="{cx}" y="36" text-anchor="middle" font-size="15" font-weight="700" fill="#2C3E50">{title}</text>')
++     svg.append(f'<text x="{cx}" y="58" text-anchor="middle" font-size="20" font-weight="800" fill="#2C3E50">{currency_symbol}{total:,.2f}</text>')
++     sorted_data = sorted(data.items(), key=lambda x:-x[1])
++     sorted_data = sorted(data.items(), key=lambda x:-x[1])
++     for cat, amt in sorted_data:
++         pct = amt/total*100
++         pct = amt/total*100
++         pct = amt/total*100
++         sweep = pct*3.6
++         color = CATEGORY_COLORS.get(cat,"#BDC3C7")
++         color = CATEGORY_COLORS.get(cat,"#BDC3C7")
++         emoji = CATEGORY_EMOJI.get(cat,"📦")
++         emoji = CATEGORY_EMOJI.get(cat,"📦")
++         label = CAT_ZH.get(cat,cat)
++         label = CAT_ZH.get(cat,cat)
++         path = arc_path(cx, cy+24, outer_r, angle, angle+sweep-0.5)
++         if sweep > 1.5:
++             svg.append(f'<path d="{path}" fill="{color}" stroke="white" stroke-width="2"><title>{emoji}{label}: {currency_symbol}{amt:,.2f} ({pct:.1f}%)</title></path>')
++     svg.append(f'<circle cx="{cx}" cy="{cy+24}" r="{inner_r}" fill="white"/>')
++     svg.append(f'<text x="{cx}" y="{cy+18}" text-anchor="middle" font-size="12" font-weight="600" fill="#888">{len(data)} 类</text>')
++     svg.append(f'<text x="{cx}" y="{cy+34}" text-anchor="middle" font-size="11" fill="#aaa">categories</text>')
++     svg.append('</svg>')
++     svg.append('</svg>')
++     svg.append('</svg>')
++     return '\n'.join(svg)
++     return '\n'.join(svg)
++     return '\n'.join(svg)
++ def svg_bar(data, title, currency_symbol="¥", width=560, bar_h=36, pad=50):
++     max_v = sorted_data[0][1]
++     H = len(sorted_data)*(bar_h+8) + pad + 28
++     bw_max = width - 160
++     svg = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {H}" width="{width}">']
++     svg.append(f'<rect width="{width}" height="{H}" fill="white" rx="12"/>')
++     svg.append(f'<text x="12" y="28" font-size="14" font-weight="700" fill="#2C3E50">{title}</text>')
++     for g in range(5):
++         x = pad + (bw_max/4)*g
++         y_top = pad+4
++         svg.append(f'<line x1="{x}" y1="{y_top}" x2="{x}" y2="{H-24}" stroke="#f0f0f0" stroke-width="1"/>')
++         svg.append(f'<text x="{x-4}" y="{H-8}" text-anchor="middle" font-size="10" fill="#bbb">{currency_symbol}{max_v/4*g:,.0f}</text>')
++     y = pad
++         bw = max(4, (amt/max_v)*bw_max)
++         svg.append(f'<text x="6" y="{y+bar_h*0.62}" font-size="13" fill="#333">{emoji} {label}</text>')
++         svg.append(f'<rect x="{pad}" y="{y+4}" width="{bw_max}" height="{bar_h-6}" rx="4" fill="#f5f5f5"/>')
++         svg.append(f'<rect x="{pad}" y="{y+4}" width="{bw}" height="{bar_h-6}" rx="4" fill="{color}"><title>{label}: {currency_symbol}{amt:,.2f}</title></rect>')
++         svg.append(f'<text x="{pad+bw+6}" y="{y+bar_h*0.62}" font-size="12" fill="#555">{currency_symbol}{amt:,.0f} ({pct:.0f}%)</text>')
++         y += bar_h+8
++ def svg_line(daily, title, currency_symbol="¥", width=560, height=200):
++     if not daily: return None
++     sorted_days = sorted(daily.items())
++     vals = [v for _,v in sorted_days]
++     max_v = max(vals) if vals else 1
++     pad_l,pad_r,pad_t,pad_b = 50,16,32,36
++     cw = width-pad_l-pad_r
++     ch = height-pad_t-pad_b
++     svg = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" width="{width}">']
++     svg.append(f'<rect width="{width}" height="{height}" fill="white" rx="12"/>')
++     svg.append(f'<text x="{pad_l}" y="22" font-size="13" font-weight="700" fill="#2C3E50">{title}</text>')
++     sx = cw/max(n-1,1) if n>1 else 0
++         y = pad_t + (ch/4)*g
++         v = max_v - max_v/4*g
++         svg.append(f'<line x1="{pad_l}" y1="{y}" x2="{width-pad_r}" y2="{y}" stroke="#eee" stroke-width="1"/>')
++         svg.append(f'<text x="{pad_l-5}" y="{y+4}" text-anchor="end" font-size="10" fill="#bbb">{currency_symbol}{v:,.0f}</text>')
++         pts = [f"{pad_l+i*sx:.1f},{pad_t+ch-v/max_v*ch:.1f}" for i,(_,v) in enumerate(sorted_days)]
++         area = f"{pad_l},{pad_t+ch} "+" ".join(pts)+f" {pad_l+(n-1)*sx:.1f},{pad_t+ch}"
++         svg.append(f'<polygon points="{area}" fill="#4ECDC4" opacity="0.12"/>')
++         svg.append(f'<polyline points="{" ".join(pts)}" fill="none" stroke="#4ECDC4" stroke-width="2.5" stroke-linejoin="round"/>')
++         for i,(day,v) in enumerate(sorted_days):
++             x = pad_l+i*sx
++             y = pad_t+ch-v/max_v*ch
++             svg.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="3.5" fill="#4ECDC4"/>')
++             if n<=8 or i%(max(1,n//6))==0:
++                 svg.append(f'<text x="{x:.1f}" y="{height-8}" text-anchor="middle" font-size="9" fill="#bbb">{day[5:]}</text>')
++ # ─── HTML report ─────────────────────────────────────────────────────────────
++ def build_html(report, period_label, lang="zh"):
++     by_cat = report.get("by_category", {})
++     daily = report.get("daily", {})
++     total = report.get("total", 0)
++     top = report.get("top_category","")
++     top_pct = report.get("top_pct", 0)
++     currency_code = (report.get("currency") or "CNY").upper()
++     currency_symbol = CURRENCY_SYMBOL.get(currency_code, "¥" if currency_code == "CNY" else "")
++     emoji_top = CATEGORY_EMOJI.get(top,"📊")
++     top_zh = CAT_ZH.get(top, top)
++     top_en = CAT_EN.get(top, top)
++     pie  = svg_pie(by_cat,  "📊 支出占比 | Category %", currency_symbol=currency_symbol)
++     bar  = svg_bar(by_cat,  "📊 分类明细 | Breakdown", currency_symbol=currency_symbol)
++     line = svg_line(daily,  "📊 日趋势 | Daily Trend", currency_symbol=currency_symbol)
++     rows = []
++     for cat, amt in sorted(by_cat.items(), key=lambda x:-x[1]):
++         rows.append(f'<tr><td>{CATEGORY_EMOJI.get(cat,"📦")} {CAT_ZH.get(cat,cat)}</td><td style="text-align:right">{currency_symbol}{amt:,.2f}</td><td style="text-align:right">{pct:.1f}%</td></tr>')
++     rows_html = '\n'.join(rows)
++     return f"""<!DOCTYPE html><html lang="{lang}"><head>
++ *{{box-sizing:border-box;margin:0;padding:0}}
++ body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f8f9fa;padding:12px}}
++ .card{{background:white;border-radius:16px;padding:18px;margin-bottom:12px;box-shadow:0 2px 12px rgba(0,0,0,.08)}}
++ .row{{display:flex;flex-wrap:wrap;gap:12px;justify-content:center}}
++ .box{{background:white;border-radius:16px;padding:14px;box-shadow:0 2px 12px rgba(0,0,0,.08);text-align:center;flex:1 1 280px}}
++ .hl{{background:linear-gradient(135deg,#667eea,#764ba2);border-radius:16px;padding:18px;color:white;text-align:center}}
++ table{{width:100%;border-collapse:collapse;margin-top:8px}}
++ th,td{{padding:8px 12px;text-align:left;border-bottom:1px solid #f0f0f0;font-size:13px}}
++ th{{color:#888;font-weight:500}}
++ .ft{{text-align:center;font-size:11px;color:#ccc;margin-top:10px}}
++ </style></head><body>
++ <div class="card" style="text-align:center">
++   <div style="font-size:16px;font-weight:700;color:#2C3E50">{period_label}</div>
++   <div style="font-size:30px;font-weight:800;color:#2C3E50;margin:6px 0">{currency_symbol}{total:,.2f}</div>
++   <div style="font-size:12px;color:#888">{report.get('count',0)} 笔 · {len(by_cat)} 个分类</div>
++ </div>
++ <div class="hl">
++   <div style="font-size:12px;opacity:.85">🏆 最高消费 | Top Category</div>
++   <div style="font-size:22px;font-weight:800;margin:4px 0">{emoji_top} {top_zh}</div>
++   <div style="font-size:13px;opacity:.8">{top_en} · {top_pct:.1f}%</div>
++ <div class="row">
++   <div class="box">{pie or ''}</div>
++   <div class="box">{bar or ''}</div>
++ <div class="box">{line or ''}</div>
++ <div class="card">
++   <table>{rows_html}</table>
++ <div class="ft">Accounting Assistant / 记账助手 · {datetime.now().strftime('%Y-%m-%d %H:%M')}</div>
++ </body></html>"""
++ # ─── PNG conversion via macOS tools ─────────────────────────────────────────
++ def html_to_png(html_path: Path) -> Optional[Path]:
++     """Convert HTML to PNG using macOS built-in tools."""
++     tmp_png = html_path.with_suffix('.png')
++     # Try qlmanage first (most reliable on macOS)
++     try:
++     try:
++     try:
++         r = subprocess.run(
++         r = subprocess.run(
++         r = subprocess.run(
++             ['qlmanage', '-t', '-s', '900', '-o', str(tmp_png.parent), str(html_path)],
++             capture_output=True, timeout=15
++             capture_output=True, timeout=15
++         potential = tmp_png.parent / f'{html_path.name}.png'
++         if potential.exists():
++         if potential.exists():
++             return potential
++         if tmp_png.exists():
++         if tmp_png.exists():
++         if tmp_png.exists():
++             return tmp_png
++             return tmp_png
++     except Exception as e:
++         pass
++         pass
++     # Fallback: use Safari/webkit
++             ['screencapture', '-x', '-t', 'png', str(tmp_png)],
++             capture_output=True, timeout=5
++     except:
++     return None
++     return None
++ def png_b64_to_data_uri(png_b64: str) -> str:
++     return f"data:image/png;base64,{png_b64}"
++ def png_b64_to_markdown(png_b64: str, alt: str = "chart") -> str:
++     # Many chat UIs render data-URI images; if not, the caller can still use png_b64/png_path.
++     return f"![{alt}]({png_b64_to_data_uri(png_b64)})"
++ def svg_to_png(svg_text: str, size: int = 600) -> Optional[bytes]:
++     """Convert SVG string to PNG bytes using macOS tools."""
++     tmp_svg = CHART_DIR / f'_tmp_{datetime.now().strftime("%H%M%S")}.svg'
++     tmp_png = tmp_svg.with_suffix('.png')
++     tmp_svg.write_text(svg_text, encoding='utf-8')
++             ['qlmanage', '-t', '-s', str(size), '-o', str(tmp_png.parent), str(tmp_svg)],
++         potential = tmp_png.parent / f'{tmp_svg.name}.png'
++             return potential.read_bytes()
++             return tmp_png.read_bytes()
++     except: pass
++     finally:
++         tmp_svg.unlink(exist_ok=True)
++         # qlmanage may output to either tmp_png or f"{tmp_svg.name}.png"
++         try:
++         try:
++         try:
++             if tmp_png.exists():
++                 tmp_png.unlink()
++         except Exception:
++         except Exception:
++         except Exception:
++             pass
++             pass
++             pass
++             potential = tmp_png.parent / f'{tmp_svg.name}.png'
++             if potential.exists():
++                 potential.unlink()
++ def svg_to_b64(svg_text: str, size=600) -> str:
++     """Convert SVG to base64 PNG for embedding."""
++     png = svg_to_png(svg_text, size)
++     if png:
++         return base64.b64encode(png).decode()
++     return ""
++ def get_default_currency_code() -> str:
++     if CONFIG_FILE.exists():
++             with open(CONFIG_FILE, encoding="utf-8") as f:
++                 config = json.load(f)
++             return str(config.get("default_currency", "CNY")).upper()
++     return "CNY"
++ # ─── Main ───────────────────────────────────────────────────────────────────
++         print(json.dumps({"error": "Usage: charts.py <pie|bar|line|report|png> [json_args]"}))
++     cmd  = sys.argv[1]
++     lang = args.get("lang", "zh")
++     ts   = datetime.now().strftime("%Y%m%d_%H%M%S")
++     if cmd == "report":
++         report = args.get("report", {})
++         report = args.get("report", {})
++         period = args.get("period_label", "支出报表")
++         period = args.get("period_label", "支出报表")
++         html   = build_html(report, period, lang)
++         html   = build_html(report, period, lang)
++         path   = CHART_DIR / f"report_{ts}.html"
++         path.write_text(html, encoding='utf-8')
++         path.write_text(html, encoding='utf-8')
++         # Try to also make PNG
++         png_path = html_to_png(path)
++         png_path = html_to_png(path)
++         result = {
++             "ok": True,
++             "type": "report",
++             "html_path": str(path),
++             "count": report.get('count', 0),
++             "total": report.get('total', 0),
++             "currency": report.get("currency", "CNY"),
++         }
++         if png_path:
++         if png_path:
++             result["png_path"] = str(png_path)
++             result["png_path"] = str(png_path)
++             png_b64 = base64.b64encode(png_path.read_bytes()).decode()
++             png_b64 = base64.b64encode(png_path.read_bytes()).decode()
++             result["png_b64"] = png_b64
++             result["png_b64"] = png_b64
++             result["png_data_uri"] = png_b64_to_data_uri(png_b64)
++             result["png_data_uri"] = png_b64_to_data_uri(png_b64)
++             result["png_markdown"] = png_b64_to_markdown(png_b64, alt="expense report")
++         print(json.dumps(result, ensure_ascii=False))
++         print(json.dumps(result, ensure_ascii=False))
++     elif cmd == "png":
++         path   = CHART_DIR / f"chart_{ts}.html"
++         result = {"ok": True, "html_path": str(path), "currency": report.get("currency", "CNY")}
++             result["png_markdown"] = png_b64_to_markdown(png_b64, alt="expense chart")
++     elif cmd == "pie":
++         data  = args.get("data", {})
++         data  = args.get("data", {})
++         data  = args.get("data", {})
+
+### scripts/export.py  [code]
+-     "comm": "通讯", "medical": "医疗", "social": "人情", "enter tain": "娱乐",
++     "comm": "通讯", "medical": "医疗", "social": "人情", "entertain": "娱乐",
+
+### scripts/ledger.py  [code]
+-     # Aggregate
+-     total = sum(e["amount"] for e in filtered)
+-         by_cat[e["category"]] = by_cat.get(e["category"], 0) + e["amount"]
+-         by_subcat[sub] = by_subcat.get(sub, 0) + e["amount"]
+-         daily[e["date"]] = daily.get(e["date"], 0) + e["amount"]
++     # Aggregate (convert into default currency)
++     config = {}
++     if CONFIG_FILE.exists():
++         with open(CONFIG_FILE, encoding="utf-8") as f:
++             config = json.load(f)
++     report_currency = str(config.get("default_currency", "CNY")).upper()
++     exchange_rates = config.get("exchange_rates", {}) or {}
++     warnings: List[str] = []
++     def convert_amount(amount: float, entry_currency: str) -> float:
++         cur = str(entry_currency).upper()
++         if cur == report_currency:
++             return float(amount)
++         # Preferred: <entry>_<report> (e.g. USD_CNY means 1 USD = X CNY)
++         key = f"{cur}_{report_currency}"
++         if key in exchange_rates:
++             return float(amount) * float(exchange_rates[key])
++         # Fallback: reverse rate (e.g. CNY_USD then amount_CNY -> USD requires division)
++         rev_key = f"{report_currency}_{cur}"
++         if rev_key in exchange_rates and float(exchange_rates[rev_key]) != 0:
++             return float(amount) / float(exchange_rates[rev_key])
++         # If missing rate, we assume the amount is already in report currency.
++         # This avoids mixing currencies silently, but we still tell the caller.
++         warnings.append(f"Missing exchange rate: {cur}->{report_currency}; assumed already {report_currency}.")
++         return float(amount)
++     total = 0.0
++         conv = convert_amount(e["amount"], e.get("currency", "CNY"))
++         total += conv
++         by_cat[e["category"]] = by_cat.get(e["category"], 0) + conv
++         by_subcat[sub] = by_subcat.get(sub, 0) + conv
++         daily[e["date"]] = daily.get(e["date"], 0) + conv
++         "currency": report_currency,
++         "warnings": warnings,

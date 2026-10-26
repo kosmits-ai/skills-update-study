@@ -1,0 +1,163 @@
+psyb0t/talkies  1.0.0 -> 1.1.0
+change_type: instructions+docs   changelog: **Talkies 1.1.0 — Adds TTS support (Kokoro-82M) alongside existing ASR**  - Adds OpenAI-compatible text-to-speech endpoint (`/v1/audio/speech`) using the Kokoro-82M model with 41 voices across 6 languages. - New endpoint `/v1/audio/voices` for discovering supported TTS voices. - Updates description and documentation to reflect speech synthesis support; previous features remain (Whisper, Parakeet, Canary, diarization, URL fetch, etc.). - Maintains full OpenAI wire format compatibility for both tr
+
+### SKILL.md  [instructions]
+- description: Self-hosted OpenAI-compatible /v1/audio/transcriptions fronting seven open ASR models (Whisper, Parakeet, Canary). Same wire format as OpenAI — change the base URL + slug. Stereo diarization, URL fetching, MCP endpoint, bearer auth.
+- Self-hosted speech-to-text. OpenAI-compatible `/v1/audio/transcriptions` wire shape — point an OpenAI client at it, change the model slug, done.
+- Seven backends behind the same endpoint: `whisper-large-v3`, `whisper-large-v3-turbo`, `distil-whisper-large-v3`, `parakeet-tdt-0.6b-v3`, `canary-180m-flash`, `canary-1b-flash`, `canary-qwen-2.5b`. Stereo diarization, URL `file_path` fetching, server-side file staging, MCP endpoint with 6 tools, optional bearer-token auth.
+- - Drop-in replacement for `api.openai.com/v1/audio/transcriptions` in existing client code.
+- - Real-time / streaming transcription (this is request/response only — buffer and POST).
+- - TTS (text-to-speech) — talkies is ASR-only. Use [speaches](https://github.com/speaches-ai/speaches) if you need TTS.
+- - Per-request `prompt` or `temperature` injection (fields accepted for compat, **ignored**).
+- | `GET /v1/models` | OpenAI-style list of configured slugs. |
+- There's also **sibling eviction at transcription time** — every request evicts other loaded models so VRAM doesn't get split. One model resident at a time, per container. If you need two models simultaneously, run two containers.
+- | `list_models` | Discover ASR slugs. Returns `[{slug, executor, default_source_lang, default_target_lang, default_task, loaded}]`. |
+- 10. **`prompt` and `temperature` are ignored** even though the form accepts them. Don't expect them to do anything.
++ description: Self-hosted OpenAI-compatible speech service. /v1/audio/transcriptions fronts seven open ASR models (Whisper, Parakeet, Canary); /v1/audio/speech fronts Kokoro-82M TTS. Same wire format as OpenAI — change the base URL + slug. Stereo diarization, URL fetching, MCP endpoint, bearer auth.
++ Self-hosted speech service — ASR and TTS, one container. OpenAI-compatible wire shape on both endpoints; point an OpenAI client at it, change the model slug, done.
++ ASR (`POST /v1/audio/transcriptions`): seven backends — `whisper-large-v3`, `whisper-large-v3-turbo`, `distil-whisper-large-v3`, `parakeet-tdt-0.6b-v3`, `canary-180m-flash`, `canary-1b-flash`, `canary-qwen-2.5b`.
++ TTS (`POST /v1/audio/speech`): `kokoro-82m` with 41 voices across en/es/fr/hi/it/pt, discovered via `GET /v1/audio/voices`.
++ Extras: stereo diarization on transcription, URL `file_path` fetching, server-side file staging, MCP endpoint with 6 ASR-side tools, optional bearer-token auth.
++ - Synthesize speech from text via Kokoro-82M — English (American + British), Spanish, French, Hindi, Italian, Portuguese.
++ - Drop-in replacement for `api.openai.com/v1/audio/transcriptions` and `api.openai.com/v1/audio/speech` in existing client code.
++ - Real-time / streaming output — both endpoints are request/response only.
++ - Per-request `prompt` / `temperature` (transcribe) or `instructions` (speech) injection — fields accepted for compat, **ignored**.
++ - Japanese / Chinese TTS — Kokoro upstream supports them but talkies filters those voices out (they need the `misaki[ja]` / `misaki[zh]` extras).
++ - OpenAI voice aliases (`alloy`, `echo`, `fable`, `onyx`, `nova`, `shimmer`) — TTS exposes Kokoro's native voice names only. Map client-side.
++ ```bash
++ ```bash
++ ```bash
++ ```
++ ```
++ ```
++ # Discover TTS voices, then synthesize an MP3.
++ curl -s $TALKIES_URL/v1/audio/voices | jq
++ curl -s $TALKIES_URL/v1/audio/voices | jq
++ curl -s $TALKIES_URL/v1/audio/speech \
++ curl -s $TALKIES_URL/v1/audio/speech \
++ curl -s $TALKIES_URL/v1/audio/speech \
++ curl -s $TALKIES_URL/v1/audio/speech \
++   -H "Content-Type: application/json" \
++   -H "Content-Type: application/json" \
++   -H "Content-Type: application/json" \
++   -H "Content-Type: application/json" \
++   -d '{
++   -d '{
++   -d '{
++         "model": "kokoro-82m",
++         "model": "kokoro-82m",
++         "model": "kokoro-82m",
++         "input": "Hello from talkies.",
++         "voice": "af_heart",
++         "voice": "af_heart",
++         "response_format": "mp3"
++       }' \
++       }' \
++       }' \
++   --output hello.mp3
++ ### ASR
++ |---|---|---|---|---|---|
++ ### TTS
++ | Slug | Family | CPU | CUDA | Languages | Voices |
++ | `kokoro-82m` | Kokoro (in-process, 24 kHz) | yes | yes | en (US + UK), es, fr, hi, it, pt | 41 (discover via `GET /v1/audio/voices`) |
++ | Field | Required | Default | Notes |
++ |---|---|---|---|
++ |---|---|---|---|
++ ## API — `POST /v1/audio/speech` (TTS)
++ JSON body (not multipart). Returns the encoded audio bytes in the body with the matching `Content-Type` — no JSON envelope.
++         "input": "The quick brown fox jumps over the lazy dog.",
++         "response_format": "mp3",
++         "speed": 1.0
++   --output fox.mp3
++ ### Request Body
++ | `model` | yes | — | TTS model slug. Currently only `kokoro-82m`. Unknown → 404. ASR slug → 400. |
++ | `input` | yes | — | Text to synthesize. Empty / whitespace-only → 400. No fixed length cap; for very long inputs split client-side. |
++ | `voice` | no | model `default_voice` (`af_heart` for `kokoro-82m`) | Kokoro voice name from `GET /v1/audio/voices`. Unknown → 400 with catalog listed. |
++ | `response_format` | no | `mp3` | `mp3` / `opus` / `aac` / `flac` / `wav` / `pcm`. |
++ | `speed` | no | `1.0` | Playback rate. Clamped to `[0.25, 4.0]`. |
++ | `instructions` | no | — | **Accepted, ignored** (Kokoro has no instruction-conditioning input). |
++ ### Output Formats
++ `response_format` picks the encoder applied to Kokoro's raw 24 kHz mono PCM. ffmpeg does the conversion in-process; no temp files.
++ | `response_format` | Content-Type | Codec / container | Notes |
++ | `mp3` (default) | `audio/mpeg` | libmp3lame, 128 kbps CBR | Most universal. |
++ | `opus` | `audio/ogg` | libopus, 64 kbps VBR, Ogg container | Best quality-per-byte for speech. |
++ | `aac` | `audio/aac` | AAC-LC, 128 kbps, ADTS | iOS-friendly. |
++ | `flac` | `audio/flac` | FLAC | Lossless. |
++ | `wav` | `audio/wav` | PCM s16le, 24 kHz mono, RIFF header | Lossless, largest. |
++ | `pcm` | `application/octet-stream` | Raw PCM s16le, 24 kHz mono — no container, no header | Real-time chaining. Caller must know sample rate / format. |
++ ### Voices
++ Returns `{"voices": [{"voice", "model", "default"}]}`. Voice names encode `<lang_code><gender>_<name>`:
++ | Prefix | Language |
++ |---|---|
++ |---|---|
++ | `af_` / `am_` | American English (female / male) |
++ | `bf_` / `bm_` | British English (female / male) |
++ | `ef_` / `em_` | Spanish |
++ | `ff_` | French |
++ | `hf_` / `hm_` | Hindi |
++ | `if_` / `im_` | Italian |
++ | `pf_` / `pm_` | Portuguese (Brazilian) |
++ 41 voices ship in the image. Japanese (`jf_*` / `jm_*`) and Chinese (`zf_*` / `zm_*`) are filtered out because they need the optional `misaki[ja]` / `misaki[zh]` extras (MeCab + pypinyin chains).
++ ### Error Contract (TTS)
++ | Status | When |
++ | 200 | success (audio bytes in body) |
++ | 400 | empty `input`, unknown `voice`, unsupported `response_format`, model isn't TTS (e.g. POSTing `whisper-large-v3` here) |
++ | 401 | `TALKIES_AUTH_TOKEN` set, missing / wrong bearer |
++ | 404 | unknown `model` slug |
++ | 422 | Pydantic validation (missing required fields, wrong types) |
++ | 500 | unhandled ffmpeg or kokoro internal failure |
++ | 503 | `kokoro-82m` snapshot files missing under `${TALKIES_DATA_DIR}/models/kokoro-82m/` (slug excluded from `TALKIES_ENABLED_MODELS` but still being called) |
++ | `GET /v1/models` | OpenAI-style list of configured slugs. Each entry includes a `modality` field (`asr` or `tts`) so clients can filter. |
++ There's also **sibling eviction at request time** — every transcribe or speech request evicts other loaded models so VRAM doesn't get split. ASR and TTS share the same pool; loading Kokoro evicts a resident Whisper and vice versa. One model resident at a time, per container. If you need two models simultaneously, run two containers.
++ MCP exposes the ASR surface only. TTS (`/v1/audio/speech`) is HTTP-only — generated audio bytes don't round-trip through JSON-RPC cleanly. `list_models` filters out TTS slugs so `transcribe` only ever sees ASR backends.
++ | `list_models` | Discover ASR slugs (TTS slugs are filtered out). Returns `[{slug, executor, default_source_lang, default_target_lang, default_task, loaded}]`. |
++ ### Synthesize speech from text
++ # Default voice, MP3 output.
++   -d '{"model":"kokoro-82m","input":"Greetings, human."}' \
++   --output greetings.mp3
++ # Pick a voice from GET /v1/audio/voices, choose a format.
++ curl -s $TALKIES_URL/v1/audio/voices | jq -r '.voices[].voice'
++         "input": "Buongiorno, mondo.",
++         "voice": "if_sara",
++         "response_format": "opus"
++   --output ciao.opus
++ 10. **`prompt` / `temperature` / `instructions` are ignored** even though the request schemas accept them. Don't expect them to do anything.
++ 13. **TTS uses Kokoro's native voice names** — no OpenAI aliases. Hit `GET /v1/audio/voices` once to discover what's shipped; pass the `voice` field accordingly. The 41 voices cover en (US + UK), es, fr, hi, it, pt; ja/zh are filtered out.
++ 14. **TTS `response_format=pcm` is for chaining** — raw 24 kHz mono s16le, no container, no header. Use it when piping into another encoder or a real-time playback path. Otherwise stick with `mp3` (default) or `opus` for size.
++ 15. **TTS evicts loaded ASR and vice versa** — they share the same one-model-resident pool. Synthesizing with Kokoro after a transcribe burst incurs Kokoro's cold load.
+
+### references/setup.md  [docs]
+- - ~12 GB additional disk for model weights (CPU image set) or ~29 GB (full CUDA set)
+- Serves 3× Whisper + `canary-180m-flash`. The CUDA-only models aren't worth running on CPU.
+- Serves all seven models. Requires the NVIDIA Container Toolkit on the host.
+- **First boot:** the entrypoint downloads every model in `models.json` into `/data/models/<slug>/`. CPU set is ~12 GB, CUDA full set is ~29 GB. Bind-mount `/data` so subsequent restarts are no-ops. Restrict the download set with `TALKIES_ENABLED_MODELS` to avoid pulling everything.
+- | CPU | `psyb0t/talkies:latest` | `linux/amd64` | 3× Whisper, 1× Canary-180m-Flash | ~3 GB |
+- | CUDA | `psyb0t/talkies:latest-cuda` | `linux/amd64` | all seven | ~9 GB |
+- The CPU image only ships models that actually finish in a sane time without a GPU. Parakeet-TDT is autoregressive (slow on CPU). Canary-1B and Canary-Qwen-2.5B are flat-out too big. Use the CUDA image for those even if you mostly run on CPU — it gracefully falls back.
+-     "your-slug": {
+- | `executor` | yes | One of `whisper`, `parakeet`, `canary_multitask`, `canary_salm`. Other values fail startup. |
+- | `default_source_lang` | no | Used when the request omits `language`. |
+- | `default_target_lang` | no | Used by Canary multitask for translation tasks. |
+- | `default_task` | no | `asr` (transcribe) or `s2t_translation` (Canary multitask only). Default `asr`. |
++ - ~13 GB additional disk for model weights (CPU image set, includes Kokoro ~330 MB) or ~30 GB (full CUDA set)
++ Serves 3× Whisper + `canary-180m-flash` for ASR, plus `kokoro-82m` for TTS. The CUDA-only ASR models aren't worth running on CPU.
++ Serves all seven ASR models plus `kokoro-82m` TTS. Requires the NVIDIA Container Toolkit on the host.
++ **First boot:** the entrypoint downloads every model in `models.json` into `/data/models/<slug>/`. CPU set is ~13 GB (includes Kokoro), CUDA full set is ~30 GB. Bind-mount `/data` so subsequent restarts are no-ops. Restrict the download set with `TALKIES_ENABLED_MODELS` to avoid pulling everything.
++ | CPU | `psyb0t/talkies:latest` | `linux/amd64` | 3× Whisper, 1× Canary-180m-Flash, Kokoro-82M | ~3 GB |
++ | CUDA | `psyb0t/talkies:latest-cuda` | `linux/amd64` | all seven ASR + Kokoro-82M | ~9 GB |
++ The CPU image only ships ASR models that actually finish in a sane time without a GPU. Parakeet-TDT is autoregressive (slow on CPU). Canary-1B and Canary-Qwen-2.5B are flat-out too big. Use the CUDA image for those even if you mostly run on CPU — it gracefully falls back. Kokoro-82M ships in both images — at 82M params it synthesizes faster than real-time on a 4-core CPU, no GPU needed.
++ Both images bake `espeak-ng` into the runtime layer because Kokoro's G2P for es/fr/hi/it/pt routes through it via `misaki.espeak.EspeakG2P`. The Python `kokoro==0.9.4` package and its lightweight dependency chain (`misaki`, no `[ja]` / `[zh]` extras) are pinned alongside the rest of the ML stack in `Dockerfile` / `Dockerfile.cuda`.
++     "your-asr-slug": {
++       "languages": ["en"]
++     },
++     "your-tts-slug": {
++       "repo": "huggingface-org/tts-repo-name",
++       "executor": "kokoro",
++       "modality": "tts",
++       "default_voice": "af_heart",
++ | `executor` | yes | One of `whisper`, `parakeet`, `canary_multitask`, `canary_salm`, `kokoro`. Other values fail startup. |
++ | `modality` | no | `asr` (default) or `tts`. Drives endpoint guards (`/v1/audio/transcriptions` requires ASR; `/v1/audio/speech` requires TTS) and the `modality` field on `/v1/models` entries. The `kokoro` executor implies `tts`; the four ASR executors imply `asr`. |
++ | `default_source_lang` | no | ASR only. Used when the request omits `language`. |
++ | `default_target_lang` | no | ASR only. Used by Canary multitask for translation tasks. |
++ | `default_task` | no | ASR only. `asr` (transcribe) or `s2t_translation` (Canary multitask only). Default `asr`. |
++ | `default_voice` | no | TTS only. Used when the request omits `voice`. Falls back to the first voice the backend reports. |

@@ -1,0 +1,363 @@
+realpda/kg-note-method-obsidian  3.17.0 -> 3.19.0
+change_type: instructions+docs+code   changelog: 两阶段模型重构: kg检查=分析(只读)+问确认→执行, 其他命令=直接执行; 步1拆命令分支(检查vs执行); ⑧分析完成后write_file覆盖执行清单为具体步骤+同步更新检查清单bitmask; 新增陷阱-分析阶段动手修改
+
+### SKILL.md  [instructions]
+- version: 3.17.0
+- `kg start` → 建执行清单+检查清单到 `_working/`（清单强制）→ 逐条跑 ①-⑥ → ⑦ → ⑨ → ⑧ → 询问是否执行 → 按清单执行 → ⑧
+-    ├─ 有同名任务的清单 → read_file 检查清单+执行清单 → 检查是否可续接（检查清单有未完成位 且 执行清单最后一步不是"删除本任务"）。可续接→从未完成步开始；不可续接（全1或最后一步是删除）→删除清单文件
+-    ├─ 有其他任务的清单（不同名）→ 先完成当前任务，末尾步5再提示
+-    └─ 无 → 生成执行清单+检查清单
+- 1. 按执行清单步骤逐条执行。清单已含所有修正步骤（改名/纠tag/去abstract等），照做即可。**⚠️ 执行中禁止修改清单内容或追加新步骤**。发现的新问题记下来，等当前清单执行完并删除后，再建新清单处理。
+-    - 编辑笔记文件时，每次 `patch` 后立即 `read_file` 确认 frontmatter 闭合 `---` 存在、YAML 结构完整、正文未丢失
++ version: 3.19.0
++ `kg start` → 建执行清单+检查清单到 `_working/`（清单强制）→ **分析阶段**（只读不写：逐条跑 ①-⑥ → ⑦ → ⑨ → ⑧生成变更清单）→ **询问是否执行** → 用户确认后 → **执行阶段**（按清单执行 patch/mv/write → ⑧）
++ **📦 内置脚本（skill_view + file_path 加载后读源码或直接 python 调用）：**
++ 1. `checklist-generator.py` — 自动生成执行清单+检查清单。用法：`python <script> <任务名> <步1> [步2...]`
++ 2. `yaml-validator.py` — 编辑后验证 YAML 结构。用法：`python <script> <文件.md>`
++ 3. `enrichment.py` — 补完计划：将搜索结果格式化为 KG 标准段落追加到笔记。用法：`echo "内容" | python <script> <文件.md> --stdout` 或 `--text "..."`
++    ├─ 有同名任务的清单 → read_file 检查清单+执行清单 → 检查是否可续接
++    │  （有未完成位 且 最后一步不是"删除本任务"）→ 从未完成步开始
++    │  否则（全1或最后一步是删除）→ 删除清单文件，重新建
++    ├─ 有其他任务的清单（不同名）→ 当前任务执行完后步5再提示
++    └─ 无清单 → 生成执行清单+检查清单。优先用脚本（需设环境变量）：
++       `OBSIDIAN_VAULT="<vault绝对路径>" python scripts/checklist-generator.py <任务名> <步1> [步2...]`
++       或用完整路径：`python <script_full_path> <任务名> <步1> [步2...]`（此时仅打印到终端，需手动保存）
++       ⚠️ 脚本在终端输出清单不等于文件已保存到 _working/。
++       **必须验证：** 脚本执行后立即 `search_files path=_working/ pattern=<任务名>` 确认清单文件存在：
++       ├─ 不存在 → 重跑（检查环境变量或手动 copy 内容建文件）
++       └─ 存在 → 继续
++       无脚本环境 → 手动建（格式见上）
++ 1. **命令流程分支：**
++    ├─ **`kg 检查` → 分析阶段（只读不写）：**
++    │   ├─ 逐条跑 ①-⑥ → ⑦ → ⑨，**此阶段禁止任何 patch/write_file/mv**
++    │   ├─ **⑧（生成变更清单）两个动作：**
++    │   │   ① 在回复中向用户列出所有变更
++    │   │   ② **同时用 `write_file` 覆盖执行清单，把具体的操作步骤写进去**（每条操作含：文件、操作类型、具体内容）
++    │   │      ⚠️ 清单源自初始脚本，但分析后才产生具体内容。不能只列在回复里，必须写回清单文件。
++    │   ├─ **同步更新检查清单 bitmask 步数** — 执行清单步骤数变化后，检查清单的位也要对应
++    │   ├─ → **询问用户「是否执行？」**
++    │   │     「📋 分析完成，发现以下问题：\n        · 傻瓜.md: tags为空→[概念], 删除无关行\n     是否执行这些修改？」
++    │   │     等用户回复"执行/动手/是" → 进入执行阶段
++    │   │     用户说"不/算了" → 删除清单，结束
++    │   └─ **⚠️ 分析阶段动手修改是最高频错误** — read_file 后会产生"这里要改"的冲动，必须克制。只更新执行清单，不动笔记文件。分析阶段的假设是"没有写操作"。
++    │
++    └─ **`kg "笔记名"` / `kg 完善` → 直接执行（不询问）：**
++         逐条跑 ①-⑥ → ⑦ → ⑨(仅完善)，分析和执行合一。发现一个问题就把操作记入执行清单（write_file 追加或覆盖）→ 立即执行 → 更新 bitmask。不等待用户确认。
++         完成后 → ⑧（列出所有变更）
++    - 编辑笔记文件后，立即调用 `python scripts/yaml-validator.py <文件>` 验证 frontmatter 闭合
++ > **两阶段模型：** `kg 检查` 的分析阶段只读不写（read_file/search_files 可以，patch/write_file/mv 禁止），分析完写回执行清单→问用户→等确认再执行。
++ > `kg 完善` / `kg "笔记名"` 无分析阶段——分析和执行合一，发现即动手。不询问。
++ **分析阶段的⑧不同：** 分析完成后的⑧不仅要列出变更，还必须用 `write_file` 覆盖 `_working/` 下的执行清单，
++ 把具体的操作步骤写入（替换初始模板），同时更新检查清单 bitmask 步数。然后等用户确认后才进入执行。
++ 优先用脚本：`python scripts/enrichment.py <笔记.md> --stdout` 预览格式化的补充内容，确认后再追加。
++ 无脚本环境 → 手动写：
++ - **⚠️ 分析阶段动手修改** → `kg 检查` 的分析阶段只读不写。read_file 后产生"这里要改"的冲动是正常的，但必须先列变更清单→问用户→等确认→再动手。分析阶段的假设是"没有写操作"
++ - **⚠️ 字段名写错 `tag:` 而非 `tags:`** → 库里有多个笔记误写 `tag:`（缺 s）。yaml-validator 会报 TAG_VS_TAGS 错误。修 frontmatter 时注意该字段是 `tags:` 不是 `tag:`
++ - **⚠️ 脚本输出≠文件保存** → 在终端跑 checklist-generator.py 只打印到 stdout，文件未必写入 _working/。必须设 OBSIDIAN_VAULT 环境变量或手动保存。执行后立即 `search_files` 验证文件存在
+
+### scripts/README.md  [docs]
++ Scripts for kg-note-method-obsidian.
++ ## checklist-generator.py
++ 生成执行清单 + 检查清单文件。
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ python scripts/checklist-generator.py <任务名> <步1> [步2...]
++ 自动追加"删除本任务2个清单文件"为最后一步，检查清单 bitmask 同步。
++ ## yaml-validator.py
++ YAML frontmatter 校验。支持：
++ - 概念/某物/skill/关系 类型检查
++ - frontmatter 开闭确认
++ - 禁止字段检查（type/[[links]/related_fragments）
++ - agent memory 碎片专用检查（summary必需）
++ - Git Bash 路径兼容
++ python scripts/yaml-validator.py <文件.md>
++ ## enrichment.py
++ 补完计划 — 将搜索结果格式化为 KG 标准段落，追加到笔记。
++ echo "内容" | python scripts/enrichment.py <笔记.md> --stdout
++ python scripts/enrichment.py <笔记.md> --text "补充内容"
++ 根据笔记类型自动匹配格式（概念→来源, 某物→补充信息, 关系→单句）。
+
+### scripts/checklist-generator.py  [code]
++ #!/usr/bin/env python3
++ """Generate execution checklist + status checklist files.
++ Usage:
++     python checklist-generator.py <task_name> <step1> [step2...]
++ The final step (delete checklist files) is auto-appended.
++ Output: prints === EXECUTION LIST === and === CHECK LIST === sections.
++ If OBSIDIAN_VAULT env var is set, also saves to _working/ directory.
++ Example:
++     python checklist-generator.py 红油小龙虾检查 新建笔记 搜网补充 搜关联 名称匹配 图片保护
++ """
++ import sys, os, re
++ VAULT = os.environ.get('OBSIDIAN_VAULT', '')
++ WORKING = os.path.join(VAULT, '_working') if VAULT else '_working'
++ def sanitize_filename(name: str) -> str:
++     """Remove chars invalid in Windows filenames."""
++     return re.sub(r'[<>:"/\\|?*]', '_', name).strip() or 'untitled'
++ def generate(task: str, steps: list[str]) -> tuple[str, str]:
++     # Auto-append final cleanup step
++     all_steps = steps + ["删除本任务2个清单文件"]
++     n = len(all_steps)
++     bitmask = ':'.join(['0'] * n)
++     lines = [f"# {task} — 执行清单", "## 步骤"]
++     for i, desc in enumerate(all_steps, 1):
++         lines.append(f"### {i}. {desc}")
++         lines.append("- 操作类型：(待定)")
++         if desc == "删除本任务2个清单文件":
++             lines.append("- 标识：最后一步＝删除清单文件")
++     exec_list = '\n'.join(lines)
++     return exec_list, bitmask
++ def save_to_file(task: str, exec_list: str, check_list: str) -> tuple[str, str]:
++     """Save checklists to _working/ directory. Returns (exec_path, check_path)."""
++     os.makedirs(WORKING, exist_ok=True)
++     safe = sanitize_filename(task)
++     exec_path = os.path.join(WORKING, f"{safe}_执行清单.md")
++     check_path = os.path.join(WORKING, f"{safe}_检查清单.md")
++     with open(exec_path, 'w', encoding='utf-8') as f:
++         f.write(exec_list)
++     with open(check_path, 'w', encoding='utf-8') as f:
++         f.write(check_list)
++     return exec_path, check_path
++ if __name__ == '__main__':
++     if len(sys.argv) < 3:
++         print("USAGE: python checklist-generator.py <task_name> <step1> [step2...]", file=sys.stderr)
++         print("       The final step (删除本任务2个清单文件) is auto-appended.", file=sys.stderr)
++         sys.exit(1)
++         sys.exit(1)
++     task = sys.argv[1]
++     steps = sys.argv[2:]
++     if not steps:
++         print("ERROR: need at least 1 step", file=sys.stderr)
++     exec_list, check_list = generate(task, steps)
++     print("=== EXECUTION LIST ===")
++     print(exec_list)
++     print("\n=== CHECK LIST ===")
++     print(check_list)
++     if VAULT:
++         exec_path, check_path = save_to_file(task, exec_list, check_list)
++         print(f"\n=== SAVED ===")
++         print(f"  exec: {exec_path}")
++         print(f"  check: {check_path}")
+
+### scripts/enrichment.py  [code]
++ #!/usr/bin/env python3
++ """
++ """
++ 补完计划 — 将搜索结果/补充资料格式化为 KG 标准章节，追加到笔记末尾。
++ Usage:
++     type search_results.txt | python enrichment.py <note.md>
++     python enrichment.py <note.md> --text "补充内容..."
++     python enrichment.py <note.md> --stdout
++ Output: 默认追加回文件，--stdout 仅打印
++ import re, sys, os
++ def parse_frontmatter(filepath: str):
++     with open(filepath, 'r', encoding='utf-8') as f:
++         raw = f.read()
++     if not raw.startswith('---'):
++         return {}, raw, 0
++         return {}, raw, 0
++     # Find closing --- in raw directly to avoid lstrip offset bug
++     close_idx = raw.find('\n---', 3)
++     if close_idx == -1:
++     yaml_block = raw[3:close_idx].strip()
++     fields = {}
++     for line in yaml_block.split('\n'):
++         m = re.match(r'^(\w[\w_-]*)\s*:\s*(.*)', line)
++         if m:
++             fields[m.group(1)] = m.group(2).strip()
++     body_start = close_idx + 5
++     return fields, raw[body_start:], body_start
++ def detect_type(fields: dict) -> str:
++     raw_tags = fields.get('tags', '')
++     m = re.match(r'\[?\s*(\S+?)\s*\]?', raw_tags)
++     return m.group(1) if m else 'unknown'
++ def normalize_path(p: str) -> str:
++     p = p.strip()
++     m = re.match(r'^/([a-zA-Z])/(.*)', p)
++     if m and os.name == 'nt':
++         p = f"{m.group(1).upper()}:/{m.group(2)}"
++     return os.path.abspath(p)
++ def dedup_lines(new: list[str], existing: str) -> list[str]:
++     """Filter out lines that already exist in body."""
++     return [l for l in new if l.strip() and l.strip() not in existing]
++ def format_concept(text: str, body: str) -> str:
++     items = dedup_lines(text.strip().split('\n'), body)
++     if not items:
++         return ''
++         return ''
++     out = []
++     if '## 来源' not in body:
++         out.append('\n## 来源\n')
++     for item in items:
++         out.append(f'- {item.strip()}')
++     return '\n'.join(out)
++ def format_relation(text: str, body: str) -> str:
++     if body.strip():
++     first = text.strip().split('\n')[0].strip()
++     return first if first else ''
++ def main():
++     if len(sys.argv) < 2 or sys.argv[1] in ('-h', '--help'):
++         print(f"USAGE: python {__file__} <note.md> [--stdout] [--text ...]", file=sys.stderr)
++         sys.exit(1)
++         sys.exit(1)
++         sys.exit(1)
++     filepath = normalize_path(sys.argv[1])
++     if not os.path.exists(filepath):
++         print(f"ERROR: not found: {filepath}", file=sys.stderr)
++     to_stdout = '--stdout' in sys.argv
++     explicit = None
++     if '--text' in sys.argv:
++         idx = sys.argv.index('--text')
++         if idx + 1 < len(sys.argv):
++             explicit = sys.argv[idx + 1]
++     fields, body, _ = parse_frontmatter(filepath)
++     ntype = detect_type(fields)
++     if explicit:
++         source = explicit
++     elif not sys.stdin.isatty():
++         source = sys.stdin.read()
++     else:
++     else:
++         print("ERROR: pipe text or use --text", file=sys.stderr)
++     if not source.strip():
++         sys.exit(0)
++         sys.exit(0)
++     fmts = {'概念': format_concept, '关系': format_relation}
++     fmter = fmts.get(ntype, format_concept)
++     output = fmter(source, body)
++     if not output.strip():
++         print("SKIP: no new content", file=sys.stderr)
++     if to_stdout:
++         print(output)
++         with open(filepath, 'a', encoding='utf-8') as f:
++             f.write('\n' + output if '\n## ' not in output else output)
++         print(f"DONE: appended to {filepath}", file=sys.stderr)
++ if __name__ == '__main__':
++     main()
+
+### scripts/yaml-validator.py  [code]
++ #!/usr/bin/env python3
++ """YAML frontmatter validator for KG notes.
++ Usage:
++     python yaml-validator.py <file.md>
++ Exit codes:
++     0 - valid (prints YAML_VALID)
++     1 - invalid (prints YAML_ERRORS + details)
++ Checks:
++     - Opening/closing ---
++     - tags field present
++     - abstract field required for 概念/某物/skill
++     - name+version required for skill
++     关系 notes: no abstract, single line only
++     type field forbidden (use tags)
++     [[ links in frontmatter forbidden
++     Non-empty body
++     Agent memory: forbid type/[[links/related_fragments, require summary
++ """
++ import re, sys, os
++ def normalize_path(p: str) -> str:
++     """Handle Git Bash /d/ style paths on Windows."""
++     p = p.strip()
++     m = re.match(r'^/([a-zA-Z])/(.*)', p)
++     if m and os.name == 'nt':
++         p = f"{m.group(1).upper()}:/{m.group(2)}"
++     return os.path.abspath(p)
++ def validate(filepath: str) -> list[str]:
++     errors = []
++     try:
++         with open(filepath, 'r', encoding='utf-8') as f:
++             raw = f.read()
++     except FileNotFoundError:
++         errors.append(f"NOT_FOUND: {filepath}")
++         return errors
++         return errors
++         return errors
++         return errors
++         return errors
++     except Exception as e:
++         errors.append(f"READ_ERROR: {e}")
++     if not raw.startswith('---'):
++         errors.append(f"MISSING_OPEN: file does not start with '---'")
++     # Find closing --- in raw directly (avoids lstrip offset bug)
++     close_idx = raw.find('\n---', 3)  # skip first --- at pos 0-2
++     if close_idx == -1:
++         errors.append(f"MISSING_CLOSE: frontmatter has no closing '---'")
++     yaml_block = raw[3:close_idx].strip()
++     if not yaml_block:
++         errors.append(f"EMPTY: frontmatter is empty")
++     # Parse YAML lines into dict
++     fields = {}
++     for line in yaml_block.split('\n'):
++         m = re.match(r'^(\w[\w_-]*)\s*:\s*(.*)', line)
++         if m:
++             fields[m.group(1)] = m.group(2).strip()
++     # Detect note type from tags
++     note_type = None
++     raw_tags = fields.get('tags', '')
++     tag_match = re.match(r'\[?\s*(\S+?)\s*\]?', raw_tags)
++     if tag_match:
++         note_type = tag_match.group(1)
++     # Check agent memory fragments
++     is_agent_memory = filepath.replace('\\', '/').find('/agent memory/') != -1
++     if is_agent_memory:
++         if 'type' in fields:
++             errors.append(f"AGENT_MEM_FORBIDDEN_type: agent memory has 'type:' (use 'tags:' instead)")
++         if '[[' in yaml_block:
++             errors.append(f"AGENT_MEM_FORBIDDEN_links: agent memory frontmatter has '[[ ]]' (use plain text)")
++         if 'related_fragments' in fields:
++             errors.append(f"AGENT_MEM_FORBIDDEN_related_fragments: agent memory has 'related_fragments' (use 'project:' grouping)")
++         if 'summary' not in fields:
++             errors.append(f"AGENT_MEM_MISSING_summary: agent memory needs 'summary:' field")
++     # General checks
++     if 'tag' in fields and 'tags' not in fields:
++         errors.append(f"TAG_VS_TAGS: frontmatter has 'tag:' — did you mean 'tags:'? (common typo: missing 's')")
++     if not fields.get('tags'):
++         if not any('TAG_VS_TAGS' in e for e in errors):
++             errors.append(f"MISSING_TAGS: no 'tags:' field")
++     if 'type' in fields and not is_agent_memory:
++         errors.append(f"FORBIDDEN_TYPE: has 'type:' (use 'tags:' instead)")
++     if '[[' in yaml_block:
++         errors.append(f"FORBIDDEN_LINKS_IN_FM: frontmatter has '[[ ]]' in YAML")
++     # Type-specific checks
++     if note_type in ('概念', '某物', 'skill') and not fields.get('abstract'):
++         errors.append(f"MISSING_ABSTRACT: {note_type} note needs 'abstract:' field")
++     if note_type == 'skill':
++         if not fields.get('name'):
++             errors.append(f"MISSING_NAME: skill note needs 'name:' field")
++         if not fields.get('version'):
++             errors.append(f"MISSING_VERSION: skill note needs 'version:' field")
++     if note_type == '关系':
++         if fields.get('abstract'):
++             errors.append(f"FORBIDDEN_ABSTRACT: relation note should not have 'abstract:'")
++         if len(fields) > 1:
++             errors.append(f"EXTRA_FIELDS: relation note should only have 'tags: [关系]'")
++     # Body check: use raw position directly, no offset accumulation
++     body_start = close_idx + 5  # skip \n---\n
++     body_raw = raw[body_start:]
++     body = body_raw.strip()
++     if not body:
++         errors.append(f"EMPTY_BODY: no content after frontmatter")
++     else:
++     else:
++         # Check for stray trailing --- (extra frontmatter delimiter)
++         if any(line.strip() == '---' for line in body_raw.split('\n')):
++             errors.append(f"STRAY_FM_CLOSE: body contains '---' (stray frontmatter delimiter in content area)")
++     return errors
++ if __name__ == '__main__':
++     if len(sys.argv) < 2:
++         print("USAGE: python yaml-validator.py <file.md>", file=sys.stderr)
++         sys.exit(1)
++         sys.exit(1)
++     path = normalize_path(sys.argv[1])
++     errors = validate(path)
++     if errors:
++         basename = os.path.basename(path)
++         print("YAML_ERRORS")
++         for e in errors:
++             print(f"  [{basename}] {e}")
++         print("YAML_VALID")
++         sys.exit(0)

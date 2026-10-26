@@ -1,0 +1,699 @@
+robansuini/notion-sync  2.4.0 -> 2.5.0
+change_type: instructions+docs+code   changelog: feat: batch-update.js for bulk property updates (query+update and stdin modes, --dry-run, rate limiting). feat: --json output mode on all scripts for composable piping.
+
+### SKILL.md  [instructions]
+- node scripts/search-notion.js "<query>" [--filter page|database] [--limit 10]
+- node scripts/query-database.js <database-id> [--filter <json>] [--sort <json>] [--limit 10]
+- node scripts/update-page-properties.js <page-id> <property-name> <value> [--type <type>]
+- ### 4. Markdown → Notion Sync
+-   "<page-title>"
+- ### 5. Notion → Markdown Sync
+- node scripts/notion-to-md.js <page-id> [output-file]
+- ### 6. Change Detection & Monitoring
+- node scripts/watch-notion.js "<page-id>" "<local-markdown-path>" [--state-file <path>]
+- ### 7. Database Management
+- node scripts/add-to-database.js <database-id> "<page-title>" <markdown-file-path>
+- node scripts/get-database-schema.js <database-id>
+- node scripts/delete-notion-page.js <page-id>
++ ## JSON Output Mode
++ All scripts support a global `--json` flag.
++ - Suppresses progress logs written to stderr
++ - Keeps stdout machine-readable for automation
++ - Errors are emitted as JSON: `{ "error": "..." }`
++ Example:
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ node scripts/query-database.js <db-id> --limit 5 --json
++ ```
++ ```
++ ```
++ ```
++ node scripts/search-notion.js "<query>" [--filter page|database] [--limit 10] [--json]
++ node scripts/query-database.js <database-id> [--filter <json>] [--sort <json>] [--limit 10] [--json]
++ node scripts/update-page-properties.js <page-id> <property-name> <value> [--type <type>] [--json]
++ ### 4. Batch Update
++ Batch update a single property across multiple pages in one command.
++ **Mode 1 — Query + Update:**
++ node scripts/batch-update.js <database-id> <property-name> <value> --filter '<json>' [--type select] [--dry-run] [--limit 100]
++ **Example:**
++ node scripts/batch-update.js <db-id> Status Review \
++   --filter '{"property":"Status","select":{"equals":"Draft"}}' \
++   --type select
++ **Mode 2 — Page IDs from stdin:**
++ echo "page-id-1\npage-id-2\npage-id-3" | \
++   node scripts/batch-update.js --stdin <property-name> <value> [--type select] [--dry-run]
++ **Features:**
++ - `--dry-run`: prints pages that would be updated (with current property value) without writing
++ - `--limit <n>`: max pages to process (default `100`)
++ - Pagination in query mode (`has_more`/`next_cursor`) up to limit
++ - Rate-limit friendly updates (300ms between page updates)
++ - Progress and summary on stderr, JSON result array on stdout
++ ### 5. Markdown → Notion Sync
++   "<page-title>" [--json]
++ ### 6. Notion → Markdown Sync
++ node scripts/notion-to-md.js <page-id> [output-file] [--json]
++ ### 7. Change Detection & Monitoring
++ node scripts/watch-notion.js "<page-id>" "<local-markdown-path>" [--state-file <path>] [--json]
++ ### 8. Database Management
++ node scripts/add-to-database.js <database-id> "<page-title>" <markdown-file-path> [--json]
++ node scripts/get-database-schema.js <database-id> [--json]
++ node scripts/delete-notion-page.js <page-id> [--json]
++ - **batch-update.js** - Batch update one property across many pages (query or stdin IDs)
+
+### references/API-REFERENCE.md  [docs]
+- node scripts/search-notion.js "<query>" [--filter page|database] [--limit 10]
+- node scripts/query-database.js <database-id> [--filter <json>] [--sort <json>] [--limit 10]
+- node scripts/update-page-properties.js <page-id> <property-name> <value> [--type <type>]
+- node scripts/md-to-notion.js "<markdown-file>" "<parent-page-id>" "<title>"
+- node scripts/notion-to-md.js <page-id> [output-file]
+- node scripts/watch-notion.js [--state-file <path>] <page-id> <local-path>
+- node scripts/get-database-schema.js <database-id>
+- node scripts/delete-notion-page.js <page-id>
++ ```bash
++ ```
++ ## JSON Output Mode
++ All scripts accept `--json` to emit machine-readable output and suppress stderr progress logs.
++ - Success output is JSON
++ - Errors are JSON objects: `{ "error": "..." }`
++ node scripts/search-notion.js "<query>" [--filter page|database] [--limit 10] [--json]
++ **Options:**
++ node scripts/query-database.js <database-id> [--filter <json>] [--sort <json>] [--limit 10] [--json]
++ node scripts/update-page-properties.js <page-id> <property-name> <value> [--type <type>] [--json]
++ ### batch-update.js
++ Batch update a property across multiple pages.
++ **Signatures:**
++ # Query + update
++ node scripts/batch-update.js <database-id> <property-name> <value> --filter '<json>' [--type <type>] [--dry-run] [--limit 100]
++ # IDs from stdin
++ echo "page-id-1\npage-id-2" | node scripts/batch-update.js --stdin <property-name> <value> [--type <type>] [--dry-run] [--limit 100]
++ - `--filter <json>`: Notion database query filter (required in query mode)
++ - `--stdin`: read page IDs (one per line) from stdin instead of querying a database
++ - `--type <type>`: `select`, `multi_select`, `checkbox`, `number`, `url`, `email`, `date`, `rich_text`
++ - `--dry-run`: no writes; prints page IDs + current values to stderr and returns preview JSON
++ - `--limit <n>`: max pages to process (default: 100)
++ **Behavior:**
++ - Uses database `data_source_id` when available
++ - Supports query pagination (`has_more` + `next_cursor`) up to `--limit`
++ - Adds 300ms delay between updates to reduce 429 rate limits
++ - Emits progress to stderr and JSON results to stdout (`[{id, url, updated}]`)
++ node scripts/md-to-notion.js "<markdown-file>" "<parent-page-id>" "<title>" [--json]
++ node scripts/notion-to-md.js <page-id> [output-file] [--json]
++ node scripts/watch-notion.js [--state-file <path>] <page-id> <local-path> [--json]
++ node scripts/get-database-schema.js <database-id> [--json]
++ node scripts/delete-notion-page.js <page-id> [--json]
+
+### scripts/add-to-database.js  [code]
+-     console.error('Usage: add-to-database.js <database-id> <page-title> <markdown-file-path>');
+-     console.error('');
+-     console.error('Example:');
+-     console.error('  add-to-database.js <db-id> "Research Report" research.md');
+-     process.exit(1);
+-     console.error(`Error: File not found: ${mdPath}`);
+-     console.log('Adding page to database...');
+-     console.log(`  Database: ${dbId}`);
+-     console.log(`  Title: ${title}`);
+-     console.log(`  Source: ${mdPath}\n`);
+-     // Create database page
+-     console.log(`✓ Page created: ${page.id}`);
+-     console.log(`  URL: https://notion.so/${page.id.replace(/-/g, '')}`);
+-     // Parse and upload content
+-     console.log(`\nParsed ${blocks.length} blocks from markdown`);
+-     console.log(`\n✅ Successfully added to database!`);
+-     console.log(`📄 URL: https://notion.so/${page.id.replace(/-/g, '')}`);
+-     console.log(`\n💡 Add additional properties (Type, Tags, Status) manually in Notion`);
+-     console.error('Error:', error.message);
++   hasJsonFlag,
++   log,
++     console.log('Usage: add-to-database.js <database-id> <page-title> <markdown-file-path> [--json]');
++     console.log('');
++     console.log('Example:');
++     console.log('  add-to-database.js <db-id> "Research Report" research.md --json');
++     process.exit(args[0] === '--help' ? 0 : 1);
++     const message = `File not found: ${mdPath}`;
++     if (hasJsonFlag()) console.log(JSON.stringify({ error: message }, null, 2));
++     else log(`Error: ${message}`);
++     log('Adding page to database...');
++     log(`  Database: ${dbId}`);
++     log(`  Title: ${title}`);
++     log(`  Source: ${mdPath}`);
++     log(`Parsed ${blocks.length} blocks from markdown`);
++     const result = {
++       id: page.id,
++       url: `https://notion.so/${page.id.replace(/-/g, '')}`,
++       title,
++       blockCount: blocks.length,
++     };
++     if (hasJsonFlag()) {
++     if (hasJsonFlag()) {
++       console.log(JSON.stringify(result, null, 2));
++     } else {
++     } else {
++       console.log(`✓ Page created: ${page.id}`);
++       console.log(`  URL: ${result.url}`);
++       console.log('\n✅ Successfully added to database!');
++       console.log(`📄 URL: ${result.url}`);
++       console.log('\n💡 Add additional properties (Type, Tags, Status) manually in Notion');
++     }
++     }
++       console.log(JSON.stringify({ error: error.message }, null, 2));
++       log(`Error: ${error.message}`);
+
+### scripts/batch-update.js  [code]
++ #!/usr/bin/env node
++ /**
++  * Batch update Notion database page properties
++  *
++  *
++  * Modes:
++  * 1) Query + Update:
++  *    batch-update.js <database-id> <property-name> <value> --filter '<json>' [--type select] [--dry-run] [--limit 100]
++  * 2) Stdin page IDs:
++  *    echo "page-id-1\npage-id-2" | batch-update.js --stdin <property-name> <value> [--type select] [--dry-run]
++  */
++ const {
++   checkApiKey,
++   notionRequest,
++   formatPropertyValue,
++   extractPropertyValue,
++   stripTokenArg,
++   hasJsonFlag,
++   log,
++ } = require('./notion-utils.js');
++ const DEFAULT_LIMIT = 100;
++ const UPDATE_DELAY_MS = 300;
++ function sleep(ms) {
++   return new Promise(resolve => setTimeout(resolve, ms));
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ function parseBatchUpdateArgs(args) {
++   const options = {
++     stdinMode: false,
++     dryRun: false,
++     propertyType: 'select',
++     limit: DEFAULT_LIMIT,
++     filter: null,
++   };
++   };
++   };
++   };
++   };
++   const positional = [];
++   for (let i = 0; i < args.length; i++) {
++     const arg = args[i];
++     if (arg === '--stdin') {
++       options.stdinMode = true;
++       continue;
++       continue;
++       continue;
++       continue;
++       continue;
++       continue;
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     if (arg === '--dry-run') {
++       options.dryRun = true;
++     if (arg === '--type' && args[i + 1]) {
++       options.propertyType = args[++i];
++     if (arg === '--limit' && args[i + 1]) {
++       options.limit = parseInt(args[++i], 10);
++     if (arg === '--filter' && args[i + 1]) {
++       try {
++         options.filter = JSON.parse(args[++i]);
++       } catch (err) {
++         throw new Error(`Invalid JSON for --filter: ${err.message}`);
++       }
++     positional.push(arg);
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   if (!Number.isInteger(options.limit) || options.limit <= 0) {
++     throw new Error('--limit must be a positive integer');
++   if (options.stdinMode) {
++     return {
++       ...options,
++       propertyName: positional[0],
++       value: positional[1],
++     };
++     };
++   return {
++   return {
++     ...options,
++     databaseId: positional[0],
++     propertyName: positional[1],
++     value: positional[2],
++ async function queryMatchingPages(databaseId, filter, limit) {
++   log(`Fetching database info: ${databaseId}`);
++   const dbInfo = await notionRequest(`/v1/databases/${databaseId}`, 'GET');
++   const dataSourceId = dbInfo.data_sources && dbInfo.data_sources.length > 0
++     ? dbInfo.data_sources[0].id
++     : databaseId;
++   log(`Querying data source: ${dataSourceId}`);
++   let results = [];
++   let cursor = null;
++   do {
++     const remaining = limit - results.length;
++     const payload = {
++       page_size: Math.min(100, remaining),
++     if (filter) payload.filter = filter;
++     if (cursor) payload.start_cursor = cursor;
++     const response = await notionRequest(`/v1/data_sources/${dataSourceId}/query`, 'POST', payload);
++     results = results.concat(response.results || []);
++     if (results.length >= limit) break;
++     cursor = response.has_more ? response.next_cursor : null;
++   } while (cursor);
++   return results.slice(0, limit);
++ function readStdinIds() {
++   const input = require('fs').readFileSync(0, 'utf8');
++   return input
++     .split(/\r?\n/)
++     .map(line => line.trim())
++     .filter(Boolean);
++ async function updatePage(pageId, propertyName, value, propertyType) {
++   const properties = {
++     [propertyName]: formatPropertyValue(propertyType, value),
++   const result = await notionRequest(`/v1/pages/${pageId}`, 'PATCH', { properties });
++     id: result.id,
++     url: result.url,
++     updated: result.last_edited_time,
++ async function runBatchUpdate(parsed) {
++   let pages = [];
++   if (parsed.stdinMode) {
++   if (parsed.stdinMode) {
++     const pageIds = readStdinIds().slice(0, parsed.limit);
++     pages = await Promise.all(pageIds.map(async (id) => {
++       const page = await notionRequest(`/v1/pages/${id}`, 'GET');
++       return page;
++     }));
++   } else {
++   } else {
++     pages = await queryMatchingPages(parsed.databaseId, parsed.filter, parsed.limit);
++   const total = pages.length;
++   const results = [];
++   for (let i = 0; i < total; i++) {
++     const page = pages[i];
++     const currentValue = page.properties && page.properties[parsed.propertyName]
++       ? extractPropertyValue(page.properties[parsed.propertyName])
++       : null;
++     if (parsed.dryRun) {
++       log(`Would update page ${i + 1}/${total}: ${page.id} (current: ${JSON.stringify(currentValue)})`);
++       results.push({ id: page.id, url: page.url, updated: false });
++     log(`Updating page ${i + 1}/${total}...`);
++     const updated = await updatePage(page.id, parsed.propertyName, parsed.value, parsed.propertyType);
++     results.push(updated);
++     if (i < total - 1) {
++       await sleep(UPDATE_DELAY_MS);
++   if (parsed.dryRun) {
++     log(`✓ Dry run: would update ${total} pages`);
++     log(`✓ Updated ${total} pages`);
++   return results;
++ function printHelp() {
++   console.log('Usage:');
++   console.log('  batch-update.js <database-id> <property-name> <value> --filter <json> [--type <type>] [--dry-run] [--limit 100] [--json]');
++   console.log('  batch-update.js --stdin <property-name> <value> [--type <type>] [--dry-run] [--limit 100] [--json]');
++   console.log('');
++   console.log('Supported types: select, multi_select, checkbox, number, url, email, date, rich_text');
++ async function main() {
++   const args = stripTokenArg(process.argv.slice(2));
++   if (args.length === 0 || args.includes('--help')) {
++     printHelp();
++     printHelp();
++     process.exit(0);
++   let parsed;
++   try {
++   try {
++     parsed = parseBatchUpdateArgs(args);
++   } catch (error) {
++   } catch (error) {
++     if (hasJsonFlag()) {
++     if (hasJsonFlag()) {
++       console.log(JSON.stringify({ error: error.message }, null, 2));
++       console.log(JSON.stringify({ error: error.message }, null, 2));
++     } else {
++     } else {
++       log(`Error: ${error.message}`);
++       log(`Error: ${error.message}`);
++     process.exit(1);
++     process.exit(1);
++     process.exit(1);
++     if (!parsed.propertyName || parsed.value === undefined) {
++       printHelp();
++       process.exit(1);
++   } else if (!parsed.databaseId || !parsed.propertyName || parsed.value === undefined) {
++     const results = await runBatchUpdate(parsed);
++     console.log(JSON.stringify(results, null, 2));
++ if (require.main === module) {
++   checkApiKey();
++   main();
++ } else {
++   module.exports = {
++     parseBatchUpdateArgs,
++     runBatchUpdate,
++     queryMatchingPages,
++     DEFAULT_LIMIT,
+
+### scripts/delete-notion-page.js  [code]
+- const { checkApiKey, notionRequest, stripTokenArg } = require('./notion-utils.js');
+-     console.error('Usage: delete-notion-page.js <page-id>');
+-     console.error('');
+-     console.error('Note: This archives the page (sets archived: true), not permanent deletion.');
+-     process.exit(1);
+-     console.log(`Archiving page: ${pageId}`);
+-     console.log('✓ Page archived successfully');
+-     console.log(`  Page ID: ${result.id}`);
+-     console.log(`  Archived: ${result.archived}`);
+-     console.error('Error:', error.message);
++ const { checkApiKey, notionRequest, stripTokenArg, hasJsonFlag, log } = require('./notion-utils.js');
++     console.log('Usage: delete-notion-page.js <page-id> [--json]');
++     console.log('');
++     console.log('Note: This archives the page (sets archived: true), not permanent deletion.');
++     process.exit(pageId === '--help' ? 0 : 1);
++     log(`Archiving page: ${pageId}`);
++     const output = {
++       id: result.id,
++       archived: result.archived,
++       url: result.url,
++     };
++     if (hasJsonFlag()) {
++     if (hasJsonFlag()) {
++       console.log(JSON.stringify(output, null, 2));
++     } else {
++     } else {
++       console.log('✓ Page archived successfully');
++       console.log(`  Page ID: ${result.id}`);
++       console.log(`  Archived: ${result.archived}`);
++     }
++     }
++       console.log(JSON.stringify({ error: error.message }, null, 2));
++       log(`Error: ${error.message}`);
+
+### scripts/get-database-schema.js  [code]
+- const { checkApiKey, notionRequest, stripTokenArg } = require('./notion-utils.js');
+-     console.error('Usage: get-database-schema.js <database-id>');
+-     process.exit(1);
+-     console.error('Error:', error.message);
++ const { checkApiKey, notionRequest, stripTokenArg, hasJsonFlag } = require('./notion-utils.js');
++     console.log('Usage: get-database-schema.js <database-id> [--json]');
++     process.exit(dbId === '--help' ? 0 : 1);
++     if (hasJsonFlag()) {
++       console.log(JSON.stringify({ error: error.message }, null, 2));
++     } else {
++       console.error('Error:', error.message);
++     }
+
+### scripts/md-to-notion.js  [code]
+-     console.error('Usage: md-to-notion.js <markdown-file> <parent-page-id> <page-title>');
+-     console.error('');
+-     console.error('Example:');
+-     console.error('  md-to-notion.js draft.md "abc123..." "Newsletter Draft"');
+-     process.exit(1);
+-     console.error(`Error: File not found: ${mdFile}`);
+-     console.log(`Parsed ${blocks.length} blocks from markdown`);
+-     // Create page with first 100 blocks
+-     console.log(`✓ Created page: ${page.url}`);
+-     // Append remaining blocks in batches
+-       console.log(`✓ Appended ${blocks.length - 100} remaining blocks`);
+-     console.log(`\n✅ Successfully created Notion page!`);
+-     console.log(`📄 URL: ${page.url}`);
+-     console.log(`🆔 Page ID: ${page.id}`);
+-     console.error('Error:', error.message);
++   hasJsonFlag,
++   log,
++     console.log('Usage: md-to-notion.js <markdown-file> <parent-page-id> <page-title> [--json]');
++     console.log('');
++     console.log('Example:');
++     console.log('  md-to-notion.js draft.md "abc123..." "Newsletter Draft" --json');
++     process.exit(args[0] === '--help' ? 0 : 1);
++     const message = `File not found: ${mdFile}`;
++     if (hasJsonFlag()) console.log(JSON.stringify({ error: message }, null, 2));
++     else log(`Error: ${message}`);
++     log(`Parsed ${blocks.length} blocks from markdown`);
++     log(`✓ Created page: ${page.url}`);
++       log(`✓ Appended ${blocks.length - 100} remaining blocks`);
++     }
++     }
++     const result = {
++       url: page.url,
++       pageId: page.id,
++       title: pageTitle,
++       blockCount: blocks.length,
++     };
++     if (hasJsonFlag()) {
++     if (hasJsonFlag()) {
++       console.log(JSON.stringify(result, null, 2));
++     } else {
++     } else {
++       console.log('\n✅ Successfully created Notion page!');
++       console.log(`📄 URL: ${page.url}`);
++       console.log(`🆔 Page ID: ${page.id}`);
++       console.log(JSON.stringify({ error: error.message }, null, 2));
++       log(`Error: ${error.message}`);
+
+### scripts/notion-to-md.js  [code]
+-     console.error('Usage: notion-to-md.js <page-id> [output-file]');
+-     console.error('');
+-     console.error('Example:');
+-     console.error('  notion-to-md.js "abc123..." newsletter.md');
+-     process.exit(1);
+-       console.log(`✓ Saved to ${outputFile}`);
+-     return { title, lastEditedTime: page.last_edited_time, markdown, blockCount: blocks.length };
+-     console.error('Error:', error.message);
++   hasJsonFlag,
++   log,
++     console.log('Usage: notion-to-md.js <page-id> [output-file] [--json]');
++     console.log('');
++     console.log('Example:');
++     console.log('  notion-to-md.js "abc123..." newsletter.md --json');
++     process.exit(args[0] === '--help' ? 0 : 1);
++       if (!hasJsonFlag()) {
++         log(`✓ Saved to ${outputFile}`);
++       }
++     } else if (!hasJsonFlag()) {
++     }
++     }
++     const result = {
++       markdown,
++       pageId,
++       title,
++       lastEditedTime: page.last_edited_time,
++       blockCount: blocks.length,
++     };
++     if (hasJsonFlag()) {
++     if (hasJsonFlag()) {
++       console.log(JSON.stringify({ markdown, pageId }, null, 2));
++     return result;
++       console.log(JSON.stringify({ error: error.message }, null, 2));
++       log(`Error: ${error.message}`);
+
+### scripts/notion-utils.js  [code]
+-     console.error('Error: No Notion API token provided');
+-     console.error('');
+-     console.error('');
+-     console.error('');
+-     console.error('');
+-     console.error('No Notion API token found. Provide one via: --token-file <path>, --token-stdin (pipe), or NOTION_API_KEY env var.');
+-     console.error('Usage (pick one):');
+-     console.error('  node scripts/<script>.js --token-file ~/.notion-token [args]');
+-     console.error('  echo "$NOTION_API_KEY" | node scripts/<script>.js --token-stdin [args]');
+-     console.error('  NOTION_API_KEY=ntn_... node scripts/<script>.js [args]');
+-     console.error('Default: if ~/.notion-token exists, it is used automatically.');
+-     console.error('Credentials are never passed as bare CLI arguments (security best practice).');
+-     console.error('Create an integration at https://www.notion.so/my-integrations');
++     }
++ }
++ }
++     const message = 'No Notion API token found. Provide one via: --token-file <path>, --token-stdin (pipe), or NOTION_API_KEY env var.';
++     if (hasJsonFlag()) {
++       console.log(JSON.stringify({ error: message }, null, 2));
++     } else {
++       console.error('Error: No Notion API token provided');
++       console.error('');
++       console.error('');
++       console.error('');
++       console.error('');
++       console.error(message);
++       console.error('Usage (pick one):');
++       console.error('  node scripts/<script>.js --token-file ~/.notion-token [args]');
++       console.error('  echo "$NOTION_API_KEY" | node scripts/<script>.js --token-stdin [args]');
++       console.error('  NOTION_API_KEY=ntn_... node scripts/<script>.js [args]');
++       console.error('Default: if ~/.notion-token exists, it is used automatically.');
++       console.error('Credentials are never passed as bare CLI arguments (security best practice).');
++       console.error('Create an integration at https://www.notion.so/my-integrations');
++ function hasJsonFlag() {
++   return process.argv.includes('--json');
++ function log(msg) {
++   if (!hasJsonFlag()) console.error(msg);
++       // skip flag only (no value)
++     } else if (args[i] === '--json') {
++   hasJsonFlag,
++   log,
+
+### scripts/query-database.js  [code]
+-   console.error(`Fetching database info: ${databaseId}`);
+-   console.error(`Querying data source: ${dataSourceId}`);
+-     console.error('Filter:', JSON.stringify(filter, null, 2));
+-     console.error('Sort:', JSON.stringify(sorts, null, 2));
+-     console.error(`\n✓ Found ${results.length} result(s)`);
+-     console.error('Error:', error.message);
++   hasJsonFlag,
++   log,
++   log(`Fetching database info: ${databaseId}`);
++   log(`Querying data source: ${dataSourceId}`);
++     log(`Filter: ${JSON.stringify(filter, null, 2)}`);
++     log(`Sort: ${JSON.stringify(sorts, null, 2)}`);
++     }
++     console.log('  --json           Output JSON only (suppress stderr logs)');
++     log(`\n✓ Found ${results.length} result(s)`);
++     if (hasJsonFlag()) {
++       console.log(JSON.stringify({ error: error.message }, null, 2));
++     } else {
++       console.error('Error:', error.message);
+
+### scripts/search-notion.js  [code]
+-   console.error(`Searching for: "${query}"${filter ? ` (filter: ${filter})` : ''}`);
+-     console.error(`\n✓ Found ${results.length} result(s)`);
+-     console.error('Error:', error.message);
++   hasJsonFlag,
++   log,
++   log(`Searching for: "${query}"${filter ? ` (filter: ${filter})` : ''}`);
++     console.log('  --json                    Output JSON only (suppress stderr logs)');
++     log(`\n✓ Found ${results.length} result(s)`);
++     if (hasJsonFlag()) {
++       console.log(JSON.stringify({ error: error.message }, null, 2));
++     } else {
++       console.error('Error:', error.message);
++     }
+
+### scripts/test-normalize.js  [code]
++   hasJsonFlag,
++   log,
++ const { parseBatchUpdateArgs, DEFAULT_LIMIT } = require('./batch-update.js');
++ }
++ }
++ }
++ }
++ }
++ }
++ assertEqual(
++ );
++ {
++ {
++ {
++ {
++ {
++ {
++ // --- hasJsonFlag ---
++ console.log('\n📋 hasJsonFlag');
++   const originalArgv = process.argv.slice();
++   const originalArgv = process.argv.slice();
++   process.argv = ['node', 'script.js', '--json'];
++   process.argv = ['node', 'script.js', '--json'];
++   assertEqual(hasJsonFlag(), true, 'Returns true when --json is present');
++   process.argv = ['node', 'script.js', '--limit', '5'];
++   assertEqual(hasJsonFlag(), false, 'Returns false when --json is absent');
++   process.argv = originalArgv;
++   process.argv = originalArgv;
++   const originalConsoleError = console.error;
++   const captured = [];
++   console.error = (...args) => captured.push(args.join(' '));
++   process.argv = ['node', 'script.js'];
++   log('visible log');
++   log('hidden log');
++   console.error = originalConsoleError;
++   assertEqual(captured.includes('visible log'), true, 'log() writes to stderr without --json');
++   assertEqual(captured.includes('hidden log'), false, 'log() is suppressed with --json');
++   ['query', '--limit', '5'],
++   stripTokenArg(['query', '--json', '--limit', '5']),
++   'Strips --json flag'
++ // --- batch-update argument parsing ---
++ console.log('\n📋 batch-update argument parsing');
++   const parsed = parseBatchUpdateArgs([
++     'db-123',
++     'Status',
++     'Review',
++     '--filter',
++     '{"property":"Status","select":{"equals":"Draft"}}',
++     '--type',
++     'select',
++     '--limit',
++     '25',
++   ]);
++   assertEqual(parsed.stdinMode, false, 'Query mode detected by default');
++   assertEqual(parsed.databaseId, 'db-123', 'Query mode parses database ID');
++   assertEqual(parsed.propertyName, 'Status', 'Query mode parses property name');
++   assertEqual(parsed.value, 'Review', 'Query mode parses value');
++   assertEqual(parsed.propertyType, 'select', 'Query mode parses --type');
++   assertEqual(parsed.limit, 25, 'Query mode parses --limit');
++   assertEqual(parsed.filter.property, 'Status', 'Query mode parses --filter JSON');
++   const parsed = parseBatchUpdateArgs(['--stdin', 'Status', 'Review', '--type', 'select']);
++   assertEqual(parsed.stdinMode, true, '--stdin mode detection');
++   assertEqual(parsed.propertyName, 'Status', 'stdin mode parses property name');
++   assertEqual(parsed.value, 'Review', 'stdin mode parses value');
++   const parsed = parseBatchUpdateArgs(['db-123', 'Status', 'Review', '--dry-run']);
++   assertEqual(parsed.dryRun, true, '--dry-run flag detection');
++   const parsed = parseBatchUpdateArgs(['db-123', 'Status', 'Review']);
++   assertEqual(parsed.limit, DEFAULT_LIMIT, '--limit default value');
+
+### scripts/update-page-properties.js  [code]
+-   console.error(`Updating page: ${pageId}`);
+-   console.error(`Property: ${propertyName} (${propertyType})`);
+-   console.error(`Value: ${value}`);
+-     console.log('Usage: update-page-properties.js <page-id> <property-name> <value> [--type <type>]');
+-     console.log('  update-page-properties.js <id> "Publish Date" 2024-02-01 --type date');
+-     console.error(`\n✓ Page updated successfully`);
+-     console.error(`  URL: ${result.url}`);
+-     console.error('Error:', error.message);
++   hasJsonFlag,
++   log,
++   log(`Updating page: ${pageId}`);
++   log(`Property: ${propertyName} (${propertyType})`);
++   log(`Value: ${value}`);
++     console.log('Usage: update-page-properties.js <page-id> <property-name> <value> [--type <type>] [--json]');
++     console.log('  update-page-properties.js <id> "Publish Date" 2024-02-01 --type date --json');
++     log('\n✓ Page updated successfully');
++     log(`  URL: ${result.url}`);
++     if (hasJsonFlag()) {
++       console.log(JSON.stringify({ error: error.message }, null, 2));
++     } else {
++       console.error('Error:', error.message);
++     }
+
+### scripts/watch-notion.js  [code]
+-     console.error('Usage: watch-notion.js [--state-file <path>] <page-id> <local-path>');
+-     console.error('Fatal error:', err);
++   hasJsonFlag,
++   log,
++     }
++     }
++     } else {
++     } else {
++     const usage = 'Usage: watch-notion.js [--state-file <path>] <page-id> <local-path> [--json]';
++     if (hasJsonFlag()) {
++     if (hasJsonFlag()) {
++       console.log(JSON.stringify({ error: usage }, null, 2));
++       log(usage);
++       console.log(JSON.stringify({ error: err.message || String(err) }, null, 2));
++       log(`Fatal error: ${err}`);

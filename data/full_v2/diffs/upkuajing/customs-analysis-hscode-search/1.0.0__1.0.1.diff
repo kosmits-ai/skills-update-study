@@ -1,0 +1,107 @@
+upkuajing/customs-analysis-hscode-search  1.0.0 -> 1.0.1
+change_type: instructions+docs+code   changelog: updated
+
+### SKILL.md  [instructions]
+- metadata: {"version":"1.0.0","homepage":"https://www.upkuajing.com","clawdbot":{"emoji":"🔍","requires":{"bins":["python"],"env":["UPKUAJING_API_KEY"]},"primaryEnv":"UPKUAJING_API_KEY"}}
++ metadata: {"version":"1.0.1","homepage":"https://www.upkuajing.com","clawdbot":{"emoji":"🔍","requires":{"bins":["python"],"env":["UPKUAJING_API_KEY"]},"primaryEnv":"UPKUAJING_API_KEY"}}
++ ```bash
++ ```
++ ### **Report Skill Call Errors**
++ When an API call fails or returns abnormal data (server error, timeout, malformed response, etc.), explain the anomaly to the user in natural language and ask whether to report it to the platform for troubleshooting. Only run the report after user confirmation:
++ python scripts/error_report.py --params '{"requestPath":"/agent/customs/analysis/hscode/search","requestId":"f47ac10b58cc4372a5670e02b2c3d479","context":"HS code search query failed with a server error"}'
++ - Do not report normal business conditions (insufficient balance, invalid API key, parameter errors) — handle them via their own flows
++ - Error reporting does not incur query fees
++ - **Parameters**: See [Error Report API](references/skill-error-report-api.md)
++ - **Skill call errors / abnormal responses**: Explain to the user and, with user confirmation, report to the platform via `python scripts/error_report.py` (see [Report Skill Call Errors](#report-skill-call-errors))
++ - Error Report: Check [references/skill-error-report-api.md](references/skill-error-report-api.md)
+
+### references/skill-error-report-api.md  [docs]
++ # Agent调用Skill异常上报 API 参考
++ > 上报 Agent 调用 Skill 异常，用于平台侧问题追踪与优化。异常上报不产生查询费用。
++ > 接口路径：`POST /agent/skill/error/report`
++ > 鉴权：需要 Bearer 令牌（UPKUAJING_API_KEY）
++ ## python脚本参数
++ - `--params`：JSON格式的上报参数（必填）
++ - 未传 `skillId`/`skillVersion` 时，脚本会自动从当前 Skill 目录名与 SKILL.md 读取并填充
++ - 必填参数：`skillId`、`skillVersion`、`requestId`、`requestPath`、`context`；其中 `requestId` 从出问题的请求响应（ApiResp.requestId）中获取
++ ## API请求参数
++ | 参数 | 类型 | 必填 | 说明 |
++ |------|------|------|------|
++ | skillId | string | 是 | Skill 标识（最大128字符），如"customs-analysis-area" |
++ | skillVersion | string | 是 | Skill 版本（最大32字符） |
++ | agentName | string | 否 | Agent 名称（最大128字符） |
++ | modelName | string | 否 | 模型名称（最大128字符） |
++ | requestPath | string | 是 | 出问题的站内接口路径，以 / 开头（最大255字符），如"/agent/customs/analysis/area" |
++ | requestId | string | 是 | 全请求唯一关联号（最大128字符），取失败请求响应中的 requestId |
++ | requestTime | long | 否 | 请求发起时间戳（毫秒，≥0） |
++ | requestParams | object | 否 | 请求参数（原始入参，敏感字段会自动脱敏；序列化后≤64KB） |
++ | responseData | object | 否 | 响应数据（异常发生时的返回内容，敏感字段会自动脱敏；序列化后≤64KB） |
++ | durationMs | long | 否 | 本次调用耗时（毫秒，≥0） |
++ | context | string | 是 | 异常上下文（堆栈/错误信息，用于定位根因，最大2000字符） |
++ ## 响应数据
++ ### 外层结构
++ - code（integer）：状态码，0 表示成功
++ - msg（string）：提示信息
++ - requestId（string）：全请求唯一关联号（32位无横线，与 MDC traceId 同值）
++ ### data 字段
++ | 字段 | 类型 | 说明 |
++ |------|------|------|
++ | reportId | long | 上报记录 ID |
+
+### scripts/customs_analysis_hscode_search.py  [code]
+-         print_json_output({"data": data, "fee": cover_fee_info(response.get('fee', {}))})
++         print_json_output({
++             "data": data,
++             "fee": cover_fee_info(response.get('fee', {})),
++             "requestId": response.get('requestId')
++         })
++         if response.get('requestId'):
++             print(f"requestId：{response.get('requestId')}", file=sys.stderr)
+
+### scripts/error_report.py  [code]
++ #!/usr/bin/env python3
++ """
++ """
++ 跨境魔方 Agent 调用 Skill 异常上报
++ 向平台上报 Agent 调用 Skill 过程中出现的异常，用于平台侧问题追踪与优化。
++ import argparse
++ import sys
++ from common import make_request, print_json_output, parse_params
++ from version_check import get_skill_name, get_skill_version
++ def report_error(params: dict) -> dict:
++     """
++     """
++     上报 Agent 调用 Skill 异常。
++     Args:
++         params: 上报参数（skillId, skillVersion, requestId, requestPath, context 等）
++     Returns:
++         包含 reportId 的API响应
++     # 自动填充 skillId 与 skillVersion（外部显式传入时以外部为准）
++     params.setdefault('skillId', get_skill_name())
++     params.setdefault('skillVersion', get_skill_version())
++     # 验证必要参数
++     for field in ('skillId', 'skillVersion', 'requestId', 'requestPath', 'context'):
++         if not params.get(field):
++             print(f"错误：params中缺少{field}", file=sys.stderr)
++             sys.exit(1)
++     response = make_request('/agent/skill/error/report', params)
++     return response
++ def main():
++     parser = argparse.ArgumentParser(
++         description='向跨境魔方开放平台上报Agent调用Skill异常'
++     )
++     )
++     parser.add_argument(
++         '--params',
++         required=True,
++         help='JSON格式的上报参数，如 \'{"requestPath":"/agent/customs/analysis/area","requestId":"f47ac10b58cc4372a5670e02b2c3d479","context":"接口返回异常"}\''
++     args = parser.parse_args()
++     params = parse_params(args.params)
++     response = report_error(params)
++     if response.get('code') in (0, 200):
++         print_json_output(response.get('data', {}))
++     else:
++         print(f"错误：{response.get('msg', '未知错误')}", file=sys.stderr)
++         sys.exit(1)
++ if __name__ == '__main__':
++     main()

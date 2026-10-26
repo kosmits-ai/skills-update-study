@@ -1,0 +1,93 @@
+{
+  "fetched_at": "2026-10-26T17:33:12.205765+00:00",
+  "status": 200,
+  "payload": {
+    "skill": {
+      "slug": "agent-p2p",
+      "displayName": "Agent P2P"
+    },
+    "version": {
+      "version": "0.7.0",
+      "createdAt": 1775738598894,
+      "changelogSource": "user"
+    },
+    "moderation": {
+      "scope": "skill",
+      "sourceVersion": {
+        "version": "0.9.3",
+        "createdAt": 1775922977136
+      },
+      "matchesRequestedVersion": false,
+      "isPendingScan": false,
+      "isMalwareBlocked": false,
+      "isSuspicious": false,
+      "isHiddenByMod": false,
+      "isRemoved": false
+    },
+    "security": {
+      "status": "suspicious",
+      "hasWarnings": true,
+      "checkedAt": 1775739109245,
+      "model": "gpt-5-mini",
+      "hasScanResult": true,
+      "sha256hash": "17bed8912e72bae5cdbef02d3000564b94305f162b5310467f863604affab632",
+      "virustotalUrl": "https://www.virustotal.com/gui/file/17bed8912e72bae5cdbef02d3000564b94305f162b5310467f863604affab632",
+      "scanners": {
+        "vt": {
+          "status": "suspicious",
+          "verdict": "suspicious",
+          "normalizedStatus": "suspicious",
+          "analysis": "Type: OpenClaw Skill\nName: agent-p2p\nVersion: 0.7.0\n\nThe skill facilitates P2P communication by deploying a 'Portal' server to a user-provided VPS via SSH and running a local 'Bridge' client. While the behavior aligns with the stated purpose, several high-risk indicators are present: `scripts/deploy_portal.py` configures Nginx with a hardcoded credential (`AgentP2P2024`), and `client.py` includes logic to automatically extract tokens and confirm verification codes from incoming messages. The automated deployment process (`auto_install.py`) and the ability to 'wake' the OpenClaw agent via local gateway hooks create a significant attack surface, though no explicit evidence of intentional malice or data exfiltration was identified.",
+          "source": "palm",
+          "checkedAt": 1775739109245
+        },
+        "skillspector": null,
+        "llm": {
+          "status": "suspicious",
+          "verdict": "suspicious",
+          "normalizedStatus": "suspicious",
+          "confidence": "high",
+          "summary": "The skill's purpose (deploy a Portal and run a local Bridge) is plausible, but there are multiple inconsistencies and risky automatic behaviors (automatic remote deploy/DB access, automatic verification/code confirmation, fixed SECRET_KEY, and mismatched declared requirements) that warrant caution before installing.",
+          "dimensions": [
+            {
+              "detail": "The stated purpose (P2P Portal + local Bridge) matches the included files: server code, client/bridge, deploy scripts and installers. Requiring SSH keys, a Portal URL, an API Key and an OpenClaw hooks token is plausible for deployment and operation. However the registry metadata in the package header claims no required env vars/binaries while SKILL.md lists AGENTP2P_API_KEY, AGENTP2P_HUB_URL, OPENCLAW_GATEWAY_URL and OPENCLAW_HOOKS_TOKEN and binaries (python3, ssh) — that mismatch is an incoherence and should be fixed/clarified.",
+              "label": "Purpose & Capability",
+              "name": "purpose_capability",
+              "rating": "note"
+            },
+            {
+              "detail": "SKILL.md and README promise user confirmation for install steps and claim 'no automatic addition of shared keys'. In practice the code has automatic behaviors: auto_install.py and install.py can SSH into a VPS, clone, install packages, run certbot and create systemd services; client.py contains logic that automatically scans guest messages for verification codes and tokens and then (a) POSTs confirmation requests to remote portals and (b) wakes the OpenClaw gateway with messages that include tokens. That contradicts the explicit safety claims in SKILL.md (manual approval) and means the agent could automatically complete verification steps and surface/relay sensitive tokens without an explicit, clear human confirmation step.",
+              "label": "Instruction Scope",
+              "name": "instruction_scope",
+              "rating": "concern"
+            },
+            {
+              "detail": "There is no platform install specification, but many scripts provided will perform in-place actions. auto_install.py and scripts/deploy_portal.py remotely execute shell commands over SSH that install system packages, pip deps, configure nginx/certbot and create systemd units on a remote VPS. They also clone code from a GitHub repo. Those actions are expected for a deployer, but they are high-impact (sudo on remote host, certbot, systemd creation). The presence of automatic deployment scripts increases risk if run without careful review and gating.",
+              "label": "Install Mechanism",
+              "name": "install_mechanism",
+              "rating": "concern"
+            },
+            {
+              "detail": "The skill needs high-sensitivity items that are reasonable for this purpose (SSH private key, Portal API Key, hub URL, OpenClaw hooks token), but the manifest shown to the registry omitted these requirements (mismatch). The skill also reads legacy envs (AGENTP2P_TOKEN) and writes gateway.env locally. Additional red flags: deployment scripts and install.py embed a fixed SECRET_KEY in service environment (SECRET_KEY=agent-p2p-shared-key-2024) and docs state JWT signing uses a fixed secret — that is a security anti-pattern (makes tokens trivially predictable across installs). The number/type of sensitive items is proportional to the feature but the fixed SECRET_KEY and automatic remote DB/key retrieval (via SSH commands that read the portal.db) amplify the risk.",
+              "label": "Credentials",
+              "name": "environment_proportionality",
+              "rating": "concern"
+            },
+            {
+              "detail": "The skill is not marked always:true. It does, however, write local config (~/.openclaw/gateway.env, ~/.openclaw/agent-p2p configs), create PID/status files, and (when deploying remotely) creates a systemd service on the VPS. Those behaviors are expected for a deploy-and-run skill but amount to persistent presence on the user's machine and on any VPS the user authorizes. Combined with automatic behaviors described above (auto-confirmation and token handling), this persistence raises the blast radius if the skill is misused or buggy.",
+              "label": "Persistence & Privilege",
+              "name": "persistence_privilege",
+              "rating": "note"
+            }
+          ],
+          "guidance": "This skill does implement the Portal + Bridge flow, but has several risky or inconsistent elements you should address before installing:\n\n- Don’t run the auto-install or deploy scripts without reviewing them. They will SSH into your VPS, install packages, run certbot and create systemd services as root — run those steps manually or audit the scripts first.\n- Use dedicated SSH keys and a dedicated VPS account. Do NOT reuse your primary ~/.ssh/id_rsa or a high-privilege key.\n- Treat the OpenClaw hooks token and AGENTP2P API Key as sensitive. The skill will write them to ~/.openclaw/gateway.env and uses them to wake your main session. Consider creating least-privilege tokens if possible.\n- The code contains automatic confirmation logic: it will detect verification codes and tokens in guest messages and may POST confirmations or surface tokens to the OpenClaw gateway. If you want a manual gate, disable or remove the auto-confirmation parts (client._confirm_verification_code / check_pending_auth) before running.\n- The installer and docs declare a fixed SECRET_KEY for JWT signing. Change this to a securely generated secret on the server; using a hardcoded SECRET_KEY is insecure and may allow token forgery.\n- There is a mismatch between registry metadata (no required envs) and SKILL.md (lists envs). Ask the publisher to reconcile this or fix the manifest before trusting any automated install.\n- Because a prompt-injection pattern was detected in SKILL.md, carefully review all SKILL.md content and the code for any embedded/encoded payloads before executing code.\n\nIf you are not comfortable auditing the scripts and code yourself, consider only using the Bridge client portion in a controlled environment, or asking a sysadmin to perform the VPS deployment steps manually. If you proceed with automated install, run it in a disposable/test VPS first to validate behavior.",
+          "findings": "[base64-block] unexpected: A prompt-injection pattern (base64-block) was detected inside SKILL.md. This is not expected for a deployment/bridge skill and could indicate attempts to embed or obfuscate instructions. It may be a false positive from long text blocks, but warrants manual review of the SKILL.md and any embedded content before installation.",
+          "agenticRiskFindings": null,
+          "riskSummary": null,
+          "model": "gpt-5-mini",
+          "checkedAt": 1775738642198
+        }
+      }
+    }
+  }
+}

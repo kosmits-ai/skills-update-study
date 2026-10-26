@@ -1,0 +1,64 @@
+falderebet/dirigera-control  1.0.2 -> 1.0.3
+change_type: code   changelog: Fix token generation by implementing correct OAuth PKCE flow with authorization code exchange
+
+### scripts/generate_token_wrapper.py  [code]
+-     url = f"https://{ip_address}:8443/v1/oauth/token"
+-     # Generate a code verifier (required for OAuth PKCE flow)
+-     import secrets
+-     code_verifier = base64.urlsafe_b64encode(secrets.token_bytes(32)).decode('utf-8').rstrip('=')
+-     # The dirigera hub expects this specific payload
+-     payload = {
+-         "code": "authorization_code",
+-         "name": "claude-agent",
+-         "grant_type": "authorization_code",
+-         "code_verifier": code_verifier
+-     print(f"Waiting for button press on Dirigera hub at {ip_address}...")
+-                 url,
+-                 json=payload,
+-                 data = response.json()
+-                 if "access_token" in data:
+-                     return data["access_token"]
++     Uses the correct OAuth PKCE flow with code challenge.
++     import string
++     import random
++     import socket
++     # Generate a code verifier (128 chars as per dirigera library)
++     alphabet = f"_-~.{string.ascii_letters}{string.digits}"
++     code_verifier = "".join(random.choice(alphabet) for _ in range(128))
++     # Create code challenge (SHA256 hash of verifier)
++     sha256_hash = hashlib.sha256()
++     sha256_hash.update(code_verifier.encode())
++     digest = sha256_hash.digest()
++     code_challenge = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("us-ascii")
++     # Step 1: Get authorization code
++     print(f"Connecting to Dirigera hub at {ip_address}...")
++     auth_url = f"https://{ip_address}:8443/v1/oauth/authorize"
++     params = {
++         "audience": "homesmart.local",
++         "response_type": "code",
++         "code_challenge": code_challenge,
++         "code_challenge_method": "S256",
++     try:
++         response = requests.get(auth_url, params=params, verify=False, timeout=10)
++         response.raise_for_status()
++         auth_code = response.json()["code"]
++         print(f"✓ Authorization code received")
++     except Exception as e:
++         print(f"✗ Failed to get authorization code: {e}")
++         return None
++     # Step 2: Wait for button press and get token
++     print(f"\nWaiting for button press on Dirigera hub at {ip_address}...")
++     token_url = f"https://{ip_address}:8443/v1/oauth/token"
++     data = (
++         f"code={auth_code}"
++         f"&name={socket.gethostname()}"
++         f"&grant_type=authorization_code"
++         f"&code_verifier={code_verifier}"
++     )
++     headers = {"Content-Type": "application/x-www-form-urlencoded"}
++                 token_url,
++                 headers=headers,
++                 data=data,
++                 token_data = response.json()
++                 if "access_token" in token_data:
++                     return token_data["access_token"]

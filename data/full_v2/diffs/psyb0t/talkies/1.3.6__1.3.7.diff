@@ -1,0 +1,44 @@
+psyb0t/talkies  1.3.6 -> 1.3.7
+change_type: instructions+docs   changelog: Version 1.3.7  - Adds support for live PCM ASR over WebSocket via /v1/audio/transcriptions/stream, enabling streaming speech-to-text. - SKILL.md clarifies availability of real-time ASR endpoint and corrects endpoint documentation. - Updated references/setup.md to cover changes and usage related to live streaming. - Removes obsolete skill-card.md file.
+
+### SKILL.md  [instructions]
+- description: Self-hosted OpenAI-compatible speech service. /v1/audio/transcriptions fronts seven open ASR models (Whisper, Parakeet, Nemotron-3.5-ASR, Canary); /v1/audio/speech fronts 2 TTS engines / 3 backends — Kokoro-82M (41 baked voices, PyTorch + ONNX runtimes) and the CUDA-only Qwen3-TTS family (voice cloning, preset speakers, voice design). Same wire format as OpenAI — change the base URL + slug. Stereo diarization, URL fetching, MCP endpoint, bearer auth.
+- Extras: stereo diarization on transcription, URL `file_path` fetching, server-side file staging, MCP endpoint with 6 ASR-side tools, optional bearer-token auth.
+- - Real-time / streaming ASR — `/v1/audio/transcriptions` is request/response only. (TTS has one streaming exception: `qwen3-tts-*` + `response_format=pcm` streams chunked PCM — see [Streaming PCM (Qwen3-TTS)](#streaming-pcm-qwen3-tts).)
+- 5. **One model at a time** — every transcribe request evicts other loaded models. Don't try to fan out two calls against two different models on the same container; the second one evicts the first and reloads. Use two containers if you actually need concurrency on different models.
++ description: Self-hosted OpenAI-compatible speech service. /v1/audio/transcriptions fronts seven open ASR models (Whisper, Parakeet, Nemotron-3.5-ASR, Canary); /v1/audio/transcriptions/stream accepts live PCM over WebSocket. /v1/audio/speech fronts 2 TTS engines / 3 backends — Kokoro-82M (41 baked voices, PyTorch + ONNX runtimes) and the CUDA-only Qwen3-TTS family (voice cloning, preset speakers, voice design). Stereo diarization, URL fetching, MCP endpoint, bearer auth.
++ Extras: live PCM ASR over WebSocket, stereo diarization on transcription, URL `file_path` fetching, server-side file staging, MCP endpoint with 6 ASR-side tools, optional bearer-token auth.
++ - Stream 16 kHz mono PCM from a microphone or decoded live-audio source through `WS /v1/audio/transcriptions/stream`.
++ - OpenAI-compatible live ASR — `/v1/audio/transcriptions` remains request/response only. Use talkies-specific `WS /v1/audio/transcriptions/stream` for raw PCM. (TTS has one streaming exception: `qwen3-tts-*` + `response_format=pcm` streams chunked PCM — see [Streaming PCM (Qwen3-TTS)](#streaming-pcm-qwen3-tts).)
++ ## Live streaming ASR
++ `WS /v1/audio/transcriptions/stream` is talkies-specific rather than an OpenAI
++ endpoint. It accepts headerless 16 kHz, mono, signed 16-bit little-endian PCM.
++ Send one JSON `start` message, wait for `ready`, stream binary PCM frames, then
++ send `{"type":"end"}` for `final` and `stats` (or `{"type":"cancel"}` to
++ discard the stream). Use a configured ASR slug with streaming support; native
++ sessions are available through parakeet.cpp, Sherpa-ONNX, and Vosk, while
++ faster-whisper uses a bounded rolling window. When authentication is enabled,
++ send the bearer token in the WebSocket upgrade header, never in the URL.
++ See the repository's [`streaming.md`](https://github.com/psyb0t/docker-talkies/blob/main/streaming.md)
++ for the exact start/event shapes, a Python client, limits, and custom Sherpa or
++ Vosk model-registry entries.
++ 5. **One active model family at a time** — every transcribe request evicts other loaded models. Multiple live streams may share one pinned model up to `TALKIES_STREAM_MAX_CONNECTIONS`; a request or stream for a different model receives a conflict until the streams end. Use two containers if you need concurrent models.
+
+### references/setup.md  [docs]
+- | `executor` | yes | One of `whisper`, `parakeet`, `parakeet_cpp`, `canary_multitask`, `canary_salm`, `kokoro`, `kokoro_nvidia`, `qwen3_tts`. Other values fail startup. |
+- | `modality` | no | `asr` (default) or `tts`. Drives endpoint guards (`/v1/audio/transcriptions` requires ASR; `/v1/audio/speech` requires TTS) and the `modality` field on `/v1/models` entries. The `kokoro` and `qwen3_tts` executors imply `tts`; the four ASR executors imply `asr`. |
++ | Var | Default | What it does |
++ |---|---|---|
++ ### Live ASR streaming
++ `WS /v1/audio/transcriptions/stream` accepts headerless 16 kHz mono PCM16LE.
++ It is separate from the OpenAI-compatible upload route. See the repository's
++ [`streaming.md`](https://github.com/psyb0t/docker-talkies/blob/main/streaming.md)
++ for the protocol and client examples.
++ | `TALKIES_STREAM_MAX_CONNECTIONS` | `4` | Maximum active ASR WebSockets per container. Streams may share one pinned model; attempts to switch models while one is active return a conflict. |
++ | `TALKIES_STREAM_MAX_FRAME_BYTES` | `65536` | Maximum binary PCM frame size. Frames must be non-empty, contain whole 16-bit samples, and be 2–16777216 bytes. |
++ | `TALKIES_STREAM_MAX_BUFFER_SECONDS` | `5` | Faster-whisper rolling-window budget. Must hold one configured maximum-size frame; native decoders process each frame directly. |
++ | `TALKIES_STREAM_IDLE_TIMEOUT` | `30s` | Maximum wait between client messages before close code 4408. |
++ | `TALKIES_STREAM_MAX_DURATION` | `4h` | Maximum accepted audio duration per WebSocket. |
++ | `revision` | no | Immutable Hugging Face commit SHA to download. Pin this for reproducible custom registries. |
++ | `executor` | yes | One of `whisper`, `parakeet`, `parakeet_cpp`, `canary_multitask`, `canary_salm`, `sherpa`, `vosk`, `kokoro`, `kokoro_nvidia`, `qwen3_tts`. Other values fail startup. |
++ | `modality` | no | `asr` (default) or `tts`. Drives endpoint guards (`/v1/audio/transcriptions` requires ASR; `/v1/audio/speech` requires TTS) and the `modality` field on `/v1/models` entries. The `kokoro` and `qwen3_tts` executors imply `tts`; the six ASR executors imply `asr`. |

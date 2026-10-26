@@ -1,0 +1,93 @@
+{
+  "fetched_at": "2026-10-26T17:36:14.326035+00:00",
+  "status": 200,
+  "payload": {
+    "skill": {
+      "slug": "agent-p2p",
+      "displayName": "Agent P2P"
+    },
+    "version": {
+      "version": "0.3.1",
+      "createdAt": 1774798676136,
+      "changelogSource": "user"
+    },
+    "moderation": {
+      "scope": "skill",
+      "sourceVersion": {
+        "version": "0.9.3",
+        "createdAt": 1775922977136
+      },
+      "matchesRequestedVersion": false,
+      "isPendingScan": false,
+      "isMalwareBlocked": false,
+      "isSuspicious": false,
+      "isHiddenByMod": false,
+      "isRemoved": false
+    },
+    "security": {
+      "status": "suspicious",
+      "hasWarnings": true,
+      "checkedAt": 1774799206536,
+      "model": "gpt-5-mini",
+      "hasScanResult": true,
+      "sha256hash": "fcbd13916d370cee510db4437d1d55e44b3b65ed2b838f07dc166b35e574f272",
+      "virustotalUrl": "https://www.virustotal.com/gui/file/fcbd13916d370cee510db4437d1d55e44b3b65ed2b838f07dc166b35e574f272",
+      "scanners": {
+        "vt": {
+          "status": "suspicious",
+          "verdict": "suspicious",
+          "normalizedStatus": "suspicious",
+          "analysis": "Type: OpenClaw Skill\nName: agent-p2p\nVersion: 0.3.1\n\nThe Agent P2P skill provides a decentralized communication platform but requires high-risk permissions and introduces a significant attack surface. Key indicators include `scripts/deploy_portal.py` and `install.py` requiring SSH private keys to perform remote root-level deployments on a VPS, and `setup.sh` modifying the global OpenClaw configuration (~/.openclaw/openclaw.json). Additionally, `client.py` implements automated message processing that uses regex to extract and act upon tokens and verification codes from guest messages, which could be exploited via prompt injection. While these features align with the stated goal of automated portal deployment, the broad system access and use of hardcoded default credentials (AgentP2P2024) warrant a suspicious classification.",
+          "source": "palm",
+          "checkedAt": 1774799206536
+        },
+        "skillspector": null,
+        "llm": {
+          "status": "suspicious",
+          "verdict": "suspicious",
+          "normalizedStatus": "suspicious",
+          "confidence": "medium",
+          "summary": "The skill mostly does what its description says (deploys a P2P portal and a client), but its runtime instructions and code request and use sensitive local secrets (SSH private key, OpenClaw hooks token, agent tokens) without declaring them, contain automatic credential-exchange/confirmation logic, and embed a shared SECRET_KEY — these mismatches and automation create meaningful risk and surprising behavior for users.",
+          "dimensions": [
+            {
+              "detail": "The declared purpose (deploy a personal P2P Portal and run a client) aligns with requiring a VPS, domain, and SSH access; deploying systemd on a remote host is coherent. However the skill metadata declares no required env vars or credentials while the code clearly expects/uses several sensitive environment vars (AGENTP2P_API_KEY / AGENTP2P_TOKEN, OPENCLAW_HOOKS_TOKEN, OPENCLAW_GATEWAY_URL). That mismatch between declared requirements and actual code is concerning.",
+              "label": "Purpose & Capability",
+              "name": "purpose_capability",
+              "rating": "note"
+            },
+            {
+              "detail": "SKILL.md tells the user to run install.py which: needs an SSH private key path and will use it to SSH to the VPS and configure systemd/Nginx/SSL; writes configuration under ~/.openclaw; and starts a client that polls and connects to other portals. The client code autonomously scans guest messages, extracts verification codes/tokens, POSTs confirmations to other portals, and calls the OpenClaw gateway hooks endpoint using a hooks token. These are broad, automated actions (automatic confirmation and token handling) that go beyond a simple 'mailbox' client and could cause credentials or tokens to be transmitted without clear manual confirmation.",
+              "label": "Instruction Scope",
+              "name": "instruction_scope",
+              "rating": "concern"
+            },
+            {
+              "detail": "There is no remote binary download specified in the registry (instruction-only), but the included scripts run local deployment routines: pip installing paramiko if missing, using paramiko to SSH and write files on the VPS, and recommending git clone from a GitHub repo. This is typical for self-hosted deployment but implies executing code on your local machine and on your VPS — expected for the stated purpose but requiring caution.",
+              "label": "Install Mechanism",
+              "name": "install_mechanism",
+              "rating": "note"
+            },
+            {
+              "detail": "The code expects multiple sensitive pieces of data that are not declared in metadata: local SSH private key path (requested interactively), AGENTP2P_API_KEY / AGENTP2P_TOKEN, OPENCLAW_HOOKS_TOKEN, and OPENCLAW_GATEWAY_URL. In particular, OPENCLAW_HOOKS_TOKEN gives the client the ability to POST to your OpenClaw gateway hooks/wake endpoint (effectively waking or injecting content into your main agent session). The installer also writes gateway.env and portal configs under ~/.openclaw. Additionally, the deployment writes a hard-coded SECRET_KEY into the remote service environment (agent-p2p-shared-key-2024), which implies identical JWT signing across installs and is a security smell.",
+              "label": "Credentials",
+              "name": "environment_proportionality",
+              "rating": "concern"
+            },
+            {
+              "detail": "The skill does not set always:true and is user-invocable. The installer configures remote systemd on the VPS and writes persistent local config files and a hookpack that calls the skill's notify hook. Those are expected for a long-running portal/client but combined with the automatic credential-exchange behavior and the need for a hooks token increase the blast radius if misused.",
+              "label": "Persistence & Privilege",
+              "name": "persistence_privilege",
+              "rating": "note"
+            }
+          ],
+          "guidance": "What to consider before installing:\n- The code will ask for and use your SSH private key to SSH into a VPS and install a service. Only provide a dedicated key with minimal privileges (or use a throwaway VPS) — do not reuse keys that access other systems.\n- The client expects an OpenClaw hooks token (OPENCLAW_HOOKS_TOKEN) and gateway URL; that token allows the skill to call your gateway hooks/wake endpoint and inject or wake your main agent session. Only supply that token if you understand and trust the code.\n- The client automatically parses guest messages for verification codes and tokens and can POST confirmations to other portals and save tokens to local configuration. This automates credential exchange and could be abused by crafted messages to cause credential leakage or unwanted trust relationships. Consider disabling automatic flows or reviewing/patching the code before use.\n- The installer deploys a hard-coded SECRET_KEY into the remote systemd environment (agent-p2p-shared-key-2024). If that key is used to sign JWTs across installations, tokens could be forged or shared between portals. Inspect/override the SECRET_KEY before deploying.\n- Verify the upstream source: the docs reference GitHub repos, but the registry lists 'Source: unknown' and no homepage. Review the GitHub repo (code, issues, committer identity) and prefer code signed or vetted by a trusted party.\n- If you still want to try it: test on an isolated VPS, use a dedicated SSH key, change defaults (admin password, SECRET_KEY), and do a code review or run it in a sandbox to observe network behavior (which endpoints are contacted and what data is sent).\n- If you want, provide the exact content of any environment variables or an excerpt of the deploy/start logs and I can point out specific lines that would send or store secrets.",
+          "findings": null,
+          "agenticRiskFindings": null,
+          "riskSummary": null,
+          "model": "gpt-5-mini",
+          "checkedAt": 1774798706814
+        }
+      }
+    }
+  }
+}

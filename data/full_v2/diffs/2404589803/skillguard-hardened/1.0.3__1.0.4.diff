@@ -1,0 +1,177 @@
+2404589803/skillguard-hardened  1.0.3 -> 1.0.4
+change_type: instructions+code   changelog: - Added auto-remediation support to scan command (`--auto-remediate quarantine|delete`) for bulk quarantine or deletion of risky skills. - Introduced "clean" and "disinfect" commands in manage_skill.py to automatically quarantine or delete a skill based on a scan result. - Extended documentation with new usage examples for auto-remediation, clean, and disinfect flows. - Default remediation now only targets skills marked as BLOCK or QUARANTINE, and still requires explicit confirmation for deletio
+
+### SKILL.md  [instructions]
+- version: 1.0.3
++ version: 1.0.4
++ python3 {baseDir}/scripts/scan_skills.py scan --auto-remediate quarantine
++ python3 {baseDir}/scripts/scan_skills.py scan --auto-remediate delete --force --yes
++ python3 {baseDir}/scripts/manage_skill.py clean suspicious-skill
++ python3 {baseDir}/scripts/manage_skill.py disinfect suspicious-skill --action delete --force --yes
++ - `clean` / `disinfect` scan a skill first, then quarantine or delete it based on the resulting recommendation. *(`clean` / `disinfect` 会先扫描，再按风险结果自动隔离或删除技能。)*
++ - `scan --auto-remediate` upgrades bulk scanning into bulk quarantine/delete, and defaults to acting on `BLOCK / QUARANTINE`. *(`scan --auto-remediate` 可把批量扫描升级为批量查杀，默认只处置 `BLOCK / QUARANTINE`。)*
+
+### lib/remediation.py  [code]
++ def remediate_skill(skill_path: Path, policy: dict[str, Any], action: str, reason: str | None = None) -> dict[str, Any]:
++     normalized = action.lower()
++     if normalized == "quarantine":
++         if not reason:
++             reason = "SkillGuard remediation requested"
++         return quarantine_skill(skill_path, policy, reason)
++     if normalized == "delete":
++         return delete_skill(str(skill_path), policy)
++     raise ValueError(f"Unsupported remediation action: {action}")
+
+### scripts/manage_skill.py  [code]
+- from lib.policy import load_policy
+- from lib.remediation import delete_skill, list_quarantined, quarantine_skill, resolve_skill_reference, restore_skill
++ from lib.ai_audit import audit_with_ai
++ from lib.analyzers import analyze_static
++ from lib.discovery import build_skill_target, resolve_workspace
++ from lib.policy import evaluate_findings, load_policy
++ from lib.remediation import (
++     delete_skill,
++     list_quarantined,
++     quarantine_skill,
++     remediate_skill,
++     resolve_skill_reference,
++     restore_skill,
++ )
++ DEFAULT_REMEDIATE_STATUSES = {"BLOCK", "QUARANTINE"}
++ def inspect_skill(target_reference: str, policy: dict, stage: str = "scan") -> dict:
++     target_path = resolve_skill_reference(target_reference, policy)
++     target = build_skill_target(target_path, policy, resolve_workspace())
++     static_result = analyze_static(target, policy)
++     ai_result = audit_with_ai(target, policy)
++     decision = evaluate_findings(policy, target, static_result, ai_result, stage)
++     return {
++         "target_path": str(target_path),
++         "skill_name": target.name,
++         "static_analysis": static_result,
++         "ai_audit": ai_result,
++         "decision": decision,
++     }
++     }
++ def scan_and_remediate(
++     target_reference: str,
++     policy: dict,
++     action: str,
++     statuses: set[str] | None = None,
++     *,
++     force: bool = False,
++     yes: bool = False,
++ ) -> dict:
++     statuses = {status.upper() for status in (statuses or DEFAULT_REMEDIATE_STATUSES)}
++     inspection = inspect_skill(target_reference, policy, stage="scan")
++     recommendation = inspection["decision"]["recommendation"].upper()
++     result = {
++         "target_path": inspection["target_path"],
++         "skill_name": inspection["skill_name"],
++         "decision": inspection["decision"],
++         "requested_action": action,
++         "statuses": sorted(statuses),
++     if recommendation not in statuses:
++         result["action"] = "noop"
++         result["reason"] = f"Recommendation {recommendation} is outside remediation statuses."
++         return result
++     if action == "delete" and (not force or not yes):
++         raise ValueError("delete remediation requires both --force and --yes")
++     reason = (
++         f"SkillGuard clean: {inspection['decision']['recommendation']} "
++         f"risk={inspection['decision']['risk_score']}"
++     )
++     remediation = remediate_skill(Path(inspection["target_path"]), policy, action, reason=reason)
++     result["action"] = action
++     result["remediation"] = remediation
++     return result
++     for command_name in ("clean", "disinfect"):
++         clean_parser = subparsers.add_parser(command_name, help="Scan a skill and remediate if it is risky")
++         clean_parser.add_argument("target", help="Skill name or path")
++         clean_parser.add_argument("--action", choices=("quarantine", "delete"), default="quarantine")
++         clean_parser.add_argument(
++             "--statuses",
++             nargs="+",
++             choices=("WARN", "BLOCK", "QUARANTINE"),
++             default=["BLOCK", "QUARANTINE"],
++             help="Recommendations that should trigger remediation",
++         )
++         clean_parser.add_argument("--force", action="store_true", help="Required for destructive deletion")
++         clean_parser.add_argument("--yes", action="store_true", help="Acknowledge permanent deletion")
++         elif args.command in {"clean", "disinfect"}:
++             result = scan_and_remediate(
++                 args.target,
++                 policy,
++                 action=args.action,
++                 statuses=set(args.statuses),
++                 force=args.force,
++                 yes=args.yes,
++             )
+
+### scripts/scan_skills.py  [code]
++ from lib.remediation import remediate_skill
++ def apply_auto_remediation(
++     reports: list[dict],
++     policy: dict,
++     action: str,
++     statuses: set[str],
++     *,
++     force: bool = False,
++     yes: bool = False,
++ ) -> list[dict]:
++     normalized_action = action.lower()
++     normalized_statuses = {status.upper() for status in statuses}
++     if normalized_action == "delete" and (not force or not yes):
++         raise ValueError("auto-delete remediation requires both --force and --yes")
++     results: list[dict] = []
++     for report in reports:
++         decision = report["decision"]
++         recommendation = str(decision["recommendation"]).upper()
++         if recommendation not in normalized_statuses:
++             continue
++         target_path = Path(report["skill"]["path"]).resolve()
++         reason = (
++             f"SkillGuard auto-remediation after scan: "
++             f"{decision['recommendation']} risk={decision['risk_score']}"
++         )
++         )
++         )
++         remediation = remediate_skill(target_path, policy, normalized_action, reason=reason)
++         results.append(
++             {
++                 "skill_name": report["skill"]["name"],
++                 "target_path": str(target_path),
++                 "recommendation": recommendation,
++                 "risk_score": decision["risk_score"],
++                 "action": normalized_action,
++                 "remediation": remediation,
++             }
++     return results
++     remediation_results: list[dict] = []
++     if args.command == "scan" and getattr(args, "auto_remediate", None):
++         remediation_results = apply_auto_remediation(
++             reports,
++             policy,
++             args.auto_remediate,
++             set(args.remediate_statuses),
++             force=args.force,
++             yes=args.yes,
++     if remediation_results:
++         bundle["remediation"] = {
++             "action": args.auto_remediate,
++             "statuses": sorted(set(args.remediate_statuses)),
++             "results": remediation_results,
++         }
++     scan_parser.add_argument(
++     scan_parser.add_argument(
++     )
++     )
++         "--auto-remediate",
++         choices=("quarantine", "delete"),
++         help="Automatically remediate risky skills after scan",
++         "--remediate-statuses",
++         nargs="+",
++         choices=("WARN", "BLOCK", "QUARANTINE"),
++         default=["BLOCK", "QUARANTINE"],
++         help="Recommendations that should trigger auto-remediation",
++     scan_parser.add_argument("--force", action="store_true", help="Required for destructive delete remediation")
++     scan_parser.add_argument("--yes", action="store_true", help="Acknowledge permanent delete remediation")

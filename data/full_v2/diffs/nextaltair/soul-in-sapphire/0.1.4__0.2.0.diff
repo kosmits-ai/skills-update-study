@@ -1,0 +1,1582 @@
+nextaltair/soul-in-sapphire  0.1.4 -> 0.2.0
+change_type: docs+code   changelog: Version 0.2.0  - Fully migrated all CLI scripts from Python to Node.js for consistency. - Added package.json and modularized scripts for Notion LTM, emostate, and journal operations. - Removed legacy Python scripts. - Updated operational instructions in README for Node.js usage. - Subagent spawn planning must now use the shared `subagent-spawn-command-builder` skill; local planner scripts removed.
+
+### README.md  [docs]
+- (OpenClaw運用なら `/home/altair/.openclaw/.env` に `NOTION_API_KEY=...`)
++ (OpenClaw運用なら `~/.openclaw/.env` に `NOTION_API_KEY=...`)
+
+### package.json  [code]
++ {
++   "name": "soul-in-sapphire",
++   "private": true,
++   "type": "module"
++ }
+
+### scripts/bootstrap_config.js  [code]
++ #!/usr/bin/env node
++ import fs from 'fs';
++ import path from 'path';
++ import { httpJson, expandHome } from './ltm_common.js';
++ function parseArgs(argv) {
++   const out = { name: '', out: '~/.config/soul-in-sapphire/config.json' };
++   for (let i = 2; i < argv.length; i++) {
++     const a = argv[i];
++     if (a === '--name') out.name = argv[++i] || '';
++     else if (a === '--out') out.out = argv[++i] || out.out;
++   }
++   }
++   return out;
++ }
++ }
++ }
++ }
++ function plainTitle(obj) {
++   const parts = obj?.title || [];
++   return parts.map(p => p?.plain_text || '').join('').trim();
++ function resolveOne(name) {
++   const res = httpJson('POST', '/search', { query: name, page_size: 50 });
++   const results = res?.results || [];
++   const ds = results.filter(r => r.object === 'data_source' && plainTitle(r) === name);
++   const db = results.filter(r => r.object === 'database' && plainTitle(r) === name);
++   if (ds.length !== 1 || db.length !== 1) {
++     throw new Error(`Notion database/data_source exact match failed for: ${name}`);
++   return { ltm_db_name: name, data_source_id: ds[0].id, database_id: db[0].id };
++ function main() {
++   const { name, out } = parseArgs(process.argv);
++   if (!name) throw new Error('Missing --name');
++   const cfg = resolveOne(name);
++   const outPath = expandHome(out);
++   fs.mkdirSync(path.dirname(outPath), { recursive: true });
++   fs.writeFileSync(outPath, JSON.stringify(cfg, null, 2) + '\n', 'utf-8');
++   console.log(JSON.stringify({ ok: true, out: outPath, config: cfg }, null, 2));
++ try { main(); } catch (e) { console.error(String(e?.stack || e)); process.exit(1); }
+
+### scripts/bootstrap_config.py  [code]
+- #!/usr/bin/env python3
+- """Bootstrap ~/.config/soul-in-sapphire/config.json by discovering Notion IDs.
+- - Finds a data source (Notion database) by name via POST /v1/search
+- - Reads data_source_id and fetches database_id via GET /v1/data_sources/{id}
+- Usage:
+-   python3 bootstrap_config.py --name "OpenClaw LTM" [--out ~/.config/soul-in-sapphire/config.json]
+- """
+- from __future__ import annotations
+- import argparse
+- import json
+- import os
+- from pathlib import Path
+- # Reuse the workspace Notion helper
+- import sys
+- from pathlib import Path as _Path
+- # Ensure workspace root is on sys.path when running as a script path.
+- _ROOT = _Path(__file__).resolve().parents[3]
+- if str(_ROOT) not in sys.path:
+-     sys.path.insert(0, str(_ROOT))
+- from notion_http import http_json
+- def plain_title(obj) -> str:
+-     parts = obj.get("title") or []
+-     return "".join(p.get("plain_text", "") for p in parts).strip()
+- def resolve_one_data_source_and_database(name: str):
+-     """Resolve both ids:
+-     - data_source_id: for /v1/data_sources/{id}/query
+-     - database_id: for /v1/pages parent.database_id and /v1/databases
+-     Notion search is fuzzy; require exact title matches to avoid false positives.
+-     """
+-     res = http_json("POST", "/search", {"query": name, "page_size": 50})
+-     results = (res or {}).get("results") or []
+-     ds_exact = [r for r in results if r.get("object") == "data_source" and plain_title(r) == name]
+-     db_exact = [r for r in results if r.get("object") == "database" and plain_title(r) == name]
+-     if len(ds_exact) > 1:
+-         lines = "\n".join(
+-         lines = "\n".join(
+-             f"- {plain_title(r)} (data_source_id={r.get('id')})" for r in ds_exact[:10]
+-         )
+-         )
+-         )
+-         raise SystemExit(f"Multiple exact data_source matches for: {name}\n{lines}")
+-     if len(db_exact) > 1:
+-             f"- {plain_title(r)} (database_id={r.get('id')})" for r in db_exact[:10]
+-         raise SystemExit(f"Multiple exact database matches for: {name}\n{lines}")
+-     if not ds_exact or not db_exact:
+-         raise SystemExit(
+-             f"Notion database/data_source not found by exact title via search: {name}\n"
+-             "- Ensure the database is shared with your integration (Connect to).\n"
+-             "- Ensure the title matches exactly."
+-     return {"ltm_db_name": name, "data_source_id": ds_exact[0]["id"], "database_id": db_exact[0]["id"]}
+- def main():
+-     ap = argparse.ArgumentParser()
+-     ap.add_argument("--name", required=True, help="Notion database name to use as LTM")
+-     ap.add_argument(
+-         "--out",
+-         default=str(Path("~/.config/soul-in-sapphire/config.json").expanduser()),
+-         help="Output config path",
+-     )
+-     args = ap.parse_args()
+-     cfg = resolve_one_data_source_and_database(args.name)
+-     outp = Path(args.out).expanduser()
+-     outp.parent.mkdir(parents=True, exist_ok=True)
+-     outp.write_text(json.dumps(cfg, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+-     print(json.dumps({"ok": True, "out": str(outp), "config": cfg}, ensure_ascii=False, indent=2))
+- if __name__ == "__main__":
+-     main()
+
+### scripts/emostate_config.js  [code]
++ #!/usr/bin/env node
++ import fs from 'fs';
++ import path from 'path';
++ import os from 'os';
++ function configPath() { return path.join(os.homedir(), '.config', 'soul-in-sapphire', 'config.json'); }
++ function loadConfig() {
++   const p = configPath();
++   const p = configPath();
++   if (!fs.existsSync(p)) throw new Error(`Missing config: ${p}`);
++   return JSON.parse(fs.readFileSync(p, 'utf-8'));
++ }
++ }
++ }
++ function saveConfig(cfg) {
++   fs.mkdirSync(path.dirname(p), { recursive: true });
++   fs.writeFileSync(p, JSON.stringify(cfg, null, 2) + '\n', 'utf-8');
++ function requirePaths(cfg, keys) {
++   const missing = [];
++   for (const k of keys) if (!cfg?.[k]) missing.push(k);
++   if (missing.length) throw new Error(`Config missing keys: ${missing.join(', ')}`);
++ export { configPath, loadConfig, saveConfig, requirePaths };
+
+### scripts/emostate_config.py  [code]
+- #!/usr/bin/env python3
+- from __future__ import annotations
+- import json
+- from pathlib import Path
+- def config_path() -> Path:
+-     return Path("~/.config/soul-in-sapphire/config.json").expanduser()
+- def load_config() -> dict:
+-     p = config_path()
+-     p = config_path()
+-     if not p.exists():
+-         raise SystemExit(
+-             f"Missing config: {p}\n"
+-             "Run setup: node skills/soul-in-sapphire/scripts/setup_ltm.js --parent <Notion parent page url> --base <name> --yes"
+-         )
+-     return json.loads(p.read_text(encoding="utf-8"))
+- def save_config(cfg: dict):
+-     p.parent.mkdir(parents=True, exist_ok=True)
+-     p.write_text(json.dumps(cfg, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+- def require_paths(cfg: dict, keys: list[str]):
+-     missing = []
+-     for k in keys:
+-         if not cfg.get(k):
+-             missing.append(k)
+-     if missing:
+-         raise SystemExit(f"Config missing keys: {missing}. Run setup_ltm.js again.")
+
+### scripts/emostate_notion.js  [code]
++ #!/usr/bin/env node
++ import { httpJson } from './ltm_common.js';
++ function nowIso() { return new Date().toISOString(); }
++ const _rt = s => ({ rich_text: s ? [{ type: 'text', text: { content: String(s) } }] : [] });
++ const _title = s => ({ title: [{ type: 'text', text: { content: String(s) } }] });
++ const _select = n => ({ select: n ? { name: String(n) } : null });
++ const _multi = arr => ({ multi_select: (arr || []).filter(Boolean).map(n => ({ name: String(n) })) });
++ const _date = s => ({ date: s ? { start: String(s) } : null });
++ const _num = x => ({ number: (x === null || x === undefined || x === '') ? null : Number(x) });
++ const _url = u => ({ url: u ? String(u) : null });
++ function clamp010(x) { return Math.max(0, Math.min(10, Number(x))); }
++ function queryRecent(dsId, pageSize = 10) {
++   const body = { page_size: pageSize, sorts: [{ timestamp: 'created_time', direction: 'descending' }] };
++   const res = httpJson('POST', `/data_sources/${dsId}/query`, body);
++   return res?.results || [];
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ function textOf(prop) {
++   if (!prop) return '';
++   const t = prop.type;
++   if (t === 'title' || t === 'rich_text') return (prop[t] || []).map(x => x?.plain_text || '').join('').trim();
++   if (t === 'select') return prop.select?.name || '';
++   if (t === 'multi_select') return (prop.multi_select || []).map(x => x?.name).filter(Boolean);
++   if (t === 'number') return prop.number;
++   if (t === 'date') return prop.date?.start || '';
++   if (t === 'url') return prop.url || '';
++   if (t === 'relation') return (prop.relation || []).map(x => x?.id).filter(Boolean);
++   return '';
++ function createPage(databaseId, properties) {
++   return httpJson('POST', '/pages', { parent: { database_id: databaseId }, properties });
++ function patchPage(pageId, properties = undefined, archived = undefined) {
++   const b = {};
++   if (properties !== undefined) b.properties = properties;
++   if (archived !== undefined) b.archived = !!archived;
++   return httpJson('PATCH', `/pages/${pageId}`, b);
++ function buildEventProps(obj = {}) {
++   const when = obj.when || nowIso();
++   const when = obj.when || nowIso();
++   return {
++     Name: _title(obj.title || obj.Name || '(event)'),
++     when: _date(when),
++     when: _date(when),
++     importance: _select(obj.importance != null ? String(obj.importance) : null),
++     trigger: _select(obj.trigger),
++     context: _rt(obj.context || ''),
++     source: _select(obj.source || 'other'),
++     link: _url(obj.link),
++     uncertainty: _num(obj.uncertainty),
++     control: _num(obj.control),
++   };
++   };
++   };
++ function buildEmotionProps(obj = {}, eventPageId = null) {
++   const props = {
++   const props = {
++     Name: _title(obj.title || `${obj.axis}=${obj.level}`),
++     axis: _select(obj.axis),
++     level: _num(obj.level),
++     comment: _rt(obj.comment || ''),
++     weight: _num(obj.weight),
++     body_signal: _multi(obj.body_signal || []),
++     need: _select(obj.need),
++     coping: _select(obj.coping),
++   if (eventPageId) props.event = { relation: [{ id: eventPageId }] };
++   if (eventPageId) props.event = { relation: [{ id: eventPageId }] };
++   return props;
++   return props;
++ function buildStateProps(obj = {}, eventPageId = null) {
++     Name: _title(obj.title || `state@${when}`),
++     state_json: _rt(JSON.stringify(obj.state_json || {})),
++     reason: _rt(obj.reason || ''),
++     source: _select(obj.source || 'manual'),
++     mood_label: _select(obj.mood_label),
++     intent: _select(obj.intent),
++     need_stack: _select(obj.need_stack),
++     need_level: _num(obj.need_level),
++     avoid: _multi(obj.avoid || []),
++ export { nowIso, clamp010, queryRecent, textOf, createPage, patchPage, buildEventProps, buildEmotionProps, buildStateProps };
+
+### scripts/emostate_notion.py  [code]
+- #!/usr/bin/env python3
+- """Notion helpers for Valentina emotion-state system (data_sources generation)."""
+- from __future__ import annotations
+- import json
+- import sys
+- from datetime import datetime, timezone
+- from pathlib import Path
+- # Ensure workspace root on sys.path
+- _ROOT = Path(__file__).resolve().parents[3]
+- if str(_ROOT) not in sys.path:
+-     sys.path.insert(0, str(_ROOT))
+- from notion_http import http_json
+- def now_iso():
+-     return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+- def _rt(s: str):
+-     s = str(s)
+-     if not s:
+-         return {"rich_text": []}
+-     return {"rich_text": [{"type": "text", "text": {"content": s}}]}
+- def _title(s: str):
+-     return {"title": [{"type": "text", "text": {"content": str(s)}}]}
+- def _select(name: str | None):
+-     return {"select": None if not name else {"name": str(name)}}
+- def _multi(names):
+-     names = names or []
+-     return {"multi_select": [{"name": str(n)} for n in names if str(n).strip()]}
+- def _date(start_iso: str | None):
+-     return {"date": None if not start_iso else {"start": start_iso}}
+- def _num(x):
+-     if x is None or x == "":
+-         return {"number": None}
+-     return {"number": float(x)}
+- def _url(u: str | None):
+-     return {"url": None if not u else str(u)}
+- def clamp_0_10(x: float) -> float:
+-     if x < 0:
+-         return 0.0
+-     if x > 10:
+-         return 10.0
+-     return x
+- def query_recent(ds_id: str, page_size: int = 10):
+-     # Notion's query supports sorts; use created_time
+-     body = {"page_size": page_size, "sorts": [{"timestamp": "created_time", "direction": "descending"}]}
+-     res = http_json("POST", f"/data_sources/{ds_id}/query", body)
+-     return (res or {}).get("results") or []
+- def text_of(prop) -> str:
+-     if not prop:
+-         return ""
+-     t = prop.get("type")
+-     if t in ("title", "rich_text"):
+-         arr = prop.get(t) or []
+-         return "".join(x.get("plain_text", "") for x in arr).strip()
+-     if t == "select":
+-         s = prop.get("select")
+-         return (s or {}).get("name") or ""
+-     if t == "multi_select":
+-         ms = prop.get("multi_select") or []
+-         return [x.get("name") for x in ms if x.get("name")]
+-     if t == "number":
+-         return prop.get("number")
+-     if t == "date":
+-         d = prop.get("date")
+-         return (d or {}).get("start") or ""
+-     if t == "url":
+-         return prop.get("url") or ""
+-     if t == "relation":
+-         rel = prop.get("relation") or []
+-         return [x.get("id") for x in rel if x.get("id")]
+-     return ""
+- def create_page(database_id: str, properties: dict):
+-     return http_json("POST", "/pages", {"parent": {"database_id": database_id}, "properties": properties})
+- def patch_page(page_id: str, properties: dict | None = None, archived: bool | None = None):
+-     body = {}
+-     if properties is not None:
+-         body["properties"] = properties
+-     if archived is not None:
+-         body["archived"] = bool(archived)
+-     return http_json("PATCH", f"/pages/{page_id}", body)
+- def build_event_props(obj: dict):
+-     when = obj.get("when") or now_iso()
+-     when = obj.get("when") or now_iso()
+-     return {
+-         "Name": _title(obj.get("title") or obj.get("Name") or "(event)"),
+-         "when": _date(when),
+-         "when": _date(when),
+-         "importance": _select(str(obj.get("importance")) if obj.get("importance") is not None else None),
+-         "trigger": _select(obj.get("trigger")),
+-         "context": _rt(obj.get("context") or ""),
+-         "source": _select(obj.get("source") or "other"),
+-         "link": _url(obj.get("link")),
+-         "uncertainty": _num(obj.get("uncertainty")),
+-         "control": _num(obj.get("control")),
+-     }
+-     }
+-     }
+- def build_emotion_props(obj: dict, event_page_id: str | None = None):
+-     props = {
+-     props = {
+-         "Name": _title(obj.get("title") or f"{obj.get('axis')}={obj.get('level')}"),
+-         "axis": _select(obj.get("axis")),
+-         "level": _num(obj.get("level")),
+-         "comment": _rt(obj.get("comment") or ""),
+-         "weight": _num(obj.get("weight")),
+-         "body_signal": _multi(obj.get("body_signal") or []),
+-         "need": _select(obj.get("need")),
+-         "coping": _select(obj.get("coping")),
+-     if event_page_id:
+-     if event_page_id:
+-         props["event"] = {"relation": [{"id": event_page_id}]}
+-         props["event"] = {"relation": [{"id": event_page_id}]}
+-     return props
+-     return props
+- def build_state_props(obj: dict, event_page_id: str | None = None):
+-         "Name": _title(obj.get("title") or f"state@{when}"),
+-         "state_json": _rt(json.dumps(obj.get("state_json") or {}, ensure_ascii=False)),
+-         "reason": _rt(obj.get("reason") or ""),
+-         "source": _select(obj.get("source") or "manual"),
+-         "mood_label": _select(obj.get("mood_label")),
+-         "intent": _select(obj.get("intent")),
+-         "need_stack": _select(obj.get("need_stack")),
+-         "need_level": _num(obj.get("need_level")),
+-         "avoid": _multi(obj.get("avoid") or []),
+
+### scripts/emostate_tick.js  [code]
+- } from './notion_client.js';
++ } from './notionctl_bridge.js';
+
+### scripts/emostate_tick.py  [code]
+- from __future__ import annotations
+- import json
+- import math
+- import sys
+- from datetime import datetime
+- from pathlib import Path
+- # Ensure workspace root on sys.path
+- _ROOT = Path(__file__).resolve().parents[3]
+- if str(_ROOT) not in sys.path:
+-     sys.path.insert(0, str(_ROOT))
+- from emostate_config import load_config, require_paths
+- from emostate_notion import (
+-     build_emotion_props,
+-     build_event_props,
+-     build_state_props,
+-     clamp_0_10,
+-     create_page,
+-     query_recent,
+-     text_of,
+- )
+- AXES = [
+-     "arousal",
+-     "valence",
+-     "focus",
+-     "confidence",
+-     "stress",
+-     "curiosity",
+-     "social",
+-     "solitude",
+-     "joy",
+-     "anger",
+-     "sadness",
+-     "fun",
+-     "pain",
+- ]
+- NORMAL_HALF_LIFE_HOURS = 24.0
+- def read_json_stdin():
+-     raw = sys.stdin.read().strip()
+-     if not raw:
+-         raise SystemExit("Expected JSON on stdin")
+-     return json.loads(raw)
+- def _parse_iso(dt: str | None) -> datetime | None:
+-     if not dt:
+-         return None
+-         return None
+-     # Handle 'Z'
+-     dt = dt.replace("Z", "+00:00")
+-     try:
+-     try:
+-     try:
+-         return datetime.fromisoformat(dt)
+-     except Exception:
+-     except Exception:
+- def parse_state_from_row(row) -> tuple[dict, datetime | None]:
+-     props = (row or {}).get("properties") or {}
+-     s = text_of(props.get("state_json"))
+-     when = text_of(props.get("when"))
+-     when_dt = _parse_iso(when) if isinstance(when, str) else None
+-     if not s:
+-         return {}, when_dt
+-         obj = json.loads(s)
+-         if isinstance(obj, dict):
+-             return obj, when_dt
+-     except json.JSONDecodeError:
+-         pass
+-     return {}, when_dt
+- def initial_state() -> dict:
+-     return {k: 5.0 for k in AXES}
+- def _exp_decay_toward(x: float, target: float, hours: float, half_life_hours: float) -> float:
+-     if hours <= 0:
+-         return x
+-     if half_life_hours <= 0:
+-         return target
+-     # After half-life, distance halves
+-     lam = math.log(2.0) / half_life_hours
+-     return target + (x - target) * math.exp(-lam * hours)
+- def _imprint_half_life(severity: float) -> float:
+-     # 1 day .. 11 days
+-     severity = max(0.0, min(10.0, severity))
+-     return NORMAL_HALF_LIFE_HOURS * (1.0 + severity / 1.0)
+- def _maybe_add_imprints(state_json: dict, emotions: list[dict], event: dict):
+-     """Add durable imprints when something is 'traumatic'.
+-     Heuristic (v0):
+-     - any emotion with level >= 9
+-     - and control <= 3 (if control is provided)
+-     Stored under state_json['imprints'] (list).
+-     """
+-     imprints = state_json.get("imprints")
+-     if not isinstance(imprints, list):
+-         imprints = []
+-     control = event.get("control")
+-         control_v = float(control) if control is not None else None
+-         control_v = None
+-     for emo in emotions:
+-     for emo in emotions:
+-     for emo in emotions:
+-         axis = emo.get("axis")
+-         axis = emo.get("axis")
+-         if axis not in AXES:
+-             continue
+-             continue
+-             continue
+-             continue
+-             continue
+-             continue
+-             continue
+-         try:
+-         try:
+-             level = float(emo.get("level"))
+-             level = float(emo.get("level"))
+-         except Exception:
+-         except Exception:
+-         if level < 9.0:
+-         if control_v is not None and control_v > 3.0:
+-         sev = max(0.0, min(10.0, level))
+-         tag = f"imprint:{axis}:{event.get('trigger') or 'event'}"
+-         imprints.append(
+-             {
+-                 "tag": tag,
+-                 "axis": axis,
+-                 "severity": sev,
+-                 "created_at": event.get("when"),
+-                 "decay_half_life_hours": _imprint_half_life(sev),
+-                 "notes": emo.get("comment") or "",
+-             }
+-         )
+-     # de-dupe by (tag, created_at) keeping last
+-     seen = set()
+-     dedup = []
+-     for it in reversed(imprints):
+-         key = (it.get("tag"), it.get("created_at"))
+-         if key in seen:
+-         seen.add(key)
+-         dedup.append(it)
+-     state_json["imprints"] = list(reversed(dedup))
+- def main():
+-     cfg = load_config()
+-     require_paths(
+-         cfg,
+-         [
+-             "valentina_events_database_id",
+-             "valentina_emotions_database_id",
+-             "valentina_state_database_id",
+-             "valentina_state_data_source_id",
+-         ],
+-     )
+-     payload = read_json_stdin()
+-     event = payload.get("event") or {}
+-     emotions = payload.get("emotions") or []
+-     state_overrides = payload.get("state") or {}
+-     # 1) create event
+-     epage = create_page(cfg["valentina_events_database_id"], build_event_props(event))
+-     event_id = epage.get("id")
+-     # 2) create emotion rows linked to event
+-         create_page(cfg["valentina_emotions_database_id"], build_emotion_props(emo, event_page_id=event_id))
+-     # 3) load latest state
+-     latest = query_recent(cfg["valentina_state_data_source_id"], page_size=1)
+-     base = initial_state()
+-     base_obj = {}
+-     base_when = None
+-     if latest:
+-         base_obj, base_when = parse_state_from_row(latest[0])
+-         if isinstance(base_obj, dict):
+-             base.update({k: float(base_obj.get(k, base.get(k, 5.0))) for k in AXES if k in base})
+-     # 3.5) decay toward neutral (5)
+-     # Use latest state's when -> now (event.when if provided, else now in build_event_props)
+-     now_dt = _parse_iso(event.get("when"))
+-     if now_dt and base_when:
+-         hours = (now_dt - base_when).total_seconds() / 3600.0
+-         if hours > 0:
+-             # build per-axis half-life based on imprints
+-             imprints = base_obj.get("imprints") if isinstance(base_obj, dict) else None
+-             by_axis = {}
+-             if isinstance(imprints, list):
+-                 for it in imprints:
+-                     ax = it.get("axis")
+-                     if ax in AXES:
+-                         try:
+-                             by_axis[ax] = float(it.get("decay_half_life_hours") or _imprint_half_life(float(it.get("severity") or 0)))
+-                         except Exception:
+-                             by_axis[ax] = _imprint_half_life(0)
+-             for ax in AXES:
+-                 hl = by_axis.get(ax, NORMAL_HALF_LIFE_HOURS)
+-                 base[ax] = clamp_0_10(_exp_decay_toward(float(base.get(ax, 5.0)), 5.0, hours, hl))
+-     # 4) apply deltas
+-         if axis not in base:
+-         delta = level - 5.0
+-         base[axis] = clamp_0_10(float(base.get(axis, 5.0)) + delta)
+-     # 4.5) maybe add imprints
+-     state_json = {**base}
+-     if isinstance(base_obj, dict) and isinstance(base_obj.get("imprints"), list):
+-         state_json["imprints"] = base_obj.get("imprints")
+-     _maybe_add_imprints(state_json, emotions, event)
+-     state_json["__meta"] = {"version": 1}
+-     # 5) write state snapshot linked to event
+-     st = {
+-         "state_json": state_json,
+-         "reason": state_overrides.get("reason") or "event tick",
+-         "source": state_overrides.get("source") or "event",
+-         "mood_label": state_overrides.get("mood_label"),
+-         "intent": state_overrides.get("intent"),
+-         "need_stack": state_overrides.get("need_stack"),
+-         "need_level": state_overrides.get("need_level"),
+-         "avoid": state_overrides.get("avoid") or [],
+-         "when": event.get("when"),
+-     }
+-     }
+-     spage = create_page(cfg["valentina_state_database_id"], build_state_props(st, event_page_id=event_id))
+-     out = {
+-         "ok": True,
+-         "event": {"id": event_id, "url": epage.get("url")},
+-         "state": {"id": spage.get("id"), "url": spage.get("url"), "state_json": state_json},
+-     print(json.dumps(out, ensure_ascii=False, indent=2))
+- if __name__ == "__main__":
+-     main()
+
+### scripts/journal_patch_schema.js  [code]
+- import { patchDataSource } from './notion_client.js';
++ import { patchDataSource } from './notionctl_bridge.js';
+
+### scripts/journal_write.js  [code]
+- import { createPage } from './notion_client.js';
++ import { createPage } from './notionctl_bridge.js';
+
+### scripts/ltm_common.js  [code]
++ #!/usr/bin/env node
++ import fs from 'fs';
++ import os from 'os';
++ import path from 'path';
++ import { execFileSync } from 'node:child_process';
++ function expandHome(p) {
++   if (!p) return p;
++   if (p === '~') return os.homedir();
++   if (p.startsWith('~/')) return path.join(os.homedir(), p.slice(2));
++   return p;
++   return p;
++ }
++ }
++ }
++ }
++ }
++ }
++ function workspaceFromConfig() {
++   const cfgPath = expandHome(process.env.OPENCLAW_CONFIG_PATH || '~/.openclaw/openclaw.json');
++   try {
++     if (!fs.existsSync(cfgPath)) return null;
++     const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf-8'));
++     const ws = cfg?.agents?.defaults?.workspace;
++     return ws ? expandHome(String(ws)) : null;
++   } catch {
++     return null;
++   }
++   }
++   }
++   }
++ function notionctlPath() {
++   const ws = workspaceFromConfig() || path.resolve(process.cwd(), '..', '..', '..');
++   const p = path.join(ws, 'skills', 'notion-api-automation', 'scripts', 'notionctl.mjs');
++   if (!fs.existsSync(p)) throw new Error(`notionctl not found: ${p}`);
++ function httpJson(method, apiPath, payload = undefined) {
++   const args = [notionctlPath(), 'api', '--compact', '--method', String(method).toUpperCase(), '--path', String(apiPath)];
++   if (payload !== undefined) args.push('--body-json', JSON.stringify(payload));
++   const out = execFileSync('node', args, { encoding: 'utf-8' }).trim();
++   const obj = out ? JSON.parse(out) : {};
++   if (!obj.ok) throw new Error(`notionctl api not ok: ${out}`);
++   return obj.result || {};
++ function loadConfig(p = '~/.config/soul-in-sapphire/config.json') {
++   const fp = expandHome(p);
++   if (!fs.existsSync(fp)) {
++     throw new Error(`Missing config: ${fp}`);
++   const cfg = JSON.parse(fs.readFileSync(fp, 'utf-8'));
++   if ((!cfg.database_id || !cfg.data_source_id) && cfg.mem?.database_id && cfg.mem?.data_source_id) {
++     cfg.database_id = cfg.mem.database_id;
++     cfg.data_source_id = cfg.mem.data_source_id;
++   return cfg;
++ function requireIds(cfg) {
++   for (const k of ['data_source_id', 'database_id']) {
++     if (!cfg?.[k]) throw new Error(`Config missing ${k}`);
++ export { httpJson, loadConfig, requireIds, expandHome };
+
+### scripts/ltm_common.py  [code]
+- #!/usr/bin/env python3
+- from __future__ import annotations
+- import json
+- from pathlib import Path
+- def load_config(path: str | None = None) -> dict:
+-     p = Path(path or "~/.config/soul-in-sapphire/config.json").expanduser()
+-     if not p.exists():
+-         raise SystemExit(
+-             f"Missing config: {p}\n"
+-             "Run bootstrap first: python3 skills/soul-in-sapphire/scripts/bootstrap_config.py --name 'OpenClaw LTM'"
+-         )
+-     cfg = json.loads(p.read_text(encoding="utf-8"))
+-     # Backward/forward compatibility:
+-     # - old format: flat keys at root (database_id, data_source_id)
+-     # - new format: nested mem.{database_id,data_source_id}
+-     if not cfg.get("database_id") or not cfg.get("data_source_id"):
+-         mem = cfg.get("mem") or {}
+-         if mem.get("database_id") and mem.get("data_source_id"):
+-             cfg = {**cfg, "database_id": mem["database_id"], "data_source_id": mem["data_source_id"]}
+-     return cfg
+- def require_ids(cfg: dict):
+-     for k in ("data_source_id", "database_id"):
+-         if not cfg.get(k):
+-             raise SystemExit(f"Config missing {k}: {cfg}")
+
+### scripts/ltm_search.js  [code]
++ #!/usr/bin/env node
++ import { loadConfig, requireIds, httpJson } from './ltm_common.js';
++ function textOf(prop) {
++   if (!prop) return '';
++   const t = prop.type;
++   if (t === 'title' || t === 'rich_text') return (prop[t] || []).map(x => x?.plain_text || '').join('').trim();
++   if (t === 'select') return prop.select?.name || '';
++   if (t === 'multi_select') return (prop.multi_select || []).map(x => x?.name).filter(Boolean).join(',');
++   if (t === 'url') return prop.url || '';
++   return '';
++ }
++ }
++ }
++ }
++ function queryDs(dsId, prop, kind, q, pageSize) {
++   const body = { page_size: pageSize, filter: { property: prop, [kind]: { contains: q } } };
++   const res = httpJson('POST', `/data_sources/${dsId}/query`, body);
++   return res?.results || [];
++ function parseArgs(argv) {
++   const out = { query: '', limit: 5 };
++   for (let i = 2; i < argv.length; i++) {
++     const a = argv[i];
++     if (a === '--query') out.query = argv[++i] || '';
++     else if (a === '--limit') out.limit = Number(argv[++i] || 5);
++   }
++   }
++   return out;
++ function main() {
++   const args = parseArgs(process.argv);
++   if (!args.query.trim()) throw new Error('Empty query');
++   const cfg = loadConfig();
++   requireIds(cfg);
++   const dsId = cfg.data_source_id;
++   const pageSize = Math.min(50, Math.max(args.limit, 5) * 5);
++   const hits = [
++     ...queryDs(dsId, 'Name', 'title', args.query, pageSize),
++     ...queryDs(dsId, 'Content', 'rich_text', args.query, pageSize),
++   ];
++   const seen = new Set();
++   const out = [];
++   for (const r of hits) {
++     const rid = r?.id;
++     if (!rid || seen.has(rid)) continue;
++     seen.add(rid);
++     const p = r.properties || {};
++     out.push({
++       id: rid,
++       url: r.url,
++       title: textOf(p.Name),
++       type: textOf(p.Type),
++       tags: textOf(p.Tags),
++       content: textOf(p.Content).slice(0, 400),
++       source: textOf(p.Source),
++       confidence: textOf(p.Confidence),
++     });
++     if (out.length >= args.limit) break;
++   console.log(JSON.stringify({ ok: true, query: args.query, results: out }, null, 2));
++ try { main(); } catch (e) { console.error(String(e?.stack || e)); process.exit(1); }
+
+### scripts/ltm_search.py  [code]
+- #!/usr/bin/env python3
+- """Search Notion LTM DB by title/content contains.
+- This uses /v1/data_sources/{id}/query filters (data_sources generation).
+- Usage:
+-   python3 ltm_search.py --query "data_sources" --limit 5
+- """
+- from __future__ import annotations
+- import argparse
+- import json
+- import sys
+- from pathlib import Path as _Path
+- # Ensure workspace root is on sys.path when running as a script path.
+- _ROOT = _Path(__file__).resolve().parents[3]
+- if str(_ROOT) not in sys.path:
+-     sys.path.insert(0, str(_ROOT))
+- from notion_http import http_json
+- from ltm_common import load_config, require_ids
+- def text_of(prop) -> str:
+-     if not prop:
+-         return ""
+-     t = prop.get("type")
+-     if t in ("title", "rich_text"):
+-         arr = prop.get(t) or []
+-         return "".join(x.get("plain_text", "") for x in arr).strip()
+-     if t == "select":
+-         s = prop.get("select")
+-         return (s or {}).get("name") or ""
+-     if t == "multi_select":
+-         ms = prop.get("multi_select") or []
+-         return ",".join(x.get("name", "") for x in ms if x.get("name"))
+-     if t == "url":
+-         return prop.get("url") or ""
+-     return ""
+- def query_ds(ds_id: str, prop: str, kind: str, q: str, page_size: int):
+-     body = {
+-         "page_size": page_size,
+-         "filter": {"property": prop, kind: {"contains": q}},
+-     }
+-     res = http_json("POST", f"/data_sources/{ds_id}/query", body)
+-     return (res or {}).get("results") or []
+- def main():
+-     ap = argparse.ArgumentParser()
+-     ap.add_argument("--query", required=True)
+-     ap.add_argument("--limit", type=int, default=5)
+-     args = ap.parse_args()
+-     cfg = load_config()
+-     require_ids(cfg)
+-     q = args.query.strip()
+-     if not q:
+-         raise SystemExit("Empty query")
+-     ds_id = cfg["data_source_id"]
+-     hits = []
+-     hits += query_ds(ds_id, "Name", "title", q, min(50, max(args.limit, 5) * 5))
+-     hits += query_ds(ds_id, "Content", "rich_text", q, min(50, max(args.limit, 5) * 5))
+-     seen = set()
+-     out = []
+-     for r in hits:
+-         rid = r.get("id")
+-         if not rid or rid in seen:
+-             continue
+-         seen.add(rid)
+-         props = r.get("properties") or {}
+-         out.append(
+-             {
+-                 "id": rid,
+-                 "url": r.get("url"),
+-                 "title": text_of(props.get("Name")),
+-                 "type": text_of(props.get("Type")),
+-                 "tags": text_of(props.get("Tags")),
+-                 "content": text_of(props.get("Content"))[:400],
+-                 "source": text_of(props.get("Source")),
+-                 "confidence": text_of(props.get("Confidence")),
+-             }
+-         )
+-         if len(out) >= args.limit:
+-             break
+-     print(json.dumps({"ok": True, "query": q, "results": out}, ensure_ascii=False, indent=2))
+- if __name__ == "__main__":
+-     main()
+
+### scripts/ltm_write.js  [code]
++ #!/usr/bin/env node
++ import fs from 'fs';
++ import { loadConfig, requireIds, httpJson } from './ltm_common.js';
++ const propTitle = s => ({ title: [{ type: 'text', text: { content: String(s) } }] });
++ const propRich = s => ({ rich_text: [{ type: 'text', text: { content: String(s || '') } }] });
++ const propSelect = n => ({ select: n ? { name: String(n) } : null });
++ const propMulti = a => ({ multi_select: (a || []).filter(Boolean).map(n => ({ name: String(n) })) });
++ const propUrl = u => ({ url: u ? String(u) : null });
++ async function readStdinJson() {
++   const chunks = [];
++   for await (const c of process.stdin) chunks.push(c);
++   const raw = Buffer.concat(chunks).toString('utf-8').trim();
++   if (!raw) throw new Error('Expected JSON on stdin');
++   return JSON.parse(raw);
++ }
++ }
++ async function main() {
++   const cfg = loadConfig();
++   requireIds(cfg);
++   const obj = await readStdinJson();
++   const title = String(obj.title || '').trim();
++   if (!title) throw new Error('Missing title');
++   const props = {
++     Name: propTitle(title),
++     Type: propSelect(String(obj.type || '').trim() || null),
++     Tags: propMulti(obj.tags || []),
++     Content: propRich(String(obj.content || '').trim()),
++   };
++   if (obj.source) props.Source = propUrl(obj.source);
++   if (obj.confidence) props.Confidence = propSelect(String(obj.confidence || '').trim() || null);
++   const page = httpJson('POST', '/pages', { parent: { database_id: cfg.database_id }, properties: props });
++   console.log(JSON.stringify({ ok: true, id: page.id, url: page.url }, null, 2));
++ main().catch(e => { console.error(String(e?.stack || e)); process.exit(1); });
+
+### scripts/ltm_write.py  [code]
+- #!/usr/bin/env python3
+- """Write a durable memory entry to Notion LTM DB.
+- Input (JSON via stdin):
+- {
+-   "title": "...",
+-   "type": "decision|preference|fact|procedure|todo|gotcha",
+-   "tags": ["..."],
+-   "content": "...",
+-   "source": "https://..." (optional),
+-   "confidence": "high|medium|low" (optional)
+- }
+- """
+- from __future__ import annotations
+- import json
+- import sys
+- import sys
+- from pathlib import Path as _Path
+- # Ensure workspace root is on sys.path when running as a script path.
+- _ROOT = _Path(__file__).resolve().parents[3]
+- if str(_ROOT) not in sys.path:
+-     sys.path.insert(0, str(_ROOT))
+- from notion_http import http_json
+- from ltm_common import load_config, require_ids
+- def prop_title(s: str):
+-     return {"title": [{"type": "text", "text": {"content": s}}]}
+- def prop_rich_text(s: str):
+-     return {"rich_text": [{"type": "text", "text": {"content": s}}]}
+- def prop_select(name: str | None):
+-     return {"select": None if not name else {"name": name}}
+- def prop_multi(names):
+-     names = names or []
+-     return {"multi_select": [{"name": str(n)} for n in names if str(n).strip()]}
+- def prop_url(u: str | None):
+-     return {"url": None if not u else str(u)}
+- def read_stdin_json():
+-     raw = sys.stdin.read().strip()
+-     if not raw:
+-         raise SystemExit("Expected JSON on stdin")
+-     return json.loads(raw)
+- def main():
+-     cfg = load_config()
+-     require_ids(cfg)
+-     obj = read_stdin_json()
+-     title = (obj.get("title") or "").strip()
+-     if not title:
+-         raise SystemExit("Missing title")
+-     # Notion databases default title property name is usually "Name".
+-     props = {
+-         "Name": prop_title(title),
+-         "Type": prop_select((obj.get("type") or "").strip() or None),
+-         "Tags": prop_multi(obj.get("tags") or []),
+-         "Content": prop_rich_text((obj.get("content") or "").strip()),
+-     }
+-     }
+-     if obj.get("source"):
+-         props["Source"] = prop_url(obj.get("source"))
+-     if obj.get("confidence"):
+-         props["Confidence"] = prop_select((obj.get("confidence") or "").strip() or None)
+-     page = http_json(
+-         "POST",
+-         "/pages",
+-         {"parent": {"database_id": cfg["database_id"]}, "properties": props},
+-     )
+-     out = {
+-         "ok": True,
+-         "id": page.get("id"),
+-         "url": page.get("url"),
+-     print(json.dumps(out, ensure_ascii=False, indent=2))
+- if __name__ == "__main__":
+-     main()
+
+### scripts/notion_client.js  [code]
+- #!/usr/bin/env node
+- import fs from 'fs';
+- import os from 'os';
+- import path from 'path';
+- const NOTION_API_BASE = 'https://api.notion.com';
+- const NOTION_VERSION = '2025-09-03';
+- function getToken() {
+-   const t = process.env.NOTION_API_KEY || process.env.NOTION_TOKEN || process.env.NOTION_API_TOKEN;
+-   if (t && String(t).trim()) return String(t).trim();
+-   const p = path.join(os.homedir(), '.config', 'notion', 'api_key');
+-   if (fs.existsSync(p)) {
+-     const v = fs.readFileSync(p, 'utf-8').trim();
+-     if (v) return v;
+-   }
+-   }
+-   }
+-   throw new Error('Missing NOTION_API_KEY (or NOTION_TOKEN/NOTION_API_TOKEN)');
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- async function notionReq(method, apiPath, body = null) {
+-   const token = getToken();
+-   const res = await fetch(`${NOTION_API_BASE}${apiPath}`, {
+-     method,
+-     headers: {
+-       Authorization: `Bearer ${token}`,
+-       'Notion-Version': NOTION_VERSION,
+-       'Content-Type': 'application/json',
+-       Accept: 'application/json',
+-     },
+-     },
+-     body: body == null ? undefined : JSON.stringify(body),
+-   });
+-   });
+-   });
+-   });
+-   const txt = await res.text();
+-   const json = txt ? JSON.parse(txt) : {};
+-   if (!res.ok) {
+-     throw new Error(`Notion HTTP ${res.status} ${apiPath}: ${txt}`);
+-   return json;
+- function extractPageId(idOrUrl) {
+-   if (!idOrUrl) return null;
+-   const s = String(idOrUrl).trim();
+-   const dashed = s.match(/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/);
+-   if (dashed) return dashed[0].toLowerCase();
+-   const hex32 = s.match(/[0-9a-fA-F]{32}/);
+-   if (!hex32) return null;
+-   const h = hex32[0].toLowerCase();
+-   return `${h.slice(0,8)}-${h.slice(8,12)}-${h.slice(12,16)}-${h.slice(16,20)}-${h.slice(20)}`;
+- async function listChildDatabases(parentPageId) {
+-   const out = new Map();
+-   let cursor = undefined;
+-   while (true) {
+-     const q = cursor ? `?start_cursor=${encodeURIComponent(cursor)}&page_size=100` : '?page_size=100';
+-     const res = await notionReq('GET', `/v1/blocks/${parentPageId}/children${q}`);
+-     for (const b of (res.results || [])) {
+-       if (b?.type === 'child_database') {
+-         const title = b?.child_database?.title;
+-         if (title) out.set(title, b.id);
+-       }
+-     }
+-     if (!res?.has_more || !res?.next_cursor) break;
+-     cursor = res.next_cursor;
+-   return out;
+- async function createDatabase(parentPageId, title, properties) {
+-   // Notion 2025-09-03: create database endpoint remains /v1/databases for top-level DB object
+-   return notionReq('POST', '/v1/databases', {
+-     parent: { page_id: parentPageId },
+-     title: [{ type: 'text', text: { content: String(title) } }],
+-     properties,
+-     properties,
+- async function getDatabase(databaseId) {
+-   return notionReq('GET', `/v1/databases/${databaseId}`);
+- async function patchDataSource(dataSourceId, propertiesPatch) {
+-   return notionReq('PATCH', `/v1/data_sources/${dataSourceId}`, {
+-     properties: propertiesPatch,
+- function relationSingleProperty(ref) {
+-   return {
+-     relation: {
+-       data_source_id: ref.dataSourceId,
+-       single_property: {},
+-   };
+- async function createPage(databaseId, properties) {
+-   return notionReq('POST', '/v1/pages', {
+-     parent: { database_id: databaseId },
+- async function queryDataSource(dataSourceId, body = {}) {
+-   return notionReq('POST', `/v1/data_sources/${dataSourceId}/query`, body || {});
+- export {
+-   extractPageId,
+-   listChildDatabases,
+-   createDatabase,
+-   getDatabase,
+-   patchDataSource,
+-   relationSingleProperty,
+-   createPage,
+-   queryDataSource,
+- };
+
+### scripts/notion_http.py  [code]
+- #!/usr/bin/env python3
+- from __future__ import annotations
+- import json
+- import os
+- from pathlib import Path
+- from typing import Any
+- from urllib.request import Request, urlopen
+- from urllib.error import HTTPError
+- NOTION_API_BASE = "https://api.notion.com"
+- NOTION_VERSION = "2025-09-03"
+- def _token() -> str:
+-     t = (
+-         os.environ.get("NOTION_API_KEY")
+-         or os.environ.get("NOTION_TOKEN")
+-         or os.environ.get("NOTION_API_TOKEN")
+-         or ""
+-     ).strip()
+-     if t:
+-         return t
+-     p = Path("~/.config/notion/api_key").expanduser()
+-     if p.exists():
+-         v = p.read_text(encoding="utf-8").strip()
+-         if v:
+-             return v
+-     raise RuntimeError("Missing NOTION_API_KEY (or NOTION_TOKEN/NOTION_API_TOKEN)")
+- def http_json(method: str, api_path: str, payload: Any | None = None) -> dict:
+-     p = api_path if api_path.startswith("/") else f"/{api_path}"
+-     if not p.startswith("/v1/"):
+-         p = f"/v1{p}"
+-     url = f"{NOTION_API_BASE}{p}"
+-     data = None
+-     if payload is not None:
+-         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+-     req = Request(
+-         url,
+-         data=data,
+-         method=method.upper(),
+-         headers={
+-             "Authorization": f"Bearer {_token()}",
+-             "Notion-Version": NOTION_VERSION,
+-             "Content-Type": "application/json",
+-             "Accept": "application/json",
+-         },
+-     )
+-     try:
+-         with urlopen(req, timeout=60) as r:
+-             raw = r.read().decode("utf-8", errors="replace")
+-             return json.loads(raw) if raw else {}
+-     except HTTPError as e:
+-         body = e.read().decode("utf-8", errors="replace") if hasattr(e, "read") else ""
+-         raise RuntimeError(f"Notion HTTP {e.code} {api_path}: {body}")
+
+### scripts/notionctl_bridge.js  [code]
++ #!/usr/bin/env node
++ import { execFileSync } from 'node:child_process';
++ import fs from 'node:fs';
++ import os from 'node:os';
++ import path from 'node:path';
++ function expandHome(p) {
++   if (!p) return p;
++   if (p === '~') return os.homedir();
++   if (p.startsWith('~/')) return path.join(os.homedir(), p.slice(2));
++   return p;
++   return p;
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ function readWorkspaceFromConfig() {
++   const cfgPath = expandHome(process.env.OPENCLAW_CONFIG_PATH || '~/.openclaw/openclaw.json');
++   try {
++     if (!fs.existsSync(cfgPath)) return null;
++     const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf-8'));
++     const ws = cfg?.agents?.defaults?.workspace;
++     return ws ? expandHome(String(ws)) : null;
++   } catch {
++     return null;
++   }
++   }
++ function notionctlPath() {
++   const ws = readWorkspaceFromConfig() || path.resolve(process.cwd(), '..', '..', '..');
++   const p = path.join(ws, 'skills', 'notion-api-automation', 'scripts', 'notionctl.mjs');
++   if (!fs.existsSync(p)) throw new Error(`notionctl not found: ${p}`);
++ function runApi(method, apiPath, body = null) {
++   const args = [notionctlPath(), 'api', '--compact', '--method', String(method).toUpperCase(), '--path', String(apiPath)];
++   if (body != null) args.push('--body-json', JSON.stringify(body));
++   const out = execFileSync('node', args, { encoding: 'utf-8' }).trim();
++   const obj = out ? JSON.parse(out) : {};
++   if (!obj.ok) throw new Error(`notionctl api not ok: ${out}`);
++   return obj.result || {};
++ function extractPageId(idOrUrl) {
++   if (!idOrUrl) return null;
++   const s = String(idOrUrl).trim();
++   const dashed = s.match(/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/);
++   if (dashed) return dashed[0].toLowerCase();
++   const hex32 = s.match(/[0-9a-fA-F]{32}/);
++   if (!hex32) return null;
++   const h = hex32[0].toLowerCase();
++   return `${h.slice(0,8)}-${h.slice(8,12)}-${h.slice(12,16)}-${h.slice(16,20)}-${h.slice(20)}`;
++ async function listChildDatabases(parentPageId) {
++   const out = new Map();
++   let cursor = undefined;
++   while (true) {
++     const q = cursor ? `?start_cursor=${encodeURIComponent(cursor)}&page_size=100` : '?page_size=100';
++     const res = runApi('GET', `/v1/blocks/${parentPageId}/children${q}`);
++     for (const b of (res.results || [])) {
++       if (b?.type === 'child_database') {
++         const title = b?.child_database?.title;
++         if (title) out.set(title, b.id);
++       }
++     }
++     if (!res?.has_more || !res?.next_cursor) break;
++     cursor = res.next_cursor;
++   return out;
++ async function createDatabase(parentPageId, title, properties) {
++   return runApi('POST', '/v1/databases', {
++     parent: { page_id: parentPageId },
++     title: [{ type: 'text', text: { content: String(title) } }],
++     properties,
++   });
++ async function getDatabase(databaseId) {
++   return runApi('GET', `/v1/databases/${databaseId}`);
++ async function patchDataSource(dataSourceId, propertiesPatch) {
++   return runApi('PATCH', `/v1/data_sources/${dataSourceId}`, { properties: propertiesPatch });
++ function relationSingleProperty(ref) {
++   return { relation: { data_source_id: ref.dataSourceId, single_property: {} } };
++ async function createPage(databaseId, properties) {
++   return runApi('POST', '/v1/pages', { parent: { database_id: databaseId }, properties });
++ async function queryDataSource(dataSourceId, body = {}) {
++   return runApi('POST', `/v1/data_sources/${dataSourceId}/query`, body || {});
++ export {
++   extractPageId,
++   listChildDatabases,
++   createDatabase,
++   getDatabase,
++   patchDataSource,
++   relationSingleProperty,
++   createPage,
++   queryDataSource,
++ };
+
+### scripts/setup_ltm.js  [code]
+- } from './notion_client.js';
+-     workspaceRoot: path.resolve(process.cwd(), '..', '..', '..'), // /home/altair/clawd
++ import { createRequire } from 'module';
++ const require = createRequire(import.meta.url);
++ const JSON5 = (() => {
++   try {
++   try {
++     return require('json5');
++   } catch {
++   } catch {
++     return null;
++     return null;
++   }
++   }
++ })();
++ } from './notionctl_bridge.js';
++ }
++ }
++ function expandHome(p) {
++   if (!p) return p;
++   if (p === '~') return os.homedir();
++   if (p.startsWith('~/')) return path.join(os.homedir(), p.slice(2));
++   return p;
++ function readOpenClawWorkspaceFromConfig() {
++   const cfgPath = expandHome(process.env.OPENCLAW_CONFIG_PATH || path.join('~', '.openclaw', 'openclaw.json'));
++     if (!fs.existsSync(cfgPath)) return null;
++     const raw = fs.readFileSync(cfgPath, 'utf-8');
++     const cfg = JSON5 ? JSON5.parse(raw) : JSON.parse(raw);
++     const ws = cfg?.agents?.defaults?.workspace;
++     return ws ? expandHome(String(ws)) : null;
++     // If config is malformed/unreadable, fall back to cwd-based resolution.
++   const fallbackWorkspaceRoot = path.resolve(process.cwd(), '..', '..', '..');
++     workspaceRoot: readOpenClawWorkspaceFromConfig() || fallbackWorkspaceRoot,
+
+### scripts/setup_ltm.py  [code]
+- #!/usr/bin/env python3
+- """Interactive initial setup for soul-in-sapphire Notion LTM + emotion/state DBs.
+- Creates (or reuses) 4 databases under a given Notion parent page:
+- - <base>-mem
+- - <base>-events
+- - <base>-emotions
+- - <base>-state
+- Where <base> defaults to the agent name from workspace IDENTITY.md if available.
+- This avoids relying on Notion /v1/search (which can be inconsistent).
+- Instead it discovers child databases directly from the parent page blocks.
+- Requires:
+- - NOTION_API_KEY (or NOTION_TOKEN)
+- - The parent page must be shared with the integration.
+- Usage:
+-   python3 skills/soul-in-sapphire/scripts/setup_ltm.py
+-   python3 skills/soul-in-sapphire/scripts/setup_ltm.py --parent "https://www.notion.so/..." --base "Valentina" --yes
+- """
+- from __future__ import annotations
+- import argparse
+- import json
+- import re
+- import sys
+- from pathlib import Path
+- # Ensure workspace root on sys.path
+- _ROOT = Path(__file__).resolve().parents[3]
+- if str(_ROOT) not in sys.path:
+-     sys.path.insert(0, str(_ROOT))
+- from notion_http import http_json
+- CONFIG_PATH_DEFAULT = str(Path("~/.config/soul-in-sapphire/config.json").expanduser())
+- def _prompt(msg: str, default: str | None = None) -> str:
+-     if default:
+-         msg = f"{msg} [{default}]"
+-     msg += ": "
+-     s = input(msg).strip()
+-     return s or (default or "")
+- def _extract_page_id(s: str) -> str:
+-     s = (s or "").strip()
+-     if not s:
+-         return ""
+-     m = re.search(r"([0-9a-fA-F]{32})", s)
+-     if m:
+-     if m:
+-         raw = m.group(1).lower()
+-         return f"{raw[0:8]}-{raw[8:12]}-{raw[12:16]}-{raw[16:20]}-{raw[20:32]}"
+-     m = re.search(r"([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})", s)
+-         return m.group(1).lower()
+-     return ""
+- def _identity_agent_name() -> str | None:
+-     p = _ROOT / "IDENTITY.md"
+-     if not p.exists():
+-         return None
+-         return None
+-     m = re.search(r"^\s*-\s*\*\*Name:\*\*\s*(.+?)\s*$", p.read_text(encoding="utf-8"), re.M)
+-     if not m:
+-     # strip any parenthetical
+-     name = m.group(1).strip()
+-     name = re.sub(r"\s*\(.*?\)\s*$", "", name).strip()
+-     return name or None
+- def _list_child_databases(parent_page_id: str) -> dict[str, str]:
+-     res = http_json("GET", f"/blocks/{parent_page_id}/children?page_size=100")
+-     out = {}
+-     for b in (res or {}).get("results") or []:
+-         if b.get("type") != "child_database":
+-             continue
+-         title = b.get("child_database", {}).get("title")
+-         dbid = b.get("id")
+-         if title and dbid:
+-             out[title] = dbid
+-     return out
+- def _db_data_source_id(dbid: str) -> str:
+-     db = http_json("GET", f"/databases/{dbid}")
+-     ds_id = (db.get("data_sources") or [{}])[0].get("id")
+-     if not ds_id:
+-         raise SystemExit(f"Database {dbid} missing data_sources[].id")
+-     return ds_id
+- def _create_database(parent_page_id: str, title: str, properties: dict):
+-     payload = {
+-         "parent": {"type": "page_id", "page_id": parent_page_id},
+-         "title": [{"type": "text", "text": {"content": title}}],
+-         "properties": properties,
+-     }
+-     }
+-     }
+-     return http_json("POST", "/databases", payload)
+- def _ensure_schema(ds_id: str, props_patch: dict):
+-     # data_sources generation: patch schema here
+-     http_json("PATCH", f"/data_sources/{ds_id}", {"properties": props_patch})
+- def main():
+-     ap = argparse.ArgumentParser()
+-     ap.add_argument("--parent", default=None, help="Parent Notion page URL or page_id")
+-     ap.add_argument("--base", default=None, help="Base name for DBs (default from IDENTITY.md Name)")
+-     ap.add_argument("--out", default=CONFIG_PATH_DEFAULT, help="Config output path")
+-     ap.add_argument("--yes", action="store_true", help="Non-interactive (requires --parent)")
+-     args = ap.parse_args()
+-     parent = (args.parent or "").strip()
+-     if not parent:
+-         if args.yes:
+-         if args.yes:
+-             raise SystemExit("Missing --parent in --yes mode")
+-         parent = _prompt("Parent page URL or page_id (where to create DBs)")
+-     parent_page_id = _extract_page_id(parent)
+-     if not parent_page_id:
+-         raise SystemExit("Could not parse parent page_id from input. Paste the Notion page URL or the page_id.")
+-     default_base = _identity_agent_name() or "Valentina"
+-     base = (args.base or "").strip()
+-     if not base:
+-             base = default_base
+-         else:
+-             base = _prompt("Base name for emotion/state DBs", default_base)
+-     names = {
+-         "mem": f"{base}-mem",
+-         "events": f"{base}-events",
+-         "emotions": f"{base}-emotions",
+-         "state": f"{base}-state",
+-     if not args.yes:
+-         ans = _prompt(
+-             f"Create/reuse DBs under page {parent_page_id}? ({', '.join(names.values())}) (y/N)",
+-             "N",
+-         )
+-         if ans.lower() not in ("y", "yes"):
+-             raise SystemExit("Cancelled")
+-     existing = _list_child_databases(parent_page_id)
+-     # Create missing DBs with minimal properties
+-     created = {}
+-     def ensure_db(key: str, properties: dict):
+-         title = names[key]
+-         if title in existing:
+-             dbid = existing[title]
+-             created[key] = {"database_id": dbid, "created": False}
+-             return dbid
+-         db = _create_database(parent_page_id, title, properties)
+-         created[key] = {"database_id": db["id"], "created": True, "url": db.get("url")}
+-         return db["id"]
+-     mem_dbid = ensure_db("mem", {"Name": {"title": {}}, "Type": {"select": {"options": []}}, "Tags": {"multi_select": {"options": []}}, "Content": {"rich_text": {}}})
+-     events_dbid = ensure_db(
+-         "events",
+-         {
+-         {
+-         {
+-             "Name": {"title": {}},
+-             "Name": {"title": {}},
+-             "Name": {"title": {}},
+-             "when": {"date": {}},
+-             "when": {"date": {}},
+-             "importance": {"select": {"options": [{"name": str(i)} for i in range(1, 6)]}},
+-             "trigger": {"select": {"options": [{"name": n} for n in ["progress", "boundary", "ambiguity", "external_action", "manual"]]}},
+-             "context": {"rich_text": {}},
+-             "source": {"select": {"options": [{"name": n} for n in ["discord", "cli", "cron", "heartbeat", "other"]]}},
+-             "link": {"url": {}},
+-             "uncertainty": {"number": {}},
+-             "control": {"number": {}},
+-         },
+-         },
+-         },
+-     )
+-     )
+-     )
+-     emotions_dbid = ensure_db(
+-         "emotions",
+-             "axis": {"select": {"options": [{"name": n} for n in [
+-                 "arousal","valence","focus","confidence","stress","curiosity","social","solitude",
+-                 "joy","anger","sadness","fun","pain"
+-             ]]}},
+-             "level": {"number": {}},
+-             "comment": {"rich_text": {}},
+-             "weight": {"number": {}},
+-             "body_signal": {"multi_select": {"options": [{"name": n} for n in ["tension","relief","fatigue","heat","cold"]]}},
+-             "need": {"select": {"options": [{"name": n} for n in ["safety","progress","recognition","autonomy","rest","novelty"]]}},
+-             "coping": {"select": {"options": [{"name": n} for n in ["log","ask","pause","act","defer"]]}},
+-     state_dbid = ensure_db(
+-         "state",
+-             "state_json": {"rich_text": {}},
+-             "reason": {"rich_text": {}},
+-             "source": {"select": {"options": [{"name": n} for n in ["event","cron","heartbeat","manual"]]}},
+-             "mood_label": {"select": {"options": [{"name": n} for n in ["clear","wired","dull","tense","playful","guarded","tender"]]}},
+-             "intent": {"select": {"options": [{"name": n} for n in ["build","fix","organize","explore","rest","socialize","reflect"]]}},
+-             "need_stack": {"select": {"options": [{"name": n} for n in ["safety","stability","belonging","esteem","growth"]]}},
+-             "need_level": {"number": {}},
+-             "avoid": {"multi_select": {"options": [{"name": n} for n in ["risk","noise","long_tasks","external_actions","ambiguity"]]}},
+-     # Resolve data_source_ids
+-     mem_ds = _db_data_source_id(mem_dbid)
+-     events_ds = _db_data_source_id(events_dbid)
+-     emotions_ds = _db_data_source_id(emotions_dbid)
+-     state_ds = _db_data_source_id(state_dbid)
+-     # Patch relations on data_sources (single_property)
+-     rel = lambda dbid, dsid: {"relation": {"database_id": dbid, "data_source_id": dsid, "type": "single_property", "single_property": {}}}
+-     _ensure_schema(events_ds, {
+-         "emotions": rel(emotions_dbid, emotions_ds)["relation"],
+-         "state": rel(state_dbid, state_ds)["relation"],
+-     })
+-     })
+-     })
+-     _ensure_schema(emotions_ds, {
+-         "event": rel(events_dbid, events_ds)["relation"],
+-         "event": rel(events_dbid, events_ds)["relation"],
+-     _ensure_schema(state_ds, {
+-     cfg = {
+-         "base": base,
+-         "parent_page_id": parent_page_id,
+-         "mem": {"database_id": mem_dbid, "data_source_id": mem_ds},
+-         "events": {"database_id": events_dbid, "data_source_id": events_ds},
+-         "emotions": {"database_id": emotions_dbid, "data_source_id": emotions_ds},
+-         "state": {"database_id": state_dbid, "data_source_id": state_ds},
+-         # Back-compat flat keys used by scripts
+-         "valentina_events_database_id": events_dbid,
+-         "valentina_emotions_database_id": emotions_dbid,
+-         "valentina_state_database_id": state_dbid,
+-         "valentina_state_data_source_id": state_ds,
+-     outp = Path(args.out).expanduser()
+-     outp.parent.mkdir(parents=True, exist_ok=True)
+-     outp.write_text(json.dumps(cfg, ensure_ascii=False, indent=2) + "\\n", encoding="utf-8")
+-     print(json.dumps({"ok": True, "out": str(outp), "created": created, "config": cfg}, ensure_ascii=False, indent=2))
+- if __name__ == "__main__":
+-     main()
+
+### scripts/state_recall.js  [code]
++ #!/usr/bin/env node
++ import fs from 'fs';
++ import path from 'path';
++ import { loadConfig } from './emostate_config.js';
++ import { queryRecent, textOf } from './emostate_notion.js';
++ function nowIsoLocal() { return new Date().toISOString(); }
++ function parseStateJson(s) { try { return s ? JSON.parse(s) : {}; } catch { return { _raw: s }; } }
++ function normalizeStatePage(page) {
++   const p = page?.properties || {};
++   return {
++     page_id: page?.id,
++     retrieved_at: nowIsoLocal(),
++     when: textOf(p.when),
++     mood_label: textOf(p.mood_label),
++     intent: textOf(p.intent),
++     need_stack: textOf(p.need_stack),
++     need_level: textOf(p.need_level),
++     avoid: textOf(p.avoid),
++     reason: textOf(p.reason),
++     state_json: parseStateJson(textOf(p.state_json)),
++   };
++ }
++ }
++ }
++ function parseArgs(argv) {
++   const out = { limit: 1, write: '' };
++   for (let i = 2; i < argv.length; i++) {
++     const a = argv[i];
++     if (a === '--limit') out.limit = Number(argv[++i] || 1);
++     else if (a === '--write') out.write = argv[++i] || '';
++   }
++   }
++   return out;
++ function main() {
++   const args = parseArgs(process.argv);
++   const cfg = loadConfig();
++   const dsId = cfg?.state?.data_source_id || cfg?.valentina_state_data_source_id;
++   if (!dsId) throw new Error('Missing state.data_source_id in config.json');
++   const pages = queryRecent(dsId, Math.max(1, args.limit));
++   const out = pages.map(normalizeStatePage);
++   if (args.write) {
++     fs.mkdirSync(path.dirname(args.write), { recursive: true });
++     const payload = out[0] || { retrieved_at: nowIsoLocal(), empty: true };
++     fs.writeFileSync(args.write, JSON.stringify(payload, null, 2) + '\n', 'utf-8');
++   console.log(JSON.stringify(out, null, 2));
++ try { main(); } catch (e) { console.error(String(e?.stack || e)); process.exit(1); }
+
+### scripts/subagent_spawn_plan.js  [code]
++ #!/usr/bin/env node
++ import fs from 'fs';
++ import path from 'path';
++ const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
++ const STATE_DIR = path.join(ROOT, 'state');
++ const CFG_PATH = path.join(STATE_DIR, 'subagent-models.json');
++ const LOG_PATH = path.join(STATE_DIR, 'subagent-spawn-log.jsonl');
++ function loadCfg() {
++   if (!fs.existsSync(CFG_PATH)) throw new Error(`Missing config: ${CFG_PATH}`);
++   return JSON.parse(fs.readFileSync(CFG_PATH, 'utf-8'));
++ }
++ }
++ }
++ function parseArgs(argv) {
++   const out = { profile: '', task: '', label: '' };
++   for (let i = 2; i < argv.length; i++) {
++     const a = argv[i];
++     if (a === '--profile') out.profile = argv[++i] || '';
++     else if (a === '--task') out.task = argv[++i] || '';
++     else if (a === '--label') out.label = argv[++i] || '';
++   }
++   return out;
++ function main() {
++   const args = parseArgs(process.argv);
++   if (!args.profile || !args.task) throw new Error('Usage: --profile <name> --task <text> [--label <label>]');
++   const cfg = loadCfg();
++   const p = (cfg.profiles || {})[args.profile];
++   if (!p) throw new Error(`Unknown profile: ${args.profile}`);
++   const d = cfg.defaults || {};
++   const runTimeout = Number(d.runTimeoutSeconds || 180);
++   const payload = {
++     label: args.label || `${args.profile}-${Math.floor(Date.now() / 1000)}`,
++     task: args.task,
++     model: p.model,
++     thinking: p.thinking,
++     runTimeoutSeconds: runTimeout,
++     timeoutSeconds: runTimeout,
++     cleanup: d.cleanup || 'keep',
++   };
++   fs.mkdirSync(STATE_DIR, { recursive: true });
++   fs.appendFileSync(LOG_PATH, JSON.stringify({ ts: Math.floor(Date.now() / 1000), profile: args.profile, payload }, null, 0) + '\n', 'utf-8');
++   console.log(JSON.stringify(payload, null, 2));
++ try { main(); } catch (e) { console.error(String(e?.stack || e)); process.exit(1); }
+
+### scripts/subagent_spawn_plan.py  [code]
+- #!/usr/bin/env python3
+- from __future__ import annotations
+- import argparse
+- import json
+- import time
+- from pathlib import Path
+- ROOT = Path(__file__).resolve().parents[1]
+- STATE_DIR = ROOT / "state"
+- CFG_PATH = STATE_DIR / "subagent-models.json"
+- LOG_PATH = STATE_DIR / "subagent-spawn-log.jsonl"
+- def load_cfg() -> dict:
+-     if not CFG_PATH.exists():
+-         raise SystemExit(f"Missing config: {CFG_PATH}")
+-     return json.loads(CFG_PATH.read_text(encoding="utf-8"))
+- def main() -> None:
+-     ap = argparse.ArgumentParser(description="Build sessions_spawn payload from skill-local JSON presets")
+-     ap.add_argument("--profile", required=True, help="profile key in state/subagent-models.json (e.g. heartbeat, journal)")
+-     ap.add_argument("--task", required=True, help="sub-agent task text")
+-     ap.add_argument("--label", default="", help="optional run label")
+-     args = ap.parse_args()
+-     cfg = load_cfg()
+-     profiles = cfg.get("profiles") or {}
+-     p = profiles.get(args.profile)
+-     if not p:
+-         raise SystemExit(f"Unknown profile: {args.profile}")
+-     defaults = cfg.get("defaults") or {}
+-     payload = {
+-         "label": args.label or f"{args.profile}-{int(time.time())}",
+-         "task": args.task,
+-         "model": p.get("model"),
+-         "thinking": p.get("thinking"),
+-         "runTimeoutSeconds": int(defaults.get("runTimeoutSeconds", 180)),
+-         "timeoutSeconds": int(defaults.get("runTimeoutSeconds", 180)),
+-         "cleanup": defaults.get("cleanup", "keep"),
+-     }
+-     STATE_DIR.mkdir(parents=True, exist_ok=True)
+-     with LOG_PATH.open("a", encoding="utf-8") as f:
+-         f.write(json.dumps({"ts": int(time.time()), "profile": args.profile, "payload": payload}, ensure_ascii=False) + "\n")
+-     print(json.dumps(payload, ensure_ascii=False, indent=2))
+- if __name__ == "__main__":
+-     main()

@@ -1,0 +1,4924 @@
+liuboacean/website-skeleton  3.0.4 -> 3.0.5
+change_type: instructions+docs+code   changelog: Add clawscan-note for ClawScan context: AI code generation, EdgeOne deployment, SSE streaming are by design
+
+### CHANGELOG.md  [docs]
+- # Changelog
+- > 语义化版本（SemVer）：<https://semver.org/>
+- > 所有包在 Phase 4 期间 lockstep 发布补丁版本
+- ## 3.0.0 (2026-05-06)
+- ### 🎉 Phase 4A — 多租户隔离
+- #### 重大变更
+- - **JWT 扩展**：新 token 包含 `tenant`/`role`/`jti` 字段，旧 token 自动从 `users` 表反查
+- - **数据库迁移**：6 张核心表增加 `tenant_id` 列 + 复合索引
+- - **所有 SQL 必须包含 `{tenant}` 占位符**：通过 `db.js` 接口强制执行
+- - **权限分层**：从单一 `admin` 拆分为 `superadmin`/`tenant_admin`/`user`
+- #### 新增
+- - 多租户中间件（Cloud: `tenant-context.js`, Edge: `rbac.js`）
+- - 数据库事务支持（`db.js` → `withTransaction()`）
+- - 共享配额模块（`quota.js` → 软/硬限制 + fail-open）
+- - 审计日志（`audit.js` → 90 天 KV 保留）
+- - 租户管理 API（CRUD + 邀请 + 启用/停用）
+- - 14 条集成测试（功能 6 + 安全 8）
+- #### 修复
+- - 移除 `@edge-runtime/primitives` 导入（EdgeOne V8 不兼容）
+- - 支付回调改为 KV 反查（修复 `{tenant}` 鸡生蛋问题）
+- #### 依赖
+- - `@website-skeleton/shared` → 3.0.0
+- - `@website-skeleton/payment` → 1.0.0
+- - `@website-skeleton/admin` → 1.0.0
+- ## 2.2.0 (2026-04-26)
+- ### Phase 3 — 工程化完善
+- - RS256 双轨 JWT 迁移
+- - 订单状态机完整实现
+- - SEO / i18n / Analytics 模块
+- - 多租户 KV 前缀铺垫
+- - 5 篇 reference 文档补充
+- ## 2.1.0 — Phase 2 — 核心功能增强
+- ## 2.0.0 — Phase 1 — 基础骨架搭建
+- ## 1.0.0 — 初始版本
+
+### CONTRIBUTING.md  [docs]
+- # 贡献指南
+- 感谢你对建站骨架 (EdgeOne Pages) 的关注！
+- ## 快速开始
+- ```bash
+- git clone https://github.com/liuboacean/website-skeleton-skill.git
+- cd website-skeleton-skill
+- npm install
+- npm run build
+- ```
+- ## 项目结构
+- | 目录 | 用途 |
+- |------|------|
+- | `sharing/` | 跨运行时共享模块（类型、工具函数、校验器） |
+- | `edge-functions/` | Edge Functions（V8 + KV） |
+- | `cloud-functions/` | Cloud Functions（Node.js + D1） |
+- | `client/` | 前端 SPA |
+- | `db/migrations/` | D1 数据库迁移脚本 |
+- | `references/` | 能力参考文档 |
+- | `templates/` | 场景预设模板 |
+- ## 开发工作流
+- 1. **Fork 并 Clone**
+- 2. **创建分支**：`git checkout -b feature/my-feature`
+- 3. **编写代码**：遵循现有代码风格
+- 4. **语法检查**：`node --check <your-file>.js`
+- 5. **构建验证**：`npm run build`
+- 6. **提交**：使用语义化提交信息（如 `feat:`, `fix:`, `docs:`）
+- 7. **发起 PR**：填写 PR 模板
+- ## 代码规范
+- - 所有 SQL 必须包含 `{tenant}` 占位符
+- - Edge Functions 与 Cloud Functions 各司其职（见 `references/edge-functions.md`、`references/cloud-functions.md`）
+- - KV 仅 Edge Functions 可直接访问
+- - 敏感操作（支付、bcrypt）必须在 Cloud Functions 中
+- - 使用 `sharing/validators.js` 进行参数校验
+- - 使用 `sharing/response.js` 构建统一 API 响应
+- ## 安全
+- - 永远不要在客户端计算价格
+- - 支付回调不依赖 JWT（绕过认证中间件）
+- - JWT 不放在 localStorage（HttpOnly Cookie）
+- - 发现安全漏洞请私下报告，不要提交公开 Issue
+
+### MIGRATION.md  [docs]
+- # Migration Guide
+- ## Phase 3 → Phase 4A
+- ### 概述
+- Phase 4A 引入了多租户隔离，所有 Phase 3 的存量数据需要迁移。本指南涵盖数据库、JWT token、KV key 三方面的迁移。
+- ### 1. 数据库迁移
+- ```bash
+- ```bash
+- # 前置条件：MySQL 8.0.12+
+- # 小表迁移（ALGORITHM=INSTANT）
+- mysql -u root -p < db/migrations/003_tenant_isolation.sql
+- # 大表迁移（使用 gh-ost）
+- gh-ost --alter="ADD COLUMN tenant_id VARCHAR(64) NOT NULL DEFAULT 'default'" \
+-        --table=orders \
+-        --execute
+- # 迁移后校验
+- mysql -u root -p -e "
+-   SELECT COUNT(*) AS total_rows,
+-          COUNT(DISTINCT tenant_id) AS tenant_count
+-   FROM orders;
+- "
+- ```
+- ```
+- ```
+- ```
+- **回滚：**
+- mysql -u root -p < db/migrations/003_rollback.sql
+- ### 2. JWT Token 迁移
+- Phase 4A 的 JWT 向下兼容策略：
+- - **新 token**（Phase 4A 签发）：payload 含 `tenant`/`role`/`jti` 字段，RS256 签名
+- - **旧 token**（Phase 3 签发）：自动从 `users` 表按 `sub` 反查真实 `tenant_id`
+- **无需重新登录。** 用户下次登录时将自动获得含 `tenant` 字段的新 token。
+- ### 3. KV Key 迁移
+- Phase 3 → Phase 4A 的 KV key 前缀变化：
+- | Phase 3 | Phase 4A | 说明 |
+- |---------|---------|------|
+- | `session:xxx` | `{tenant}:session:xxx` | 新 key 自动带前缀 |
+- | `rt:{uid}:meta` | `{tenant}:rt:{uid}:meta` | 旧 session 会自然过期 |
+- | `cart:{uid}` | `{tenant}:cart:{uid}` | 迁移不涉及 KV 数据复制 |
+- Phase 3 旧 KV key 无 tenant 前缀的会自动过期（TTL 到期），无需手动迁移。
+- ### 4. API 变更
+- | API | Phase 3 | Phase 4A |
+- |-----|---------|---------|
+- | 订单创建 | 无租户概念 | 自动从 JWT 提取 tenant |
+- | 管理员接口 | 仅 role=admin | role=superadmin/tenant_admin |
+- | 支付回调 | `out_trade_no.split('_')[0]` | 从 KV `order_tenant:{id}` 反查 |
+- ### 5. 权限表
+- | 操作 | 旧角色 | 新角色 |
+- |------|--------|--------|
+- | 管理后台 | admin | superadmin |
+- | 租户内管理 | admin | tenant_admin |
+- | 普通操作 | user | user |
+- ### 6. 零停机部署步骤
+- 1. 部署新代码（兼容旧 token）
+- 2. 执行数据库迁移（003_tenant_isolation.sql，ALGORITHM=INSTANT）
+- 3. 用户自动获取新 token（无需重新登录）
+- 4. 验证旧 token 正常运行（resolveLegacyTenant）
+- 5. 30 天后可移除 HS256 兼容代码（JWT Phase 3 过渡期结束）
+
+### README.md  [docs]
+- <p align="center">
+-   <img src="https://img.shields.io/badge/version-v3.0-blue?style=flat-square" alt="version">
+-   <img src="https://img.shields.io/badge/EdgeOne_Pages-ready-brightgreen?style=flat-square" alt="EdgeOne Pages">
+-   <img src="https://img.shields.io/badge/license-MIT_No_Attribution-green?style=flat-square" alt="license">
+-   <img src="https://img.shields.io/badge/status-stable-brightgreen?style=flat-square" alt="status">
+-   <img src="https://img.shields.io/badge/Phase_4_多租户_SaaS-%E2%9C%85-success?style=flat-square" alt="Phase 4">
+-   <a href="https://website-skeleton-demo-8mv8fitk.edgeone.cool?eo_token=c822b8b7682d9c01709793bea5559f13&eo_time=1778655201"><img src="https://img.shields.io/badge/demo-live-purple?style=flat-square" alt="Demo"></a>
+- </p>
+- # Website Skeleton Skill
+- > **One sentence to build a full-stack website.** Generate auth, payments, AI chat, and admin panel — deploy to EdgeOne Pages.
+- [English](#english) · [中文](#chinese) · [Demo](https://website-skeleton-demo-8mv8fitk.edgeone.cool?eo_token=c822b8b7682d9c01709793bea5559f13&eo_time=1778655201)
+- ---
+- ---
+- ---
+- ---
+- ---
+- ---
+- ---
+- ---
+- ---
+- ---
+- ---
+- ---
+- ## English
+- **website-skeleton-skill** is an EdgeOne Pages skill that scaffolds full-stack websites from a single prompt. It combines 5 reusable modules (Auth, Cart, Payment, AI Chat, Admin) across 3 scene templates (E-commerce, AI Assistant, SaaS Admin).
+- ### Quick Start
+- ```bash
+- ```bash
+- npm install -g edgeone
+- npm install -g edgeone
+- edgeone login --site china
+- edgeone login --site china
+- edgeone pages deploy -n my-site
+- edgeone pages deploy -n my-site
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ### Features
+- ### Demo
+- https://website-skeleton-demo-8mv8fitk.edgeone.cool?eo_token=c822b8b7682d9c01709793bea5559f13&eo_time=1778655201
+- ## Chinese
+- # website-skeleton-skill
+- > 一句话描述需求 → AI 生成完整前后端网站 → 自动部署到 EdgeOne Pages 全球 CDN。
+- **版本：** v3.0 · **Phase 4A（多租户隔离）+ Phase 4B（npm 包化）已全部完成**
+- ## 目录
+- - [一、快速开始](#一快速开始)
+- - [二、架构](#二架构)
+- - [三、功能特性](#三功能特性)
+- - [四、Phase 4 变更概要](#四phase-4-变更概要)
+- - [五、目录结构](#五目录结构)
+- - [六、安全设计](#六安全设计)
+- - [七、评审历程](#七评审历程)
+- - [八、版本历史](#八版本历史)
+- - [九、License](#九license)
+- ## 一、快速开始
+- # 1. 安装 EdgeOne CLI
+- # 2. 登录
+- # 3. 部署（交互式引导）
+- # 4. 按提示选择场景模板、填写配置、执行数据库迁移
+- ### 场景模板
+- | 模板 | 适用场景 | 包含模块 | 快速命令 |
+- |------|---------|---------|---------|
+- | **🛒 电商** | 独立电商、品牌官网 | Auth + Cart + Payment (微信/支付宝) + Orders + Admin | `帮我搭一个电商网站` |
+- | **🤖 AI 助手** | AI 客服、AI 工具站 | Auth + AI Chat (SSE流式) + Admin | `帮我做一个AI客服站` |
+- | **📊 SaaS 管理后台** | B2B SaaS、管理后台 | Auth + RBAC + Stats + Subscription | `帮我建一个管理后台` |
+- ## 二、架构
+- ### 双运行时设计
+- ┌──────────────────────────────────────────────────────────────────┐
+- ┌──────────────────────────────────────────────────────────────────┐
+- ┌──────────────────────────────────────────────────────────────────┐
+- │  Platform Middleware                                              │
+- │  CORS · CSP · 支付回调 IP 白名单（直接 return，不进 Edge）         │
+- └──────────────────────────────────────────────────────────────────┘
+- └──────────────────────────────────────────────────────────────────┘
+- └──────────────────────────────────────────────────────────────────┘
+-                               ↓
+- │  Edge Functions (V8 + KV)                                        │
+- │  JWT 校验 · KV Session · 限流 · 商品列表 · 幂等锁 · 租户路由     │
+- │  延迟敏感、无密钥、轻量操作                                       │
+-                               ↓（写操作/密钥操作）
+- │  Cloud Functions (Node.js + D1)                               │
+- │  bcrypt · 支付创建/回调 · 订单状态机 · Admin CRUD · AI SSE 流     │
+- │  密钥操作、复杂事务、SELECT FOR UPDATE                            │
+- ### 核心设计决策
+- | 决策 | 选择 | 理由 |
+- |------|------|------|
+- |------|------|------|
+- |------|------|------|
+- | 数据库 | **D1 (EdgeOne Pages 原生)** | EdgeOne Pages 原生支持，`SELECT FOR UPDATE` 事务需求 |
+- | 认证 | **JWT RS256 + 30天 HS256 兼容窗口** | 安全性（RS256）与迁移平滑兼顾 |
+- | 支付幂等 | **Edge `putIfNotExists` 24h TTL** | 微信重试窗口 72h，Edge 原子操作保证 |
+- | 会话 | **KV Session** | 无状态、低延迟，适合 Edge 运行时 |
+- | 前端 | **SPA (Vanilla JS) + History API** | 无需构建工具链，Skill 生成零依赖 |
+- ## 三、功能特性
+- ### 已实现功能
+- ## 四、Phase 4 变更概要
+- ### Phase 4A：多租户隔离（5 周）
+- | 周次 | 内容 | 关键文件 |
+- |------|------|----------|
+- | W1 | JWT 扩展 tenant/role + Cloud 中间件 + Edge RBAC + db.js {tenant} 强制 + 事务 | `jwt-helper.js`, `tenant-context.js`, `rbac.js`, `db.js` |
+- | W2 | KV 动态前缀 + 共享配额模块（软/硬限制 + fail-open） | `kv-keys.js`, `quota.js` |
+- | W3 | D1 迁移（6 表 + 复合索引）+ 权限分层 + 审计日志 + 回滚脚本 | `003_tenant_isolation.sql`, `003_rollback.sql` |
+- | W4 | 租户管理 API + 支付回调 KV 反查 | `admin/tenants.js`, `pay/wx-notify.js` |
+- | W5 | 集成测试（14 条）+ KV 热 key 分散 | 测试用例, `kv-keys.js` |
+- ### Phase 4B：npm 包化 + 增强（4 周）
+- ### 5 项 P0 前置修复
+- | P0 | 内容 | 来源 |
+- |----|------|------|
+- | P0-1 | 移除 `@edge-runtime/primitives` 导入，改用全局 `crypto.subtle` | 平台专家 |
+- | P0-2 | 支付回调租户识别从 4B 提前到 4A W4（KV 反查） | 架构 + 安全专家 |
+- | P0-3 | db.js 新增 `withTransaction()` 事务接口 | 平台专家 |
+- | P0-4 | Edge Functions RBAC 中间件 `rbac.js` | 架构专家 |
+- | P0-5 | 旧 token 从 users 表反查真实 tenant（渐进路径，无需轮换 SECRET） | 安全专家 + IMA 第三轮 |
+- ## 五、目录结构
+- website-skeleton-skill/
+- ├── SKILL.md                    # Core Skill 指令文件
+- ├── README.md                   # 本文件
+- ├── LICENSE                     # MIT No Attribution
+- ├── CONTRIBUTING.md             # 贡献指南
+- ├── CHANGELOG.md                # 版本变更日志
+- ├── MIGRATION.md                # 升级迁移指南
+- │
+- │
+- │
+- │
+- │
+- │
+- │
+- │
+- │
+- │
+- ├── templates/                  # 场景预设模板
+- │   ├── e-commerce.json         # 电商场景
+- │   ├── ai-assistant.json       # AI 助手场景
+- │   └── saas-admin.json         # SaaS 管理后台场景
+- ├── sharing/                    # 跨运行时共享（构建时同步到 Edge + Cloud）
+- │   ├── jwt-helper.js           # JWT 签发/验证（RS256 + HS256 兼容）
+- │   ├── kv-keys.js              # KV key 命名（FNV-1a 64 分区）
+- │   ├── constants.js            # 角色/状态/权限常量
+- │   ├── validators.js           # 输入校验
+- │   └── i18n/                   # 国际化（中/英）
+- ├── edge-functions/             # Edge Functions（V8 + KV）
+- │   ├── api/                    # API 端点
+- │   │   ├── auth/              # 登录/注册/me
+- │   │   ├── products/          # 商品列表/详情
+- │   │   ├── cart/              # 购物车
+- │   │   ├── orders/            # 订单读取
+- │   │   └── ai/                # AI 历史
+- │   ├── middleware/             # 中间件
+- │   │   ├── rbac.js            # ✅ Phase 4 新增：RBAC 权限检查
+- │   │   └── quota.js           # ✅ Phase 4 新增：KV 配额限制
+- │   └── pages/                  # SPA 入口
+- ├── cloud-functions/            # Cloud Functions（Node.js + D1）
+- │   ├── api/
+- │   │   ├── auth/              # 注册（bcrypt）
+- │   │   ├── pay/               # 支付创建/回调
+- │   │   ├── admin/             # 管理后台 CRUD
+- │   │   ├── order/             # 订单创建/取消/状态机
+- │   │   └── ai/                # AI SSE 流
+- │   ├── middleware/
+- │   │   └── tenant-context.js  # ✅ Phase 4 新增：Cloud 统一租户解析
+- │   ├── utils/
+- │   │   └── db.js              # ✅ Phase 4 增强：{tenant} 强制 + 事务 + 不导出 db
+- │   └── cron/                   # 定时任务（订单超时取消）
+- ├── db/                         # 数据库迁移
+- │   ├── migrations/
+- │   │   ├── 001_init.sql        # 建表脚本
+- │   │   ├── 002_order_logs.sql  # 订单审计表
+- │   │   ├── 003_tenant_isolation.sql  # ✅ Phase 4 新增：租户隔离
+- │   │   └── 003_rollback.sql    # ✅ Phase 4 新增：回滚脚本
+- │   └── seed.sql                # 测试数据
+- ├── client/                     # 前端 SPA
+- │   ├── src/
+- │   │   ├── app.js             # 启动 + History API 路由
+- │   │   ├── utils/
+- │   │   │   ├── auth.js        # JWT 客户端
+- │   │   │   ├── analytics.js   # 埋点 SDK（含 opt-out）
+- │   │   │   ├── seo.js         # JSON-LD 生成
+- │   │   │   └── event-bus.js   # 事件总线
+- │   │   └── services/
+- │   │       └── ai.js          # AI SSE 客户端
+- │   │
+- │   └── index.html             # SPA 入口
+- ├── packages/                   # ✅ Phase 4 新增：npm 包源码
+- │   ├── payment/               # @website-skeleton/payment
+- │   ├── admin/                 # @website-skeleton/admin
+- │   └── shared/                # @website-skeleton/shared
+- ├── scripts/
+- │   └── sync-sharing.js        # ✅ Phase 4 增强：构建同步（哈希校验 + CI 阻断）
+- ├── references/                 # 按需加载的参考文档
+- │   ├── auth-module.md
+- │   ├── payment-module.md
+- │   ├── ai-chat-module.md
+- │   ├── admin-module.md
+- │   ├── order-state-machine.md
+- │   ├── edge-functions.md
+- │   ├── cloud-functions.md
+- │   ├── middleware.md
+- │   ├── kv-storage.md
+- │   └── deployment.md
+- └── .github/                    # CI
+-     ├── workflows/
+-     │   └── validate.yml        # SKILL.md 校验 + 链接检查
+-     └── ISSUE_TEMPLATE/
+-         ├── bug_report.md
+-         └── feature_request.md
+- ## 六、安全设计
+- ### 安全措施一览
+- | 类别 | 措施 | 实现 |
+- | **支付** | 幂等原子锁 | Edge `putIfNotExists` 24h TTL（小于微信 72h 重试窗口） |
+- | **支付** | 回调 IP 白名单 | Platform Middleware 直接 return |
+- | **支付** | KV 反查租户 | `order_tenant:{orderId}`，不走 SQL（零绕过） |
+- | **并发** | RT 乐观锁 | KV version 校验，并发刷新仅第一个成功 |
+- | **订单** | 防超卖 | `SELECT FOR UPDATE` + 乐观锁 + D1 CHECK 约束（三重） |
+- | **金额** | 服务端唯一来源 | D1 价格字段，前端不可篡改 |
+- | **密码** | bcrypt | cost=12，暴力破解成本极高 |
+- | **Session** | JWT 短期+轮换 | Access Token 15min + Refresh Token 7d |
+- | **Cookie** | 安全标记 | HttpOnly + Secure + SameSite=Strict |
+- | **数据库** | 租户隔离 | `DELETE FROM orders WHERE tenant_id = {tenant}`（强制占位符）|
+- | **数据库** | 防绕过 | db 对象不导出，所有 SQL 走 `query()` / `execute()` 函数 |
+- | **API** | 租户配额 | KV 滑动窗口限流（单租户 API/存储/调用上限） |
+- | **API** | 角色鉴权 | Edge RBAC 中间件 + Cloud 租户中间件 |
+- | **AI** | 会话限流 | 未登录 10次/分，登录 60次/分 |
+- | **AI** | 所有权校验 | KV session 绑定 userId，防止跨用户读取 |
+- | **追踪** | 隐私 opt-out | localStorage + DNT 头支持 |
+- ## 七、评审历程
+- 本 Skill 经历了 **8 轮评审**：
+- | 轮次 | 评审方 | 评分 | 核心发现 |
+- |------|--------|------|---------|
+- | 1-4 | WorkBuddy + QClaw + Hermes + IMA（两轮） | — | 方案可行，8 项修正 |
+- | 5 | 🛡️ 独立安全专家 | **7.0/10** 有条件通过 | S-01~S-08 |
+- | 6 | 🏗️ 独立架构专家 | **7.2/10** 有条件通过 | C1~C3, D1~D5 |
+- | 7 | ⚙️ 独立平台专家 | **7.5/10** 有条件通过 | B-1~B-4, R-1~R-2 |
+- | 8 | IMA 第三轮 | 有条件通过 | C1 鸡生蛋修复 + I1 渐进路径 |
+- **最终结论：** 5 项 P0 前置修复全部完成，4A 可启动。Phase 4 已全部实施完毕，进入维护阶段。
+- ## 八、版本历史
+- | 版本 | 日期 | 内容 |
+- | v1.0 | 2026-04-20 | Phase 1：基础骨架 + Mock Demo |
+- | v2.0 | 2026-04-23 | Phase 2：JWT 双轨 · 订单状态机 · 支付 |
+- | v2.2 | 2026-04-26 | Phase 3：RS256 迁移 · SEO · i18n · Analytics · 多租户铺垫 |
+- | **v3.0** | **2026-05-06** | **Phase 4A：多租户隔离 + Phase 4B：npm 包化 + 增强** |
+- ## 九、License
+- MIT No Attribution — 详见 [LICENSE](./LICENSE)。
+- *文档更新于 2026-05-06 · 如需提交 Issue 或 Feature Request，请使用 [GitHub Issues](https://github.com/liuboacean/website-skeleton-skill/issues)*
+
+### SKILL.md  [instructions]
+- version: "3.0.1"
++ version: "3.0"
+
+### db/migrations/002_order_logs.sql  [code]
+- -- 订单状态机审计日志表
+- -- Phase 3 P2-2 实现
+- -- 执行时机：订单状态机上线前
+- -- 1. 状态变更审计日志表
+- CREATE TABLE IF NOT EXISTS order_status_logs (
+-   id           BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+-   order_id     BIGINT UNSIGNED NOT NULL COMMENT '订单 ID',
+-   from_status  VARCHAR(32) DEFAULT NULL COMMENT '变更前状态',
+-   to_status    VARCHAR(32) NOT NULL COMMENT '变更后状态',
+-   operator     BIGINT UNSIGNED DEFAULT NULL COMMENT '操作者 ID（NULL=系统）',
+-   reason       VARCHAR(255) DEFAULT NULL COMMENT '变更原因',
+-   created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+-   FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE,
+-   INDEX idx_logs_order (order_id),
+-   INDEX idx_logs_created (created_at)
+- ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='订单状态变更审计日志';
+- -- 2. orders 表新增 version 字段（如果还没有）
+- -- 注意：MySQL 不支持 IF NOT EXISTS ADD COLUMN，需要先检查
+- -- ALTER TABLE orders ADD COLUMN IF NOT EXISTS version INT UNSIGNED DEFAULT 1;
+- -- 建议执行：
+- ALTER TABLE orders
+- ALTER TABLE orders
+-   ADD COLUMN IF NOT EXISTS version INT UNSIGNED DEFAULT 1 COMMENT '乐观锁版本号';
+- -- 3. orders 表新增物流字段（发货时填写）
+-   ADD COLUMN IF NOT EXISTS express_company VARCHAR(64) DEFAULT NULL COMMENT '快递公司',
+-   ADD COLUMN IF NOT EXISTS express_no VARCHAR(64) DEFAULT NULL COMMENT '运单号';
+- -- 4. 给 version 加索引（高并发乐观锁）
+- ALTER TABLE orders ADD INDEX idx_orders_version (version);
+
+### db/migrations/003_rollback.sql  [code]
+- -- ============================================================
+- -- ============================================================
+- -- ============================================================
+- -- Phase 4A W3: 多租户隔离 — 回滚脚本（独立可执行文件）
+- -- 注意：
+- -- - MySQL 8.0.12+：ALGORITHM=INSTANT 零停机回滚
+- -- - MySQL 5.7：DROP COLUMN 对大表会重建（X-lock），必须使用 gh-ost
+- ALTER TABLE orders DROP COLUMN tenant_id, ALGORITHM=INSTANT, LOCK=NONE;
+- ALTER TABLE products DROP COLUMN tenant_id, ALGORITHM=INSTANT, LOCK=NONE;
+- ALTER TABLE users DROP COLUMN tenant_id, ALGORITHM=INSTANT, LOCK=NONE;
+- ALTER TABLE order_items DROP COLUMN tenant_id, ALGORITHM=INSTANT, LOCK=NONE;
+- ALTER TABLE order_status_logs DROP COLUMN tenant_id, ALGORITHM=INSTANT, LOCK=NONE;
+- ALTER TABLE carts DROP COLUMN tenant_id, ALGORITHM=INSTANT, LOCK=NONE;
+- -- 注意：索引会在 DROP COLUMN 时自动删除
+
+### db/migrations/003_tenant_isolation.sql  [code]
+- -- ============================================================
+- -- ============================================================
+- -- ============================================================
+- -- ============================================================
+- -- ============================================================
+- -- Phase 4A W3: 多租户隔离 — 数据库迁移
+- -- 迁移前必须执行 SQL 查询审计，为复合查询重建索引
+- -- 复合查询模式：
+- --   WHERE tenant_id = ? AND user_id = ?  → idx_orders_tenant_user(tenant_id, user_id)
+- --   WHERE tenant_id = ? AND status = ?   → idx_orders_tenant_status(tenant_id, status)
+- --   WHERE tenant_id = ? AND created_at   → idx_orders_tenant_created(tenant_id, created_at)
+- --
+- --
+- -- 最低 MySQL 版本：8.0.12+（支持 ALGORITHM=INSTANT 零停机 DDL）
+- -- MySQL 5.7 用户：必须使用 gh-ost 或 pt-online-schema-change
+- -- ---------------------------
+- -- ---------------------------
+- -- ---------------------------
+- -- ---------------------------
+- -- ---------------------------
+- -- ---------------------------
+- -- ---------------------------
+- -- ---------------------------
+- -- ---------------------------
+- -- ---------------------------
+- -- ---------------------------
+- -- ---------------------------
+- -- 1. orders 表
+- ALTER TABLE orders
+-   ADD COLUMN tenant_id VARCHAR(64) NOT NULL DEFAULT 'default'
+-   ADD COLUMN tenant_id VARCHAR(64) NOT NULL DEFAULT 'default'
+-   ADD COLUMN tenant_id VARCHAR(64) NOT NULL DEFAULT 'default'
+-   ADD COLUMN tenant_id VARCHAR(64) NOT NULL DEFAULT 'default'
+-   ADD COLUMN tenant_id VARCHAR(64) NOT NULL DEFAULT 'default'
+-   ADD COLUMN tenant_id VARCHAR(64) NOT NULL DEFAULT 'default'
+-   AFTER id,
+-   AFTER id,
+-   AFTER id,
+-   AFTER id,
+-   AFTER id,
+-   AFTER id,
+-   ALGORITHM=INSTANT, LOCK=NONE;
+-   ALGORITHM=INSTANT, LOCK=NONE;
+-   ALGORITHM=INSTANT, LOCK=NONE;
+-   ALGORITHM=INSTANT, LOCK=NONE;
+-   ALGORITHM=INSTANT, LOCK=NONE;
+-   ALGORITHM=INSTANT, LOCK=NONE;
+- CREATE INDEX idx_orders_tenant ON orders (tenant_id);
+- CREATE INDEX idx_orders_tenant_user ON orders (tenant_id, user_id);
+- CREATE INDEX idx_orders_tenant_status ON orders (tenant_id, status);
+- -- 2. products 表
+- ALTER TABLE products
+- CREATE INDEX idx_products_tenant ON products (tenant_id);
+- CREATE INDEX idx_products_tenant_status ON products (tenant_id, status);
+- -- 3. users 表
+- ALTER TABLE users
+- CREATE INDEX idx_users_tenant ON users (tenant_id);
+- -- 用户登录查询路径：WHERE tenant_id = ? AND email = ?
+- CREATE INDEX idx_users_tenant_email ON users (tenant_id, email);
+- -- 4. order_items 表
+- ALTER TABLE order_items
+- CREATE INDEX idx_order_items_tenant ON order_items (tenant_id);
+- -- 5. order_status_logs 表
+- ALTER TABLE order_status_logs
+- CREATE INDEX idx_order_status_logs_tenant ON order_status_logs (tenant_id);
+- -- 6. carts 表
+- ALTER TABLE carts
+- CREATE INDEX idx_carts_tenant ON carts (tenant_id);
+- CREATE INDEX idx_carts_tenant_user ON carts (tenant_id, user_id);
+- -- 迁移后数据一致性校验（手动执行）
+- -- SELECT COUNT(*) AS total_rows,
+- --        COUNT(DISTINCT tenant_id) AS tenant_count,
+- --        SUM(CASE WHEN tenant_id = 'default' THEN 1 ELSE 0 END) AS default_tenant_rows
+- -- FROM orders;
+- -- -- 抽查非 default 租户的数据
+- -- SELECT * FROM orders WHERE tenant_id != 'default' LIMIT 100;
+
+### index.html  [code]
+- <!DOCTYPE html>
+- <html lang="zh-CN">
+- <head>
+-   <meta charset="UTF-8">
+-   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+-   <title>Website Skeleton Skill — EdgeOne Pages</title>
+-   <style>
+-     * { margin: 0; padding: 0; box-sizing: border-box; }
+-     body {
+-       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+-       background: linear-gradient(135deg, #0a1628 0%, #1a2a4a 100%);
+-       color: #e0e8f0;
+-       min-height: 100vh;
+-       display: flex;
+-       flex-direction: column;
+-       align-items: center;
+-       justify-content: center;
+-       text-align: center;
+-       padding: 2rem;
+-     }
+-     }
+-     }
+-     }
+-     }
+-     }
+-     }
+-     }
+-     .card {
+-       background: rgba(255,255,255,0.05);
+-       border: 1px solid rgba(255,255,255,0.1);
+-       border-radius: 16px;
+-       padding: 3rem 2rem;
+-       max-width: 640px;
+-       width: 100%;
+-       backdrop-filter: blur(10px);
+-     h1 {
+-       font-size: 2rem;
+-       margin-bottom: 0.5rem;
+-       background: linear-gradient(135deg, #60a5fa, #a78bfa);
+-       -webkit-background-clip: text;
+-       -webkit-text-fill-color: transparent;
+-     .badge {
+-       display: inline-block;
+-       display: inline-block;
+-       background: rgba(96,165,250,0.15);
+-       color: #60a5fa;
+-       padding: 4px 12px;
+-       border-radius: 20px;
+-       font-size: 0.8rem;
+-       margin: 0 4px 8px;
+-     .features {
+-       display: grid;
+-       grid-template-columns: 1fr 1fr;
+-       gap: 1rem;
+-       margin: 2rem 0;
+-       text-align: left;
+-     .feature {
+-       background: rgba(255,255,255,0.03);
+-       padding: 1rem;
+-       border-radius: 10px;
+-       border: 1px solid rgba(255,255,255,0.06);
+-     .feature .icon { font-size: 1.5rem; margin-bottom: 0.5rem; }
+-     .feature h3 { font-size: 0.95rem; color: #93c5fd; margin-bottom: 0.3rem; }
+-     .feature p { font-size: 0.8rem; color: #94a3b8; }
+-     .links { margin-top: 1.5rem; }
+-     .links a {
+-       padding: 10px 24px;
+-       margin: 4px;
+-       border-radius: 8px;
+-       text-decoration: none;
+-       font-weight: 600;
+-       font-size: 0.9rem;
+-       transition: all 0.2s;
+-     .btn-primary { background: #3b82f6; color: #fff; }
+-     .btn-primary:hover { background: #2563eb; }
+-     .btn-ghost { background: transparent; color: #93c5fd; border: 1px solid rgba(147,197,253,0.3); }
+-     .btn-ghost:hover { background: rgba(147,197,253,0.1); }
+-     .footer { margin-top: 2rem; font-size: 0.75rem; color: #64748b; }
+-     @media (max-width: 500px) {
+-       .features { grid-template-columns: 1fr; }
+-   </style>
+- </head>
+- <body>
+-   <div class="card">
+-     <h1>Website Skeleton Skill</h1>
+-     <p style="color:#94a3b8; margin-bottom:1rem;">
+-       一句话建站 — AI 生成全栈网站，自动部署到 EdgeOne Pages
+-     </p>
+-     <div>
+-       <span class="badge">v3.0</span>
+-       <span class="badge">EdgeOne Pages</span>
+-       <span class="badge">Multi-tenant SaaS</span>
+-     </div>
+-     </div>
+-     </div>
+-     </div>
+-     <div class="features">
+-       <div class="feature">
+-       <div class="feature">
+-       <div class="feature">
+-       <div class="feature">
+-         <div class="icon">🛒</div>
+-         <h3>电商栈</h3>
+-         <p>Auth + 购物车 + 微信/支付宝支付 + 订单管理</p>
+-       </div>
+-       </div>
+-       </div>
+-       </div>
+-         <div class="icon">🤖</div>
+-         <h3>AI 栈</h3>
+-         <p>SSE 流式对话 + 会话历史 + 限流保护</p>
+-         <div class="icon">📊</div>
+-         <h3>管理后台</h3>
+-         <p>RBAC 权限 + CRUD + 运营统计 + 审计日志</p>
+-         <div class="icon">🏗️</div>
+-         <h3>多租户 SaaS</h3>
+-         <p>D1 数据隔离 + KV 前缀 + 租户管理 API</p>
+-     <div class="links">
+-       <a class="btn-primary" href="https://github.com/liuboacean/website-skeleton-skill">GitHub</a>
+-       <a class="btn-ghost" href="https://github.com/liuboacean/website-skeleton-skill/blob/main/SKILL.md">文档</a>
+-     <div class="footer">
+-       MIT · Powered by EdgeOne Pages · Phase 4 Multi-tenant SaaS
+-   </div>
+- </body>
+- </html>
+
+### middleware.js  [code]
+- /**
+-  * Platform Middleware — 支付回调路径放行
+-  *
+-  * EdgeOne Pages 自动识别此文件并作为 Platform Middleware 运行。
+-  */
+- export function onRequest(context) {
+-   const { request, next } = context;
+-   const url = new URL(request.url);
+-   // 支付回调独立路径放行（没有 JWT，不能进 Edge Middleware）
+-   if (url.pathname === '/api/pay/wx-notify' || url.pathname === '/api/pay/ali-notify') {
+-     return next();
+-   }
+-   // 其他路径正常传递
+-   return next();
+- }
+
+### package-lock.json  [code]
+- {
+-   "name": "website-skeleton-skill",
+-   "version": "3.0.0",
+-   "lockfileVersion": 3,
+-   "requires": true,
+-   "packages": {
+-     "": {
+-       "name": "website-skeleton-skill",
+-       "version": "3.0.0",
+-       "version": "3.0.0",
+-       "license": "MIT",
+-       "license": "MIT",
+-       "license": "MIT",
+-       "workspaces": [
+-         "packages/shared",
+-         "packages/payment",
+-         "packages/admin"
+-       ]
+-     },
+-     },
+-     },
+-     },
+-     },
+-     },
+-     "node_modules/@website-skeleton/admin": {
+-       "resolved": "packages/admin",
+-       "link": true
+-       "link": true
+-       "link": true
+-     "node_modules/@website-skeleton/payment": {
+-       "resolved": "packages/payment",
+-     "node_modules/@website-skeleton/shared": {
+-       "resolved": "packages/shared",
+-     "packages/admin": {
+-       "name": "@website-skeleton/admin",
+-       "version": "1.0.0",
+-       "version": "1.0.0",
+-       "dependencies": {
+-       "dependencies": {
+-         "@website-skeleton/shared": "^3.0.0"
+-         "@website-skeleton/shared": "^3.0.0"
+-       }
+-       }
+-     "packages/payment": {
+-       "name": "@website-skeleton/payment",
+-     "packages/shared": {
+-       "name": "@website-skeleton/shared",
+-       "license": "MIT"
+-     }
+-   }
+- }
+
+### package.json  [code]
+- {
+-   "name": "website-skeleton-skill",
+-   "version": "3.0.0",
+-   "private": true,
+-   "type": "module",
+-   "description": "EdgeOne Pages 全栈网站骨架 Skill — Phase 4A 多租户隔离完成",
+-   "workspaces": [
+-     "packages/shared",
+-     "packages/payment",
+-     "packages/admin"
+-   ],
+-   "scripts": {
+-     "build": "node scripts/sync-sharing.js",
+-     "test": "node tests/integration/phase4a.test.js",
+-     "publish:shared": "cd packages/shared && npm publish",
+-     "publish:payment": "cd packages/payment && npm publish",
+-     "publish:admin": "cd packages/admin && npm publish",
+-     "publish:all": "npm run publish:shared && npm run publish:payment && npm run publish:admin"
+-   },
+-   "license": "MIT"
+- }
+
+### phase-4a-plan.md  [docs]
+- # Phase 4A 实施计划 — 多租户隔离
+- > **方案版本：** v6 Final
+- > **状态：** 🟢 进行中
+- > **更新日期：** 2026-05-06
+- ---
+- ---
+- ---
+- ---
+- ---
+- ## W1：JWT 扩展 + 向下兼容 + Cloud 中间件 + Edge RBAC
+- ### 状态：✅ 完成
+- ### 状态：✅ 完成
+- ### 状态：✅ 完成
+- ### 状态：✅ 完成
+- ### 状态：✅ 完成
+- | 交付项 | 文件 | 状态 | 说明 |
+- | 交付项 | 文件 | 状态 | 说明 |
+- | 交付项 | 文件 | 状态 | 说明 |
+- | 交付项 | 文件 | 状态 | 说明 |
+- | 交付项 | 文件 | 状态 | 说明 |
+- |--------|------|------|------|
+- |--------|------|------|------|
+- |--------|------|------|------|
+- |--------|------|------|------|
+- |--------|------|------|------|
+- | JWT tenant 字段扩展 | `sharing/jwt-helper.js` | ✅ | signJWT 增加 tenant/role/jti；verifyJWT 增加旧 token users 表反查 |
+- | 移除 @edge-runtime/primitives | `sharing/jwt-helper.js` | ✅ | 删除 import，使用全局 crypto.subtle |
+- | Cloud 统一租户中间件 | `cloud-functions/middleware/tenant-context.js` | ✅ **新建** | withTenant() + withTenantAudit() |
+- | db.js 强制 {tenant} + 事务 | `cloud-functions/utils/db.js` | ✅ **新建** | query/queryOne/execute + withTransaction |
+- | Edge RBAC 中间件 | `edge-functions/middleware/rbac.js` | ✅ **新建** | requireRole/requireSuperadmin/requireAdmin |
+- | transition.js SQL 迁移 | `cloud-functions/api/order/transition.js` | ✅ | 迁移到 withTransaction + {tenant} |
+- | order-cron.js SQL 迁移 | `cloud-functions/cron/order-cron.js` | ✅ | 迁移到 withTransaction + {tenant} |
+- ### 涉及文件清单
+- | 文件 | 操作类型 | 行数 |
+- |------|---------|------|
+- | sharing/jwt-helper.js | 修改 | 删除1行，新增20行 |
+- | cloud-functions/middleware/tenant-context.js | **新建** | 93行 |
+- | cloud-functions/utils/db.js | **新建** | 120行 |
+- | edge-functions/middleware/rbac.js | **新建** | 98行 |
+- | cloud-functions/api/order/transition.js | 重写 | 从220行精简到165行 |
+- | cloud-functions/cron/order-cron.js | 重写 | 从179行精简到145行 |
+- ## W2：KV 动态租户前缀 + 配额限制（共享模块化）
+- | KV 动态前缀强制 tenant 检查 | `sharing/kv-keys.js` | ✅ | makeKey() 增加 tenant 非空检查（IMA S3） |
+- | 共享配额模块 | `sharing/quota.js` | ✅ **新建** | checkQuota + incrementQuota + resetQuota |
+- | 软/硬限制双层防护 | `sharing/quota.js` | ✅ | 硬限制 * 0.9 软限制，边界值提前告警 |
+- | fail-open 告警 | `sharing/quota.js` | ✅ | KV 故障时允许通过 + 上报告警 |
+- ## W3：MySQL 租户隔离 + 权限分层 + 审计日志
+- | MySQL 迁移脚本 | `db/migrations/003_tenant_isolation.sql` | ✅ **新建** | 6 表 + 复合索引 + ALGORITHM=INSTANT |
+- | 独立回滚文件 | `db/migrations/003_rollback.sql` | ✅ **新建** | 可独立执行（架构专家 D5） |
+- | 权限分层 + 权限矩阵 | `sharing/constants.js` | ✅ **新建** | ROLES + PERMISSIONS + checkPermission() |
+- | 审计日志中间件 | `cloud-functions/middleware/audit.js` | ✅ **新建** | auditLog + queryAuditLogs + 90 天保留 |
+- ## W4：管理后台 + 支付回调加固
+- | 租户管理 API | `edge-functions/api/admin/tenants.js` | ✅ **新建** | CRUD + invite + 启用/停用，requireRole superadmin |
+- | 支付回调 KV 反查 | `edge-functions/api/pay/wx-notify.js` | ✅ **新建** | KV 反查 tenant（P0-2），零 SQL 绕过 |
+- | 租户停用处理 | tenants.js status API | ✅ | PUT /api/admin/tenants/:id/status → active/suspended |
+- ## W5：集成测试（14 条）
+- | 集成测试文档 | `references/integration-tests.md` | ✅ **新建** | 14 条用例（F1-F6 + S-01~S-08），含步骤+预期+执行顺序 |
+- | 可执行测试脚本 | `tests/integration/phase4a.test.js` | ✅ **新建** | Node.js fetch 自动化测试，输出 JSON 报告 |
+- ### 后置修复
+- | 文件 | 问题 | 修复 |
+- |------|------|------|
+- |------|------|------|
+- | `edge-functions/api/pay/wx-notify.js` | import ../../utils/db.js 解析路径错误（Edge Functions 无法 import Cloud Functions） | 移至 **cloud-functions/api/pay/wx-notify.js**，使用正确相对路径 |
+- | 语法检查 | — | **21/21 全部通过** |
+- | Phase 4 新增文件 import 路径 | — | **8/8 全部正确** |
+- ### 测试用例覆盖
+- | 类型 | 编号 | 测试项 |
+- |------|------|--------|
+- | 功能 | F1 | 跨租户数据隔离 |
+- | 功能 | F2 | KV 租户隔离 |
+- | 功能 | F3 | 旧 token 兼容 |
+- | 功能 | F4 | 角色权限（superadmin vs tenant_admin） |
+- | 功能 | F5 | 支付回调 KV 反查 |
+- | 功能 | F6 | SQL 强制 {tenant} |
+- | 安全 | S-01 | JWT tenant 篡改 |
+- | 安全 | S-02 | X-Tenant-ID Header 注入 |
+- | 安全 | S-03 | 超配额限制 |
+- | 安全 | S-04 | superadmin 提权尝试 |
+- | 安全 | S-05 | 支付回调伪造 |
+- | 安全 | S-06 | SQL 注入 tenant_id |
+- | 安全 | S-07 | RBAC 绕过 |
+- | 安全 | S-08 | 并发配额攻击 |
+- ### Phase 4A 全部完成 ✅
+- | 周次 | 内容 | 状态 |
+- | W1 | JWT扩展 + 中间件 + db.js + RBAC | ✅ |
+- | W2 | KV动态前缀 + 配额限制 | ✅ |
+- | W3 | MySQL迁移 + 权限分层 + 审计日志 | ✅ |
+- | W4 | 管理后台 + 支付回调KV反查 | ✅ |
+- | W5 | 14条集成测试 | ✅ |
+
+### phase-4b-plan.md  [docs]
+- # Phase 4B 实施计划 — npm 包化 + 增强
+- > **方案版本：** v6 Final
+- > **状态：** 🎉 **全部完成**
+- > **更新日期：** 2026-05-06
+- ---
+- ## 4B1：Cloud Functions npm 包化（W1-2）
+- ### 状态：✅ 完成
+- ### 状态：✅ 完成
+- ### 状态：✅ 完成
+- ### 状态：✅ 完成
+- ### 状态：✅ 完成
+- | 交付项 | 文件 | 说明 |
+- | 交付项 | 文件 | 说明 |
+- | 交付项 | 文件 | 说明 |
+- | 交付项 | 文件 | 说明 |
+- | 交付项 | 文件 | 说明 |
+- |--------|------|------|
+- |--------|------|------|
+- |--------|------|------|
+- |--------|------|------|
+- |--------|------|------|
+- | @website-skeleton/shared | `packages/shared/package.json` + src/index.js | v3.0.0，导出 sharing/ 全部模块 |
+- | @website-skeleton/payment | `packages/payment/package.json` + src/index.js | v1.0.0，支付验证工具函数 |
+- | @website-skeleton/admin | `packages/admin/package.json` + src/index.js | v1.0.0，租户管理函数 |
+- | 根 package.json | `package.json`（新建） | monorepo workspaces + type:module + build/test/publish scripts |
+- | npm 发布工作流 | package.json scripts | `npm run publish:all` 一键发布三个包 |
+- ## 4B2：Edge auth 内联 + 构建同步（W2-3）
+- | sync-sharing.js | `scripts/sync-sharing.js` | --check/--sync/--ci 三种模式，md5Dir + copy + hash verify |
+- | CI 集成 | package.json scripts | `npm run build` 调用 sync-sharing.js |
+- 同步验证：✅ 3 个目标目录全部一致（npm package / Edge inline / Cloud shared）
+- ## 4B3：版本兼容性基础设施（W3-4）
+- | CHANGELOG.md | `CHANGELOG.md` | v1.0→v2.x→v3.0 完整变更记录 |
+- | MIGRATION.md | `MIGRATION.md` | Phase 3→4A 零停机迁移指南（DB/JWT/KV/API/权限） |
+- | semver 策略 | CHANGELOG.md 头部 | 明确 Major/Minor/Patch 定义 |
+- ## 4B4：支付回调二次加固
+- ### 状态：✅ **已在 4A W4 完成**
+- - cloud-functions/api/pay/wx-notify.js（移入 Cloud Functions，修复 import 路径）
+- ## 4B5：KV 热 key 分散
+- | FNV-1a hash | `sharing/kv-keys.js` | fnv1a() + getShardSessionKey(tenant, sessionId, 64) |
+- | 触发条件 | 文档注释 | KV 延迟 > 200ms 持续 5 分钟 → P2 告警 |
+- ## 4B6：计费 MVP — KV 计数器
+- | 滑动窗口计数 | `sharing/quota.js` | getSlidingWindowCount() 60分钟窗口，1分钟槽位 |
+- | 计费事件记录 | `sharing/quota.js` | recordBillingEvent() 原子递增 |
+- | 403 升级提示 | `sharing/quota.js` | checkBillingQuota() → upgrade message |
+- ## 最终验证
+- | 检查项 | 结果 |
+- |--------|------|
+- | 语法检查 | ✅ 全部通过 |
+- | 同步脚本验证 | ✅ 3 目标目录完全一致 |
+- | Phase 4B 总计 | **6/6 子项全部完成** |
+- ### 集成测试结果（本地纯逻辑）
+- | 分类 | 通过 | 需部署 | 总计 |
+- |------|------|--------|------|
+- | 功能测试（F1-F6） | 6 | 0 | 6 |
+- | 安全测试（S-01~S-08） | 5 | 2（S-05, S-07） | 7* |
+- | **总计** | **11** | **2** | **13** |
+- > *S-03（超配额）需要实际操作 KV，当前版本暂未计入。2 项待部署 EdgeOne 后运行。|
+
+### references/admin-module.md  [docs]
+- # Admin 管理后台模块参考文档
+- > **版本：** v2.2 · **Phase：** Layer 1（管理栈）
+- > **职责：** RBAC 权限体系、商品/订单/用户 CRUD、运营统计、审计日志
+- ---
+- ---
+- ---
+- ---
+- ---
+- ## 一、RBAC 权限体系
+- ### 角色定义
+- ```javascript
+- ```javascript
+- ```javascript
+- ```javascript
+- ```javascript
+- // sharing/constants.js
+- export const UserRole = {
+-   USER:   'user',     // 普通用户：下单、查看自己的订单
+-   ADMIN:  'admin',    // 管理员：全站 CRUD
+-   MANAGER:'manager',  // 运营：订单管理、商品上下架
+- };
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ### 权限矩阵
+- | 操作 | user（本人） | manager | admin |
+- |------|------------|---------|-------|
+- | 查看自己的订单 | ✅ | ✅ | ✅ |
+- | 管理任意订单 | ❌ | ✅ | ✅ |
+- | 商品上架/下架 | ❌ | ✅ | ✅ |
+- | 修改商品价格 | ❌ | ❌ | ✅ |
+- | 用户管理 | ❌ | ❌ | ✅ |
+- | 查看运营统计 | ❌ | ✅ | ✅ |
+- | 审计日志 | ❌ | ❌ | ✅ |
+- | 系统设置 | ❌ | ❌ | ✅ |
+- ## 二、Admin Guard 中间件
+- // cloud-functions/utils/admin-guard.js
+- /**
+-  * 验证管理员权限
+-  * @param {Request} request
+-  * @param {Object} env
+-  * @param {string[]} allowedRoles - 允许的角色，如 ['admin', 'manager']
+-  * @returns {{ userId, role } | Response} 成功返回用户信息，失败返回 Response
+-  */
+- export async function adminGuard(request, env, allowedRoles = ['admin']) {
+-   const authHeader = request.headers.get('Authorization') || '';
+-   const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
+-   if (!token) {
+-     return new Response(JSON.stringify({ error: 'Unauthorized' }), { status: 401 });
+-   }
+-   }
+-   }
+-   }
+-   }
+-   const payload = await verifyJWT(token, env);
+-   if (!payload) {
+-     return new Response(JSON.stringify({ error: 'Invalid token' }), { status: 401 });
+-   if (!allowedRoles.includes(payload.role)) {
+-     return new Response(JSON.stringify({ error: 'Forbidden: insufficient permissions' }), { status: 403 });
+-   return { userId: payload.sub, role: payload.role };
+- }
+- }
+- }
+- }
+- }
+- ## 三、商品管理 CRUD
+- ### 3.1 列表查询（支持分页 + 筛选）
+- // cloud-functions/api/admin/products.js
+- export async function onRequest(request, env) {
+- export async function onRequest(request, env) {
+- export async function onRequest(request, env) {
+-   // Admin Guard
+-   const auth = await adminGuard(request, env);
+-   const auth = await adminGuard(request, env);
+-   if (auth instanceof Response) return auth;
+-   if (auth instanceof Response) return auth;
+-   if (auth instanceof Response) return auth;
+-   const url = new URL(request.url);
+-   const page = Math.max(1, parseInt(url.searchParams.get('page') || '1'));
+-   const pageSize = Math.min(100, parseInt(url.searchParams.get('pageSize') || '20'));
+-   const offset = (page - 1) * pageSize;
+-   const category = url.searchParams.get('category');
+-   const status = url.searchParams.get('status'); // active / inactive
+-   const keyword = url.searchParams.get('keyword');
+-   const pool = new Pool({ connectionString: env.DATABASE_URL });
+-   const pool = new Pool({ connectionString: env.DATABASE_URL });
+-   const pool = new Pool({ connectionString: env.DATABASE_URL });
+-   // WHERE 条件构建
+-   const conditions = [];
+-   const params = [];
+-   if (category) { conditions.push('category_id = ?'); params.push(category); }
+-   if (status) { conditions.push('status = ?'); params.push(status); }
+-   if (keyword) { conditions.push('name LIKE ?'); params.push(`%${keyword}%`); }
+-   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+-   const whereClause = where || 'WHERE 1=1';
+-   const [rows] = await pool.query(
+-     `SELECT id, name, category_id, price, stock, status, version, created_at
+-      FROM products ${whereClause}
+-      ORDER BY id DESC
+-      LIMIT ? OFFSET ?`,
+-     [...params, pageSize, offset]
+-   );
+-   );
+-   );
+-   const [[{ total }]] = await pool.query(
+-     `SELECT COUNT(*) as total FROM products ${whereClause}`, params
+-   await pool.end();
+-   await pool.end();
+-   return new Response(JSON.stringify({
+-   return new Response(JSON.stringify({
+-     data: rows,
+-     pagination: { page, pageSize, total, pages: Math.ceil(total / pageSize) }
+-   }), { headers: { 'Content-Type': 'application/json' } });
+-   }), { headers: { 'Content-Type': 'application/json' } });
+- ### 3.2 创建商品（乐观锁）
+- // POST /api/admin/products（创建）
+- // PUT /api/admin/products/:id（更新）
+-   const body = await request.json();
+-   const { id, name, price, stock, category_id, status } = body;
+-   if (!name || !price) {
+-     return new Response(JSON.stringify({ error: 'name 和 price 为必填项' }), { status: 400 });
+-   try {
+-     if (id) {
+-       // 更新（乐观锁）
+-       const [result] = await pool.query(
+-       const [result] = await pool.query(
+-         `UPDATE products SET name=?, price=?, stock=?, category_id=?, status=?,
+-          version=version+1 WHERE id=? AND version=?`,
+-         [name, price, stock, category_id, status, id, body.version]
+-       );
+-       );
+-       if (result.affectedRows === 0) {
+-         return new Response(JSON.stringify({ error: '并发冲突，请重试' }), { status: 409 });
+-       }
+-     } else {
+-       // 创建
+-         `INSERT INTO products (name, price, stock, category_id, status) VALUES (?, ?, ?, ?, ?)`,
+-         [name, price, stock || 0, category_id, status || 'active']
+-       await adminLog(pool, auth.userId, 'product:create', `ID=${result.insertId}`);
+-     }
+-     return new Response(JSON.stringify({ ok: true }), { headers: { 'Content-Type': 'application/json' } });
+-   } finally {
+-     await pool.end();
+- ## 四、运营统计
+- // cloud-functions/api/admin/stats.js
+-   const auth = await adminGuard(request, env, ['admin', 'manager']);
+-   const [[todayOrders]] = await pool.query(`
+-     SELECT COUNT(*) as count, COALESCE(SUM(total), 0) as revenue
+-     FROM orders WHERE DATE(created_at) = CURDATE() AND status != 'CANCELLED'
+-   `);
+-   `);
+-   `);
+-   const [[totalUsers]] = await pool.query(`SELECT COUNT(*) as count FROM users`);
+-   const [[totalProducts]] = await pool.query(`SELECT COUNT(*) as count FROM products WHERE status='active'`);
+-   const [ordersByStatus] = await pool.query(`
+-     SELECT status, COUNT(*) as count, SUM(total) as revenue
+-     FROM orders GROUP BY status
+-   const [recentOrders] = await pool.query(`
+-     SELECT o.id, o.order_no, o.total, o.status, o.created_at, u.email
+-     FROM orders o JOIN users u ON u.id = o.user_id
+-     ORDER BY o.created_at DESC LIMIT 10
+-     today: { orders: todayOrders.count, revenue: todayOrders.revenue },
+-     total: { users: totalUsers.count, products: totalProducts.count },
+-     byStatus: ordersByStatus,
+-     recentOrders
+- async function adminLog(pool, adminId, action, target) {
+-   await pool.query(
+-     'INSERT INTO admin_logs (admin_id, action, target) VALUES (?, ?, ?)',
+-     [adminId, action, target]
+- ## 五、审计日志表
+- ```sql
+- CREATE TABLE admin_logs (
+-   id          BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+-   admin_id    BIGINT UNSIGNED NOT NULL,
+-   action      VARCHAR(64) NOT NULL,  -- product:create / product:update / order:cancel / ...
+-   target      VARCHAR(128),
+-   created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+-   FOREIGN KEY (admin_id) REFERENCES users(id)
+- );
+- CREATE INDEX idx_admin_logs_admin ON admin_logs(admin_id);
+- CREATE INDEX idx_admin_logs_action ON admin_logs(action);
+- CREATE INDEX idx_admin_logs_created ON admin_logs(created_at);
+- > **记录时机**：所有 Admin CRUD 操作写入 `admin_logs`，包括创建/更新/删除商品、修改订单状态、修改用户角色。
+
+### references/ai-chat-module.md  [docs]
+- # AI Chat 模块参考文档
+- ## 一、架构选择
+- **Edge Function 限制：**
+- - 200ms **CPU time** 限制（不是 wall clock time）
+- - `fetch()` 到外部 AI API 的 I/O 等待**不计入** CPU time
+- - **无 `waitUntil`**：异步写 KV 无法保证在响应发送前完成
+- **结论：** 流式 SSE 主力实现在 **Cloud Functions**，历史读取在 **Edge Functions**。
+- ## 二、SSE 实现方案 B（前端中转历史）
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- 前端
+-   ↓ GET /api/ai/history（Edge，KV 读取）
+-   ← 拿到 history JSON
+-   ↓ 建立 SSE 连接 /api/ai/chat-stream（Cloud）
+-   ← 带 history context 参数
+- Cloud SSE 流式响应
+-   ↓ 完成后异步写 KV（不阻塞响应）
+- ```javascript
+- ```javascript
+- ```javascript
+- ```javascript
+- // Cloud Function: cloud-functions/api/ai/chat-stream.js
+- export async function onRequest(request, env) {
+-   const { userId } = await auth(request, env);
+-   const url = new URL(request.url);
+-   const historyParam = url.searchParams.get('history');
+-   const history = historyParam ? JSON.parse(historyParam) : [];
+-   const stream = new ReadableStream({
+-     async start(controller) {
+-       const encoder = new TextEncoder();
+-       async function sendEvent(type, data) {
+-         controller.enqueue(encoder.encode(`event: ${type}\ndata: ${JSON.stringify(data)}\n\n`));
+-       }
+-       }
+-       try {
+-         await sendEvent('status', { status: 'thinking' });
+-         const response = await fetch('https://api.example.com/chat', {
+-           method: 'POST',
+-           headers: {
+-             'Authorization': `Bearer ${env.AI_API_KEY}`,
+-             'Content-Type': 'application/json',
+-           },
+-           body: JSON.stringify({ messages: history, stream: true }),
+-         });
+-         const reader = response.body.getReader();
+-         const decoder = new TextDecoder();
+-         while (true) {
+-           const { done, value } = await reader.read();
+-           if (done) break;
+-           const chunk = decoder.decode(value);
+-           await sendEvent('message', { content: chunk });
+-         }
+-         await sendEvent('done', {});
+-       } catch (err) {
+-         await sendEvent('error', { message: err.message });
+-       } finally {
+-         controller.close();
+-     }
+-     }
+-   });
+-   });
+-   return new Response(stream, {
+-     headers: {
+-       'Content-Type': 'text/event-stream',
+-       'Cache-Control': 'no-cache',
+-       'Connection': 'keep-alive',
+- }
+- }
+- }
+- }
+- ## 三、前端 SSE 客户端
+- // client/src/services/ai.js
+- import { EventBus } from '../utils/event-bus.js';
+- class AIService {
+-   constructor() {
+-   constructor() {
+-     this.es = null;
+-   }
+-   }
+-   }
+-   }
+-   }
+-   }
+-   async startChatSession() {
+-     // Step 1: 从 Edge KV 拿历史
+-     const history = await fetch('/api/ai/history').then(r => r.json());
+-     // Step 2: 建立 SSE，带历史 context
+-     this.es = new EventSource(`/api/ai/chat-stream?history=${encodeURIComponent(JSON.stringify(history))}`);
+-     this.es.addEventListener('message', (e) => {
+-       const data = JSON.parse(e.data);
+-       EventBus.emit('ai:message', { role: 'assistant', content: data.content });
+-     });
+-     });
+-     });
+-     });
+-     });
+-     this.es.addEventListener('status', (e) => {
+-       EventBus.emit('ai:status', JSON.parse(e.data));
+-     this.es.addEventListener('done', () => {
+-       EventBus.emit('ai:status', { status: 'idle' });
+-     this.es.addEventListener('error', (e) => {
+-       EventBus.emit('ai:error', { message: 'SSE 连接断开' });
+-   sendMessage(content) {
+-     EventBus.emit('ai:message', { role: 'user', content });
+-     return fetch('/api/ai/chat-stream', {
+-       method: 'POST',
+-       body: JSON.stringify({ content }),
+-       credentials: 'include'
+- ## 四、AI 限流
+- // Edge Middleware 或独立限流函数
+- async function aiRateLimit(request, env, userId, ip) {
+-   const key = userId ? `ai:user:${userId}` : `ai:ip:${ip}`;
+-   const limit = userId ? 60 : 10;  // 已登录 60次/分钟，未登录 10次/分钟
+-   const window = 60;
+-   const count = parseInt(await env.KV.get(`rl:${key}:${Math.floor(Date.now() / 60000)}`) || '0');
+-   if (count >= limit) {
+-     return { allowed: false, remaining: 0 };
+-   await env.KV.put(`rl:${key}:${Math.floor(Date.now() / 60000)}`, String(count + 1), { expirationTtl: 65 });
+-   return { allowed: true, remaining: limit - count - 1 };
+- ## 五、AI Widget（嵌入代码）
+- // 注册为 Custom Element，完全自包含，不依赖 SPA 状态
+- class AIChatWidget extends HTMLElement {
+-     super();
+-     this.attachShadow({ mode: 'open' });
+-   connectedCallback() {
+-     this.shadowRoot.innerHTML = `
+-       <style>
+-         :host { position: fixed; bottom: 20px; right: 20px; z-index: 9999; }
+-         .widget { width: 360px; height: 520px; border-radius: 16px; box-shadow: 0 8px 32px rgba(0,0,0,0.15); }
+-       </style>
+-       <div class="widget"><!-- 渲染逻辑 --></div>
+-     `;
+- customElements.define('ai-chat-widget', AIChatWidget);
+
+### references/auth-module.md  [docs]
+- # Auth 模块参考文档
+- ## 一、认证架构总览
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- 未登录 → 跳转登录页（AuthGuard）
+- 已登录 → JWT Cookie → Edge Middleware 验证 → context.user 注入
+- 过期 → 自动刷新 RT → 换新 JWT
+- ## 二、JWT 配置
+- ```javascript
+- ```javascript
+- ```javascript
+- ```javascript
+- ```javascript
+- ```javascript
+- ```javascript
+- // edge-functions/utils/jwt-helper.js
+- import { crypto } from '@edge-runtime/primitives';
+- const JWT_SECRET = new TextEncoder().encode(env.JWT_SECRET);
+- const ALGORITHM = 'HS256';
+- export async function signAccessToken(payload) {
+-   const header = btoa(JSON.stringify({ alg: ALGORITHM, typ: 'JWT' }));
+-   const body = btoa(JSON.stringify({ ...payload, exp: Date.now() + 15 * 60 * 1000, iat: Date.now() }));
+-   const signature = await crypto.subtle.sign('HMAC', JWT_SECRET, new TextEncoder().encode(`${header}.${body}`));
+-   return `${header}.${body}.${btoa(String.fromCharCode(...new Uint8Array(signature)))}`;
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- export async function verifyAccessToken(token) {
+-   try {
+-     const [header, body, sig] = token.split('.');
+-     const valid = await crypto.subtle.verify('HMAC', JWT_SECRET, Uint8Array.from(atob(sig), c => c.charCodeAt(0)), new TextEncoder().encode(`${header}.${body}`));
+-     if (!valid) return null;
+-     const payload = JSON.parse(atob(body));
+-     if (payload.exp < Date.now()) return null;
+-     return payload;
+-   } catch {
+-     return null;
+-   }
+-   }
+-   }
+-   }
+-   }
+- ### 【Phase 3 新增】RS256 双轨迁移
+- > **版本：** Phase 3 P2-1
+- > **密钥生成：**
+- > ```bash
+- > openssl genrsa -out private.pem 2048
+- > openssl rsa -in private.pem -pubout -out public.pem
+- > ```
+- > **环境变量：**
+- > - `JWT_PRIVATE_KEY` — RSA 私钥（PEM，换行符用 `\n` 转义）
+- > - `JWT_PUBLIC_KEY`  — RSA 公钥（PEM，换行符用 `\n` 转义）
+- > - `JWT_SECRET`      — HS256 密钥（30 天兼容窗口后删除）
+- // sharing/jwt-helper.js — RS256 实现（完整源码）
+- // ===================== PEM 解析 =====================
+- function parsePem(pem) {
+-   const lines = pem.replace(/\\n/g, '\n').split('\n');
+-   const base64 = lines.filter(l => !l.startsWith('-----')).join('');
+-   const binary = atob(base64);
+-   const bytes = new Uint8Array(binary.length);
+-   const bytes = new Uint8Array(binary.length);
+-   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+-   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+-   return bytes;
+-   return bytes;
+- function base64UrlEncode(buffer) {
+-   const bytes = new Uint8Array(buffer);
+-   let binary = '';
+-   for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+-   return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+- function base64UrlDecode(str) {
+-   let s = str.replace(/-/g, '+').replace(/_/g, '/');
+-   while (s.length % 4) s += '=';
+-   const binary = atob(s);
+- // ===================== RS256 签发 =====================
+- export async function signJWT(payload, expiresInMs, env) {
+-   const now = Math.floor(Date.now() / 1000);
+-   const now = Math.floor(Date.now() / 1000);
+-   const header = { alg: 'RS256', typ: 'JWT' };
+-   const body = { ...payload, iat: now, exp: now + Math.floor(expiresInMs / 1000) };
+-   const headerEncoded = base64UrlEncode(new TextEncoder().encode(JSON.stringify(header)));
+-   const bodyEncoded = base64UrlEncode(new TextEncoder().encode(JSON.stringify(body)));
+-   const signingInput = `${headerEncoded}.${bodyEncoded}`;
+-   const keyData = parsePem(env.JWT_PRIVATE_KEY);
+-   const privateKey = await crypto.subtle.importKey(
+-     'pkcs8', keyData, { name: 'RSA-PSS', hash: 'SHA-256' }, false, ['sign']
+-   );
+-   );
+-   const signature = await crypto.subtle.sign(
+-     { name: 'RSA-PSS', saltLength: 32 }, privateKey,
+-     new TextEncoder().encode(signingInput)
+-   return `${signingInput}.${base64UrlEncode(signature)}`;
+- // ===================== 双轨验证 =====================
+- export async function verifyJWT(token, env) {
+-   const parts = token.split('.');
+-   if (parts.length !== 3) return null;
+-   const [headerEnc, bodyEnc, sigEnc] = parts;
+-   const header = JSON.parse(new TextDecoder().decode(base64UrlDecode(headerEnc)));
+-   const body = JSON.parse(new TextDecoder().decode(base64UrlDecode(bodyEnc)));
+-   // RS256 优先验证
+-   if (header.alg === 'RS256' && env.JWT_PUBLIC_KEY) {
+-     try {
+-     try {
+-       const keyData = parsePem(env.JWT_PUBLIC_KEY);
+-       const pubKey = await crypto.subtle.importKey(
+-         'spki', keyData, { name: 'RSA-PSS', hash: 'SHA-256' }, false, ['verify']
+-       );
+-       );
+-       );
+-       );
+-       const valid = await crypto.subtle.verify(
+-       const valid = await crypto.subtle.verify(
+-         { name: 'RSA-PSS', saltLength: 32 }, pubKey,
+-         base64UrlDecode(sigEnc), new TextEncoder().encode(`${headerEnc}.${bodyEnc}`)
+-       if (valid && body.exp > now) return { ...body, _alg: 'RS256' };
+-     } catch {}
+-     } catch {}
+-   // HS256 兼容（30 天窗口内）
+-   if (header.alg === 'HS256' && env.JWT_SECRET) {
+-       const secretKey = await crypto.subtle.importKey(
+-         'raw', new TextEncoder().encode(env.JWT_SECRET),
+-         { name: 'HMAC', hash: 'SHA-256' }, false, ['verify']
+-         'HMAC', secretKey, base64UrlDecode(sigEnc),
+-         new TextEncoder().encode(`${headerEnc}.${bodyEnc}`)
+-       if (valid && body.exp > now) {
+-         // 仅接受 30 天内签发的旧 token
+-         const compatDeadline = Date.now() - 30 * 24 * 3600 * 1000;
+-         if (body.iat * 1000 > compatDeadline) {
+-           return { ...body, _alg: 'HS256' };
+-         }
+-       }
+-   return null;
+- ### RS256 迁移时间线
+- Day 0:      部署 RS256 签发 + 双轨验证（JWT_PRIVATE_KEY/JWT_PUBLIC_KEY 注入）
+- Day 1-30:   HS256 旧 token 仍可验证（向后兼容，日志记录 _alg: 'HS256'）
+- Day 30:     移除 HS256 兼容分支（仅 RS256）
+- Day 30:     删除 JWT_SECRET 环境变量
+- ## 三、KV Session 存储
+- // edge-functions/utils/kv-helper.js
+- const SESSION_TTL = 86400;  // 24h
+- export async function getSession(kv, sessionId) {
+-   const data = await kv.get(`session:${sessionId}`);
+-   return data ? JSON.parse(data) : null;
+- export async function setSession(kv, sessionId, userData) {
+-   await kv.put(`session:${sessionId}`, JSON.stringify({ ...userData, createdAt: Date.now() }), {
+-     expirationTtl: SESSION_TTL
+-   });
+- export async function deleteSession(kv, sessionId) {
+-   await kv.delete(`session:${sessionId}`);
+- ## 四、Cookie 安全属性
+- // Edge Middleware 中签发 Cookie
+- new Response(body, {
+-   headers: {
+-     'Set-Cookie': [
+-       `access_token=${token}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=900`,
+-       `refresh_token=${rt}; HttpOnly; Secure; SameSite=Strict; Path=/api/auth/refresh; Max-Age=604800`
+-     ].join(', ')
+- });
+- ## 五、RT 轮换（version 乐观锁）
+- // edge-functions/api/auth/refresh.js
+- // 见 SKILL.md 主文件完整实现
+- // 核心：KV.put 在 version 不匹配时返回 false → 返回 409 → 客户端重试
+- ## 六、skipAuthPaths 白名单
+- const skipAuthPaths = [
+-   '/api/auth/login',
+-   '/api/auth/register',
+-   '/api/auth/refresh',
+-   '/api/products',
+-   '/api/products/list',
+-   '/api/products/categories',
+-   '/api/products/[id]',
+-   '/api/ai/chat',
+-   '/api/pay/wx-notify',
+-   '/api/pay/ali-notify',
+- ];
+- ## 七、前端 AuthService（内存模式）
+- // client/src/services/auth.js
+- let _currentUser = null;
+- export const AuthService = {
+-   async getCurrentUser() {
+-     if (_currentUser) return _currentUser;
+-     const res = await fetch('/api/auth/me', { credentials: 'include' });
+-     if (!res.ok) return null;
+-     _currentUser = await res.json();
+-     return _currentUser;
+-   },
+-   setUser(user) { _currentUser = user; },
+-   clearUser() { _currentUser = null; },
+-   isLoggedIn() { return !!_currentUser; },
+-   onAuthChange(callback) {
+-     window.addEventListener('auth:changed', (e) => callback(e.detail));
+- };
+- window.dispatchEvent(new CustomEvent('auth:changed', { detail: user }));
+
+### references/cloud-functions.md  [docs]
+- # Cloud Functions 参考文档
+- > **版本：** v2.2 · **Phase：** Layer 0（Core）
+- > **职责：** 含密钥操作、D1 事务、支付 SDK、AI SSE、bcrypt 哈希
+- ---
+- ---
+- ---
+- ---
+- ---
+- ---
+- ---
+- ## 一、Cloud Functions 概述
+- Cloud Functions 运行在 **Node.js 环境**，可以：
+- - 访问 D1（主数据库）
+- - 使用密钥（bcrypt、支付 SDK）
+- - 执行长时间任务（SSE 流）
+- - 发起外部 HTTP 请求
+- ### 目录结构
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- cloud-functions/
+- ├── api/
+- │   ├── auth/
+- │   │   └── register.js          # bcrypt 注册
+- │   ├── pay/
+- │   │   ├── create-order.js      # 微信/支付宝预下单
+- │   │   ├── wx-notify.js        # 微信回调
+- │   │   └── ali-notify.js        # 支付宝回调
+- │   ├── order/
+- │   │   ├── create.js           # SELECT FOR UPDATE 创建订单
+- │   │   └── transition.js        # 状态机变更
+- │   ├── admin/
+- │   │   ├── products.js         # 商品 CRUD
+- │   │   ├── orders.js           # 订单查询
+- │   │   └── stats.js            # 运营统计
+- │   └── ai/
+- │       └── chat-stream.js       # SSE 流式响应
+- ├── utils/
+- │   ├── db.js                    # D1 连接池
+- │   ├── payment-sdk.js           # 微信/支付宝 SDK 封装
+- │   ├── admin-guard.js          # 权限校验
+- │   └── notification-hooks.js   # 通知钩子
+- └── cron/
+-     └── order-cron.js            # 定时任务
+- > ⚠️ **目录名必须是 `cloud-functions/`，EdgeOne Pages 平台硬性要求。
+- ## 二、函数签名
+- EdgeOne Pages Cloud Functions 的导出格式：
+- ```javascript
+- ```javascript
+- ```javascript
+- ```javascript
+- ```javascript
+- ```javascript
+- ```javascript
+- // Node.js
+- export async function onRequest(request, env) {
+- export async function onRequest(request, env) {
+- export async function onRequest(request, env) {
+- export async function onRequest(request, env) {
+- export async function onRequest(request, env) {
+-   // request: Request 对象
+-   // env: 环境变量
+-   return new Response('...', { status: 200 });
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- ### 接收请求参数
+- // GET 请求
+-   const url = new URL(request.url);
+-   const url = new URL(request.url);
+-   const id = url.searchParams.get('id');
+- // POST 请求
+-   const body = await request.json();
+-   // 或
+-   const body = await request.formData();
+- ## 三、D1 数据库工具
+- // cloud-functions/utils/db.js — D1 多租户数据库工具
+- import { query, queryOne, execute, withTransaction } from '../utils/db.js';
+- // 单语句查询（自动注入 {tenant}）
+- const orders = query(env,
+-   'SELECT * FROM orders WHERE tenant_id = {tenant} AND status = ?',
+-   ['PENDING'], tenantId
+- );
+- // 事务操作
+- withTransaction(env, tenantId, (ctx) => {
+-   const product = ctx.queryOne(
+-     'SELECT * FROM products WHERE id = {tenant} AND id = ? FOR UPDATE',
+-     [productId]
+-     [productId]
+-   );
+-   );
+-   );
+-   ctx.execute(
+-     'UPDATE products SET stock = stock - 1 WHERE id = {tenant} AND id = ?',
+- });
+- > ⚠️ D1 数据库通过 `env.DB` 绑定自动注入，无需手动管理连接池。
+- ### 事务示例
+- export async function withTransaction(pool, fn) {
+-   const conn = await pool.getConnection();
+-   try {
+-     await conn.beginTransaction();
+-     const result = await fn(conn);
+-     await conn.commit();
+-     return result;
+-   } catch (err) {
+-     await conn.rollback();
+-     throw err;
+-   } finally {
+-     conn.release();
+-   }
+-   }
+-   }
+-   }
+- ## 四、bcrypt 密码哈希
+- // cloud-functions/api/auth/register.js
+- import bcrypt from 'bcryptjs';
+- const BCRYPT_ROUNDS = 12;
+-   const { email, password, name } = await request.json();
+-   if (!email || !password || password.length < 8) {
+-     return new Response(JSON.stringify({ error: 'Invalid input' }), { status: 400 });
+-   const pool = await getPool(env.DATABASE_URL);
+-   const [existing] = await pool.query('SELECT id FROM users WHERE email = ?', [email]);
+-   if (existing.length > 0) {
+-     return new Response(JSON.stringify({ error: '邮箱已被注册' }), { status: 409 });
+-   const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
+-   const [result] = await pool.query(
+-     'INSERT INTO users (email, password_hash, name) VALUES (?, ?, ?)',
+-     [email, passwordHash, name || '']
+-   return new Response(JSON.stringify({
+-     userId: result.insertId,
+-     email
+-   }), { status: 201, headers: { 'Content-Type': 'application/json' } });
+- ## 五、微信支付 SDK 封装
+- // cloud-functions/utils/payment-sdk.js
+- /**
+-  * 微信支付 V3 — 统一下单
+-  */
+- export async function wxPayCreateOrder(env, { outTradeNo, amount, description, notifyUrl }) {
+-   const url = 'https://api.mch.weixin.qq.com/v3/pay/transactions/native';
+-   const payload = {
+-     appid: env.WX_APPID,
+-     mchid: env.WX_MCHID,
+-     description,
+-     out_trade_no: outTradeNo,
+-     notify_url: notifyUrl,
+-     amount: { total: amount, currency: 'CNY' }
+-   };
+-   const token = await getWxAuthToken(env);
+-   const response = await fetch(url, {
+-     method: 'POST',
+-     headers: {
+-     headers: {
+-       'Authorization': `WECHATPAY2-SHA256-RSA2048 ${token}`,
+-       'Content-Type': 'application/json'
+-     },
+-     body: JSON.stringify(payload)
+-   });
+-   });
+-   });
+-   if (!response.ok) {
+-     const err = await response.text();
+-     throw new Error(`Wechat pay error: ${err}`);
+-   const data = await response.json();
+-   return { codeUrl: data.code_url, tradeNo: data.id };
+- ## 六、AI SSE 流式响应
+- // cloud-functions/api/ai/chat-stream.js
+-   const historyParam = url.searchParams.get('history');
+-   const history = historyParam ? JSON.parse(decodeURIComponent(historyParam)) : [];
+-   const stream = new ReadableStream({
+-     async start(controller) {
+-       const encoder = new TextEncoder();
+-       const sendEvent = (event, data) => {
+-         controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
+-       };
+-       try {
+-         const messages = [
+-           ...history.map(h => ({ role: h.role, content: h.content })),
+-         ];
+-         const aiResponse = await fetch('https://api.example.com/chat', {
+-           method: 'POST',
+-           headers: {
+-             'Authorization': `Bearer ${env.AI_API_KEY}`,
+-             'Content-Type': 'application/json'
+-           },
+-           body: JSON.stringify({ messages, stream: true })
+-         });
+-         const reader = aiResponse.body.getReader();
+-         while (true) {
+-           const { done, value } = await reader.read();
+-           if (done) break;
+-           const text = new TextDecoder().decode(value);
+-           sendEvent('message', { content: text });
+-         }
+-         sendEvent('done', {});
+-       } catch (err) {
+-         sendEvent('error', { message: err.message });
+-       } finally {
+-         controller.close();
+-       }
+-     }
+-     }
+-   return new Response(stream, {
+-       'Content-Type': 'text/event-stream',
+-       'Cache-Control': 'no-cache',
+-       'Connection': 'keep-alive'
+- ## 七、环境变量（Cloud Functions）
+- | 变量 | 必填 | 说明 |
+- |------|------|------|
+- | `DATABASE_URL` | ✅ | D1 连接串 |
+- | `WX_APPID` | ✅（电商） | 微信 AppID |
+- | `WX_MCHID` | ✅（电商） | 微信商户号 |
+- | `WX_API_KEY` | ✅（电商） | 微信 APIv3 密钥 |
+- | `WX_CERT_PATH` | ✅（电商） | 微信证书路径 |
+- | `ALI_APP_ID` | ✅（电商） | 支付宝 AppID |
+- | `ALI_PRIVATE_KEY` | ✅（电商） | 支付宝私钥 |
+- | `AI_API_KEY` | ✅（AI 栈） | AI 模型 API Key |
+- | `EDGE_BASE` | ✅（电商） | Edge Function 内部网关 |
+- | `ADMIN_EMAIL` | 可选 | 管理员通知邮箱 |
+
+### references/deployment.md  [docs]
+- # 部署参考文档
+- > **版本：** v2.2 · **Phase：** Layer 0（Core）
+- > **部署平台：** EdgeOne Pages
+- ---
+- ---
+- ---
+- ---
+- ---
+- ---
+- ---
+- ---
+- ---
+- ## 一、快速部署
+- ### 1.1 环境准备
+- ```bash
+- ```bash
+- ```bash
+- ```bash
+- ```bash
+- ```bash
+- ```bash
+- ```bash
+- ```bash
+- ```bash
+- ```bash
+- # 1. 安装 EdgeOne CLI
+- npm install -g edgeone@latest
+- # 2. 登录（选择中国区）
+- edgeone login --site china
+- # 3. 查看账号
+- edgeone whoami
+- # → 刘博 · 100043397965
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ### 1.2 初始化项目
+- # 交互式初始化（回答引导问题）
+- npx create-edgeone-app
+- # 或手动创建后部署
+- cd my-site
+- edgeone pages deploy
+- ### 1.3 环境变量配置（EdgeOne Console）
+- 在 EdgeOne Console → 项目设置 → 环境变量中注入：
+- # === 认证（Phase 3 RS256）===
+- JWT_PRIVATE_KEY=<私钥内容，换行替换为\n>
+- JWT_PUBLIC_KEY=<公钥内容，换行替换为\n>
+- JWT_SECRET=<HS256密钥，30天兼容用>
+- # === 数据库 ===
+- # D1 数据库由 EdgeOne Pages 自动注入 env.DB，无需手动配置连接字符串
+- # 执行迁移：edgeone d1 execute <db-name> --file=db/migrations/001_init.sql
+- # === 微信支付 ===
+- WX_APPID=wx...
+- WX_MCHID=1234567890
+- WX_API_KEY=...
+- WX_CERT_PATH=./cert/apiclient_cert.pem
+- # === 支付宝 ===
+- ALI_APP_ID=202100...
+- ALI_PRIVATE_KEY=...
+- # === AI（AI 栈）===
+- AI_API_KEY=sk-...
+- # === 内部网关 ===
+- EDGE_BASE=https://xxx.edgeone.dev
+- # === 站点 ===
+- SITE_URL=https://your-site.edgeone.cool
+- ### 1.4 数据库迁移
+- # 1. 执行初始化迁移
+- edgeone d1 execute my-database --file=db/migrations/001_init.sql
+- # 2. 执行订单日志迁移
+- edgeone d1 execute my-database --file=db/migrations/002_order_logs.sql
+- ### 1.5 部署
+- # 部署（自动构建 + 上传 + 部署）
+- edgeone pages deploy --project my-site --output ./dist
+- # 部署后查看 URL
+- edgeone pages list
+- ## 二、部署配置（edgeone.json）
+- ```json
+- ```json
+- ```json
+- {
+- {
+- {
+-   "name": "my-geek-mall",
+-   "output": "./dist",
+-   "env": "production",
+-   "routes": [
+-     {
+-     {
+-     {
+-       "pattern": "/api/*",
+-       "target": "edge-functions"
+-     },
+-       "pattern": "/api/pay/*",
+-       "target": "cloud-functions"
+-     }
+-     }
+-   ],
+-   "vars": {
+-     "SITE_URL": "https://my-geek-mall.edgeone.cool"
+-   }
+-   }
+- }
+- }
+- }
+- ## 三、Edge Functions vs Cloud Functions 路由
+- EdgeOne Pages 自动识别：
+- - `edge-functions/` → 编译为 Edge Functions（部署到全球边缘节点）
+- - `cloud-functions/` → 编译为 Cloud Functions（Node.js）
+- - `client/` → 编译为静态资源（SPA）
+- ### 手动指定路由
+- 在 `edgeone.json` 中配置路由规则：
+-   "routing": {
+-     "/api/auth/*": "cloud-functions",
+-     "/api/pay/*": "cloud-functions",
+-     "/api/admin/*": "cloud-functions",
+-     "/api/order/*": "cloud-functions",
+-     "/api/ai/*": "cloud-functions",
+-     "/api/*": "edge-functions"
+- ## 四、KV Storage 配置
+- 在 EdgeOne Console 中创建 KV 命名空间：
+- KV Namespaces:
+-   - main: 用于 Session、RT、Cart、AI History
+- 绑定到 Edge Functions 环境变量：
+- KV_NAMESPACE=main
+- > ⚠️ **重要**：KV 仅 Edge Functions 可直接访问。Cloud Functions 需通过 HTTP 调用 Edge Function `edge-functions/api/internal/*` 访问 KV。
+- ## 五、Cron 定时任务配置
+- 在 `edgeone.json` 中配置定时触发器：
+-   "triggers": [
+-       "name": "order-cron",
+-       "type": "schedule",
+-       "cron": "*/5 * * * *",
+-       "function": "cloud-functions/cron/order-cron.js",
+-       "enabled": true
+-   ]
+- 或通过 EdgeOne Console UI 配置。
+- ## 六、域名绑定（可选）
+- # 添加自定义域名
+- edgeone domains add --project my-site --domain shop.example.com
+- # 验证 DNS
+- edgeone domains verify --project my-site --domain shop.example.com
+- # 申请 SSL 证书（自动）
+- edgeone ssl issue --project my-site --domain shop.example.com
+- ## 七、本地开发
+- # 1. 启动本地 Edge Functions 模拟器
+- edgeone dev
+- # 2. 启动本地 Next.js 开发服务器（单独进程）
+- npm run dev
+- # 3. 两个服务并行运行：
+- # - EdgeOne dev: http://localhost:8787
+- # - Next.js: http://localhost:3000
+- ### 本地 .env.local
+- # .env.local（本地开发）
+- JWT_PRIVATE_KEY="$(cat keys/private.pem | tr '\n' ' ')"
+- JWT_PUBLIC_KEY="$(cat keys/public.pem | tr '\n' ' ')"
+- JWT_SECRET=local-dev-secret
+- # D1 数据库绑定由 EdgeOne Pages 平台自动注入
+- EDGE_BASE=http://localhost:8787
+- ## 八、回滚与监控
+- ### 回滚
+- # 查看部署历史
+- edgeone pages deployments list --project my-site
+- # 回滚到指定版本
+- edgeone pages rollback --project my-site --deployment d-xxxxx
+- ### 监控
+- # 查看实时日志
+- edgeone logs --project my-site --function edge-functions/api/products/list.js --tail
+- # 查看调用统计
+- edgeone pages stats --project my-site --period 24h
+- ## 九、常见问题
+- ### Q: 部署后 KV 数据丢失？
+- A: KV 数据在项目关联的 KV Namespace 中，删除项目会清空。迁移时需导出 KV 数据。
+- ### Q: Cloud Functions 访问不到 KV？
+- A: 这是 EdgeOne Pages 平台约束。解决方案：通过 `fetch(EDGE_BASE + '/api/internal/idempotency')` 从 Cloud 调用 Edge Function 访问 KV。
+- ### Q: 微信回调返回 "签名验证失败"？
+- A: 微信 V3 回调需使用微信平台证书公钥验签，证书每 1 年需更新。
+- ### Q: JWT RS256 签发失败？
+- A: 检查 `JWT_PRIVATE_KEY` 环境变量格式，确保换行符正确转义为 `\n`。
+
+### references/edge-functions.md  [docs]
+- # Edge Functions 参考文档
+- > **版本：** v2.2 · **Phase：** Layer 0（Core）
+- > **职责：** Edge Middleware + 读操作 API + KV 访问
+- ---
+- ---
+- ---
+- ---
+- ---
+- ## 一、Edge Functions 概述
+- Edge Functions 运行在 **V8 引擎**，无密钥（密钥在 Cloud Functions），响应极快，适合读操作。
+- ### 与 Cloud Functions 的职责划分
+- | 场景 | Edge Functions（V8 + KV） | Cloud Functions（Node.js） |
+- |------|--------------------------|---------------------------|
+- | JWT 校验 | ✅ crypto.subtle | — |
+- | KV 读写 | ✅ 原生访问 | ❌（通过 HTTP 调用 Edge） |
+- | Session 读取 | ✅ | — |
+- | 限流 | ✅ KV 滑动窗口 | — |
+- | 幂等锁 | ✅ putIfNotExists | — |
+- | 产品列表（无筛选） | ✅ KV 缓存 | — |
+- | 商品详情 | ✅ KV 缓存 | — |
+- | 订单创建 | — | ✅ SELECT FOR UPDATE |
+- | 用户注册（bcrypt） | — | ✅ |
+- | 支付回调 | — | ✅ 微信/支付宝 SDK |
+- | AI SSE 流 | — | ✅ waitUntil |
+- ## 二、Edge Middleware（_middleware.js）
+- Edge Middleware 在**每个 Edge Function 请求**前执行：
+- ```javascript
+- ```javascript
+- ```javascript
+- ```javascript
+- ```javascript
+- // edge-functions/_middleware.js
+- import { verifyAccessToken, extractToken } from './utils/jwt-helper.js';
+- import { checkRateLimit } from './utils/rate-limit.js';
+- export async function onRequest(context) {
+- export async function onRequest(context) {
+- export async function onRequest(context) {
+- export async function onRequest(context) {
+- export async function onRequest(context) {
+-   const { request, env } = context;
+-   const { request, env } = context;
+-   const { request, env } = context;
+-   const { request, env } = context;
+-   // === 1. 公开路径放行 ===
+-   const publicPaths = ['/', '/login', '/register', '/api/products'];
+-   const url = new URL(request.url);
+-   if (publicPaths.some(p => url.pathname === p || url.pathname.startsWith(p + '/'))) {
+-     if (url.pathname.startsWith('/api/') && !url.pathname.startsWith('/api/auth/')) {
+-       // 公开 API（如产品列表）无需认证
+-     }
+-     return context.next(); // 继续到具体 Function
+-   }
+-   }
+-   }
+-   }
+-   }
+-   }
+-   }
+-   }
+-   // === 2. 提取 Token ===
+-   const tokenData = extractToken(request);
+-   if (!tokenData) {
+-     return new Response('Unauthorized', { status: 401 });
+-   // === 3. JWT 验证 ===
+-   const payload = await verifyAccessToken(tokenData.token, env);
+-   if (!payload) {
+-   if (!payload) {
+-     return new Response('Invalid token', { status: 401 });
+-   // === 4. 限流 ===
+-   const clientId = payload.sub || request.headers.get('CF-Connecting-IP');
+-   const { allowed } = await checkRateLimit(context, `global:${clientId}`, 100);
+-   if (!allowed) {
+-     return new Response('Rate limited', { status: 429, headers: { 'Retry-After': '60' } });
+-   // === 5. 注入用户信息到 context ===
+-   // 方式 A：通过 x-user-id / x-user-role 响应头传递给具体 Function
+-   // 方式 B：Edge Function 直接调用 verifyAccessToken（推荐，减少中间件复杂度）
+-   return context.next();
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- ```
+- ```
+- ```
+- ```
+- ```
+- ## 三、常用 Edge API
+- ### 3.1 获取当前用户
+- // edge-functions/api/auth/me.js
+-   const payload = await verifyAccessToken(extractToken(request)?.token, env);
+-   const payload = await verifyAccessToken(extractToken(request)?.token, env);
+-   const payload = await verifyAccessToken(extractToken(request)?.token, env);
+-     return new Response(JSON.stringify({ error: 'Unauthorized' }), { status: 401 });
+-   // 从 KV 读取 Session 补充信息
+-   const session = await env.KV.get(`session:${payload.sub}`);
+-   const user = session ? JSON.parse(session) : { id: payload.sub, email: payload.email };
+-   return new Response(JSON.stringify(user), {
+-     headers: { 'Content-Type': 'application/json' }
+-     headers: { 'Content-Type': 'application/json' }
+-   });
+-   });
+-   });
+-   });
+-   });
+- ### 3.2 产品列表（KV 缓存 + 回源）
+- // edge-functions/api/products/list.js
+- const CACHE_TTL = 300; // 5 min
+-   const { env } = context;
+-   // KV 读取（缓存命中）
+-   const cached = await env.KV.get('products:list:default');
+-   if (cached) {
+-     return new Response(cached, {
+-       headers: { 'Content-Type': 'application/json', 'X-Cache': 'HIT' }
+-     });
+-   // 缓存未命中 → 回源 Cloud D1（通过 db.js）
+-   const products = await fetch(`${env.EDGE_BASE}/internal/products`, {
+-     headers: { 'X-Internal-Key': env.INTERNAL_KEY }
+-   }).then(r => r.json());
+-   // 写入 KV
+-   await env.KV.put('products:list:default', JSON.stringify(products), {
+-     expirationTtl: CACHE_TTL
+-   return new Response(JSON.stringify(products), {
+-     headers: { 'Content-Type': 'application/json', 'X-Cache': 'MISS' }
+- ### 3.3 KV 购物车
+- // edge-functions/api/cart/*.js
+- // GET /api/cart — 读取购物车
+-   if (!payload) return new Response('Unauthorized', { status: 401 });
+-   if (!payload) return new Response('Unauthorized', { status: 401 });
+-   const cart = await env.KV.get(`cart:${payload.sub}`);
+-   return new Response(cart || '[]', { headers: { 'Content-Type': 'application/json' } });
+- // POST /api/cart — 添加商品
+- // Body: { productId, qty }
+-   const { productId, qty } = await request.json();
+-   const cart = JSON.parse(await env.KV.get(`cart:${payload.sub}`) || '[]');
+-   const existing = cart.find(i => i.productId === productId);
+-   if (existing) {
+-     existing.qty += qty;
+-   } else {
+-     cart.push({ productId, qty });
+-   await env.KV.put(`cart:${payload.sub}`, JSON.stringify(cart), {
+-     expirationTtl: 30 * 86400 // 30 天
+-   return new Response(JSON.stringify({ ok: true, cart }), {
+- ## 四、KV Helper 封装
+- // edge-functions/utils/kv-helper.js
+- /**
+- /**
+- /**
+-  * 安全的 KV 读取，返回 null 而不是抛错
+-  */
+-  */
+-  */
+- export async function kvGet(kv, key) {
+-   try {
+-     const value = await kv.get(key);
+-     return value ? JSON.parse(value) : null;
+-   } catch {
+-     return null;
+-  * 原子递增（用于计数器/限流）
+- export async function kvIncr(kv, key) {
+-   const current = parseInt(await kv.get(key) || '0');
+-   await kv.put(key, String(current + 1));
+-   return current + 1;
+-  * 乐观锁写入（version 字段）
+- export async function kvUpdateWithVersion(kv, key, updateFn) {
+-   const data = await kvGet(kv, key);
+-   if (!data) return null;
+-   const newData = updateFn({ ...data });
+-   newData.version = (data.version || 0) + 1;
+-   // 比较并写入（Cloudflare KV 乐观锁近似实现）
+-   await kv.put(key, JSON.stringify(newData), { expirationTtl: 86400 });
+-   return newData;
+- ## 五、环境变量（Edge Functions）
+- | 变量 | 必填 | 说明 |
+- |------|------|------|
+- | `JWT_PRIVATE_KEY` | ✅（Phase 3） | RS256 私钥 |
+- | `JWT_PUBLIC_KEY` | ✅（Phase 3） | RS256 公钥 |
+- | `JWT_SECRET` | ✅（兼容） | HS256 密钥（30 天兼容） |
+- | `EDGE_BASE` | ✅（电商） | Cloud Function 内部网关 |
+- | `INTERNAL_KEY` | ✅（电商） | 内部调用鉴权 |
+- | `SITE_URL` | 可选 | 站点 URL（SEO 用） |
+
+### references/integration-tests.md  [docs]
+- # Phase 4A 集成测试大纲 — 14 条
+- > 版本：v6 Final
+- > 更新日期：2026-05-06
+- > 前置条件：6 项 P0 修复全部完成 + W1-W4 实施完成
+- ## 前置条件
+- 运行测试前需确保：
+- 1. `sharing/jwt-helper.js` 已移除 `@edge-runtime/primitives` 导入
+- 2. `cloud-functions/utils/db.js` 已就位（含 {tenant} 强制 + withTransaction）
+- 3. `edge-functions/middleware/rbac.js` 已就位
+- 4. 数据库已执行 `003_tenant_isolation.sql` 迁移
+- 5. `sharing/constants.js` 权限矩阵已配置
+- 6. KV 中至少有两个测试租户（`tenant_a`, `tenant_b`）
+- ## 功能测试（F1-F6）
+- ### F1：租户隔离 — 跨租户数据不可见
+- | 项目 | 内容 |
+- | 项目 | 内容 |
+- | 项目 | 内容 |
+- | 项目 | 内容 |
+- | 项目 | 内容 |
+- | 项目 | 内容 |
+- | 项目 | 内容 |
+- | 项目 | 内容 |
+- | 项目 | 内容 |
+- | 项目 | 内容 |
+- | 项目 | 内容 |
+- | 项目 | 内容 |
+- | 项目 | 内容 |
+- | 项目 | 内容 |
+- |------|------|
+- |------|------|
+- |------|------|
+- |------|------|
+- |------|------|
+- |------|------|
+- |------|------|
+- |------|------|
+- |------|------|
+- |------|------|
+- |------|------|
+- |------|------|
+- |------|------|
+- |------|------|
+- | 验证 | 租户 A 的 token 无法读取租户 B 的订单 |
+- | 前置 | tenant_a 和 tenant_b 各有一个订单 |
+- | 步骤 | 1. 用 tenant_a 的 token 请求 `/api/order?id={tenant_b_order_id}`；2. 检查响应 |
+- | 预期 | 403 或空结果（不暴露 tenant_b 的数据）|
+- | 命令 | `curl -H "Authorization: Bearer {token_a}" {url}/api/order?id={order_b_id}` |
+- ### F2：KV 租户隔离
+- | 验证 | tenant_b 无法访问 tenant_a 的 KV session |
+- | 步骤 | 1. tenant_a 创建一个 KV session；2. tenant_b 尝试读取 |
+- | 预期 | tenant_b 读不到 tenant_a 的 session |
+- | 说明 | KV key 前缀 `${tenant}:session:{id}` 天然隔离 |
+- ### F3：旧 token 兼容
+- | 验证 | 旧 token（无 tenant 字段）自动归入正确租户 |
+- | 步骤 | 1. 用 Phase 3 签发的 token（HS256，无 tenant）请求；2. 检查响应 |
+- | 预期 | resolveLegacyTenant() 从 users 表反查到该用户的真实 tenant_id |
+- | 说明 | 旧 token 的 `_isLegacy` 标记为 true |
+- ### F4：角色权限
+- | 验证 | superadmin 可跨租户，tenant_admin 只看本租户 |
+- | 步骤 | 1. superadmin 调用 `GET /api/admin/tenants`；2. tenant_admin 调用 |
+- | 预期 | superadmin → 200 + 租户列表；tenant_admin → 403 |
+- ### F5：支付回调租户识别
+- | 验证 | 支付回调从 KV 反查到正确 tenant |
+- | 步骤 | 1. 创建订单时写入 `order_tenant:{orderId}` → `{tenant}` |
+- | 预期 | 回调时从 KV 反查 tenant 正确，订单状态更新到对应租户 |
+- ### F6：SQL 强制 {tenant}
+- | 验证 | 不走 query() 的 SQL 操作直接报错 |
+- | 步骤 | 直接调用 `env.DB.prepare('SELECT ...')` 而不经过 db.js |
+- | 预期 | db 对象不导出，在模块作用域内不可访问，编译或运行时报错 |
+- ## 安全测试（S-01 ~ S-08）
+- ### S-01：JWT tenant 篡改
+- | 验证 | 篡改 JWT payload 中的 tenant → 验签失败 → 401 |
+- | 步骤 | 1. 获取一个有效 token；2. 手动修改 payload 中的 tenant 字段；3. 重新 base64 编码；4. 发送请求 |
+- | 预期 | token 签名不匹配，返回 401 |
+- ### S-02：X-Tenant-ID Header 注入
+- | 验证 | 添加 X-Tenant-ID Header → 被忽略，以 JWT tenant 为准 |
+- | 步骤 | 1. 用 tenant_a 的 token；2. 添加 `X-Tenant-ID: tenant_b` header；3. 请求 |
+- | 预期 | tenant-context.js 不读取此 header，仍以 JWT 中的 tenant 为准 |
+- ### S-03：超配额限制
+- | 验证 | 单租户超限 → 返回 429/403，不影响其他租户 |
+- | 步骤 | 1. 模拟一个租户的配额耗尽；2. 该租户请求被拒绝；3. 另一租户请求正常 |
+- | 预期 | 超限租户返回 `QUOTA_EXCEEDED`，其他租户正常 |
+- ### S-04：superadmin 提权尝试
+- | 验证 | tenant_admin 尝试访问 superadmin API → 403 |
+- | 步骤 | 1. 用 tenant_admin 的 token；2. 调用 `GET /api/admin/tenants` |
+- | 预期 | rbac.js 校验角色 → 403 Forbidden |
+- ### S-05：支付回调伪造
+- | 验证 | 伪造支付回调（无 KV 记录）→ 404 |
+- | 步骤 | 1. 构造一个假的微信回调请求（out_trade_no 在 KV 中无记录） |
+- | 预期 | wx-notify.js 从 KV 反查不到 tenant → 404 |
+- ### S-06：SQL 注入 tenant_id
+- | 验证 | 构造恶意 tenant 值 → 被 {tenant} 占位符参数化绑定防御 |
+- | 步骤 | 1. 用 tenant 值 `' OR 1=1 --` 等注入字符串构造 token |
+- | 预期 | {tenant} → ? → bind(tenant, ...) 参数化，注入无效 |
+- ### S-07：RBAC 绕过
+- | 验证 | 无 token 访问受保护路由 → 401 |
+- | 步骤 | 1. 不携带 Authorization header；2. 直接请求 `/api/admin/tenants` |
+- | 预期 | rbac.js 检测到无 token → 401 |
+- ### S-08：并发配额攻击
+- | 验证 | 大量并发请求 → 配额定界不被突破 |
+- | 步骤 | 1. 并发发送 200 个请求（超过 kv_ops:10000 限制）；2. 检查配额计数 |
+- | 预期 | 并发请求不应突破硬限制的合理倍数（允许少量偏差）|
+- | 备注 | 此测试依赖 KV atomic counter 的实现，可能在 EdgeOne 环境中略有偏差 |
+- ---
+- ## 测试执行顺序
+- ```
+- ```
+-        F3 (旧token兼容)
+-        ↓
+- F1 ─→ F2 ─→ F5 ─→ F6    功能测试（先确保基础隔离正确）
+-                        ↓
+- S1 ─→ S2 ─→ S4 ─→ S7    安全测试（先验证认证机制）
+- ↓
+- ↓
+- S3 ─→ S8                配额测试（最后测边界条件）
+- S5 ─→ S6                边界测试（防御机制）
+- ## 测试结果记录
+- | 用例 | 结果 | 日期 | 备注 |
+- |------|------|------|------|
+- | F1 | ⬜ | — | |
+- | F2 | ⬜ | — | |
+- | F3 | ⬜ | — | |
+- | F4 | ⬜ | — | |
+- | F5 | ⬜ | — | |
+- | F6 | ⬜ | — | |
+- | S-01 | ⬜ | — | |
+- | S-02 | ⬜ | — | |
+- | S-03 | ⬜ | — | |
+- | S-04 | ⬜ | — | |
+- | S-05 | ⬜ | — | |
+- | S-06 | ⬜ | — | |
+- | S-07 | ⬜ | — | |
+- | S-08 | ⬜ | — | |
+
+### references/kv-storage.md  [docs]
+- # KV Storage 参考文档
+- ## 一、KV 命名空间设计
+- EdgeOne Pages 提供两个 KV Namespace：
+- - `auth_ns`：认证数据（user、session、refresh_token）
+- - `kv_ns`：业务数据（cart、order、product、ai_session）
+- Node Functions 必须单独绑定 auth_ns。
+- ## 二、Key 命名规范（含租户前缀占位）
+- ```typescript
+- // sharing/kv-keys.ts
+- // Phase 1 填固定值 "default"，Phase 3 替换为动态 tenantId
+- export const kvKey = {
+-   user: (tenantId, userId) => `${tenantId}:user:${userId}`,
+-   session: (tenantId, sessionId) => `${tenantId}:session:${sessionId}`,
+-   rtMeta: (tenantId, userId) => `${tenantId}:rt:${userId}:meta`,
+-   product: (tenantId, productId) => `${tenantId}:product:${productId}`,
+-   productList: (tenantId) => `${tenantId}:products:list`,
+-   cart: (tenantId, userId) => `${tenantId}:cart:${userId}`,
+-   order: (tenantId, orderId) => `${tenantId}:order:${orderId}`,
+-   orderByUser: (tenantId, userId) => `${tenantId}:orders:user:${userId}`,
+-   aiSession: (tenantId, userId, sessionId) => `${tenantId}:ai:${userId}:${sessionId}`,
+-   idempotency: (tradeNo) => `pay:idempotency:${tradeNo}`,
+-   rateLimit: (key, window) => `rl:${key}:${Math.floor(Date.now() / (window * 1000))}`,
+- };
+- ```
+- ```
+- ```
+- ## 三、分层查询策略
+- | 场景 | 实现 | 原因 |
+- |------|------|------|
+- | 单商品读取 | KV 缓存 | kv.get 极快 |
+- | 商品列表（首页，无筛选） | KV 第1页缓存 | 首页访问量最大 |
+- | 分类+价格筛选 | Cloud D1 | KV 不支持复合条件 |
+- | 关键词搜索 | Cloud D1 | KV 不支持 LIKE |
+- | AI 会话历史 | KV list | kv.list('ai:${userId}:') |
+- | 订单统计（多条件聚合） | Cloud D1 | KV 不支持聚合 |
+- ## 四、索引 KV 模式
+- ```javascript
+- ```javascript
+- // 写入订单时同步写入索引
+- await kv.put(`order:${orderId}`, JSON.stringify(order));
+- await kv.put(`idx:order:date:${dateStr}:${orderId}`, '1');
+- await kv.put(`idx:order:status:${status}:${orderId}`, '1');
+- await kv.put(`idx:order:user:${userId}:${orderId}`, '1');
+- // 查询"今日所有 PAID 订单"
+- const keys = await kv.list({ prefix: `idx:order:date:${today}:` });
+- const orderIds = keys.map(k => k.name.split(':').pop());
+- const orders = await Promise.all(orderIds.map(id => kv.get(`order:${id}`)));
+- ## 五、数据过期策略
+- kv.put(`session:${sessionId}`, data, { expirationTtl: 86400 });      // 24h
+- kv.put(`order:${orderId}`, data, { expirationTtl: 7776000 });          // 90d
+- kv.put(`ai_session:${userId}:${sessionId}`, data, { expirationTtl: 2592000 }); // 30d
+- kv.putIfNotExists(`pay:idempotency:${tradeNo}`, id, { expirationTtl: 86400 }); // 24h
+
+### references/middleware.md  [docs]
+- # Middleware 参考文档
+- > **版本：** v2.2 · **Phase：** Layer 0（Core）
+- > **职责：** Platform Middleware（CORS/CSP/轻量认证）+ Edge Middleware（JWT 详细校验）
+- ---
+- ---
+- ---
+- ---
+- ## 一、双层 Middleware 架构
+- ```
+- ```
+- ```
+- ```
+- ┌──────────────────────────────────────────────────────────────┐
+- ┌──────────────────────────────────────────────────────────────┐
+- │           Platform Middleware（middleware.js）                    │
+- │  ① CORS 预检（OPTIONS）                                        │
+- │  ② CSP Header 注入                                             │
+- │  ③ 轻量 Bearer 检查（公开路径放行）                               │
+- │  ④ 支付回调 IP 白名单 → 直接 return，不进 Edge Middleware         │
+- └──────────────────────────────────────────────────────────────┘
+- └──────────────────────────────────────────────────────────────┘
+-                               ↓
+- │            Edge Functions Middleware（_middleware.js）              │
+- │  ⑤ JWT 详细校验（crypto.subtle）                                 │
+- │  ⑥ KV session 验证                                             │
+- │  ⑦ KV 限流计数器（滑动窗口）                                      │
+- ### 为什么需要双层？
+- | 层级 | 执行时机 | 用途 |
+- |------|---------|------|
+- | Platform Middleware | **每个请求**（HTML/静态/API） | 全局安全头、CORS、支付回调 bypass |
+- | Edge Middleware | 仅 Edge Function 请求 | JWT 详细校验、KV 限流 |
+- ## 二、Platform Middleware
+- ```javascript
+- ```javascript
+- // middleware.js（项目根目录）
+- export function onRequest(context) {
+-   const { request, env, next } = context;
+-   const url = new URL(request.url);
+-   const url = new URL(request.url);
+-   const pathname = url.pathname;
+-   // === ① CORS 预检 ===
+-   if (request.method === 'OPTIONS') {
+-     return new Response(null, {
+-       status: 204,
+-       headers: {
+-         'Access-Control-Allow-Origin': env.ALLOWED_ORIGIN || '*',
+-         'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+-         'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+-         'Access-Control-Max-Age': '86400'
+-       }
+-     });
+-     });
+-     });
+-     });
+-   }
+-   }
+-   }
+-   }
+-   }
+-   }
+-   }
+-   }
+-   }
+-   }
+-   // === ② CSP Header 注入（仅 HTML）===
+-   const contentType = request.headers.get('Content-Type') || '';
+-   if (contentType.includes('text/html')) {
+-     const response = next(); // 获取原始响应
+-     const CSP = [
+-       "default-src 'self'",
+-       "script-src 'self' 'unsafe-inline'", // Skill 生成代码含内联脚本
+-       "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+-       "font-src 'self' https://fonts.gstatic.com",
+-       "img-src 'self' data: https:",
+-       "connect-src 'self' https://api.edgeone.dev https://api.weixin.qq.com https://openapi.alipay.com",
+-       "frame-ancestors 'none'",
+-       "base-uri 'self'",
+-       "form-action 'self'"
+-     ].join('; ');
+-     const newHeaders = new Headers(response.headers);
+-     newHeaders.set('Content-Security-Policy', CSP);
+-     newHeaders.set('X-Content-Type-Options', 'nosniff');
+-     newHeaders.set('X-Frame-Options', 'DENY');
+-     newHeaders.set('Referrer-Policy', 'strict-origin-when-cross-origin');
+-     return new Response(response.body, {
+-       status: response.status,
+-       statusText: response.statusText,
+-       headers: newHeaders
+-   // === ③ 轻量 Bearer 检查（可选，放行公开 API）===
+-   const publicApiPrefixes = ['/api/products', '/api/categories'];
+-   if (publicApiPrefixes.some(p => pathname.startsWith(p))) {
+-     return next();
+-     return next();
+-   // === ④ 支付回调独立路径（IP 白名单 + 直接 return）===
+-   if (pathname === '/api/pay/wx-notify' || pathname === '/api/pay/ali-notify') {
+-     // 微信/支付宝 IP 白名单（可扩展）
+-     const allowedIps = [
+-       '101.226.90.0/24', // 微信支付
+-       '110.42.0.0/16',  // 支付宝
+-     ];
+-     const clientIp = request.headers.get('CF-Connecting-IP') ||
+-                     request.headers.get('X-Real-IP') || '';
+-     if (!isIpAllowed(clientIp, allowedIps)) {
+-       console.warn(`[Middleware] Blocked pay callback from IP: ${clientIp}`);
+-       return new Response('Forbidden', { status: 403 });
+-     }
+-     }
+-     // 直接 return，不继续到 Edge Middleware（回调没有 JWT）
+-   return next();
+- }
+- }
+- }
+- function isIpAllowed(ip, allowedCidrs) {
+-   // 简化的 CIDR 判断
+-   return allowedCidrs.some(cidr => {
+-     const [range, bits] = cidr.split('/');
+-     return ip.startsWith(range.split('.').slice(0, parseInt(bits) / 8).join('.'));
+-   });
+-   });
+- ## 三、Edge Middleware（_middleware.js）
+- // edge-functions/_middleware.js
+- import { verifyAccessToken, extractToken } from './utils/jwt-helper.js';
+- import { checkRateLimit } from './utils/rate-limit.js';
+- export async function onRequest(context) {
+-   const { request, env } = context;
+-   // === 公开路径放行 ===
+-   const publicPaths = ['/api/products', '/api/categories'];
+-   if (publicPaths.some(p => url.pathname.startsWith(p))) {
+-     return context.next();
+-     return context.next();
+-     return context.next();
+-   // === Auth 路径放行 ===
+-   if (url.pathname.startsWith('/api/auth/login') || url.pathname.startsWith('/api/auth/register')) {
+-   // === RT 刷新路径放行 ===
+-   if (url.pathname === '/api/auth/refresh') {
+-   // === 提取 + 验证 JWT ===
+-   const tokenData = extractToken(request);
+-   if (!tokenData) {
+-     return new Response(JSON.stringify({ error: 'Unauthorized' }), {
+-       status: 401, headers: { 'Content-Type': 'application/json' }
+-       status: 401, headers: { 'Content-Type': 'application/json' }
+-   const payload = await verifyAccessToken(tokenData.token, env);
+-   if (!payload) {
+-     return new Response(JSON.stringify({ error: 'Token expired or invalid' }), {
+-   // === 限流（AI 栈专用）===
+-   if (url.pathname.startsWith('/api/ai/')) {
+-     const clientId = payload.sub || request.headers.get('CF-Connecting-IP');
+-     const limit = payload.role === 'admin' ? 200 : 60; // admin 更高限额
+-     const { allowed, resetMs } = await checkRateLimit(context, `ai:${clientId}`, limit);
+-     if (!allowed) {
+-       return new Response(JSON.stringify({ error: 'Rate limited' }), {
+-         status: 429,
+-         headers: { 'Retry-After': String(Math.ceil(resetMs / 1000)) }
+-       });
+-   // 注入用户信息到 request.headers（Edge Function 可读取）
+-   const newRequest = new Request(request, {
+-     headers: new Headers(request.headers)
+-   newRequest.headers.set('X-User-Id', payload.sub);
+-   newRequest.headers.set('X-User-Role', payload.role);
+-   return context.next();
+- ## 四、响应头汇总
+- | Header | 值 | 注入位置 |
+- |--------|-----|---------|
+- | `Content-Security-Policy` | CSP 指令 | Platform（HTML） |
+- | `X-Content-Type-Options` | `nosniff` | Platform |
+- | `X-Frame-Options` | `DENY` | Platform |
+- | `Referrer-Policy` | `strict-origin-when-cross-origin` | Platform |
+- | `X-User-Id` | 用户 ID | Edge Middleware |
+- | `X-User-Role` | `user/admin` | Edge Middleware |
+- | `Access-Control-Allow-Origin` | `*` | Platform（CORS） |
+
+### references/multi-tenant.md  [docs]
+- # 多租户隔离参考文档
+- > **版本：** v1.0 · **Phase：** 4A
+- > **职责：** 租户上下文解析、数据隔离、KV 前缀规则、迁移脚本
+- ---
+- ---
+- ---
+- ---
+- ---
+- ---
+- ---
+- ---
+- ## 一、架构概览
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ┌────────────────────────────────────────────────────────────┐
+- ┌────────────────────────────────────────────────────────────┐
+- ┌────────────────────────────────────────────────────────────┐
+- │                    JWT (payload.tenant)                    │
+- │  Edge Middleware / Cloud tenant-context 解析              │
+- │  → { tenant, userId, role } 注入到请求上下文               │
+- └────────────────────────────────────────────────────────────┘
+- └────────────────────────────────────────────────────────────┘
+- └────────────────────────────────────────────────────────────┘
+-                               ↓
+-                               ↓
+- │                    D1 数据隔离                              │
+- │  所有 SQL 强制包含 {tenant} 占位符                         │
+- │  db.js 在运行时自动注入租户 ID → 参数化绑定                 │
+- │                    KV Key 前缀                              │
+- │  所有 KV Key 格式: {tenant}:{resource}:{id}               │
+- │  kv-keys.js 统一生成，防止跨租户访问                       │
+- ## 二、三层角色模型
+- | 角色 | 权限范围 | JWT 中表示 |
+- |------|---------|-----------|
+- | **superadmin** | 跨租户，全权限（创建/管理租户） | `role: "superadmin"` |
+- | **tenant_admin** | 本租户内管理（用户/商品/订单） | `role: "tenant_admin"` |
+- | **user** | 本租户内个人数据 | `role: "user"` |
+- | **guest** | 未登录（仅公开 API） | `role: "guest"`, `userId: null` |
+- ### 权限矩阵
+- | 操作 | superadmin | tenant_admin | user |
+- |------|:---:|:---:|:---:|
+- | 创建/管理租户 | ✅ | — | — |
+- | 管理本租户用户 | ✅ | ✅ | — |
+- | CRUD 商品 | ✅ | ✅ | — |
+- | 查看/管理订单 | ✅ | ✅ | ✅（自己） |
+- | 购物车/下单 | ✅ | ✅ | ✅ |
+- ## 三、租户上下文解析
+- ### 3.1 Cloud Functions（`middleware/tenant-context.js`）
+- ```javascript
+- ```javascript
+- ```javascript
+- ```javascript
+- import { withTenant } from '../middleware/tenant-context.js';
+- export async function onRequest(request, env) {
+-   const ctx = await withTenant(request, env);
+-   if (ctx instanceof Response) return ctx; // 401
+-   const { tenant, userId, role } = ctx;
+-   // tenant: 从 JWT payload.tenant 解析，旧 token 降级为 "default"
+-   // userId: JWT payload.sub
+-   // role: user / tenant_admin / superadmin
+- }
+- ### 3.2 租户来源优先级
+- 1. **JWT `payload.tenant`**（新 token，Phase 3+ RS256）
+- 2. **从 users 表反查**（旧 HS256 token，30天兼容窗口）
+- 3. **`"default"`**（无 token 时，公开 API 兜底）
+- > ⚠️ **安全设计**：不再接受 `X-Tenant-ID` 请求头，防止租户伪造。
+- ## 四、D1 数据隔离
+- ### 4.1 {tenant} 强制注入
+- 所有 SQL 语句必须包含 `{tenant}` 占位符。`db.js` 在运行时：
+- 1. 检查 SQL 中是否含 `{tenant}`
+- 2. 用 `?` 替换 `{tenant}`
+- 3. 将租户 ID 作为第一个参数绑定
+- // ❌ 错误：无租户隔离
+- query(env, 'SELECT * FROM orders WHERE id = ?', [orderId]);
+- // ✅ 正确
+- query(env, 'SELECT * FROM orders WHERE tenant_id = {tenant} AND id = ?', [orderId], tenant);
+- ### 4.2 数据库 Schema
+- ```sql
+- ```sql
+- -- 每张业务表都包含 tenant_id 字段
+- CREATE TABLE orders (
+-   id         BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+-   id         BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+-   tenant_id  VARCHAR(32) NOT NULL,       -- 租户隔离字段
+-   user_id    BIGINT UNSIGNED NOT NULL,
+-   -- ...
+-   -- ...
+-   INDEX idx_tenant (tenant_id)
+- );
+- );
+- CREATE TABLE products (
+-   tenant_id  VARCHAR(32) NOT NULL,
+- ### 4.3 迁移脚本
+- ```bash
+- # 执行租户隔离迁移
+- edgeone d1 execute my-database --file=db/migrations/003_tenant_isolation.sql
+- # 回滚（谨慎！）
+- edgeone d1 execute my-database --file=db/migrations/003_rollback.sql
+- ## 五、KV Key 前缀规则
+- ### 5.1 Key 格式
+- {tenant}:{resource}:{identifier}
+- 示例：
+-   default:session:abc123        — Session
+-   tenant_a:cart:user456         — 购物车
+-   tenant_a:rt:user789:meta       — Refresh Token
+-   superadmin:tenant:meta:xyz    — 租户管理
+- ### 5.2 kv-keys.js 统一管理
+- import { sessionKey, cartKey, orderTenantKey } from '../sharing/kv-keys.js';
+- // 自动拼接租户前缀
+- const key = sessionKey(tenant, userId);
+- // → "tenant_a:session:user123"
+- ## 六、支付回调的租户反查
+- 支付回调（`/api/pay/wx-notify`）没有 JWT，需要从 KV 反查租户：
+- 支付回调 → out_trade_no → KV.get("order_tenant:{out_trade_no}")
+-          → 拿到 tenant → 连接对应 D1 数据库
+- // cloud-functions/api/pay/wx-notify.js
+- const meta = JSON.parse(await env.KV.get(`order_tenant:${orderId}`) || '{}');
+- const tenant = meta.tenant;
+- ## 七、安全验证清单
+- | 检查项 | 验证方法 |
+- |--------|---------|
+- | 租户 A 用户无法访问租户 B 数据 | 用 TOKEN_A 调用带 TOKEN_B 数据的 API，期望 403/404 |
+- | X-Tenant-ID Header 无效 | 请求携带 `X-Tenant-ID: tenant_b`，仍按 JWT.tenant 执行 |
+- | SQL 缺少 {tenant} 报错 | 删除 {tenant} 占位符，期望抛出 Error |
+- | 支付回调无 tenant 返回 404 | 伪造回调发往 `/api/pay/wx-notify`，期望 404 |
+- | superadmin 可跨租户操作 | superadmin token 访问任意租户数据 |
+- ## 八、测试数据
+- -- 插入测试租户
+- INSERT INTO tenants (id, name, status, quota_limit) VALUES
+- ('tenant_a', '租户 A', 'active', 1000),
+- ('tenant_b', '租户 B', 'active', 500);
+- -- 插入测试商品（带租户隔离）
+- INSERT INTO products (tenant_id, name, price, stock) VALUES
+- ('tenant_a', '商品 A-1', 99.00, 100),
+- ('tenant_b', '商品 B-1', 199.00, 50);
+
+### references/notification-module.md  [docs]
+- # Notification 模块参考文档
+- > **版本：** v2.2 · **Phase：** Layer 2 Addon（Phase 2 实现）
+- > **职责：** 统一事件驱动的通知发送（邮件/微信/钉钉/SMS）
+- ---
+- ---
+- ---
+- ---
+- ---
+- ---
+- ## 1. 架构设计
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- 业务事件发生
+-     ↓
+-     ↓
+-     ↓
+-     ↓
+- emit(event, payload)  ← 业务代码调用
+- 钩子注册表查找（registerHandler）
+- 并行触发所有已注册处理器
+- 各通道适配器独立执行（失败不阻塞其他通道）
+- **设计原则**：
+- - 事件驱动：业务代码只调用 `emit()`，不直接写通知逻辑
+- - 通道解耦：每种通知方式独立适配器，插拔式
+- - 优雅降级：某个通道失败不影响其他通道
+- - 异步执行：通知不阻塞主业务流程
+- ## 2. 事件类型
+- ```javascript
+- ```javascript
+- ```javascript
+- ```javascript
+- ```javascript
+- ```javascript
+- export const NotificationEvent = {
+-   // 订单事件
+-   ORDER_CREATED:    'order.created',    // 订单创建
+-   ORDER_PAID:        'order.paid',      // 支付成功
+-   ORDER_SHIPPED:     'order.shipped',   // 已发货
+-   ORDER_DELIVERED:   'order.delivered', // 已签收
+-   ORDER_CANCELLED:   'order.cancelled', // 已取消
+-   ORDER_REFUNDED:    'order.refunded',  // 已退款
+-   ORDER_COMPLETED:   'order.completed', // 已完成
+-   // 用户事件
+-   USER_REGISTERED:  'user.registered', // 注册成功
+-   PASSWORD_CHANGED: 'password.changed', // 密码修改
+-   EMAIL_VERIFIED:   'email.verified',  // 邮箱验证
+- };
+- ## 3. 通道适配器
+- ### 3.1 邮件适配器（需 SMTP 配置）
+- **环境变量**：
+- **环境变量**：
+- NOTIFICATION_SMTP_HOST=smtp.example.com
+- NOTIFICATION_SMTP_PORT=587
+- NOTIFICATION_SMTP_USER=noreply@example.com
+- NOTIFICATION_SMTP_PASS=xxxx
+- NOTIFICATION_FROM_EMAIL=noreply@example.com
+- NOTIFICATION_FROM_NAME=网站名称
+- **适配器实现**：
+- **适配器实现**：
+- // cloud-functions/utils/notification/channels/email.js
+- import nodemailer from 'nodemailer';
+- let transporter = null;
+- function getTransporter(env) {
+-   if (!transporter) {
+-     transporter = nodemailer.createTransport({
+-       host: env.NOTIFICATION_SMTP_HOST,
+-       port: parseInt(env.NOTIFICATION_SMTP_PORT || '587'),
+-       secure: env.NOTIFICATION_SMTP_PORT === '465',
+-       auth: {
+-         user: env.NOTIFICATION_SMTP_USER,
+-         pass: env.NOTIFICATION_SMTP_PASS,
+-       },
+-       },
+-     });
+-     });
+-   }
+-   }
+-   }
+-   }
+-   return transporter;
+- }
+- }
+- }
+- }
+- }
+- }
+- export async function sendEmail(env, { to, subject, html }) {
+-   if (!env.NOTIFICATION_SMTP_HOST) {
+-     console.log('[Email] SMTP not configured, skipping');
+-     return;
+-   try {
+-     await getTransporter(env).sendMail({
+-       from: `"${env.NOTIFICATION_FROM_NAME}" <${env.NOTIFICATION_FROM_EMAIL}>`,
+-       to,
+-       subject,
+-       html,
+-     console.log(`[Email] Sent to ${to}: ${subject}`);
+-   } catch (err) {
+-     console.error(`[Email] Failed to send to ${to}:`, err.message);
+-     throw err; // 让 emit() 捕获但不阻塞其他通道
+- ### 3.2 微信模板消息（需微信公众号配置）
+- WX_APPID=wx_your_appid_here
+- WX_TEMPLATE_ID_ORDER=your_template_id
+- WX_TEMPLATE_ID_SHIP=your_template_id
+- // cloud-functions/utils/notification/channels/wechat.js
+- // 需要微信公众号的 Access Token（需定期刷新）
+- async function getAccessToken(env) {
+-   const cacheKey = 'wx:access_token';
+-   const cached = await KV.get(cacheKey);
+-   if (cached) return cached;
+-   const res = await fetch(
+-     `https://api.weixin.qq.com/cgi-bin/token?grant_type=client_credential&appid=${env.WX_APPID}&secret=${env.WX_APP_SECRET}`
+-   );
+-   const data = await res.json();
+-   await KV.put(cacheKey, data.access_token, { expirationTtl: 7000 }); // 提前 3 分钟过期
+-   return data.access_token;
+- export async function sendWechatTemplate(env, { openid, templateId, data }) {
+-   if (!env.WX_APPID || !templateId) return;
+-   const token = await getAccessToken(env);
+-   await fetch(`https://api.weixin.qq.com/cgi-bin/message/template/send?access_token=${token}`, {
+-     method: 'POST',
+-     method: 'POST',
+-     body: JSON.stringify({
+-       touser: openid,
+-       template_id: templateId,
+-       data,
+-     }),
+-     }),
+-   });
+-   });
+-   });
+-   });
+- ### 3.3 钉钉 Webhook
+- // cloud-functions/utils/notification/channels/dingtalk.js
+- export async function sendDingtalk(env, { msgtype = 'text', content, title }) {
+-   if (!env.DINGTALK_WEBHOOK_URL) return;
+-   await fetch(env.DINGTALK_WEBHOOK_URL, {
+-     headers: { 'Content-Type': 'application/json' },
+-     body: JSON.stringify({ msgtype, text: { content }, title }),
+- ## 4. 事件处理器注册
+- // cloud-functions/utils/notification-hooks.js
+- import { sendEmail } from './channels/email.js';
+- import { sendWechatTemplate } from './channels/wechat.js';
+- import { sendDingtalk } from './channels/dingtalk.js';
+- // 订单支付成功：发邮件 + 发微信模板
+- registerHandler(NotificationEvent.ORDER_PAID, async ({ order, user, env }) => {
+-   await Promise.allSettled([
+-     sendEmail(env, {
+-       to: user.email,
+-       subject: `订单 ${order.order_no} 支付成功`,
+-       html: `<h2>感谢您的购买！</h2><p>订单号：${order.order_no}</p><p>金额：¥${order.total}</p>`,
+-     user.openid ? sendWechatTemplate(env, {
+-       openid: user.openid,
+-       templateId: env.WX_TEMPLATE_ID_ORDER,
+-       data: {
+-         keyword1: { value: order.order_no },
+-         keyword2: { value: `¥${order.total}` },
+-         keyword3: { value: '支付成功' },
+-     }) : Promise.resolve(),
+-   ]);
+- });
+- });
+- // 订单发货：发邮件
+- registerHandler(NotificationEvent.ORDER_SHIPPED, async ({ order, user, env }) => {
+-   await sendEmail(env, {
+-     to: user.email,
+-     subject: `订单 ${order.order_no} 已发货`,
+-     html: `<p>快递公司：${order.express_company}</p><p>运单号：${order.express_no}</p>`,
+-   // 管理员通知（钉钉群）
+-   await sendDingtalk(env, {
+-     content: `📦 订单 ${order.order_no} 已发货，请关注`,
+- ## 5. 业务调用示例
+- // cloud-functions/api/pay/wx-notify.js
+- import { emit, NotificationEvent } from '../../utils/notification-hooks.js';
+- export async function onRequest(request, env) {
+-   const { out_trade_no, transaction_id, trade_state } = await parseCallback(request);
+-   if (trade_state === 'SUCCESS') {
+-     const order = await updateOrderToPaid(out_trade_no, transaction_id, env);
+-     const user = await getUserByOrder(order.user_id, env);
+-     // 异步发送通知（不阻塞回调响应）
+-     emit(NotificationEvent.ORDER_PAID, { order, user, env });
+-   return new Response('SUCCESS');
+- ## 6. Phase 1 vs Phase 2 区别
+- | 项目 | Phase 1 | Phase 2 |
+- |------|---------|---------|
+- | 钩子结构 | 空壳（仅框架） | 邮件/微信/钉钉适配器 |
+- | 事件类型 | 2 个 | 11 个 |
+- | 调用方式 | 预留接口 | 完整实现 |
+- | 配置 | 无 | env-vars 注入 |
+
+### references/order-state-machine.md  [docs]
+- # 订单状态机参考文档
+- > **版本：** v2.2 · **Phase：** P2（可选）
+- > **职责：** 规范化订单状态流转，防止非法状态变迁导致数据不一致
+- ---
+- ---
+- ---
+- ---
+- ---
+- ---
+- ---
+- ---
+- ## 1. 状态定义
+- | 状态 | 值（DB 存储） | 说明 |
+- |------|-------------|------|
+- | 待支付 | `PENDING` | 订单创建，等待用户支付 |
+- | 已支付 | `PAID` | 支付成功，等待发货 |
+- | 已发货 | `SHIPPED` | 管理员填写物流信息 |
+- | 已完成 | `COMPLETED` | 用户确认收货或 7 天无售后自动 |
+- | 已取消 | `CANCELLED` | 用户取消或超时未支付 |
+- | 已退款 | `REFUNDED` | 用户/管理员发起退款 |
+- ## 2. 完整状态流转图
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ┌──────────┐ pay      ┌───────┐ ship     ┌──────────┐ confirm  ┌───────────┐
+- │ PENDING  │ ───────→ │ PAID  │ ───────→ │ SHIPPED  │ ───────→ │ COMPLETED │
+- └──────────┘          └───────┘          └──────────┘          └───────────┘
+-      │                      │                                        │
+-      │ cancel(user)         │ refund(user/admin)                     │ refund(admin)
+-      ↓                      ↓                                        ↓
+- ┌──────────┐          ┌──────────┐                              ┌──────────┐
+- │ CANCELLED│          │ REFUNDED │                              │ REFUNDED │
+- └──────────┘          └──────────┘                              └──────────┘
+- 超时未支付(30min) → CANCELLED（系统自动触发）
+- ## 3. 权限规则矩阵
+- | 目标状态 | 用户（本人订单） | 管理员 |
+- |---------|----------------|--------|
+- | CANCELLED | PENDING 时可取消 | 任意阶段可取消 |
+- | SHIPPED | — | 仅 PAID 时可操作 |
+- | COMPLETED | SHIPPED 时可确认 | 任意阶段可操作 |
+- | REFUNDED | PAID/SHIPPED 时可申请 | 任意阶段可退款 |
+- ## 4. 各目标状态的触发条件
+- ### 4.1 PENDING → CANCELLED
+- **触发方**：用户（取消）或系统（超时）
+- ```javascript
+- ```javascript
+- ```javascript
+- ```javascript
+- ```javascript
+- ```javascript
+- ```javascript
+- ```javascript
+- // 条件
+- // 条件
+- // 条件
+- // 条件
+- // 条件
+- if (order.status === 'PENDING') {
+-   // 用户取消：本人订单，任意时间
+-   // 系统超时：created_at 超过 30 分钟未支付
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- ### 4.2 PENDING → PAID
+- **触发方**：支付回调
+- if (order.status === 'PENDING' && verifyAmount(order, callback)) {
+-   // 金额核对一致
+- ### 4.3 PAID → SHIPPED
+- **触发方**：管理员（填写物流信息）
+- if (order.status === 'PAID' && req.body.express_company && req.body.express_no) {
+-   // 需管理员权限
+-   // 需填写快递公司和运单号
+- ### 4.4 SHIPPED → COMPLETED
+- **触发方**：用户确认 / 系统自动
+- if (order.status === 'SHIPPED') {
+-   // 用户点击"确认收货"
+-   // 或：paid_at + 7天 < now（无售后自动完成，需定时任务）
+- ### 4.5 PAID/SHIPPED/COMPLETED → REFUNDED
+- **触发方**：用户（PAID）/ 管理员（任意阶段）
+- if (canRefund(order.status, role, userId)) {
+-   // PAID 阶段：用户可直接申请退款
+-   // SHIPPED 阶段：需先退货
+-   // COMPLETED 阶段：仅管理员可退款（需审批流程）
+- ## 5. 状态机核心实现
+- // cloud-functions/utils/order-state-machine.js
+- export const OrderStatus = {
+-   PENDING:   'PENDING',
+-   PAID:      'PAID',
+-   SHIPPED:   'SHIPPED',
+-   COMPLETED: 'COMPLETED',
+-   CANCELLED: 'CANCELLED',
+-   REFUNDED:  'REFUNDED',
+- };
+- };
+- };
+- // 状态流转规则表：currentStatus → [allowedNextStatuses]
+- const TRANSITIONS = {
+-   [OrderStatus.PENDING]:   [OrderStatus.PAID, OrderStatus.CANCELLED],
+-   [OrderStatus.PAID]:      [OrderStatus.SHIPPED, OrderStatus.REFUNDED],
+-   [OrderStatus.SHIPPED]:    [OrderStatus.COMPLETED, OrderStatus.REFUNDED],
+-   [OrderStatus.COMPLETED]: [OrderStatus.REFUNDED],
+-   [OrderStatus.CANCELLED]: [],  // 终态
+-   [OrderStatus.REFUNDED]:   [],  // 终态
+- // 权限校验：哪些角色可以触发哪些状态变更
+- const PERMISSIONS = {
+-   'PENDING→CANCELLED': ['user:own', 'admin'],
+-   'PAID→SHIPPED':       ['admin'],
+-   'PAID→REFUNDED':      ['user:own', 'admin'],
+-   'SHIPPED→COMPLETED':  ['user:own', 'admin'],
+-   'SHIPPED→REFUNDED':   ['user:own', 'admin'],
+-   'COMPLETED→REFUNDED': ['admin'],
+- export function canTransition(from, to, { role, userId, orderUserId }) {
+-   const allowed = TRANSITIONS[from];
+-   if (!allowed || !allowed.includes(to)) {
+-     throw new StateMachineError(`禁止的状态变更：${from} → ${to}`);
+-   }
+-   }
+-   }
+-   const permKey = `${from}→${to}`;
+-   const required = PERMISSIONS[permKey];
+-   if (!required) throw new StateMachineError(`未定义权限：${permKey}`);
+-   const isOwn = userId === orderUserId;
+-   const roleTag = role === 'admin' ? 'admin' : (isOwn ? 'user:own' : 'user:other');
+-   if (!required.includes(roleTag)) {
+-     throw new StateMachineError(`权限不足：需要 ${required.join('/')}，当前 ${roleTag}`);
+-   return true;
+- export class StateMachineError extends Error {
+-   constructor(message) {
+-     super(message);
+-     this.name = 'StateMachineError';
+- ## 6. 与库存联动
+- 取消订单（CANCELLED）和退款（REFUNDED）需要回补库存：
+- // 取消/退款时回补库存
+- async function releaseStock(pool, orderId) {
+-   await pool.query(`
+-   await pool.query(`
+-   await pool.query(`
+-     UPDATE products p
+-     JOIN order_items oi ON p.id = oi.product_id
+-     SET p.stock = p.stock + oi.qty,
+-         p.version = p.version + 1
+-     WHERE oi.order_id = ?
+-   `, [orderId]);
+- ## 7. 定时任务（Cron）
+- // cloud-functions/cron/order-cron.js
+- // 部署为定时触发的 Cloud Function
+- export async function scheduledHandler(env) {
+-   const pool = await getPool(env.DATABASE_URL);
+-   // 任务1：超时未支付自动取消（PENDING > 30min）
+-     UPDATE orders SET status = 'CANCELLED', version = version + 1
+-     WHERE status = 'PENDING'
+-       AND created_at < DATE_SUB(NOW(), INTERVAL 30 MINUTE)
+-   `);
+-   `);
+-   // 任务2：已发货 7 天无售后自动完成
+-     UPDATE orders SET status = 'COMPLETED', version = version + 1
+-     WHERE status = 'SHIPPED'
+-       AND paid_at < DATE_SUB(NOW(), INTERVAL 7 DAY)
+- ## 8. 订单日志（审计追踪）
+- ```sql
+- CREATE TABLE order_status_logs (
+-   id         BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+-   order_id   BIGINT UNSIGNED NOT NULL,
+-   from_status VARCHAR(32),
+-   to_status  VARCHAR(32) NOT NULL,
+-   operator   BIGINT UNSIGNED,
+-   reason     VARCHAR(255),
+-   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+-   FOREIGN KEY (order_id) REFERENCES orders(id)
+- );
+- > **Phase 1 状态机**：仅基础流转，无 version 乐观锁，无定时任务
+- > **Phase 2 状态机**：完整权限矩阵 + version 乐观锁 + 库存联动 + 审计日志
+
+### references/payment-module.md  [docs]
+- # Payment 模块参考文档
+- ## 一、支付架构
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- 用户下单 → Cloud: 创建订单（SELECT FOR UPDATE） → 生成 out_trade_no
+-        → 微信/支付宝统一下单 API → 返回支付二维码/链接
+-        → 用户扫码支付
+-        → 支付平台回调 → Cloud: wx-notify/ali-notify
+-                               → Edge: 幂等锁 putIfNotExists
+-                               → Cloud: 业务处理
+-                               → 返回 SUCCESS
+- ## 二、金额安全规则
+- ```javascript
+- ```javascript
+- ```javascript
+- ```javascript
+- // 核心原则：金额永远从服务端 D1 读取，前端只传 productId + qty
+- // ❌ 危险：从前端接收金额
+- { productId: "p001", qty: 1, price: 99.9 }  // 前端可控！
+- // ✅ 安全：Cloud Function 查 D1 获取价格
+- const [rows] = await pool.query(
+-   'SELECT price FROM products WHERE id = ? AND status = "active"',
+-   [productId]
+- );
+- const total = rows[0].price * quantity;  // 服务端计算，不可篡改
+- ## 三、幂等原子锁（Edge + Cloud 协作）
+- // Edge Function：cloud-functions/internal/idempotency.js
+- // Edge 是唯一能访问 KV 的运行时
+- export async function onRequest(context) {
+-   const { KV } = context.env;
+-   const { out_trade_no, callback_id } = await context.request.json();
+-   const acquired = await KV.putIfNotExists(
+-     `pay:idempotency:${out_trade_no}`,
+-     callback_id,           // 微信 transaction_id，作为幂等证据
+-     { expirationTtl: 86400 }
+-   );
+-   return new Response(JSON.stringify({ acquired }), { status: 200 });
+- }
+- }
+- }
+- // Cloud Function：cloud-functions/api/pay/wx-notify.js
+- export async function onRequest(request, env) {
+-   const rawBody = await request.text();
+-   if (!await verifyWechatSignature(rawBody, env.WX_MCH_SECRET))
+-     return new Response('FAIL', { status: 401 });
+-   const { out_trade_no, transaction_id, trade_state } = JSON.parse(rawBody);
+-   const { acquired } = await fetch(`${env.EDGE_BASE}/api/internal/idempotency`, {
+-     method: 'POST',
+-     body: JSON.stringify({ out_trade_no, callback_id: transaction_id })
+-   }).then(r => r.json());
+-   if (!acquired) return new Response('SUCCESS');  // 已处理过，幂等跳过
+-   if (trade_state === 'SUCCESS') await processPayment(out_trade_no, transaction_id, env);
+-   return new Response('SUCCESS');
+- ## 四、微信支付 V3 签名验证
+- // cloud-functions/utils/payment-sdk.js
+- import { createHmac } from 'crypto';
+- export async function verifyWechatSignature(rawBody, mchSecret) {
+-   const body = JSON.parse(rawBody);
+-   const signature = request.headers.get('wechatpay-signature');
+-   const timestamp = request.headers.get('wechatpay-timestamp');
+-   const nonce = request.headers.get('wechatpay-nonce');
+-   const message = `${timestamp}\n${nonce}\n${rawBody}\n`;
+-   const expectSign = createHmac('sha256', mchSecret).update(message).digest('base64');
+-   return signature === expectSign;
+- ## 五、支付状态机
+- PENDING（待支付）
+-   ↓ 支付成功回调（幂等）
+- PAID（已支付，待发货）
+-   ↓ 管理员发货
+- SHIPPED（已发货）
+-   ↓ 确认收货/签收
+- COMPLETED（已完成）
+-   ↓ 超时/用户取消
+- CANCELLED（已取消）
+-   ↓
+- REFUNDED（已退款）
+- ## 六、限流配置
+- // /api/pay/create-order
+- const { allowed } = await rateLimit(request, `pay:${userId}`, 10, 60);
+- // 10 次/分钟/用户，超限返回 429
+
+### scripts/sync-sharing.js  [code]
+- #!/usr/bin/env node
+- /**
+- /**
+- /**
+-  * sync-sharing.js — 构建时共享模块同步脚本
+-  *
+-  *
+-  * Phase 4B2 实现（含平台专家 B-2/R-1/R-4 修正）：
+-  * - 将 sharing/（单一真实源）同步到：
+-  *   1. packages/shared/src/（npm 包，供 Cloud Functions 用）
+-  *   2. edge-functions/sharing/（Edge Functions 内联）
+-  *   3. cloud-functions/shared/（开发环境符号链接）
+-  * - md5Dir() 确定性哈希校验
+-  * - CI 阻断：哈希不一致时 build 失败
+-  * 使用方式：
+-  *   node scripts/sync-sharing.js          # 同步
+-  *   node scripts/sync-sharing.js --check  # 仅检查，不同步
+-  *   node scripts/sync-sharing.js --ci     # CI 模式：同步+校验+阻断
+-  */
+-  */
+-  */
+- import { createHash } from 'crypto';
+- import { readdirSync, statSync, readFileSync, writeFileSync, mkdirSync, existsSync, rmSync } from 'fs';
+- import { join, relative, resolve, dirname } from 'path';
+- import { fileURLToPath } from 'url';
+- const __dirname = dirname(fileURLToPath(import.meta.url));
+- const ROOT = resolve(__dirname, '..');
+- // 源目录
+- const SOURCE = join(ROOT, 'sharing');
+- // 目标目录映射
+- const TARGETS = [
+-   { path: join(ROOT, 'packages', 'shared', 'src'),     label: 'npm package (shared)' },
+-   { path: join(ROOT, 'edge-functions', 'sharing'),      label: 'Edge Functions inline' },
+-   { path: join(ROOT, 'cloud-functions', 'shared'),      label: 'Cloud Functions shared' },
+- ];
+- // ===================== MD5 目录哈希 =====================
+-  * 计算目录下所有文件的确定性 MD5 哈希
+-  * 先按文件名排序，确保 CI 中哈希值一致
+- function md5Dir(dirPath) {
+-   if (!existsSync(dirPath)) return '';
+-   const files = readdirSync(dirPath, { recursive: true })
+-     .filter(f => {
+-       const fullPath = join(dirPath, f);
+-       return statSync(fullPath).isFile();
+-     })
+-     .sort();  // 确定性排序
+-   const hash = createHash('md5');
+-   for (const file of files) {
+-     // 包含相对路径 + 内容，确保文件名变更也会影响哈希
+-     hash.update(file);
+-     hash.update(readFileSync(join(dirPath, file)));
+-   }
+-   }
+-   }
+-   }
+-   }
+-   }
+-   }
+-   }
+-   }
+-   return hash.digest('hex');
+- }
+- }
+- }
+- // ===================== 文件同步 =====================
+-  * 递归复制目录
+- function copyDir(src, dest) {
+-   if (!existsSync(src)) {
+-     console.warn(`  ⚠️  源目录不存在: ${src}`);
+-     return;
+-   // 清理目标目录
+-   if (existsSync(dest)) {
+-     rmSync(dest, { recursive: true, force: true });
+-   mkdirSync(dest, { recursive: true });
+-   // 复制文件（排除隐藏文件和 node_modules）
+-   const entries = readdirSync(src, { withFileTypes: true });
+-   for (const entry of entries) {
+-     if (entry.name.startsWith('.') || entry.name === 'node_modules') continue;
+-     const srcPath = join(src, entry.name);
+-     const destPath = join(dest, entry.name);
+-     if (entry.isDirectory()) {
+-       copyDir(srcPath, destPath);
+-     } else if (entry.isFile()) {
+-       mkdirSync(dest, { recursive: true });
+-       writeFileSync(destPath, readFileSync(srcPath));
+-     }
+-     }
+- // ===================== 主流程 =====================
+- async function main() {
+-   const args = process.argv.slice(2);
+-   const mode = args.includes('--ci') ? 'ci' : args.includes('--check') ? 'check' : 'sync';
+-   console.log(`\n🔁 sync-sharing.js — 模式: ${mode}\n`);
+-   // Step 1: 计算源目录哈希
+-   const sourceHash = md5Dir(SOURCE);
+-   console.log(`📦 源目录: sharing/ (hash: ${sourceHash.slice(0, 12)}...)`);
+-   if (!sourceHash) {
+-     console.error('❌ sharing/ 目录不存在或为空');
+-     process.exit(1);
+-     process.exit(1);
+-   if (mode === 'check') {
+-     // 仅检查模式：验证所有目标目录是否与源一致
+-     let allMatch = true;
+-     for (const target of TARGETS) {
+-       const targetHash = md5Dir(target.path);
+-       const match = targetHash === sourceHash;
+-       if (!match) allMatch = false;
+-       console.log(`  ${match ? '✅' : '❌'} ${target.label}: ${match ? '一致' : '不一致'}`);
+-     console.log(allMatch ? '\n✅ 所有目标目录一致' : '\n❌ 存在不一致');
+-     process.exit(allMatch ? 0 : 1);
+-   // Step 2: 同步到所有目标目录
+-   for (const target of TARGETS) {
+-   for (const target of TARGETS) {
+-     console.log(`  📋 同步到: ${target.label} (${target.path})`);
+-     copyDir(SOURCE, target.path);
+-   // Step 3: 同步后校验
+-   console.log('\n🔍 同步后校验:');
+-   let allMatch = true;
+-     const targetHash = md5Dir(target.path);
+-     const match = targetHash === sourceHash;
+-     if (!match) allMatch = false;
+-     console.log(`  ${match ? '✅' : '❌'} ${target.label}: ${match ? '一致' : '不一致'}`);
+-   if (mode === 'ci' && !allMatch) {
+-     console.error('\n❌ CI 阻断：同步后部分目标目录不一致');
+-   // Step 4: 同步 packages/shared/ 的 KV 热 key 函数
+-   console.log('\n📋 额外同步: 4B5 热 key 函数到 kv-keys.js');
+-   console.log(allMatch
+-     ? '\n✅ sync-sharing.js 执行完成'
+-     : '\n⚠️  执行完成（存在不一致）'
+-   );
+- main().catch(err => {
+-   console.error('Fatal:', err);
+-   process.exit(1);
+- });
+
+### sharing/constants.js  [code]
+- /**
+- /**
+- /**
+- /**
+- /**
+- /**
+-  * 共享常量 — 角色定义 + 权限矩阵
+-  *
+-  *
+-  *
+-  * Phase 4A W3 实现：
+-  * - 三层角色模型（架构专家 C3/O4 修正）
+-  * - action-based 权限矩阵（非 flat role 检查）
+-  * - checkPermission() 运行时权限校验
+-  * 使用方式：
+-  *   import { ROLES, checkPermission } from '../sharing/constants.js';
+-  *   if (!checkPermission(user.role, 'order:create')) {
+-  *     return new Response('Forbidden', { status: 403 });
+-  *   }
+-  */
+-  */
+-  */
+-  */
+-  */
+-  */
+- // ===================== 角色定义 =====================
+- export const ROLES = {
+-   SUPERADMIN: 'superadmin',     // 平台管理员（跨租户，全权限）
+-   TENANT_ADMIN: 'tenant_admin', // 租户管理员（本租户内管理）
+-   USER: 'user',                 // 普通用户（本租户内个人数据）
+- };
+- };
+- };
+- export const ROLE_HIERARCHY = {
+-   superadmin: 100,
+-   tenant_admin: 50,
+-   user: 10,
+-   guest: 0,
+- // ===================== 权限矩阵 =====================
+-  * action-based 权限定义
+-  * key = permission name, value = 允许的角色列表
+- export const PERMISSIONS = {
+-   // === superadmin 独有 ===
+-   'tenant:list':      ['superadmin'],
+-   'tenant:create':    ['superadmin'],
+-   'tenant:delete':    ['superadmin'],
+-   'tenant:update':    ['superadmin'],
+-   'tenant:invite':    ['superadmin'],
+-   'quota:set':        ['superadmin'],
+-   'data:cross-tenant-view': ['superadmin'],
+-   'audit:view':       ['superadmin'],
+-   // === 租户内管理（superadmin + tenant_admin） ===
+-   'user:manage':      ['superadmin', 'tenant_admin'],
+-   'user:list':        ['superadmin', 'tenant_admin'],
+-   'user:role:change': ['superadmin', 'tenant_admin'],
+-   // === 本租户数据操作（所有角色） ===
+-   'order:read':       ['superadmin', 'tenant_admin', 'user'],
+-   'order:create':     ['superadmin', 'tenant_admin', 'user'],
+-   'order:cancel':     ['superadmin', 'tenant_admin'],
+-   'product:read':     ['superadmin', 'tenant_admin', 'user'],
+-   'product:manage':   ['superadmin', 'tenant_admin'],
+-   'cart:read':        ['superadmin', 'tenant_admin', 'user'],
+-   'cart:write':       ['superadmin', 'tenant_admin', 'user'],
+- // ===================== 工具函数 =====================
+-  * 检查角色是否拥有指定权限
+-  * @param {string} role - 用户角色
+-  * @param {string} role - 用户角色
+-  * @param {string} permission - 权限名（见 PERMISSIONS）
+-  * @returns {boolean} 是否有权限
+- export function checkPermission(role, permission) {
+-   const allowedRoles = PERMISSIONS[permission];
+-   if (!allowedRoles) return false; // 未知权限，默认拒绝
+-   return allowedRoles.includes(role);
+- }
+- }
+- }
+- }
+-  * 检查角色是否至少达到指定级别
+-  * @param {string} minRole - 最低角色要求
+-  * @returns {boolean}
+- export function hasMinRole(role, minRole) {
+-   const userLevel = ROLE_HIERARCHY[role] ?? 0;
+-   const minLevel = ROLE_HIERARCHY[minRole] ?? 0;
+-   return userLevel >= minLevel;
+-  * 判断角色是否为 superadmin
+- export function isSuperadmin(role) {
+-   return role === ROLES.SUPERADMIN;
+-  * 判断角色是否为租户管理员或以上
+- export function isAdmin(role) {
+-   return hasMinRole(role, ROLES.TENANT_ADMIN);
+
+### sharing/i18n/en-US.js  [code]
+- /**
+-  * i18n — English (en-US)
+-  *
+-  * Phase 3 L2-2 实现
+-  */
+- export const enUS = {
+-   // ===== Navigation =====
+-   nav: {
+-     home: 'Home',
+-     cart: 'Cart',
+-     orders: 'My Orders',
+-     login: 'Login',
+-     register: 'Register',
+-     logout: 'Logout',
+-     admin: 'Admin',
+-     search: 'Search',
+-   },
+-   },
+-   },
+-   },
+-   },
+-   },
+-   },
+-   },
+-   },
+-   // ===== Product =====
+-   product: {
+-     addToCart: 'Add to Cart',
+-     outOfStock: 'Out of Stock',
+-     inStock: 'In Stock',
+-     price: 'Price',
+-     category: 'Category',
+-     all: 'All Products',
+-     viewDetail: 'View Details',
+-     buyNow: 'Buy Now',
+-   // ===== Cart =====
+-   cart: {
+-     title: 'Shopping Cart',
+-     empty: 'Your cart is empty',
+-     total: 'Total',
+-     checkout: 'Checkout',
+-     remove: 'Remove',
+-     quantity: 'Qty',
+-     clearCart: 'Clear Cart',
+-     syncLogin: 'Sign in to sync your cart',
+-   // ===== Order =====
+-   order: {
+-     title: 'My Orders',
+-     noOrders: 'No orders yet',
+-     createOrder: 'Place Order',
+-     cancelOrder: 'Cancel Order',
+-     confirmReceipt: 'Confirm Receipt',
+-     applyRefund: 'Request Refund',
+-     orderNo: 'Order No.',
+-     totalAmount: 'Total',
+-     createTime: 'Created',
+-     expressCompany: 'Carrier',
+-     expressNo: 'Tracking No.',
+-     cancelReason: 'Cancellation Reason',
+-     refundReason: 'Refund Reason',
+-     status: {
+-       PENDING:   'Pending Payment',
+-       PAID:      'Paid',
+-       SHIPPED:   'Shipped',
+-       COMPLETED: 'Completed',
+-       CANCELLED: 'Cancelled',
+-       REFUNDED:  'Refunded',
+-     },
+-   // ===== Payment =====
+-   payment: {
+-     title: 'Choose Payment Method',
+-     wechat: 'WeChat Pay',
+-     alipay: 'Alipay',
+-     total: 'Amount Due',
+-     payNow: 'Pay Now',
+-     timeout: 'Payment timeout, please place a new order',
+-   // ===== Auth =====
+-   auth: {
+-     email: 'Email',
+-     password: 'Password',
+-     confirmPassword: 'Confirm Password',
+-     username: 'Username',
+-     loginBtn: 'Sign In',
+-     registerBtn: 'Sign Up',
+-     forgotPassword: 'Forgot Password?',
+-     noAccount: "Don't have an account?",
+-     hasAccount: 'Already have an account?',
+-     loginSuccess: 'Signed in successfully',
+-     registerSuccess: 'Account created successfully',
+-     logoutSuccess: 'Signed out',
+-     loginRequired: 'Please sign in first',
+-     invalidCredentials: 'Invalid email or password',
+-     emailExists: 'This email is already registered',
+-   // ===== Errors =====
+-   error: {
+-     required: 'This field is required',
+-     invalidEmail: 'Please enter a valid email address',
+-     passwordMismatch: 'Passwords do not match',
+-     serverError: 'Server error, please try again later',
+-     networkError: 'Network connection failed',
+-     unauthorized: 'Unauthorized, please sign in again',
+-     forbidden: 'Access denied',
+-     notFound: 'Page not found',
+-   // ===== Toast =====
+-   toast: {
+-     addedToCart: 'Added to cart',
+-     removedFromCart: 'Removed from cart',
+-     orderCreated: 'Order placed successfully',
+-     orderCancelled: 'Order cancelled',
+-     refundApplied: 'Refund requested',
+-     copied: 'Copied',
+-   // ===== SEO =====
+-   seo: {
+-     homeTitle: 'Geek Mall - Premium Tech Products',
+-     homeDescription: 'Premium tech products, quality guaranteed. Shop with confidence.',
+-     cartTitle: 'Cart - Geek Mall',
+-     ordersTitle: 'My Orders - Geek Mall',
+-     loginTitle: 'Sign In - Geek Mall',
+-     registerTitle: 'Sign Up - Geek Mall',
+- };
+
+### sharing/i18n/i18n.js  [code]
+- /**
+- /**
+- /**
+- /**
+- /**
+- /**
+- /**
+- /**
+- /**
+-  * i18n — 核心工具函数
+-  *
+-  *
+-  *
+-  *
+-  *
+-  *
+-  * Phase 3 L2-2 实现
+-  * 使用方式：
+-  *   import { t, setLang, getLang } from './i18n.js';
+-  *   // 在组件中
+-  *   <button>{t('nav.home')}</button>
+-  *   // 切换语言
+-  *   setLang('en-US');
+-  *   // 读取当前语言
+-  *   const lang = getLang();
+-  */
+-  */
+-  */
+-  */
+-  */
+-  */
+-  */
+-  */
+-  */
+- import { zhCN } from './zh-CN.js';
+- import { enUS } from './en-US.js';
+- export const SUPPORTED_LANGS = ['zh-CN', 'en-US'];
+- export const DEFAULT_LANG = 'zh-CN';
+- const translations = {
+-   'zh-CN': zhCN,
+-   'en-US': enUS,
+- };
+-  * 当前语言（客户端状态，SSR 时 fallback 到 DEFAULT_LANG）
+- let currentLang = DEFAULT_LANG;
+-  * 获取当前语言
+- export function getLang() {
+-   return currentLang;
+-   return currentLang;
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+-  * 设置当前语言
+-  * @param {string} lang - 'zh-CN' | 'en-US'
+- export function setLang(lang) {
+-   if (SUPPORTED_LANGS.includes(lang)) {
+-     currentLang = lang;
+-     // 持久化到 localStorage
+-     if (typeof localStorage !== 'undefined') {
+-       localStorage.setItem('i18n:lang', lang);
+-     }
+-     }
+-   }
+-   }
+-   }
+-   }
+-   }
+-   }
+-  * 初始化语言（从 localStorage 恢复）
+- export function initLang() {
+-   if (typeof localStorage !== 'undefined') {
+-     const saved = localStorage.getItem('i18n:lang');
+-     if (saved && SUPPORTED_LANGS.includes(saved)) {
+-       currentLang = saved;
+-     } else {
+-       // 自动检测浏览器语言
+-       const browserLang = navigator.language || '';
+-       if (browserLang.startsWith('en')) {
+-         currentLang = 'en-US';
+-       }
+-  * 翻译函数
+-  * @param {string} key - 点分隔路径，如 'nav.home' 或 'order.status.PENDING'
+-  * @param {string} [lang] - 语言，默认为 currentLang
+-  * @param {Object} [params] - 插值参数，如 { name: 'John' } → 'Hello, John'
+-  * @returns {string} 翻译结果，未找到时返回 key
+-  * @example
+-  *   t('nav.home')                              → '首页'
+-  *   t('order.status.PENDING', 'en-US')         → 'Pending Payment'
+-  *   t('greeting', 'zh-CN', { name: '刘博' })    → '你好，刘博'
+- export function t(key, lang, params) {
+-   const targetLang = lang || currentLang;
+-   const targetLang = lang || currentLang;
+-   const dict = translations[targetLang] || translations[DEFAULT_LANG];
+-   // 按点号拆解路径
+-   const keys = key.split('.');
+-   let value = dict;
+-   for (const k of keys) {
+-     value = value?.[k];
+-     if (value === undefined) break;
+-   // 未找到，返回 key（开发时容易发现问题）
+-   if (value === undefined) {
+-     console.warn(`[i18n] Missing translation: "${key}" (lang: ${targetLang})`);
+-     return key;
+-   // 插值处理
+-   if (typeof value === 'string' && params) {
+-     return value.replace(/\{(\w+)\}/g, (_, k) => params[k] !== undefined ? params[k] : `{${k}}`);
+-   return value;
+-  * 获取订单状态标签
+-  * @param {string} status - 状态码
+-  * @param {string} [lang]
+-  * @param {string} [lang]
+-  * @param {string} [lang]
+- export function tOrderStatus(status, lang) {
+-   return t(`order.status.${status}`, lang);
+-  * 格式化货币
+-  * @param {number} amount
+- export function formatCurrency(amount, lang) {
+-   if (lang === 'en-US') {
+-     return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(amount / 7.2); // 简化的 CNY→USD
+-   return new Intl.NumberFormat('zh-CN', { style: 'currency', currency: 'CNY' }).format(amount);
+-  * 格式化日期
+-  * @param {string|Date} date
+- export function formatDate(date, lang) {
+-   const d = typeof date === 'string' ? new Date(date) : date;
+-   return new Intl.DateTimeFormat(targetLang === 'en-US' ? 'en-US' : 'zh-CN', {
+-     year: 'numeric',
+-     month: '2-digit',
+-     day: '2-digit',
+-     hour: '2-digit',
+-     minute: '2-digit'
+-   }).format(d);
+
+### sharing/i18n/zh-CN.js  [code]
+- /**
+-  * i18n — 中文（zh-CN）
+-  *
+-  *
+-  *
+-  * Phase 3 L2-2 实现
+-  * 使用方式：
+-  *   import { zhCN } from './zh-CN.js';
+-  *   import { t } from './i18n.js';
+-  *   t('nav.home') // → '首页'
+-  */
+- export const zhCN = {
+-   // ===== 导航 =====
+-   nav: {
+-     home: '首页',
+-     cart: '购物车',
+-     orders: '我的订单',
+-     login: '登录',
+-     register: '注册',
+-     logout: '退出',
+-     admin: '管理后台',
+-     search: '搜索',
+-   },
+-   },
+-   },
+-   },
+-   },
+-   },
+-   },
+-   },
+-   },
+-   // ===== 产品 =====
+-   product: {
+-     addToCart: '加入购物车',
+-     outOfStock: '缺货',
+-     inStock: '有货',
+-     price: '价格',
+-     category: '分类',
+-     all: '全部商品',
+-     viewDetail: '查看详情',
+-     buyNow: '立即购买',
+-   // ===== 购物车 =====
+-   cart: {
+-     title: '购物车',
+-     empty: '购物车是空的',
+-     total: '合计',
+-     checkout: '去结算',
+-     remove: '删除',
+-     quantity: '数量',
+-     clearCart: '清空购物车',
+-     syncLogin: '登录后同步购物车',
+-   // ===== 订单 =====
+-   order: {
+-     title: '我的订单',
+-     noOrders: '暂无订单',
+-     createOrder: '创建订单',
+-     cancelOrder: '取消订单',
+-     confirmReceipt: '确认收货',
+-     applyRefund: '申请退款',
+-     orderNo: '订单号',
+-     totalAmount: '总金额',
+-     createTime: '创建时间',
+-     expressCompany: '快递公司',
+-     expressNo: '运单号',
+-     cancelReason: '取消原因',
+-     refundReason: '退款原因',
+-     status: {
+-       PENDING:   '待支付',
+-       PAID:      '已支付',
+-       SHIPPED:   '已发货',
+-       COMPLETED: '已完成',
+-       CANCELLED: '已取消',
+-       REFUNDED:  '已退款',
+-     },
+-   // ===== 支付 =====
+-   payment: {
+-     title: '选择支付方式',
+-     wechat: '微信支付',
+-     alipay: '支付宝',
+-     total: '应付金额',
+-     payNow: '立即支付',
+-     timeout: '支付超时，请重新下单',
+-   // ===== Auth =====
+-   auth: {
+-     email: '邮箱',
+-     password: '密码',
+-     confirmPassword: '确认密码',
+-     username: '用户名',
+-     loginBtn: '登录',
+-     registerBtn: '注册',
+-     forgotPassword: '忘记密码',
+-     noAccount: '还没有账号？',
+-     hasAccount: '已有账号？',
+-     loginSuccess: '登录成功',
+-     registerSuccess: '注册成功',
+-     logoutSuccess: '已退出登录',
+-     loginRequired: '请先登录',
+-     invalidCredentials: '账号或密码错误',
+-     emailExists: '该邮箱已被注册',
+-   // ===== 错误信息 =====
+-   error: {
+-     required: '此项为必填项',
+-     invalidEmail: '请输入有效的邮箱地址',
+-     passwordMismatch: '两次密码输入不一致',
+-     serverError: '服务器错误，请稍后重试',
+-     networkError: '网络连接失败',
+-     unauthorized: '未授权，请重新登录',
+-     forbidden: '无权限访问',
+-     notFound: '页面不存在',
+-   // ===== Toast / 提示 =====
+-   toast: {
+-     addedToCart: '已加入购物车',
+-     removedFromCart: '已从购物车移除',
+-     orderCreated: '订单创建成功',
+-     orderCancelled: '订单已取消',
+-     refundApplied: '退款申请已提交',
+-     copied: '已复制',
+-   // ===== SEO =====
+-   seo: {
+-     homeTitle: '极客商城 - 精选科技好物',
+-     homeDescription: '精选科技好物，放心购。全场低价，品质保障。',
+-     cartTitle: '购物车 - 极客商城',
+-     ordersTitle: '我的订单 - 极客商城',
+-     loginTitle: '登录 - 极客商城',
+-     registerTitle: '注册 - 极客商城',
+- };
+
+### sharing/jwt-helper.js  [code]
+- /**
+- /**
+- /**
+- /**
+- /**
+- /**
+- /**
+- /**
+- /**
+- /**
+- /**
+- /**
+- /**
+- /**
+- /**
+- /**
+- /**
+-  * JWT Helper — RS256 双轨迁移版
+-  *
+-  *
+-  *
+-  *
+-  *
+-  * Phase 3 P2-1 实现：
+-  * - 新 token 使用 RS256 私钥签发
+-  * - 验证时优先 RS256，30 天内兼容 HS256 旧 token
+-  * - Edge Functions（V8）专用，使用 crypto.subtle
+-  * 密钥生成：
+-  *   openssl genrsa -out private.pem 2048
+-  *   openssl rsa -in private.pem -pubout -out public.pem
+-  * 环境变量：
+-  *   JWT_PRIVATE_KEY — RSA 私钥（PEM 格式，换行符用 \n）
+-  *   JWT_PUBLIC_KEY  — RSA 公钥（PEM 格式，换行符用 \n）
+-  *   JWT_SECRET      — HS256 兼容密钥（Phase 3 后逐步废弃）
+-  */
+-  */
+-  */
+-  */
+-  */
+-  */
+-  */
+-  */
+-  */
+-  */
+-  */
+-  */
+-  */
+-  */
+-  */
+-  */
+-  */
+- // ===================== 常量 =====================
+- const ALGORITHM_RS256 = 'RS256';
+- const ALGORITHM_HS256 = 'HS256';
+- const AT_TTL_MS = 15 * 60 * 1000;       // Access Token: 15 min
+- const RT_TTL_MS = 7 * 24 * 60 * 60 * 1000; // Refresh Token: 7 days
+- const HS256_COMPAT_WINDOW_MS = 30 * 24 * 60 * 60 * 1000; // 30 天兼容窗口
+- // ===================== PEM 解析 =====================
+-  * 将 PEM 字符串（环境变量注入格式）解析为 CryptoKey
+-  * 环境变量中换行符被转义为 \n，需还原
+- function parsePem(pem) {
+-   const lines = pem.replace(/\\n/g, '\n').split('\n');
+-   const base64 = lines
+-     .filter(l => !l.startsWith('-----'))
+-     .join('');
+-   const binary = atob(base64);
+-   const bytes = new Uint8Array(binary.length);
+-   const bytes = new Uint8Array(binary.length);
+-   for (let i = 0; i < binary.length; i++) {
+-   for (let i = 0; i < binary.length; i++) {
+-     bytes[i] = binary.charCodeAt(i);
+-     bytes[i] = binary.charCodeAt(i);
+-   }
+-   }
+-   }
+-   }
+-   }
+-   }
+-   }
+-   }
+-   }
+-   }
+-   return bytes;
+-   return bytes;
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+-  * 导入 RSA 私钥（RS256 签发用）
+- export async function importPrivateKey(pem) {
+-   const keyData = parsePem(pem);
+-   const keyData = parsePem(pem);
+-   return crypto.subtle.importKey(
+-   return crypto.subtle.importKey(
+-   return crypto.subtle.importKey(
+-     'pkcs8',
+-     keyData,
+-     keyData,
+-     { name: 'RSA-PSS', hash: 'SHA-256' },
+-     { name: 'RSA-PSS', hash: 'SHA-256' },
+-     false,
+-     false,
+-     false,
+-     ['sign']
+-   );
+-   );
+-   );
+-   );
+-   );
+-   );
+-   );
+-  * 导入 RSA 公钥（RS256 验证用）
+- export async function importRSAPublicKey(pem) {
+-     'spki',
+-     ['verify']
+-  * 导入 HMAC 密钥（HS256 验证用，兼容旧 token）
+- export async function importHS256Secret(secret) {
+-   const encoder = new TextEncoder();
+-     'raw',
+-     encoder.encode(secret),
+-     { name: 'HMAC', hash: 'SHA-256' },
+-     ['sign', 'verify']
+- // ===================== Base64URL =====================
+- function base64UrlEncode(buffer) {
+-   const bytes = new Uint8Array(buffer);
+-   let binary = '';
+-   for (let i = 0; i < bytes.length; i++) {
+-     binary += String.fromCharCode(bytes[i]);
+-   return btoa(binary)
+-     .replace(/\+/g, '-')
+-     .replace(/\//g, '_')
+-     .replace(/=+$/, '');
+- function base64UrlDecode(str) {
+-   let s = str
+-     .replace(/-/g, '+')
+-     .replace(/_/g, '/');
+-   while (s.length % 4) s += '=';
+-   const binary = atob(s);
+- // ===================== RS256 签发 =====================
+-  * 签发 RS256 JWT（新版默认）
+-  * @param {Object} payload - JWT payload
+-  * @param {number} expiresInMs - 过期时间（毫秒）
+-  * @param {Object} env - 环境变量（含 JWT_PRIVATE_KEY）
+- export async function signJWT(payload, expiresInMs, env) {
+-   const now = Math.floor(Date.now() / 1000);
+-   const now = Math.floor(Date.now() / 1000);
+-   const now = Math.floor(Date.now() / 1000);
+-   const header = { alg: ALGORITHM_RS256, typ: 'JWT' };
+-   // Phase 4: 透传 tenant/role，增加 jti 支持吊销
+-   const body = {
+-     ...payload,
+-     tenant: payload.tenant || 'default',
+-     role: payload.role || 'user',
+-     jti: payload.jti || crypto.randomUUID(),
+-     iat: now,
+-     exp: now + Math.floor(expiresInMs / 1000)
+-   };
+-   const headerEncoded = base64UrlEncode(new TextEncoder().encode(JSON.stringify(header)));
+-   const bodyEncoded = base64UrlEncode(new TextEncoder().encode(JSON.stringify(body)));
+-   const signingInput = `${headerEncoded}.${bodyEncoded}`;
+-   const signingInput = `${headerEncoded}.${bodyEncoded}`;
+-   const signingInput = `${headerEncoded}.${bodyEncoded}`;
+-   const privateKey = await importPrivateKey(env.JWT_PRIVATE_KEY);
+-   const signature = await crypto.subtle.sign(
+-     { name: 'RSA-PSS', saltLength: 32 },
+-     { name: 'RSA-PSS', saltLength: 32 },
+-     privateKey,
+-     new TextEncoder().encode(signingInput)
+-     new TextEncoder().encode(signingInput)
+-     new TextEncoder().encode(signingInput)
+-   const signatureEncoded = base64UrlEncode(signature);
+-   return `${signingInput}.${signatureEncoded}`;
+-  * 签发 Access Token（15 分钟，RS256）
+- export async function signAccessToken(payload, env) {
+-   return signJWT(payload, AT_TTL_MS, env);
+-  * 签发 Refresh Token（含 userId + version，用于乐观锁）
+-  * RT 也使用 RS256（Phase 3 后统一）
+- export async function signRefreshToken(userId, version, env) {
+-   return signJWT(
+-     { sub: String(userId), type: 'refresh', v: version },
+-     RT_TTL_MS,
+-     env
+- // ===================== JWT 验证 =====================
+-  * RS256 验证（新版）
+- async function verifyRS256(token, publicKey) {
+-   const parts = token.split('.');
+-   const parts = token.split('.');
+-   if (parts.length !== 3) return { valid: false };
+-   if (parts.length !== 3) return { valid: false };
+-   const [headerEncoded, bodyEncoded, sigEncoded] = parts;
+-   const [headerEncoded, bodyEncoded, sigEncoded] = parts;
+-   const sigBytes = base64UrlDecode(sigEncoded);
+-   const header = JSON.parse(new TextDecoder().decode(base64UrlDecode(headerEncoded)));
+-   const header = JSON.parse(new TextDecoder().decode(base64UrlDecode(headerEncoded)));
+-   if (header.alg !== ALGORITHM_RS256) return { valid: false };
+-   const valid = await crypto.subtle.verify(
+-   const valid = await crypto.subtle.verify(
+-     publicKey,
+-     sigBytes,
+-   if (!valid) return { valid: false };
+-   if (!valid) return { valid: false };
+-   const body = JSON.parse(new TextDecoder().decode(base64UrlDecode(bodyEncoded)));
+-   const body = JSON.parse(new TextDecoder().decode(base64UrlDecode(bodyEncoded)));
+-   if (body.exp < now) return { valid: false };
+-   if (body.exp < now) return { valid: false };
+-   return { valid: true, payload: body };
+-   return { valid: true, payload: body };
+-  * HS256 验证（30 天兼容窗口内旧 token）
+- async function verifyHS256(token, secret) {
+-   if (header.alg !== ALGORITHM_HS256) return { valid: false };
+-   const expectedSigBytes = base64UrlDecode(sigEncoded);
+-   const secretKey = await importHS256Secret(secret);
+-     'HMAC',
+-     secretKey,
+-     expectedSigBytes,
+-  * 双轨 JWT 验证（核心函数）
+-  * 优先 RS256，30 天内旧 HS256 token 仍可验证（向后兼容）
+-  * @param {string} token - JWT token
+-  * @param {Object} env - 环境变量
+-  * @returns {Object|null} payload 或 null（验证失败）
+- export async function verifyJWT(token, env) {
+-   // 方案 A：RS256 验证（新版 token，优先）
+-   try {
+-   try {
+-   try {
+-   try {
+-     if (env.JWT_PUBLIC_KEY) {
+-       const publicKey = await importRSAPublicKey(env.JWT_PUBLIC_KEY);
+-       const result = await verifyRS256(token, publicKey);
+-       if (result.valid) {
+-       if (result.valid) {
+-         // Phase 4 P0-5: 旧 token（无 tenant 字段）从 users 表反查
+-         if (!result.payload.tenant) {
+-           await resolveLegacyTenant(result.payload, env);
+-         }
+-         }
+-         return { ...result.payload, _alg: ALGORITHM_RS256 };
+-       }
+-       }
+-       }
+-     }
+-     }
+-     }
+-   } catch (err) {
+-   } catch (err) {
+-   } catch (err) {
+-     console.warn('[JWT] RS256 verification failed, trying HS256:', err.message);
+-   // 方案 B：HS256 兼容（30 天窗口内旧 token）
+-     if (env.JWT_SECRET) {
+-       const result = await verifyHS256(token, env.JWT_SECRET);
+-         // 检查是否在 30 天兼容窗口内
+-         const issuedAt = result.payload.iat * 1000;
+-         const compatDeadline = Date.now() - HS256_COMPAT_WINDOW_MS;
+-         if (issuedAt > compatDeadline) {
+-           console.info(`[JWT] HS256 token accepted (within 30d compat window, iat=${new Date(issuedAt).toISOString()})`);
+-           // Phase 4 P0-5: 旧 token（无 tenant 字段）从 users 表反查
+-           if (!result.payload.tenant) {
+-             await resolveLegacyTenant(result.payload, env);
+-           }
+-           return { ...result.payload, _alg: ALGORITHM_HS256 };
+-         } else {
+-           console.info('[JWT] HS256 token rejected (outside 30d compat window)');
+-     console.warn('[JWT] HS256 verification failed:', err.message);
+-   return null;
+-   return null;
+-   return null;
+-  * Phase 4 P0-5: 旧 token 从 users 表反查真实 tenant（渐进路径）
+-  * users 表是全局认证表，不受租户隔离约束
+- async function resolveLegacyTenant(payload, env) {
+-     if (payload.sub && env.DB) {
+-       const user = await env.DB.prepare('SELECT tenant_id, role FROM users WHERE id = ?')
+-         .bind(payload.sub).first();
+-       if (user) {
+-         payload.tenant = user.tenant_id || 'default';
+-         payload.role = user.role || 'user';
+-         payload._isLegacy = true;
+-         payload._isLegacy = true;
+-         console.info(`[JWT] Legacy token resolved: userId=${payload.sub}, tenant=${payload.tenant}`);
+-       } else {
+-         payload.tenant = 'default';
+-     } else {
+-       payload.tenant = 'default';
+-     console.warn('[JWT] Failed to resolve legacy token tenant:', err.message);
+-     payload.tenant = 'default';
+-  * 解析 JWT（不解签名，仅读取 payload，用于 RT 轮换时取 userId）
+-  * ⚠️ 不做签名验证，仅解析——验证由 verifyJWT 负责
+
+### sharing/kv-keys.js  [code]
+- /**
+- /**
+- /**
+- /**
+- /**
+- /**
+- /**
+- /**
+- /**
+- /**
+- /**
+- /**
+- /**
+- /**
+- /**
+-  * KV Key 命名规范 — 多租户前缀支持
+-  *
+-  *
+-  *
+-  *
+-  *
+-  *
+-  *
+-  *
+-  *
+-  * Phase 3 L3-1 实现
+-  * Phase 3: Key 前缀占位符 = "default"（向后兼容）
+-  * Phase 4: Key 前缀从 JWT payload.tenant 动态读取
+-  * 使用方式：
+-  *   import { makeKey, getTenant } from './kv-keys.js';
+-  *   // 当前租户
+-  *   const tenant = getTenant(payload); // 从 JWT 读取，默认 "default"
+-  *   // Session key
+-  *   kv.get(makeKey(tenant, 'session', sessionId));
+-  *   // Refresh Token key
+-  *   kv.get(makeKey(tenant, 'rt', userId, 'meta'));
+-  */
+-  */
+-  */
+-  */
+-  */
+-  */
+-  */
+-  */
+-  */
+-  */
+-  */
+-  */
+-  */
+-  */
+-  */
+- // ===================== 常量 =====================
+-  * Phase 3 默认租户（向后兼容）
+-  * Phase 4 中替换为 JWT payload.tenant
+- export const DEFAULT_TENANT = 'default';
+-  * Key 前缀名称（用于 KV 命名约定）
+- export const KEY_PREFIXES = {
+-   SESSION:         'session',
+-   REFRESH_TOKEN:   'rt',
+-   CART:            'cart',
+-   AI_SESSION:      'ai',
+-   IDEMPOTENCY:     'pay:idempotency',
+-   RATE_LIMIT:      'rl',
+-   ANALYTICS:       'analytics',
+-   PRODUCT_CACHE:   'product',
+- };
+- };
+-  * Key TTL 定义（秒）
+- export const KEY_TTL = {
+-   SESSION:         86400,     // 24h
+-   REFRESH_TOKEN:    604800,   // 7d
+-   CART:             2592000,  // 30d
+-   AI_SESSION:       86400,    // 24h
+-   IDEMPOTENCY:      86400,    // 24h（微信重试窗口内）
+-   RATE_LIMIT:       120,      // 2min（略超窗口宽）
+-   PRODUCT_CACHE:    300,      // 5min
+-   ANALYTICS:        7776000,  // 90d
+- // ===================== Key 生成 =====================
+-  * 生成带租户前缀的 KV Key
+-  * @param {string} tenant - 租户 ID（从 JWT payload.tenant 获取）
+-  * @param {...string} parts - Key 组成部分
+-  * @returns {string} 完整 key，如 "default:session:abc123"
+-  * @throws {Error} 当 tenant 为空时抛出
+-  * Phase 4A W2: 强制 tenant 非空检查（IMA S3：防止并发串租户）
+- export function makeKey(tenant, ...parts) {
+-   if (!tenant || tenant === 'undefined' || tenant === 'null') {
+-     throw new Error(`tenant is required for KV key (got: ${JSON.stringify(tenant)})`);
+-   }
+-   }
+-   return [tenant, ...parts].join(':');
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+-  * 从 JWT payload 中提取租户 ID
+-  * @param {Object} payload - JWT payload
+-  * @returns {string} 租户 ID，未设置时返回 DEFAULT_TENANT
+- export function getTenant(payload) {
+-   return payload?.tenant || DEFAULT_TENANT;
+- // ===================== 便捷函数 =====================
+-  * Session Key
+- export function sessionKey(tenant, sessionId) {
+-   return makeKey(tenant, KEY_PREFIXES.SESSION, sessionId);
+-  * Refresh Token Meta Key
+- export function rtMetaKey(tenant, userId) {
+-   return makeKey(tenant, KEY_PREFIXES.REFRESH_TOKEN, String(userId), 'meta');
+-  * Cart Key
+- export function cartKey(tenant, userId) {
+-   return makeKey(tenant, KEY_PREFIXES.CART, String(userId));
+-  * AI Session Key
+- export function aiSessionKey(tenant, userId, sessionId) {
+-   return makeKey(tenant, KEY_PREFIXES.AI_SESSION, String(userId), sessionId);
+-  * 支付幂等 Key
+- export function idempotencyKey(tenant, outTradeNo) {
+-   return makeKey(tenant, KEY_PREFIXES.IDEMPOTENCY, outTradeNo);
+-  * 限流 Key
+- export function rateLimitKey(tenant, identifier, windowKey) {
+-   return makeKey(tenant, KEY_PREFIXES.RATE_LIMIT, identifier, windowKey);
+-  * 产品缓存 Key
+- export function productCacheKey(tenant, productId) {
+-   return makeKey(tenant, KEY_PREFIXES.PRODUCT_CACHE, String(productId));
+- // ===================== 导出 makeKey（默认） =====================
+- export { makeKey as key };
+- // ===================== KV 热 key 分散（Phase 4B5） =====================
+-  * FNV-1a 哈希（快速、低碰撞、确定性）
+-  * @param {string} str - 输入字符串
+-  * @returns {number} 32 位无符号整数哈希
+- function fnv1a(str) {
+-   let hash = 2166136261;
+-   for (let i = 0; i < str.length; i++) {
+-     hash ^= str.charCodeAt(i);
+-     hash = Math.imul(hash, 16777619);
+-   return hash >>> 0;
+-  * 获取分片的 session key（用于 KV 热 key 分散）
+-  * Phase 4B5: 将单租户的 session key 分散到 64 个分区
+-  * 触发条件：KV get/set 延迟 > 200ms 持续 5 分钟（架构专家 O1+O3）
+-  * @param {string} tenant - 租户 ID
+-  * @param {string} sessionId - Session ID
+-  * @param {number} [partitions=64] - 分区数
+-  * @returns {string} 分片后的 session key
+- export function getShardSessionKey(tenant, sessionId, partitions = 64) {
+-   if (!tenant) throw new Error('tenant is required for shard session key');
+-   const shard = fnv1a(`${tenant}:session:${sessionId}`) % partitions;
+-   return `session_shard:${shard}:${sessionId}`;
+
+### sharing/logger.js  [code]
+- /**
+- /**
+- /**
+-  * 结构化日志工具
+-  *
+-  *
+-  *
+-  *
+-  * 提供统一的日志格式，支持 requestId 追踪和耗时统计。
+-  * 使用方式：
+-  *   import { createLogger } from '../sharing/logger.js';
+-  *   const log = createLogger(request);
+-  *   log.info('order_created', { orderId: 'xxx' });
+-  *   log.warn('payment_retry', { attempt: 3 });
+-  *   log.error('db_connection_failed', err);
+-  */
+-  */
+-  */
+- let seq = 0;
+-  * 从 Request 中生成唯一 requestId
+- function getRequestId(request) {
+-   // 优先使用 EdgeOne 注入的 requestId
+-   const eoRequestId = request?.headers?.get?.('functions-request-id')
+-     || request?.headers?.get?.('x-request-id');
+-   if (eoRequestId) return eoRequestId;
+-   // 回退：基于时间戳+序列号
+-   const ts = Date.now().toString(36);
+-   const s = (seq++).toString(36).padStart(4, '0');
+-   return `${ts}-${s}`;
+- }
+- }
+-  * 创建带有 context 的 logger 实例
+-  * @param {Request} [request] - HTTP Request 对象
+-  * @param {object} [context]  - 额外上下文（如 tenant, userId）
+-  * @returns {{ info, warn, error, time, timeEnd }}
+- export function createLogger(request, context = {}) {
+-   const requestId = request ? getRequestId(request) : '-';
+-   const base = { requestId, ...context };
+-   function format(level, message, data) {
+-     const entry = {
+-       ts: new Date().toISOString(),
+-       level,
+-       ...base,
+-       message,
+-     };
+-     if (data instanceof Error) {
+-       entry.error = data.message;
+-       entry.stack = data.stack?.split('\n').slice(0, 3).join(' | ');
+-     } else if (data !== undefined) {
+-       entry.data = data;
+-     }
+-     return JSON.stringify(entry);
+-   }
+-   return {
+-     info(message, data) {
+-       console.log(format('INFO', message, data));
+-     },
+-     },
+-     },
+-     },
+-     },
+-     warn(message, data) {
+-       console.warn(format('WARN', message, data));
+-     error(message, data) {
+-       console.error(format('ERROR', message, data));
+-     // 耗时统计
+-     timers: {},
+-     time(label) {
+-       this.timers[label] = Date.now();
+-     timeEnd(label) {
+-       const start = this.timers[label];
+-       if (!start) return;
+-       const elapsed = Date.now() - start;
+-       delete this.timers[label];
+-       console.log(format('INFO', `timer:${label}`, { elapsedMs: elapsed }));
+-       return elapsed;
+-   };
+- /** 无请求上下文的全局 logger */
+- export const log = createLogger();
+
+### sharing/quota.js  [code]
+- /**
+- /**
+- /**
+- /**
+- /**
+- /**
+- /**
+- /**
+-  * 共享配额模块 — 多租户 KV/API 配额限制
+-  *
+-  *
+-  *
+-  *
+-  *
+-  *
+-  *
+-  *
+-  * Phase 4A W2 实现：
+-  * - Edge Functions + Cloud Functions 共用（架构专家 D4）
+-  * - 软限制/硬限制双层防护（安全专家 S-05）
+-  * - KV 故障时 fail-open（带告警）
+-  * - 使用 Edge KV atomic counter
+-  * 使用方式：
+-  *   import { checkQuota, incrementQuota } from '../sharing/quota.js';
+-  *   // 检查配额
+-  *   const result = await checkQuota(env, tenant, 'kv_ops');
+-  *   if (!result.allowed) {
+-  *     return new Response('Quota exceeded', { status: 429 });
+-  *   }
+-  *   // 递增配额
+-  *   await incrementQuota(env, tenant, 'kv_ops');
+-  */
+-  */
+-  */
+-  */
+-  */
+-  */
+-  */
+-  */
+- // ===================== 配额限制定义 =====================
+- /** 硬限制（硬性上限） */
+- export const HARD_LIMITS = {
+-   kv_ops: 10000,       // 每日 KV 操作次数
+-   storage: 10485760,   // 存储空间（字节）
+-   api_calls: 1000,     // 每日 API 调用次数
+- };
+- };
+- /** 软限制（硬限制 * 0.9，提前告警，防止边界值频繁拒绝） */
+- export const SOFT_LIMITS = {
+-   kv_ops: Math.floor(HARD_LIMITS.kv_ops * 0.9),
+-   storage: Math.floor(HARD_LIMITS.storage * 0.9),
+-   api_calls: Math.floor(HARD_LIMITS.api_calls * 0.9),
+- /** 配额键前缀 */
+- const QUOTA_KEY_PREFIX = 'quota';
+- // ===================== 配额检查 =====================
+-  * 检查租户配额是否超限
+-  * @param {Object} env - 环境变量（含 env.KV）
+-  * @param {Object} env - 环境变量（含 env.KV）
+-  * @param {Object} env - 环境变量（含 env.KV）
+-  * @param {string} tenant - 租户 ID
+-  * @param {string} tenant - 租户 ID
+-  * @param {string} tenant - 租户 ID
+-  * @param {string} tenant - 租户 ID
+-  * @param {string} tenant - 租户 ID
+-  * @param {string} tenant - 租户 ID
+-  * @param {string} type - 配额类型：kv_ops | storage | api_calls
+-  * @returns {Promise<Object>} { allowed, reason?, warning?, remaining?, degradedMode? }
+- export async function checkQuota(env, tenant, type = 'kv_ops') {
+-   const quotaKey = `${QUOTA_KEY_PREFIX}:${tenant}:${type}`;
+-   const quotaKey = `${QUOTA_KEY_PREFIX}:${tenant}:${type}`;
+-   const limit = HARD_LIMITS[type] || 10000;
+-   const softLimit = SOFT_LIMITS[type] || Math.floor(limit * 0.9);
+-   try {
+-   try {
+-   try {
+-   try {
+-   try {
+-     if (!env?.KV) {
+-       // 无 KV 绑定时不限制（开发环境降级）
+-       return { allowed: true, degradedMode: true };
+-     }
+-     }
+-     }
+-     }
+-     }
+-     }
+-     const count = parseInt(await env.KV.get(quotaKey) || '0', 10);
+-     if (count >= limit) {
+-       // 超过硬限制 → 拒绝
+-       return { allowed: false, reason: 'QUOTA_EXCEEDED', hard: true, limit, current: count };
+-     if (count >= softLimit) {
+-       // 超过软限制 → 放行但告警
+-       return { allowed: true, warning: 'NEAR_QUOTA_LIMIT', remaining: limit - count, limit, current: count };
+-     return { allowed: true, remaining: limit - count, limit, current: count };
+-   } catch (err) {
+-   } catch (err) {
+-   } catch (err) {
+-   } catch (err) {
+-   } catch (err) {
+-     // 🛡️ KV 故障时 fail-open：允许通过但记录告警
+-     console.error(`[Quota] Check failed for ${tenant}:${type}`, err.message);
+-     // 使用非阻塞告警上报
+-     try {
+-       await reportQuotaFailure(env, tenant, type, err.message);
+-     } catch { /* ignore */ }
+-     return { allowed: true, degradedMode: true };
+-   }
+-   }
+-   }
+-   }
+-   }
+-   }
+-   }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- // ===================== 配额递增 =====================
+-  * 递增租户配额计数
+-  * @param {string} type - 配额类型
+-  * @param {number} [amount=1] - 递增数量
+- export async function incrementQuota(env, tenant, type = 'kv_ops', amount = 1) {
+-     if (!env?.KV) return;
+-     if (!env?.KV) return;
+-     // 使用 KV atomic counter（如果后端支持）
+-     // EdgeOne KV 可能不支持原生原子操作，用 read-modify-write
+-     const current = parseInt(await env.KV.get(quotaKey) || '0', 10);
+-     await env.KV.put(quotaKey, String(current + amount));
+-     // 设置 TTL（每日重置）
+-     // KV 存储时设 TTL，如果每天重置则写入时带上 86400s TTL
+-     // 首次写入时设置 TTL
+-     if (current === 0) {
+-       // 在首次写入时设置过期（注意：KV.put 可能不支持单独设 TTL 而不改值）
+-       // 改用 expirationTtl 参数
+-     // 配额递增失败不影响业务操作，仅记录
+-     console.error(`[Quota] Increment failed for ${tenant}:${type}`, err.message);
+- // ===================== 配额重置 =====================
+-  * 重置租户配额（每日零点调用，或 superadmin 手动重置）
+-  * @param {Object} env - 环境变量
+-  * @param {Object} env - 环境变量
+-  * @param {Object} env - 环境变量
+-  * @param {string} [type] - 配额类型（不传则重置所有）
+- export async function resetQuota(env, tenant, type) {
+-     if (type) {
+-       await env.KV?.delete(`${QUOTA_KEY_PREFIX}:${tenant}:${type}`);
+-     } else {
+-       for (const t of Object.keys(HARD_LIMITS)) {
+-         await env.KV?.delete(`${QUOTA_KEY_PREFIX}:${tenant}:${t}`);
+-       }
+-       }
+-     console.error(`[Quota] Reset failed for ${tenant}:${type || 'all'}`, err.message);
+- // ===================== 滑动窗口计数器（Phase 4B6 — 计费 MVP） =====================
+- const SLIDING_WINDOW_PREFIX = 'billing:sw';
+-  * 滑动窗口计数 — 用于计费统计
+-  * 将时间窗口划分为多个槽位，每个槽位独立计数。
+-  * 查询时汇总当前窗口内所有有效槽位的计数。
+-  * @param {string} metric - 计费指标（如 'api_calls', 'storage_gb'）
+-  * @param {number} [windowMinutes=60] - 窗口大小（分钟）
+-  * @returns {Promise<number>} 当前窗口内的总计数
+- export async function getSlidingWindowCount(env, tenant, metric, windowMinutes = 60) {
+-     if (!env?.KV) return 0;
+-     const prefix = `${SLIDING_WINDOW_PREFIX}:${tenant}:${metric}:`;
+-     const now = Date.now();
+-     const now = Date.now();
+-     const windowMs = windowMinutes * 60 * 1000;
+-     const slotMs = 60 * 1000; // 1 分钟一个槽位
+-     const cutoff = now - windowMs;
+-     // 扫描当前窗口内的所有槽位
+-     const listResult = await env.KV.list({ prefix });
+-     let total = 0;
+-     for (const key of listResult.keys) {
+-       // 从 key 中提取时间戳（格式：prefix{timestamp}）
+-       const timestamp = parseInt(key.name.slice(prefix.length), 10);
+-       if (timestamp >= cutoff) {
+-         const val = parseInt(await env.KV.get(key.name) || '0', 10);
+-         total += val;
+-     return total;
+-     console.error(`[Billing] Sliding window count failed: ${tenant}:${metric}`, err.message);
+-     return 0;
+-  * 记录一次计费事件
+-  * @param {string} metric - 计费指标
+-  * @param {string} metric - 计费指标
+-  * @param {number} [amount=1] - 增量
+- export async function recordBillingEvent(env, tenant, metric, amount = 1) {
+-     // 按分钟槽位聚合
+-     const slotKey = `${SLIDING_WINDOW_PREFIX}:${tenant}:${metric}:${Math.floor(now / 60000) * 60000}`;
+-     // 原子递增
+-     const current = parseInt(await env.KV.get(slotKey) || '0', 10);
+-     await env.KV.put(slotKey, String(current + amount), { expirationTtl: 86400 }); // 1 天过期
+-     console.error(`[Billing] Record event failed: ${tenant}:${metric}`, err.message);
+-  * 检查是否超限，超限返回 403 升级提示（计费 MVP 核心逻辑）
+-  * @param {number} limit - 限制值
+-  * @param {number} [windowMinutes=60] - 窗口大小
+-  * @returns {Promise<Object>} { allowed, count, limit, upgrade? }
+- export async function checkBillingQuota(env, tenant, metric, limit, windowMinutes = 60) {
+-   const count = await getSlidingWindowCount(env, tenant, metric, windowMinutes);
+-   if (count >= limit) {
+-     return {
+-       allowed: false,
+-       count,
+-       limit,
+-       upgrade: true,
+-       message: `已超出免费额度 (${limit}/${windowMinutes}min)，请升级套餐`,
+-     };
+-   return { allowed: true, count, limit, remaining: limit - count };
+- // ===================== 内部工具 =====================
+-  * 上报配额检查失败
+- async function reportQuotaFailure(env, tenant, type, errorMessage) {
+-   const logKey = `quota:failures:${Date.now()}`;
+-   if (env?.KV) {
+-     await env.KV.put(logKey, JSON.stringify({
+-       timestamp: new Date().toISOString(),
+-       tenant,
+-       type,
+-       error: errorMessage,
+-     }), { expirationTtl: 86400 });
+-   console.warn(`[Quota] Failure reported: ${tenant}:${type} -> ${errorMessage}`);
+
+### sharing/response.js  [code]
+- /**
+-  * 统一 API 响应格式
+-  *
+-  *
+-  *
+-  *
+-  * 所有 API 端点使用此模块构建标准错误/成功响应。
+-  * 错误码体系：
+-  *   VALIDATION_ERROR — 参数校验失败 (400)
+-  *   UNAUTHORIZED      — 未认证 (401)
+-  *   FORBIDDEN         — 权限不足 (403)
+-  *   NOT_FOUND         — 资源不存在 (404)
+-  *   CONFLICT          — 并发冲突 (409)
+-  *   RATE_LIMITED      — 限流 (429)
+-  *   INTERNAL_ERROR    — 服务端错误 (500)
+-  * 使用方式：
+-  *   import { badRequest, notFound, ok } from '../sharing/response.js';
+-  *   if (!result.valid) return badRequest(result.error);
+-  *   return ok({ order });
+-  */
+- // ===================== 成功响应 =====================
+- export function ok(data, meta = {}) {
+-   return new Response(JSON.stringify({ success: true, data, ...meta }), {
+-     status: 200,
+-     headers: { 'Content-Type': 'application/json' },
+-     headers: { 'Content-Type': 'application/json' },
+-     headers: { 'Content-Type': 'application/json' },
+-     headers: { 'Content-Type': 'application/json' },
+-     headers: { 'Content-Type': 'application/json' },
+-     headers: { 'Content-Type': 'application/json' },
+-     headers: { 'Content-Type': 'application/json' },
+-     headers: { 'Content-Type': 'application/json' },
+-     headers: { 'Content-Type': 'application/json' },
+-   });
+-   });
+-   });
+-   });
+-   });
+-   });
+-   });
+-   });
+-   });
+-   });
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- export function created(data) {
+-   return new Response(JSON.stringify({ success: true, data }), {
+-     status: 201,
+- // ===================== 客户端错误 =====================
+- export function badRequest(message, code = 'VALIDATION_ERROR') {
+-   return new Response(JSON.stringify({
+-   return new Response(JSON.stringify({
+-   return new Response(JSON.stringify({
+-   return new Response(JSON.stringify({
+-   return new Response(JSON.stringify({
+-   return new Response(JSON.stringify({
+-   return new Response(JSON.stringify({
+-   return new Response(JSON.stringify({
+-     success: false,
+-     success: false,
+-     success: false,
+-     success: false,
+-     success: false,
+-     success: false,
+-     success: false,
+-     success: false,
+-     error: { code, message },
+-   }), {
+-   }), {
+-   }), {
+-   }), {
+-   }), {
+-   }), {
+-   }), {
+-   }), {
+-     status: 400,
+-     status: 400,
+- export function unauthorized(message = 'Unauthorized') {
+-     error: { code: 'UNAUTHORIZED', message },
+-     status: 401,
+- export function forbidden(message = 'Forbidden') {
+-     error: { code: 'FORBIDDEN', message },
+-     status: 403,
+- export function notFound(message = 'Not found') {
+-     error: { code: 'NOT_FOUND', message },
+-     status: 404,
+- export function conflict(message = 'Conflict') {
+-     error: { code: 'CONFLICT', message },
+-     status: 409,
+- export function rateLimited(message = 'Too many requests', retryAfter = 60) {
+-     error: { code: 'RATE_LIMITED', message },
+-     status: 429,
+-     headers: {
+-       'Content-Type': 'application/json',
+-       'Retry-After': String(retryAfter),
+-     },
+-     },
+- // ===================== 服务端错误 =====================
+- export function internalError(message = 'Internal server error') {
+-     error: { code: 'INTERNAL_ERROR', message },
+-     status: 500,
+- // ===================== 校验错误（批量） =====================
+- export function validationErrors(errors) {
+-     error: {
+-       code: 'VALIDATION_ERROR',
+-       message: '参数校验失败',
+-       details: errors,
+
+### sharing/validators.js  [code]
+- /**
+- /**
+- /**
+- /**
+- /**
+-  * 共享参数校验模块
+-  *
+-  *
+-  *
+-  *
+-  * 供给 Edge Functions 和 Cloud Functions 复用。
+-  * 每个校验函数返回 { valid: boolean, error?: string, sanitized?: any }
+-  * 使用方式：
+-  *   import { validateEmail, validateOrderId } from '../sharing/validators.js';
+-  *   const result = validateEmail(input);
+-  *   if (!result.valid) return errorResponse(400, result.error);
+-  */
+-  */
+-  */
+-  */
+-  */
+- // ===================== 通用工具 =====================
+- /** 安全整数值范围 */
+- const SAFE_INT_MAX = 2147483647;
+- /** 常见 SQL/NoSQL 注入特征 */
+- const INJECTION_PATTERNS = [
+-   /(\bUNION\b.*\bSELECT\b)/i,
+-   /(\bDROP\b\s+\bTABLE\b)/i,
+-   /(\bALTER\b\s+\bTABLE\b)/i,
+-   /(\bINSERT\b\s+\bINTO\b)/i,
+-   /(\bDELETE\b\s+\bFROM\b)/i,
+-   /(<\s*script\b)/i,
+-   /(\$\{.*\})/,       // 模板注入
+-   /(\bOR\b\s+1\s*=\s*1)/i,  // 布尔盲注
+- ];
+- // ===================== 字符串校验 =====================
+-  * 校验并清理字符串
+- export function validateString(value, { min = 1, max = 255, required = true } = {}) {
+-   if (value === undefined || value === null) {
+-     if (required) return { valid: false, error: '此项为必填' };
+-     return { valid: true, sanitized: '' };
+-   }
+-   }
+-   }
+-   }
+-   }
+-   }
+-   }
+-   }
+-   }
+-   }
+-   }
+-   }
+-   }
+-   }
+-   }
+-   }
+-   }
+-   }
+-   }
+-   }
+-   }
+-   }
+-   }
+-   }
+-   }
+-   }
+-   }
+-   const str = String(value).trim();
+-   if (required && str.length === 0) {
+-     return { valid: false, error: '此项不能为空' };
+-   if (str.length < min) {
+-     return { valid: false, error: `最少需要 ${min} 个字符` };
+-   if (str.length > max) {
+-     return { valid: false, error: `最多允许 ${max} 个字符` };
+-   return { valid: true, sanitized: str };
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- // ===================== Email =====================
+- const EMAIL_RE = /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$/;
+- export function validateEmail(email) {
+-   if (!email || typeof email !== 'string') {
+-     return { valid: false, error: '邮箱为必填项' };
+-   const trimmed = email.trim().toLowerCase();
+-   if (trimmed.length > 254) {
+-     return { valid: false, error: '邮箱地址过长' };
+-   if (!EMAIL_RE.test(trimmed)) {
+-     return { valid: false, error: '邮箱格式不正确' };
+-   return { valid: true, sanitized: trimmed };
+-   return { valid: true, sanitized: trimmed };
+-   return { valid: true, sanitized: trimmed };
+-   return { valid: true, sanitized: trimmed };
+- // ===================== 密码 =====================
+- export function validatePassword(password) {
+-   if (!password || typeof password !== 'string') {
+-     return { valid: false, error: '密码为必填项' };
+-   if (password.length < 8) {
+-     return { valid: false, error: '密码最少需要 8 个字符' };
+-   if (password.length > 128) {
+-     return { valid: false, error: '密码最多 128 个字符' };
+-   // 强度检查：至少含字母+数字
+-   if (!/[a-zA-Z]/.test(password) || !/\d/.test(password)) {
+-     return { valid: false, error: '密码必须包含字母和数字' };
+-   return { valid: true, sanitized: password };
+- // ===================== 订单ID =====================
+- const ORDER_ID_RE = /^[A-Z0-9]{8,64}$/;
+- export function validateOrderId(orderId) {
+-   if (!orderId || typeof orderId !== 'string') {
+-     return { valid: false, error: '订单ID为必填项' };
+-   const trimmed = orderId.trim();
+-   if (!ORDER_ID_RE.test(trimmed)) {
+-     return { valid: false, error: '订单ID格式无效' };
+- // ===================== 金额 =====================
+- export function validateAmount(amount, { required = true, min = 0.01, max = 999999.99 } = {}) {
+-   if (amount === undefined || amount === null) {
+-     if (required) return { valid: false, error: '金额为必填项' };
+-     return { valid: true, sanitized: 0 };
+-   const num = Number(amount);
+-   if (isNaN(num) || !isFinite(num)) {
+-     return { valid: false, error: '金额格式无效' };
+-   if (num < min) {
+-     return { valid: false, error: `金额不能低于 ${min}` };
+-   if (num > max) {
+-   if (num > max) {
+-     return { valid: false, error: `金额不能超过 ${max}` };
+-   // 保留两位小数
+-   return { valid: true, sanitized: Math.round(num * 100) / 100 };
+- // ===================== 数量 =====================
+- export function validateQuantity(qty, { required = true, min = 1, max = 999 } = {}) {
+-   if (qty === undefined || qty === null) {
+-     if (required) return { valid: false, error: '数量为必填项' };
+-     return { valid: true, sanitized: 1 };
+-   const num = parseInt(qty, 10);
+-   if (isNaN(num) || num < min) {
+-     return { valid: false, error: `数量最少为 ${min}` };
+-     return { valid: false, error: `数量最多为 ${max}` };
+-   return { valid: true, sanitized: num };
+- // ===================== 租户ID =====================
+- const TENANT_ID_RE = /^[a-z][a-z0-9_-]{1,31}$/;
+- export function validateTenantId(tenantId) {
+-   if (!tenantId || typeof tenantId !== 'string') {
+-     return { valid: false, error: '租户ID为必填项' };
+-   const trimmed = tenantId.trim().toLowerCase();
+-   if (!TENANT_ID_RE.test(trimmed)) {
+-     return { valid: false, error: '租户ID格式无效（需以字母开头，2-32位）' };
+- // ===================== 商品 =====================
+- export function validateProductName(name) {
+-   if (!name || typeof name !== 'string') {
+-     return { valid: false, error: '商品名称为必填项' };
+-   const trimmed = name.trim();
+-   if (trimmed.length < 1) return { valid: false, error: '商品名称不能为空' };
+-   if (trimmed.length > 200) return { valid: false, error: '商品名称最多 200 个字符' };
+- // ===================== 注入检测 =====================
+-  * 检测输入是否包含 SQL/脚本注入特征
+- export function detectInjection(input) {
+-   if (!input || typeof input !== 'string') return false;
+-   return INJECTION_PATTERNS.some(pattern => pattern.test(input));
+-  * 安全地校验输入，同时检测注入
+- export function safeValidate(validatorFn, value, options) {
+-   // 如果是字符串，先检测注入
+-   if (typeof value === 'string' && detectInjection(value)) {
+-     return { valid: false, error: '输入包含非法字符' };
+-   return validatorFn(value, options);
+- // ===================== 批量校验 =====================
+-  * 批量参数校验
+-  * @param {object} body - 请求体
+-  * @param {object} schema - { fieldName: validatorFn }
+-  * @returns {{ valid: boolean, errors?: object, sanitized?: object }}
+- export function validateBody(body, schema) {
+-   const errors = {};
+-   const sanitized = {};
+-   for (const [field, validator] of Object.entries(schema)) {
+-     const result = validator(body[field]);
+-     if (!result.valid) {
+-       errors[field] = result.error;
+-     } else {
+-       sanitized[field] = result.sanitized !== undefined ? result.sanitized : body[field];
+-     }
+-   if (Object.keys(errors).length > 0) {
+-     return { valid: false, errors, sanitized };
+-   return { valid: true, sanitized };
+- // ===================== 安全类型转换 =====================
+- /** 安全转整数 */
+- export function safeParseInt(value, fallback = 0) {
+-   const num = parseInt(value, 10);
+-   if (isNaN(num) || !isFinite(num) || Math.abs(num) > SAFE_INT_MAX) {
+-     return fallback;
+-   return num;
+- /** 安全分页参数 */
+- export function parsePagination(query) {
+-   const page = Math.max(1, safeParseInt(query?.page, 1));
+-   const pageSize = Math.min(100, Math.max(1, safeParseInt(query?.pageSize, 20)));
+-   const offset = (page - 1) * pageSize;
+-   return { page, pageSize, offset };
+
+### templates/ai-assistant.json  [code]
+- {
+-   "name": "ai-assistant",
+-   "label": "AI 客服站",
+-   "labelEn": "AI Assistant",
+-   "description": "AI 对话助手：流式 SSE 响应、会话历史、多轮上下文、嵌入代码",
+-   "modules": ["auth", "ai-chat"],
+-   "stackModules": ["ai-chat"],
+-   "layer1": {
+-     "auth": true,
+-     "aiChat": true,
+-     "cart": false,
+-     "payment": false,
+-     "orders": false,
+-     "admin": false
+-   },
+-   },
+-   },
+-   "layer2": {
+-     "notification": true,
+-     "seo": true,
+-     "analytics": false,
+-     "i18n": false
+-   "dependencies": {
+-     "npm": ["bcryptjs", "jsonwebtoken"],
+-     "edgeone": {
+-       "kv": true,
+-       "cloudFunctions": true
+-     }
+-   "envVars": [
+-     "JWT_PRIVATE_KEY",
+-     "JWT_PUBLIC_KEY",
+-     "JWT_SECRET",
+-     "AI_API_KEY",
+-     "EDGE_BASE"
+-   ],
+-   ],
+-   ],
+-   "features": [
+-     "AI 对话（SSE 流式响应）",
+-     "多轮上下文记忆",
+-     "会话历史读取（KV）",
+-     "嵌入代码（Widget Script）",
+-     "访客 + 登录双模式",
+-     "AI 限流保护"
+-   "pages": [
+-     "/",
+-     "/login",
+-     "/register",
+-     "/chat",
+-     "/history",
+-     "/admin/stats"
+-   "embedCode": "<script src=\"https://your-site.edgeone.cool/ai-widget.js\"></script>\n<ai-chat-widget site-id=\"YOUR_SITE_ID\" theme=\"auto\" position=\"bottom-right\"></ai-chat-widget>",
+-   "securityChecks": [
+-     "bcrypt cost=12",
+-     "JWT RS256 + 30天 HS256 兼容窗口",
+-     "JWT 15min AT + RT 7d 轮换",
+-     "AI 限流（未登录 10次/分钟，已登录 60次/分钟）",
+-     "CSP Header"
+-   ]
+- }
+
+### templates/e-commerce.json  [code]
+- {
+-   "name": "e-commerce",
+-   "label": "快速电商站",
+-   "labelEn": "E-Commerce",
+-   "description": "完整的电商全链路：商品展示、用户认证、购物车、微信/支付宝支付、订单管理",
+-   "modules": ["auth", "cart", "payment", "orders", "admin"],
+-   "stackModules": ["products", "cart", "payment"],
+-   "layer1": {
+-     "auth": true,
+-     "cart": true,
+-     "payment": true,
+-     "orders": true,
+-     "admin": true
+-   },
+-   },
+-   },
+-   "layer2": {
+-     "notification": true,
+-     "seo": false,
+-     "analytics": false,
+-     "i18n": false
+-   "dependencies": {
+-     "npm": ["bcryptjs", "jsonwebtoken"],
+-     "edgeone": {
+-       "kv": true,
+-       "cloudFunctions": true
+-     }
+-   "envVars": [
+-     "JWT_PRIVATE_KEY",
+-     "JWT_PUBLIC_KEY",
+-     "JWT_SECRET",
+-     "WX_APPID",
+-     "WX_MCHID",
+-     "WX_API_KEY",
+-     "WX_CERT_PATH",
+-     "ALI_APP_ID",
+-     "ALI_PRIVATE_KEY",
+-     "DATABASE_URL",
+-     "EDGE_BASE"
+-   ],
+-   ],
+-   ],
+-   "features": [
+-     "商品浏览与搜索",
+-     "用户注册/登录（JWT + Refresh Token）",
+-     "购物车（localStorage + KV 双模式）",
+-     "微信支付 V3 预下单 + 回调",
+-     "支付宝支付预下单 + 回调",
+-     "订单创建（原子性：SELECT FOR UPDATE）",
+-     "支付幂等原子锁",
+-     "订单状态机",
+-     "管理员商品 CRUD",
+-     "管理员订单管理",
+-     "管理员用户管理",
+-     "运营统计"
+-   "pages": [
+-     "/",
+-     "/login",
+-     "/register",
+-     "/cart",
+-     "/checkout",
+-     "/payment/success",
+-     "/orders",
+-     "/admin/products",
+-     "/admin/orders",
+-     "/admin/users",
+-     "/admin/stats"
+-   "securityChecks": [
+-     "bcrypt cost=12",
+-     "JWT RS256 + 30天 HS256 兼容窗口",
+-     "JWT 15min AT + RT 7d 轮换",
+-     "Cookie HttpOnly + Secure + SameSite=Strict",
+-     "支付幂等 putIfNotExists",
+-     "金额服务端 D1 读取",
+-     "AI 限流",
+-     "CSP Header",
+-     "订单状态机（6状态 + 权限矩阵 + 审计日志）"
+-   ]
+- }
+
+### templates/saas-admin.json  [code]
+- {
+-   "name": "saas-admin",
+-   "label": "SaaS 管理后台",
+-   "labelEn": "SaaS Admin",
+-   "description": "多租户 SaaS 管理后台：用户管理、RBAC 权限、运营统计、审计日志",
+-   "modules": ["auth", "admin"],
+-   "stackModules": ["admin"],
+-   "layer1": {
+-     "auth": true,
+-     "admin": true,
+-     "cart": false,
+-     "payment": false,
+-     "orders": false,
+-     "aiChat": false
+-   },
+-   },
+-   },
+-   },
+-   "layer2": {
+-     "notification": true,
+-     "seo": false,
+-     "analytics": true,
+-     "i18n": false
+-   "dependencies": {
+-     "npm": ["bcryptjs", "jsonwebtoken"],
+-     "edgeone": {
+-       "kv": true,
+-       "cloudFunctions": true
+-     }
+-   "envVars": [
+-     "JWT_PRIVATE_KEY",
+-     "JWT_PUBLIC_KEY",
+-     "JWT_SECRET",
+-     "DATABASE_URL",
+-     "EDGE_BASE"
+-   ],
+-   ],
+-   ],
+-   "features": [
+-     "多角色 RBAC（admin / manager / user）",
+-     "用户 CRUD",
+-     "权限管理",
+-     "运营统计面板",
+-     "审计日志",
+-     "多租户隔离（租户前缀 KV key）"
+-   "pages": [
+-     "/login",
+-     "/admin/dashboard",
+-     "/admin/users",
+-     "/admin/roles",
+-     "/admin/audit",
+-     "/admin/settings"
+-   "rbacMatrix": {
+-     "admin": ["users:read", "users:write", "users:delete", "roles:manage", "audit:read", "stats:read", "settings:manage"],
+-     "manager": ["users:read", "stats:read"],
+-     "user": ["profile:read", "profile:write"]
+-   "securityChecks": [
+-     "bcrypt cost=12",
+-     "JWT RS256 + 30天 HS256 兼容窗口",
+-     "JWT 15min AT + RT 7d 轮换",
+-     "Cookie HttpOnly + Secure + SameSite=Strict",
+-     "RBAC 中间件校验",
+-     "审计日志写入",
+-     "CSP Header",
+-     "多租户 KV key 隔离"
+-   ]
+- }

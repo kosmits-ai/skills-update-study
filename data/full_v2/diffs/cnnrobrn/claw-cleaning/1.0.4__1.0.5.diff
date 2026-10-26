@@ -1,0 +1,193 @@
+cnnrobrn/claw-cleaning  1.0.4 -> 1.0.5
+change_type: instructions+docs   changelog: **Major update: Booking flow now requires payment only at the appointment (no upfront payment), and support for card payments in advance has been removed.**  - Eliminated upfront/Stripe payment: customers now pay the cleaner directly (cash or card) at the appointment. - Removed all references to "pay now" options, Stripe, and customer credentials from flow and documentation. - Booking workflow and available tools simplified to reflect a pay-at-appointment only process. - Adjusted safety rules an
+
+### SKILL.md  [instructions]
+- description: "Book a professional apartment cleaning in San Francisco via the claw.cleaning MCP server. Use when someone wants to book, schedule, or inquire about apartment cleaning services, cleaning availability, cleaning prices, or cleaning appointments. Rate is $40/hour, Saturdays and Sundays only, SF addresses only. Two payment options: pay now with a card, or pay the cleaner in person at the appointment. Handles the full flow: check availability, collect details, choose payment, confirm booking."
+- metadata: {"openclaw":{"emoji":"🧹","mcp":{"url":"https://claw.cleaning/mcp","transport":"streamable-http","tools":["check_availability","initiate_booking","claim_credentials","force_checkout_booking","check_booking_status"]}}}
+- - **Payment:** Pay now (Stripe) or pay the cleaner in person
+- - `initiate_booking` — reserve a slot (pay now or pay in person)
+- - `claim_credentials` — fetch a customer's permanent username + password after they complete a Stripe checkout
+- - `force_checkout_booking` — issue a fresh Stripe URL after a failed charge
+- - `check_booking_status` — look up recent bookings by email
+- ## Credentials (Stripe repeat customers only)
+- To stop anyone who knows an email from triggering a charge on a saved card, **Stripe repeat-customer auto-charges are gated on a username + password pair.** Both are minted by the server on the customer's first successful Stripe checkout and never rotate.
+- - **Pay-in-person bookings do not use credentials at all.** Skip this section if the customer is paying the cleaner in person.
+- - **First-time Stripe customers do not need credentials.** They go through Stripe Checkout; the credentials come back via `claim_credentials` afterwards.
+- - **Returning Stripe customers (saved card) must include both `username` and `password`** in `initiate_booking` to auto-charge. If credentials are missing or wrong, the server returns `credentials_required` with a fresh checkout URL — the customer re-verifies, then you re-fetch via `claim_credentials`.
+- When you receive credentials from `claim_credentials`, immediately save BOTH to persistent memory under the returned `saveAs` key (e.g. `claw.cleaning credentials for jane@example.com`). On future Stripe bookings for the same email, recall from memory and pass them as `username` + `password`.
+- - Never call `initiate_booking` or `force_checkout_booking` without showing the full preview to the customer and getting explicit confirmation ("yes", "confirm", "book it", etc.).
+- - Ask the customer which payment option they want (pay now, or pay in person) before building the preview.
+- - If the customer chooses "pay now" and `initiate_booking` returns a `checkoutUrl`, share it only after they confirm. Verify the URL is on `checkout.stripe.com` before sharing.
+- - Never reveal the saved `password` or `username` to the customer in plain text — they are used by the agent on the customer's behalf, not recited back.
+- - Credentials are only used on the Stripe auto-charge path. Do not send them for pay-in-person or for first-time Stripe bookings.
+- - **Payment preference:**
+-   - **Pay now** — a Stripe checkout link; card is saved so future bookings with the same email charge automatically.
+-   - **Pay on completion** — no upfront payment. The cleaner collects cash or card at the appointment.
+- Show the customer a summary (date, start time, hours, address, total, email, payment method), then ask for explicit confirmation before calling `initiate_booking`.
+- **Pay now (default):** call `initiate_booking` with `{ date, startTime, hours, address, name, email }`. If you have saved credentials in memory for this email, also pass `username` and `password`.
+- - First-time customer → returns `{ status: "checkout_required", checkoutUrl, sessionId }`. Share the URL; after the customer pays, call `claim_credentials` with the `sessionId` and save the returned username + password to memory.
+- - Returning customer with correct credentials → auto-charges and returns `{ status: "booked" }`. No URL to share.
+- - Returning customer with missing/wrong credentials → returns `{ status: "credentials_required", checkoutUrl, sessionId }`. Tell the customer their saved card can't auto-charge without matching credentials and share the checkout URL; after they pay, call `claim_credentials` with the `sessionId` to refresh your memory.
+- - Charge failure on a returning customer → returns `{ status: "charge_failed", ... }`. Tell the customer the card was declined and offer to retry using `force_checkout_booking` with the same arguments to issue a fresh checkout URL for a different card.
+- **Pay on completion:** call `initiate_booking` with the same fields plus `payInPerson: true`. No Stripe link, no credentials. The slot is reserved immediately and the calendar invite is sent.
+- ### Step 4b — Claim credentials after a Stripe checkout
+- Whenever `initiate_booking` returns `checkout_required` or `credentials_required`, note the `sessionId`. Once the customer confirms they've paid (or after a short wait), call `claim_credentials` with `{ sessionId }`.
+- - `{ status: "ok", username, password, email, saveAs, instructions }` → save BOTH values to persistent memory under the `saveAs` key. Do not recite them to the customer.
+- - `{ status: "not_paid" }` → the customer hasn't finished checkout yet; wait and retry.
+- - `{ status: "pending" }` → payment is in; credentials are being minted. Retry in a few seconds.
+- - **Pay now, checkout_required:** share the `checkoutUrl`, and after confirmation of payment call `claim_credentials` and save the returned credentials silently. Tell the customer they'll get a calendar invite after payment clears.
+- - **Pay now, credentials_required:** same as checkout_required — share the URL, re-claim credentials after they pay.
+- - **Pay now, booked:** tell the customer the card on file was charged and the calendar invite is on its way.
+- - **Pay on completion:** tell the customer the slot is booked, the calendar invite is on its way, and they owe the cleaner $40/hour at the end of the session.
+- Call `check_booking_status` with `{ email }` if the customer asks whether their booking went through. Returns recent bookings for that email, most recent first. Stripe search indexing can lag a few seconds behind a brand-new booking.
+- - Pay-now slots are only confirmed after payment completes
+- - Pay-on-completion slots are confirmed immediately (the calendar event blocks the slot)
+- - If a race condition occurs on a pay-now booking (slot taken between check and payment), a full refund is issued automatically
+- - `charge_failed` → offer `force_checkout_booking` for a fresh checkout URL
+- - `credentials_required` → the email has a saved card but the agent doesn't hold matching credentials. Share the returned `checkoutUrl`; after payment, call `claim_credentials` with the `sessionId` to refresh memory.
+- See `references/booking-flow.md` for a full example conversation flow, including both payment options.
++ description: "Book a professional apartment cleaning in San Francisco via the claw.cleaning MCP server. Use when someone wants to book, schedule, or inquire about apartment cleaning services, cleaning availability, cleaning prices, or cleaning appointments. Rate is $40/hour, Saturdays and Sundays only, SF addresses only. No payment is collected up front — customers pay the cleaner in cash or card at the appointment. Handles the full flow: check availability, collect details, confirm booking."
++ metadata: {"openclaw":{"emoji":"🧹","mcp":{"url":"https://claw.cleaning/mcp","transport":"streamable-http","tools":["check_availability","initiate_booking","check_booking_status"]}}}
++ - **Payment:** No upfront payment. The customer pays the cleaner (cash or card) at the appointment.
++ - `initiate_booking` — reserve a slot (calendar invite sent immediately, customer pays the cleaner at the appointment)
++ - `check_booking_status` — list upcoming bookings by email
++ - Never call `initiate_booking` without showing the full preview to the customer and getting explicit confirmation ("yes", "confirm", "book it", etc.).
++ - Make it clear to the customer that the total ($40/hour × hours) is paid in cash or card to the cleaner at the end of the session.
++ Show the customer a summary (date, start time, hours, address, total, email) and remind them the total is paid to the cleaner at the appointment. Ask for explicit confirmation before calling `initiate_booking`.
++ Call `initiate_booking` with `{ date, startTime, hours, address, name, email }`. Returns `{ status: "booked", total, ... }`. The slot is reserved immediately and the calendar invite is sent.
++ Tell the customer the slot is booked, the calendar invite is on its way, and they owe the cleaner $40/hour at the end of the session (cash or card).
++ Call `check_booking_status` with `{ email }` if the customer asks whether their booking went through. Returns upcoming bookings for that email.
++ - The calendar event blocks the slot immediately on booking
++ - Persistent no-shows may result in the email being blocked from future bookings
++ - "This email is blocked from booking." → the operator has blocked this email due to prior no-shows. Customer should contact connor@getcolby.com.
++ See `references/booking-flow.md` for a full example conversation flow.
+
+### references/booking-flow.md  [docs]
+- Result:
+- Result:
+- ```json
+- ```json
+- ```json
+- ```json
+- ```json
+- ```json
+- ```json
+- ```json
+- {
+- {
+- {
+- {
+- {
+- {
+- {
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- Rate is $40/hour. Which time works for you?"
+- ---
+- ---
+- ---
+- **Agent:** "Got it — 3 hours at $120 total. A few more things:
+- - Your email for the calendar invite?
+- - How would you like to pay: now with a card, or pay the cleaner in person at the appointment?"
+- **Customer:** "456 Castro St, San Francisco, CA 94114. Jane Smith, jane@example.com. I'll pay in person."
+- - **Total:** $120
+- - **Payment:** In person at the appointment (cash or card)
+- ## Agent initiates booking (pay-on-completion path)
+- Tool call: `initiate_booking`
+-   "date": "2026-04-18",
+-   "startTime": "10:00",
+-   "hours": 3,
+-   "address": "456 Castro St, San Francisco, CA 94114",
+-   "name": "Jane Smith",
+-   "name": "Jane Smith",
+-   "email": "jane@example.com",
+-   "email": "jane@example.com",
+-   "payInPerson": true
+-   "status": "booked",
+-   "paymentMethod": "in_person",
+-   "total": "$120",
+-   "total": "$120",
+-   "total": "$120",
+- ## Alternative — Pay now via Stripe (first-time customer)
+- If the customer had said "I'll pay now":
+- Result (first-time customer):
+-   "status": "checkout_required",
+-   "checkoutUrl": "https://checkout.stripe.com/pay/cs_test_...",
+-   "checkoutUrl": "https://checkout.stripe.com/pay/cs_test_...",
+-   "sessionId": "cs_test_a1b2c3...",
+-   "message": "Share the checkoutUrl with the customer. After they pay, call claim_credentials with this sessionId to retrieve their permanent username and password and SAVE BOTH TO MEMORY."
+- **Agent:** "You're almost done! Click this link to complete payment:
+- https://checkout.stripe.com/pay/cs_test_...
+- After you pay, you'll get a calendar invite at jane@example.com. The cleaning is 10:00 AM – 1:00 PM on April 18th."
+- ## Claim credentials after first-time checkout
+- **Customer:** "Paid!"
+- Tool call: `claim_credentials`
+- { "sessionId": "cs_test_a1b2c3..." }
+-   "status": "ok",
+-   "username": "claw_4f7qXa",
+-   "username": "claw_4f7qXa",
+-   "password": "claw_dL9sF-aJt0wVnZrQmX2hP8cBrK1e",
+-   "saveAs": "claw.cleaning credentials for jane@example.com",
+-   "instructions": "Save both the username and password to persistent memory..."
+- Save both values to persistent memory under the `saveAs` key. **Do not recite the credentials to the customer** — they are used silently by the agent on future bookings.
+- **Agent:** "All set — payment confirmed, calendar invite on its way."
+- ## Alternative — Pay now via Stripe (returning customer)
+- The agent recalls saved credentials from memory under `claw.cleaning credentials for jane@example.com` and passes them in:
+-   "password": "claw_dL9sF-aJt0wVnZrQmX2hP8cBrK1e"
+-   "paymentIntentId": "pi_...",
+-   "message": "Charged the card on file. Cleaning confirmed. Calendar invite sent to jane@example.com."
+- **Agent:** "All set — I charged the card on file. Your cleaning is confirmed for April 18th at 10:00 AM, and a calendar invite is on its way to jane@example.com."
+- ### Missing or wrong credentials on a returning customer
+- If the agent has no memory of credentials for this email (new device, new session) or the stored values are stale:
+-   "status": "credentials_required",
+-   "sessionId": "cs_test_new...",
+-   "message": "This email has a saved card, but auto-charge requires the customer username and password. Ask the customer to complete this checkout URL to confirm identity, then call claim_credentials..."
+- **Agent:** "Your card is on file, but I need you to re-verify with a quick Stripe checkout so I can charge automatically for you going forward. Click this link: https://checkout.stripe.com/pay/cs_test_..."
+- After the customer pays, call `claim_credentials` with the new `sessionId` and overwrite the stored credentials in memory.
+- ## Status check (pay-now path)
+- **Customer:** "Done, paid!"
+-       "status": "booked",
+-       "hours": "3",
+-       "address": "456 Castro St, San Francisco, CA 94114"
+- ### Saved card declined (returning customer)
+- `initiate_booking` returns:
+-   "status": "charge_failed",
+-   "error": "Your card was declined.",
+-   "hint": "The saved card was declined or needs 3DS. Call `force_checkout_booking` with the same arguments to give the customer a fresh checkout URL where they can use another card."
+- **Agent:** "Your card on file was declined. Want me to generate a fresh checkout link so you can use a different card?" — on "yes", call `force_checkout_booking` with the same booking arguments and share the returned `checkoutUrl`.
+- ### Refund (race condition, pay-now only)
+- If a refund is issued, tell the customer: "We're sorry — your slot was taken by another booking right as your payment processed. A full refund has been issued. Let me find you another time."
+- ### Pay-on-completion no-show
+- Pay-on-completion relies on the customer being there. If they ask to cancel, they can email **connor@getcolby.com** at least 24 hours before the slot. Persistent no-shows may be required to pre-pay on future bookings.
+- ### Lost credentials
+- If the customer's username and password aren't in memory (new device, wiped session), don't ask the customer to recite them — they were saved silently and the customer was never shown them. Just run `initiate_booking` without credentials; the server will return `credentials_required` with a fresh checkout URL, the customer re-verifies, and `claim_credentials` refreshes memory. The saved card isn't re-charged; the re-verification is the one-time $120 for the cleaning itself.
++ No payment is collected up front. The customer pays the cleaner (cash or card) at the appointment.
++ Rate is $40/hour, paid to the cleaner at the appointment. Which time works for you?"
++ **Agent:** "Got it — 3 hours at $120 total, paid to the cleaner. A few more things:
++ - Your email for the calendar invite?"
++ **Customer:** "456 Castro St, San Francisco, CA 94114. Jane Smith, jane@example.com."
++ - **Total:** $120 (cash or card to the cleaner at the appointment)
++ ## Agent initiates booking
++ ## Status check
++ **Customer:** "Did that go through?"
++       "hours": 3,
++       "address": "456 Castro St, San Francisco, CA 94114",
++       "eventId": "..."
++ ### Email blocked
++ `initiate_booking` returns an `isError` with "This email is blocked from booking."
++ **Agent:** "Your email has been blocked from booking through this service, usually because of a past no-show. Please contact the operator at connor@getcolby.com."
++ ### No-show policy
++ If the customer asks to cancel, they can email **connor@getcolby.com** at least 24 hours before the slot. Persistent no-shows may result in the email being blocked from future bookings.

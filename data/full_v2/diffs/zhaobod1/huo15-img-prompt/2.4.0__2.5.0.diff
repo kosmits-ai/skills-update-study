@@ -1,0 +1,1041 @@
+zhaobod1/huo15-img-prompt  2.4.0 -> 2.5.0
+change_type: instructions+docs+code   changelog: huo15-img-prompt v2.5.0 introduces closed-loop image review and automated prompt refinement.  - Added `image_review.py`: Claude Vision-based 5-dimensional image review (subject match, composition, lighting, palette, technical quality) with actionable fix suggestions and pass/reject/iterate scoring. - Added `auto_iterate.py`: Full closed-loop workflow for image generation—generate → review → auto-revise prompt → re-generate; up to 3 rounds to select the best result. - New features in `enhance_pro
+
+### CHANGELOG.md  [docs]
++ ## v2.5.0 — 2026-04-27
++ **核心护城河上线：图生评审 + 闭环自动迭代。GPT-4o image / Claude Imagen 内部都做不到。**
++ ### C1: image_review.py — Claude Vision 五维评审（新文件 320 行）
++ - 调 Claude Sonnet 4.5 Vision 评审一张图
++ - 五维结构化打分（0-10）：subject_match / composition / lighting / palette / technical
++ - 输出加权 overall_score（subject 0.3 / composition 0.2 / lighting 0.2 / palette 0.15 / technical 0.15）
++ - 三档 verdict：PASS ≥ 7.5 / RETRY 5-7.5 / REJECT < 5
++ - **可执行修复**：每个 issue 不写"光线不好"，直接给"add: golden hour rim light, soft fill from camera left"
++ - 多图排名：`image_review.py a.png b.png c.png --rank` 自动批量评审排序
++ - 简评模式 `--quick`（只输出 overall_score，省 token）
++ - 完整模式启用 prompt caching，多图调用省 90% input token
++ ### C2: auto_iterate.py — 闭环自动迭代（新文件 350 行）
++ 把整个流程串成闭环：
++ ```
++ ```
++ enhance_prompt → render → image_review → 不达标？让 Claude 改 prompt → 回到第一步（≤ 3 轮）
++ - 9 个后端可选（DALL-E / SD-WebUI / ComfyUI / Replicate / Fal / 即梦 / 可灵 / 海螺）
++ - 整轮锁定 seed，便于对比每轮的 prompt 改动到底改善了哪一维
++ - Claude 改 prompt 的 system prompt 单独设计，输入是上轮评审，输出是 revised_subject + extra_negatives + extra_mood + rationale
++ - 每轮 trace 全保留（subject + recipe + image_path + review + revision），最终选最高分
++ - 用例：
++ - 用例：
++ - 用例：
++   ```bash
++   ```bash
++   ```bash
++   auto_iterate.py "持剑女侠" -p 赛博朋克 --backend dalle --target 7.5 --max-rounds 3
++   ```
++   ```
++   ```
++ ### C3: enhance_prompt.py 加 `--variants N`（A/B 测试）
++ - 同 subject + 同 seed，仅在指定轴上分化
++ - 内置 4 维差异轴：mood / composition / lighting / stylize
++ - `--variant-axes mood,composition` 选差异轴（默认这俩）
++   # 出 4 个变体（mood × composition 笛卡尔积取 4 个）
++   enhance_prompt.py "持剑女侠" -p 赛博朋克 --variants 4 -j > variants.json
++   # 出图后挑最优（用 image_review.py 排名）
++   for f in renders/*.png; do echo "$f"; done | xargs image_review.py --rank
++ ### A1: 智能预设推荐 `--suggest`
++ - 解决"温柔感"、"高级感"等模糊描述匹配不到预设的痛点
++ - 让 Claude 看用户描述 + 88 预设清单，返回 **top 3** 候选
++ - 每个候选附 score (0-1) + 一句话 reason + best_subject_example
++ - 同时给 mix_suggestion（自动判断该不该混合）
++ - 同时暴露在 `enhance_prompt.py --suggest` 和 `claude_polish.py --suggest`
++   enhance_prompt.py "温柔治愈感的画面" --suggest
++   # → top_3: 疗愈治愈 / 奶油风 / 童话绘本，附理由 + 适合主体
++ ### 兼容性
++ - 完全向下兼容 v2.4
++ - 新文件 `image_review.py` / `auto_iterate.py` 不影响老脚本
++ - 所有新参数有默认值
++ ### 文件改动
++ | 文件 | 改动 |
++ |------|------|
++ | `scripts/image_review.py` | 新文件 320 行 |
++ | `scripts/auto_iterate.py` | 新文件 350 行 |
++ | `scripts/enhance_prompt.py` | + 100 行（variants + suggest dispatch） |
++ | `scripts/claude_polish.py` | + 90 行（suggest_presets 函数 + CLI） |
++ | 其他 4 脚本 | VERSION bump |
++ ### 真实差异化
++ 这一版做完，huo15-img-prompt 有了 GPT-4o image / Claude Imagen 都没有的能力：
++ - **闭环反馈**：能告诉用户"这张图差在哪"+"下轮怎么改"
++ - **可解释性**：5 维分项打分 + 改进 trace 全留
++ - **多模型协作**：Claude 评审 + DALL-E/Replicate/即梦 出图，跨厂商组合
++ - **A/B 实验**：同 seed 控变量比较
++ ---
+
+### SKILL.md  [instructions]
+- description: 火一五文生图提示词 v2.4 — 文生图&视频六件套：(1) enhance_prompt.py 文生图：88 风格预设 + 混合预设 + 五锁一致性 + 角色设定图 + 系列批量 + ⭐v2.4 prompt 压缩(--compact) + 多轮编辑(--session/--continue) + 88 预设参考图链接(--examples)；(2) enhance_video.py 视频提示词：9 模型规格 + 30 镜头运动 + 关键帧；(3) reverse_prompt.py 参考图反解：A1111/ComfyUI/NovelAI metadata + VLM 模板；(4) render_prompt.py 直出图片：⭐v2.4 扩到 10 后端（ComfyUI/SD-WebUI/DALL-E/Replicate/Fal.ai/字节即梦/快手可灵/海螺 MiniMax/dry-run）；(5) claude_polish.py Claude API 智能润色；(6) safety_lint.py 平台合规润色（仅服务合规艺术创作，拒绝违法/未成年/真人色情）。适配 Midjourney/SD/SDXL/Flux/DALL-E 3。触发词：文生图、火一五文生图提示词、文生视频、提示词、生成图片、生成视频、img-prompt、text to image、text to video、enhance prompt、提示词增强、图片一致性、系列图、角色一致、批量出图、混合风格、原神+敦煌、参考图反解、reverse prompt、提示词反解、ComfyUI 直出、SD WebUI、DALL-E、Replicate、Fal、即梦、可灵、Hailuo、视频提示词、Sora、Runway、Claude 润色、智能润色、平台合规、艺术化重写、多轮编辑、prompt 压缩、参考图链接。
+- version: 2.4.0
+- # 火一五文生图提示词 v2.4
+- **一句话描述 → 贴合需求、一致性强的专业 T2I/T2V 提示词，多轮编辑、10 后端直出。**
+- ## v2.4 = 六件套
+- | `enhance_prompt.py` | 文生图（混合 + polish + safety + ⭐compact + ⭐session + ⭐examples） | `enhance_prompt.py "持剑女侠" -p "赛博朋克+水墨" --compact --session jianxia` |
+- | `enhance_video.py` | 视频提示词 | `enhance_video.py "汉服少女转身回眸" -p 汉服写真 -m Kling --duration 6` |
+- | `render_prompt.py` | ⭐v2.4 扩到 10 后端 | `render_prompt.py "原神少女" -p 原神 --backend jimeng` |
+- | `claude_polish.py` | Claude API 智能润色 | `claude_polish.py "一个温柔的女孩" --pipe` |
+- | `safety_lint.py` | 平台合规润色 | `safety_lint.py "战士手中沾满鲜血的剑" --target dalle` |
+- | 维度 | v2.0 | v2.1 | v2.2 | v2.3 | v2.4 |
+- |------|------|------|------|------|------|
+- | **风格预设** | 56 | 88 | + 混合预设 | 沿用 | + **参考图链接**（5 平台） |
+- | **一致性** | 四锁 + seed + 系列 | + 角色设定图 | + motion 第六锁 | 沿用 | + **多轮 session 锁** |
+- | **贴近需求** | 意图+构图+情绪 | + 时间/天气/季节 | + 视频运动+关键帧 | + Claude 润色 | + **prompt 压缩** |
+- | **生态闭环** | 仅 prompt | 仅 prompt | + 反解+直出 | + 合规重写 | + **10 后端直出** |
+- | **AI 联动** | 无 | 无 | 无 | Claude API | + **多轮编辑** |
++ description: 火一五文生图提示词 v2.5 — 文生图&视频八件套：(1) enhance_prompt.py 文生图：88 预设 + 混合 + 五锁 + 角色设定图 + 系列 + 压缩 + session 多轮 + ⭐v2.5 --variants A/B 测试 + ⭐v2.5 --suggest 智能 top-3 预设；(2) enhance_video.py 视频提示词 9 模型；(3) reverse_prompt.py 参考图反解；(4) render_prompt.py 10 后端直出（DALL-E/ComfyUI/SD-WebUI/Replicate/Fal/即梦/可灵/Hailuo）；(5) claude_polish.py Claude 智能润色；(6) safety_lint.py 平台合规润色（拒绝违法/未成年/真人色情）；(7) ⭐v2.5 image_review.py Claude Vision 五维评审（subject_match/composition/lighting/palette/technical 0-10 打分 + 可执行修复指令 + PASS/RETRY/REJECT）；(8) ⭐v2.5 auto_iterate.py 闭环自动迭代（出图→评审→改 prompt→重出，≤3 轮取最优）。适配 Midjourney/SD/SDXL/Flux/DALL-E 3。触发词：文生图、火一五文生图提示词、文生视频、提示词、生成图片、生成视频、img-prompt、enhance prompt、提示词增强、图片一致性、系列图、角色一致、批量出图、混合风格、参考图反解、ComfyUI、Replicate、Fal、即梦、可灵、Hailuo、视频提示词、Sora、Claude 润色、智能润色、平台合规、艺术化重写、多轮编辑、prompt 压缩、A/B 测试、变体、智能预设推荐、Claude Vision 评审、闭环迭代、自动改 prompt、auto iterate、image review、五维评审。
++ version: 2.5.0
++ # 火一五文生图提示词 v2.5
++ **一句话描述 → 出图 → Claude 评审 → 自动改 prompt 重出。GPT-4o image / Claude Imagen 都做不到的闭环反馈。**
++ ## v2.5 = 八件套
++ | `enhance_prompt.py` | 文生图（+ ⭐variants + ⭐suggest） | `enhance_prompt.py "持剑女侠" -p 赛博朋克 --variants 4` |
++ | `enhance_video.py` | 视频提示词 | `enhance_video.py "汉服少女转身回眸" -p 汉服写真 -m Kling` |
++ | `render_prompt.py` | 10 后端直出 | `render_prompt.py "原神少女" -p 原神 --backend jimeng` |
++ | `claude_polish.py` | Claude 智能润色 + 预设推荐 | `claude_polish.py "温柔治愈" --suggest` |
++ | `safety_lint.py` | 平台合规润色 | `safety_lint.py "战士手中的鲜血" --target dalle` |
++ | `image_review.py` ⭐v2.5 | Claude Vision 五维评审 | `image_review.py img.png -p "原 prompt"` |
++ | `auto_iterate.py` ⭐v2.5 | 闭环自动迭代（出图→评审→改 prompt→重出） | `auto_iterate.py "持剑女侠" -p 赛博朋克 --backend dalle --target 7.5` |
++ | 维度 | v2.2 | v2.3 | v2.4 | v2.5 |
++ |------|------|------|------|------|
++ | **风格预设** | 88 + 混合 | 沿用 | + 参考图链接 | + **智能 top-3 推荐** |
++ | **一致性** | + motion 锁 | 沿用 | + session 锁 | + **A/B 变体共享 seed** |
++ | **贴近需求** | + 视频关键帧 | + Claude 润色 | + prompt 压缩 | + **Claude 改 prompt** |
++ | **生态闭环** | + 反解+直出 | + 合规重写 | + 10 后端直出 | + **VLM 五维评审** |
++ | **AI 联动** | 无 | Claude API | 多轮编辑 | + **闭环自动迭代** |
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ 输出：
++ ## v2.5 新功能 ⭐⭐⭐（核心护城河）
++ ### 1. Claude Vision 五维评审 `image_review.py`
++ # 单图评审
++ image_review.py img.png --prompt "原始 prompt"
++ # 多图排名（同一组 variants 出图后挑最优）
++ image_review.py renders/*.png --rank
++ image_review.py renders/*.png --rank
++ - 五维分数（0-10）：subject_match / composition / lighting / palette / technical
++ - 加权 overall_score + 三档 verdict（PASS/RETRY/REJECT）
++ - **可执行修复**：每条 issue 不写"光线不好"，直接给 `add: golden hour rim light, soft fill from camera left`
++ - 简评模式 `--quick`（只 overall_score，省 token）
++ ### 2. 闭环自动迭代 `auto_iterate.py` ⭐ 杀手级 feature
++                 ┌──────────────┐
++                 │ user prompt  │
++                 └──────┬───────┘
++                        ↓
++             ┌─────────────────────┐
++             ┌─────────────────────┐
++             ┌─────────────────────┐
++             │  enhance_prompt     │
++             └─────────┬───────────┘
++             └─────────┬───────────┘
++             └─────────┬───────────┘
++                       ↓
++                       ↓
++                       ↓
++             │  render (10 后端)   │
++             │  Claude Vision      │
++             │  五维评审           │
++                   分数 ≥ 阈值?
++                   ↙          ↘
++                 Y              N (≤ 3 轮)
++                 ↓               ↓
++               完成        ┌────────────┐
++                           │ Claude 改   │
++                           │ prompt     │
++                           └─────┬──────┘
++                                 ↑
++                           (回到 enhance)
++ auto_iterate.py "持剑女侠" -p 赛博朋克 --backend dalle --target 7.5 --max-rounds 3
++ 每轮锁定 seed，便于对比 prompt 改动到底改善了哪一维。Claude 的修改基于上轮 review 的 actionable_fixes，输出 revised_subject + extra_negatives + extra_mood + rationale。
++ **这个能力 GPT-4o image / Claude Imagen 内部做不到** — 它们是端到端黑盒，没有 prompt-image 闭环数据。
++ ### 3. A/B 变体测试 `--variants N`
++ # 同 subject + 同 seed，仅在 mood/composition 上分化出 4 个变体
++ enhance_prompt.py "持剑女侠" -p 赛博朋克 --variants 4 -j > variants.json
++ # 出图后挑最优
++ 四个差异轴可选：`mood / composition / lighting / stylize`，`--variant-axes mood,lighting` 自定义。
++ ### 4. 智能预设推荐 `--suggest`
++ # 模糊描述也能自动匹配预设
++ enhance_prompt.py "温柔治愈感的画面" --suggest
++ 输出：top-3 候选预设 + 每个的 score (0-1) + reason + best_subject_example + mix_suggestion（自动判断是否需要混合）。
++ 解决"温柔"、"高级"、"梦幻"等抽象描述硬关键词匹配不到的痛点。
+
+### scripts/auto_iterate.py  [code]
++ #!/usr/bin/env python3
++ """
++ """
++ huo15-img-prompt — 闭环自动迭代 v2.5
++ 把 enhance_prompt + render_prompt + image_review 串成闭环：
++   生成 → 出图 → 评审 → 不达标？让 Claude 改 prompt 再来一轮（≤ 3 轮）
++ 这是 v2.5 的核心护城河：GPT-4o image / Imagen / Claude Imagen 内部都做不到，
++ 因为它们的 prompt 是黑盒。我们在用户侧补这个反馈循环。
++ 工作流（每轮）：
++   Step 1: enhance_prompt 生成 recipe（首轮用基础推荐，后续用上轮 fix 后的）
++   Step 2: render_prompt 出图（任意 backend）
++   Step 3: image_review 五维评审
++   Step 4: overall_score >= target_score → 完成
++           < target_score 且 attempt < max_attempts:
++             → 用 Claude 把 actionable_fixes 综合成新 prompt
++             → 回 Step 1
++   Step 5: 返回历史最高分图 + 全过程 trace
++ 调用：
++   auto_iterate.py "持剑女侠" -p 赛博朋克 --backend dalle --target 7.5
++   auto_iterate.py "持剑女侠" -p 赛博朋克 --backend dalle --target 7.5
++   auto_iterate.py "汉服少女" -p 汉服写真 --backend jimeng --max-rounds 3
++   auto_iterate.py "汉服少女" -p 汉服写真 --backend jimeng --max-rounds 3
++   auto_iterate.py "敦煌神女" -p 敦煌壁画 --backend none --no-render   # 评审现有 recipe，不真出图
++ 依赖：
++   - 同目录 enhance_prompt.py / render_prompt.py / image_review.py
++   - ANTHROPIC_API_KEY（评审 + 改 prompt）
++   - 后端对应的 API key（DALL-E / Replicate / 即梦 / 可灵 等）
++ import sys
++ import os
++ import json
++ import time
++ import argparse
++ from typing import Dict, List, Optional
++ from urllib.request import Request, urlopen
++ from urllib.error import HTTPError
++ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
++ from enhance_prompt import (
++     build_prompt, parse_mix_preset, resolve_preset,
++     parse_requirement, STYLE_PRESETS, ASPECT_TO_SDXL,
++ )
++ from image_review import review_image, parse_review_json, ANTHROPIC_BASE, ANTHROPIC_VERSION
++ VERSION = "2.5.0"
++ DEFAULT_MODEL = "claude-sonnet-4-5"
++ DEFAULT_TARGET_SCORE = 7.5
++ DEFAULT_MAX_ROUNDS = 3
++ # ─────────────────────────────────────────────────────────
++ # ─────────────────────────────────────────────────────────
++ # ─────────────────────────────────────────────────────────
++ # ─────────────────────────────────────────────────────────
++ # ─────────────────────────────────────────────────────────
++ # ─────────────────────────────────────────────────────────
++ # Claude 改 prompt（基于上轮评审）
++ REVISION_SYSTEM_PROMPT = """你是 prompt revision 专家，给定一张图的 5 维评审，输出改进版 prompt。
++ # 工作流
++ 1. 读 actionable_fixes（按优先级，high 必处理）
++ 2. 读 issues（避免下轮重蹈覆辙）
++ 3. 读 good_points（保留这些优势）
++ 4. 输出新 prompt（只输出主体描述部分，不要带 style/camera/lighting 模板，因为 enhance_prompt.py 会再加这些锁）
++ # 输出 JSON 严格 schema
++ ```json
++ {
++   "revised_subject": "改进后的主体描述（中文，可加视觉细节），喂给 enhance_prompt.py 的 subject 参数",
++   "preset_change": null,
++   "extra_negatives": ["补充负面词 1", "补充负面词 2"],
++   "extra_mood": "如需更改情绪覆盖（无则空）",
++   "extra_composition": "如需更改构图覆盖（无则空）",
++   "rationale": "中文一句话说明这次改动针对哪个维度的 issue"
++ }
++ ```
++ `preset_change` 只在评审里明确说"风格不对"时改，否则保持 null。
++ 只输出 JSON，不要解释。"""
++ def call_claude_revise(original_subject: str, original_preset: str,
++                        review: Dict, model: str = DEFAULT_MODEL) -> Dict:
++     """让 Claude 基于 review 输出改进 subject。"""
++     api_key = os.environ.get("ANTHROPIC_API_KEY")
++     if not api_key:
++         raise RuntimeError("缺少 ANTHROPIC_API_KEY")
++     review_summary = {
++         "overall_score": review.get("overall_score", 0),
++         "verdict": review.get("verdict", "?"),
++         "summary": review.get("summary", ""),
++         "actionable_fixes": review.get("actionable_fixes", []),
++         "weak_dimensions": [],
++     }
++     }
++     }
++     for dim in ("subject_match", "composition", "lighting", "palette", "technical"):
++         d = review.get(dim, {})
++         score = d.get("score", 0)
++         if score < 7:
++             review_summary["weak_dimensions"].append({
++                 "dim": dim, "score": score, "issues": d.get("issues", []),
++             })
++     user_msg = f"""<original>
++ subject: {original_subject}
++ preset: {original_preset}
++ </original>
++ <review>
++ {json.dumps(review_summary, ensure_ascii=False, indent=2)}
++ </review>
++ 请输出改进后的 JSON。"""
++     body = {
++         "model": model,
++         "max_tokens": 1500,
++         "system": [{
++             "type": "text",
++             "text": REVISION_SYSTEM_PROMPT,
++             "cache_control": {"type": "ephemeral"},
++         }],
++         "messages": [
++             {"role": "user", "content": user_msg},
++             {"role": "assistant", "content": "{"},
++         ],
++     req = Request(
++         f"{ANTHROPIC_BASE}/v1/messages",
++         data=json.dumps(body).encode("utf-8"),
++         headers={
++             "Content-Type": "application/json",
++             "x-api-key": api_key,
++             "anthropic-version": ANTHROPIC_VERSION,
++         },
++         method="POST",
++     )
++     )
++     )
++     )
++     try:
++     try:
++         with urlopen(req, timeout=60) as r:
++             resp = json.loads(r.read().decode("utf-8"))
++     except HTTPError as e:
++         raise RuntimeError(f"Claude HTTP {e.code}: {e.read().decode('utf-8', errors='replace')}")
++     return parse_review_json(resp)
++ # 后端调用（直接 import render_prompt 函数，不重复实现）
++ def render_via_backend(backend: str, recipe: Dict, aspect: str, output_dir: str,
++                        remote_model: str = "", steps: int = 25, cfg: float = 7.0) -> Dict:
++     """统一 backend dispatch，复用 render_prompt 内部函数。"""
++     from render_prompt import (
++         render_dalle, render_sdwebui, render_comfyui,
++         render_replicate, render_fal,
++         render_jimeng, render_kling, render_hailuo,
++         DALLE_SIZES,
++     seed = recipe["seed_suggestion"]
++     pos, neg = recipe["positive"], recipe["negative"]
++     if backend == "dalle":
++         size = DALLE_SIZES.get(aspect, "1024x1024")
++         return render_dalle(pos, size, output_dir)
++     elif backend == "sd-webui":
++         return render_sdwebui(pos, neg, aspect, seed, steps, cfg, "DPM++ 2M Karras", output_dir)
++     elif backend == "comfyui":
++         return render_comfyui(pos, neg, aspect, seed, steps, cfg, None, output_dir)
++     elif backend == "replicate":
++         ref = remote_model or "black-forest-labs/flux-schnell"
++         return render_replicate(pos, neg, aspect, seed, ref, output_dir, steps=steps, cfg=cfg)
++     elif backend == "fal":
++         ref = remote_model or "fal-ai/flux/schnell"
++         return render_fal(pos, neg, aspect, seed, ref, output_dir, steps=steps)
++     elif backend == "jimeng":
++         return render_jimeng(pos, neg, aspect, seed, output_dir)
++     elif backend == "kling":
++         return render_kling(pos, neg, aspect, seed, output_dir)
++     elif backend in ("hailuo", "minimax"):
++         return render_hailuo(pos, neg, aspect, seed, output_dir)
++     else:
++     else:
++     else:
++         raise RuntimeError(f"未知 backend: {backend}")
++ # 闭环主流程
++ def auto_iterate(
++     subject: str,
++     preset: str,
++     backend: str,
++     target_score: float = DEFAULT_TARGET_SCORE,
++     max_rounds: int = DEFAULT_MAX_ROUNDS,
++     aspect: str = "",
++     model_adapt: str = "SDXL",
++     output_dir: str = "./renders",
++     remote_model: str = "",
++     no_render: bool = False,
++     quality_tier: str = "pro",
++     seed: Optional[int] = None,
++ ) -> Dict:
++     """主闭环。返回 trace + 最佳轮次。"""
++     primary_raw, secondary_raw = parse_mix_preset(preset)
++     if secondary_raw:
++         primary = resolve_preset(primary_raw)
++         secondary = resolve_preset(secondary_raw)
++         if not primary or not secondary:
++             raise RuntimeError(f"未知预设: {primary_raw} 或 {secondary_raw}")
++         preset_resolved, mix_secondary = primary, secondary
++         preset_resolved, mix_secondary = (resolve_preset(primary_raw) or "写实摄影"), None
++     auto = parse_requirement(subject)
++     if not aspect:
++         aspect = auto["aspect_suggestion"] or STYLE_PRESETS.get(preset_resolved, {}).get("aspect", "1:1")
++     rounds: List[Dict] = []
++     current_subject = subject
++     current_extra_neg = ""
++     current_mood = ""
++     current_composition = ""
++     locked_seed = seed  # 整轮锁同一 seed，便于对比
++     for attempt in range(1, max_rounds + 1):
++         print(f"\n🔄 第 {attempt}/{max_rounds} 轮...", file=sys.stderr)
++         recipe = build_prompt(
++             current_subject, preset_resolved, model_adapt, aspect,
++             extra_mood=current_mood, extra_composition=current_composition,
++             extra_negatives=current_extra_neg,
++             seed=locked_seed,
++             quality_tier=quality_tier,
++             mix_secondary=mix_secondary,
++         )
++         )
++         if locked_seed is None:
++             locked_seed = recipe["seed_suggestion"]
++         round_data = {"attempt": attempt, "subject": current_subject, "recipe": recipe}
++         if no_render:
++             print(f"   🧪 dry-run 模式：不出图，仅评审 prompt 文本（跳过本轮，需 --no-render 配合外部出图）", file=sys.stderr)
++             round_data["skipped"] = "no-render mode (cannot review without image)"
++             rounds.append(round_data)
++             rounds.append(round_data)
++             rounds.append(round_data)
++             rounds.append(round_data)
++             break
++             break
++             break
++             break
++             break
++             break
++             break
++         # 出图
++         try:
++         try:
++         try:
++             print(f"   🎨 出图: backend={backend}", file=sys.stderr)
++             render = render_via_backend(backend, recipe, aspect, output_dir,
++                                         remote_model=remote_model)
++         except Exception as e:
++         except Exception as e:
++         except Exception as e:
++             round_data["render_error"] = str(e)
++             print(f"   ❌ 出图失败: {e}", file=sys.stderr)
++         saved = render.get("saved", [])
++         if not saved:
++             round_data["render_error"] = "no images saved"
++         round_data["image_path"] = saved[0]
++         round_data["render"] = render
++         # 评审
++             print(f"   🔍 Claude Vision 评审...", file=sys.stderr)
++             review = review_image(saved[0], prompt=recipe["positive"][:500],
++                                   quick=False, model=DEFAULT_MODEL)
++             round_data["review_error"] = str(e)
++             print(f"   ❌ 评审失败: {e}", file=sys.stderr)
++         round_data["review"] = review
++         score = review.get("overall_score", 0)
++         verdict = review.get("verdict", "?")
++         print(f"   📊 得分: {score:.1f}/10 → {verdict}", file=sys.stderr)
++         rounds.append(round_data)
++         # 收敛？
++         if score >= target_score:
++             print(f"   ✅ 达标 ({score:.1f} ≥ {target_score})，停止迭代", file=sys.stderr)
++         if attempt >= max_rounds:
++             print(f"   ⏱  达到最大轮次 {max_rounds}", file=sys.stderr)
++         # 让 Claude 改 prompt
++             print(f"   ✏️  让 Claude 改 prompt...", file=sys.stderr)
++             revision = call_claude_revise(current_subject, preset_resolved, review)
++             round_data["revision_error"] = str(e)
++             print(f"   ⚠️  改 prompt 失败: {e}，停止迭代", file=sys.stderr)
++         round_data["revision"] = revision
++         if revision.get("revised_subject"):
++             current_subject = revision["revised_subject"]
++             print(f"   📝 新 subject: {current_subject}", file=sys.stderr)
++         if revision.get("extra_negatives"):
++             extras = ", ".join(revision["extra_negatives"])
++             current_extra_neg = f"{current_extra_neg}, {extras}".strip(", ")
++         if revision.get("extra_mood"):
++             current_mood = revision["extra_mood"]
++         if revision.get("extra_composition"):
++             current_composition = revision["extra_composition"]
++     # 选出最佳轮
++     best_round = max(
++         [r for r in rounds if r.get("review", {}).get("overall_score") is not None],
++         key=lambda r: r["review"]["overall_score"],
++         default=None,
++     return {
++         "version": VERSION,
++         "subject": subject,
++         "preset": preset,
++         "backend": backend,
++         "target_score": target_score,
++         "max_rounds": max_rounds,
++         "rounds": rounds,
++         "rounds_executed": len(rounds),
++         "best_round": best_round,
++         "best_score": best_round["review"]["overall_score"] if best_round else None,
++         "best_image": best_round.get("image_path") if best_round else None,
++ def print_summary(result: Dict):
++     sep = "═" * 60
++     print(f"\n{sep}")
++     print(f"\n{sep}")
++     print(f"🔁 闭环自动迭代结果 v{result['version']}")
++     print(f"📌 主体: {result['subject']}")
+
+### scripts/claude_polish.py  [code]
+- VERSION = "2.4.0"
++ VERSION = "2.5.0"
++     by_cat: Dict[str, List[str]] = {}
++     for name, data in STYLE_PRESETS.items():
++         by_cat.setdefault(data["category"], []).append(name)
++     preset_block = "\n".join([
++         f"- {cat}: " + " / ".join(by_cat[cat])
++         for cat in ("摄影", "动漫", "插画", "3D", "设计", "艺术", "场景", "游戏", "东方")
++         if cat in by_cat
++     ])
++ {preset_block}
++ # 输出 JSON 严格 schema
++ ```json
++ {{
++   ],
++ }}
++ ```
++ # v2.5 A1: 智能预设 top-3 推荐 system prompt
++ def build_suggest_system_prompt() -> str:
++     return f"""你是火一五预设推荐师。给定用户的描述（可能很模糊，比如"温柔感"、"高级感"），从 88 预设里挑 top 3 最贴近的，按相关性降序输出。
++ # 88 风格预设
++   "top_3": [
++     {{
++       "preset": "预设名（必须是 88 里的）",
++       "score": 0.0-1.0,
++       "reason": "为什么贴近用户描述（一句话，强调核心匹配点）",
++       "best_subject_example": "适合用这个预设画什么主体（一句话）"
++     }},
++     {{...}},
++     {{...}}
++   "mix_suggestion": {{
++     "primary": "主预设",
++     "secondary": "副预设",
++     "ratio": 0.6,
++     "reason": "为什么这两个混合可能更好（如果不需要混合则置 null）"
++   }},
++   "user_intent_summary": "一句话总结用户到底想要什么"
++ # 关键
++ - score 反映"相关性"，1.0 是完美匹配
++ - 多个候选时，预设名必须不重复
++ - 用户描述模糊时（如"温暖治愈"），优先匹配氛围预设；明确时（如"赛博朋克猫"）就只给一个高分
++ - 适合混合的场景才给 mix_suggestion，简单场景置 null
++ - 只输出 JSON，不要解释。"""
++ def call_claude_suggest(prompt: str, model: str = DEFAULT_MODEL,
++                         max_tokens: int = 1500) -> Dict:
++     """v2.5 A1: 调用 Claude 输出 top-3 预设推荐。"""
++     api_key = os.environ.get("ANTHROPIC_API_KEY")
++     if not api_key:
++         raise RuntimeError("缺少 ANTHROPIC_API_KEY 环境变量")
++     body = {
++         "model": model,
++         "max_tokens": max_tokens,
++         "temperature": 0.5,
++         "system": [{
++             "type": "text",
++             "text": build_suggest_system_prompt(),
++             "cache_control": {"type": "ephemeral"},
++         }],
++         "messages": [
++             {"role": "user", "content": f"<user_input>{prompt}</user_input>\n请输出 JSON。"},
++             {"role": "assistant", "content": "{"},
++         ],
++     }
++     req = Request(
++         f"{ANTHROPIC_BASE}/v1/messages",
++         data=json.dumps(body).encode("utf-8"),
++         headers={
++             "Content-Type": "application/json",
++             "x-api-key": api_key,
++             "anthropic-version": ANTHROPIC_VERSION,
++         },
++         method="POST",
++     )
++     try:
++         with urlopen(req, timeout=60) as r:
++             return json.loads(r.read().decode("utf-8"))
++     except HTTPError as e:
++         raise RuntimeError(f"Claude HTTP {e.code}: {e.read().decode('utf-8', errors='replace')}")
++ def suggest_presets(prompt: str, model: str = DEFAULT_MODEL) -> Dict:
++     """高层 API: 给一句话描述 → top-3 预设 + mix 建议。"""
++     resp = call_claude_suggest(prompt, model=model)
++     return parse_claude_json(resp)
++         return
++     parser.add_argument("--suggest", action="store_true",
++                         help="只做 top-3 预设推荐，不做完整润色（v2.5 A1，描述模糊但要选预设时用）")
++     # v2.5 A1: --suggest 仅做 top-3 预设推荐
++     if args.suggest:
++         try:
++             suggestion = suggest_presets(args.subject, model=args.model)
++         except RuntimeError as e:
++             print(f"❌ {e}", file=sys.stderr)
++             sys.exit(2)
++         if args.json:
++             print(json.dumps(suggestion, ensure_ascii=False, indent=2))
++             return
++         print(f"\n🎯 智能预设推荐 (Claude {args.model})")
++         print(f"📝 用户意图: {suggestion.get('user_intent_summary', '')}\n")
++         for i, p in enumerate(suggestion.get("top_3", []), 1):
++             score = p.get("score", 0)
++             bar = "█" * int(score * 10) + "░" * (10 - int(score * 10))
++             print(f"  {i}. {p.get('preset', '?'):12s}  [{bar}] {score:.2f}")
++             print(f"     ↳ {p.get('reason', '')}")
++             print(f"     ↳ 适合: {p.get('best_subject_example', '')}")
++         mix = suggestion.get("mix_suggestion") or {}
++         if mix and mix.get("primary"):
++             print(f"\n🎨 混合建议: {mix['primary']} + {mix['secondary']} (mix={mix.get('ratio', 0.6)})")
++             print(f"   理由: {mix.get('reason', '')}")
++         u = suggestion.get("_usage", {})
++         print(f"\n📊 token: in={u.get('input_tokens', 0)} / out={u.get('output_tokens', 0)} / cache_read={u.get('cache_read_input_tokens', 0)}\n")
+
+### scripts/enhance_prompt.py  [code]
+- VERSION = "2.4.0"
++ VERSION = "2.5.0"
++         else:
++         return
++         return
++         try:
++ }
++     """
++         )
++         )
++     if seed is None:
++         r = build_prompt(
++             mix_secondary=mix_secondary, mix_ratio=mix_ratio,
++ # v2.5 C3: 变体差异轴
++ VARIANT_AXES_DICT: Dict[str, List[str]] = {
++     "mood": [
++         "神秘 ethereal mysterious",
++         "治愈 cozy healing soft",
++         "史诗 epic dramatic cinematic",
++         "高级 luxurious refined sophisticated",
++         "梦幻 dreamy ethereal whimsical",
++         "紧张 tense intense gripping",
++     ],
++     ],
++     ],
++     ],
++     "composition": [
++         "特写 close-up portrait",
++         "全身 full body wide shot",
++         "俯拍 top-down overhead",
++         "仰拍 low-angle hero shot",
++         "侧面 side profile",
++         "三分之二 three-quarter view",
++     "lighting": [
++         "黄金时刻 golden hour warm rim light",
++         "蓝调时刻 blue hour cool gradient",
++         "硬光 hard directional spotlight",
++         "柔光 soft diffused window light",
++         "霓虹 neon multi-color rim",
++         "侧光 side rim with deep shadows",
++     "stylize": [
++         "stylize 50 写实",
++         "stylize 250 平衡",
++         "stylize 500 风格化",
++         "stylize 750 高度风格化",
++ def build_variants(subject: str, preset: str, model: str, aspect: str,
++                    axes: List[str], n: int, seed: Optional[int] = None,
++                    quality_tier: str = "pro",
++                    mix_secondary: Optional[str] = None,
++                    mix_ratio: float = 0.6) -> List[Dict]:
++     """v2.5 C3: 生成 N 个 A/B 测试变体。
++     每个变体在 axes 指定的维度上选不同值，其余字段固定（含 seed）。
++     valid_axes = [a for a in axes if a in VARIANT_AXES_DICT]
++     if not valid_axes:
++         valid_axes = ["mood", "composition"]
++     # 生成 N 个差异化组合
++         seed = stable_seed(subject, preset)
++     variants = []
++     for i in range(n):
++         mood = composition = lighting = ""
++         extras_neg = ""
++         # 每个 axis 取第 i % len(axis) 个值
++         for axis in valid_axes:
++         for axis in valid_axes:
++         for axis in valid_axes:
++             values = VARIANT_AXES_DICT[axis]
++             val = values[i % len(values)]
++             # 中文部分作 mood/composition，英文部分作 prompt 注入
++             zh, _, en = val.partition(" ")
++             if axis == "mood":
++                 mood = en
++             elif axis == "composition":
++                 composition = en
++             elif axis == "lighting":
++                 # 注入到 extras_neg 反向：实际加到 subject 后
++                 pass
++                 pass
++         # 在 subject 后面拼接 lighting / stylize 信号（让 build_prompt 不破坏锁机制）
++         injected_subject = subject
++             if axis == "lighting":
++                 _, _, en = VARIANT_AXES_DICT[axis][i % len(VARIANT_AXES_DICT[axis])].partition(" ")
++                 injected_subject = f"{subject}, {en}"
++             elif axis == "stylize":
++                 # stylize 不改 subject，留给 MJ flag（默认 250）
++             injected_subject, preset, model, aspect,
++             extra_mood=mood, extra_composition=composition,
++             seed=seed, quality_tier=quality_tier,
++         # 描述这个变体
++         descriptors = []
++             zh, _, _ = VARIANT_AXES_DICT[axis][i % len(VARIANT_AXES_DICT[axis])].partition(" ")
++             descriptors.append(f"{axis}={zh}")
++         r["variant_index"] = i + 1
++         r["variant_total"] = n
++         r["variant_descriptor"] = " / ".join(descriptors)
++         variants.append(r)
++     return variants
++     parser.add_argument("--variants", type=int, default=0,
++                         help="A/B 测试：同 subject 出 N 个不同 mood/composition 变体（v2.5），可 pipe 给 image_review --rank")
++     parser.add_argument("--variant-axes", default="mood,composition",
++                         help="变体差异轴，逗号分隔（mood/composition/lighting/stylize），默认 mood,composition（v2.5）")
++     parser.add_argument("--suggest", action="store_true",
++                         help="只 Claude 推荐 top-3 预设，不做完整 prompt（v2.5 A1，描述模糊时用）")
++     # v2.5 A1: --suggest 委托 claude_polish 做 top-3 预设推荐
++     if args.suggest:
++             from claude_polish import suggest_presets
++             suggestion = suggest_presets(args.subject)
++         except Exception as e:
++             print(f"❌ {e}", file=sys.stderr)
++             sys.exit(2)
++         if args.json:
++         if args.json:
++             print(json.dumps(suggestion, ensure_ascii=False, indent=2))
++             return
++         print(f"\n🎯 智能预设推荐\n📝 用户意图: {suggestion.get('user_intent_summary', '')}\n")
++         for i, p in enumerate(suggestion.get("top_3", []), 1):
++             score = p.get("score", 0)
++             bar = "█" * int(score * 10) + "░" * (10 - int(score * 10))
++             print(f"  {i}. {p.get('preset', '?'):12s}  [{bar}] {score:.2f}  → {p.get('reason', '')}")
++         mix = suggestion.get("mix_suggestion") or {}
++         if mix and mix.get("primary"):
++             print(f"\n🎨 混合建议: {mix['primary']} + {mix['secondary']} (mix={mix.get('ratio', 0.6)})")
++             print(f"   {mix.get('reason', '')}")
++         print()
++     # v2.5 C3: A/B 变体模式（同 subject + 同 seed，不同 mood/composition）
++     if args.variants > 0:
++         axes = [a.strip() for a in args.variant_axes.split(",") if a.strip()]
++         variants = build_variants(
++             subject, preset, args.model, aspect, axes, args.variants,
++             seed=args.seed, quality_tier=args.tier,
++             mix_secondary=mix_secondary, mix_ratio=effective_mix,
++             out = {"version": VERSION, "variants": variants}
++             print(json.dumps(out, ensure_ascii=False, indent=2))
++             print(f"🎲 A/B 变体测试 ({args.variants} 个，差异轴: {', '.join(axes)})")
++             print(f"   所有变体共享 seed = {variants[0]['seed_suggestion']}（仅在指定轴上分化）")
++             for v in variants:
++                 print(f"\n   变体 {v['variant_index']}/{v['variant_total']}: {v['variant_descriptor']}")
++                 print(f"      positive head: {v['positive'][:120]}...")
++             print(f"\n💡 出图后用 image_review.py img1.png img2.png ... --rank 选最优\n")
+
+### scripts/enhance_video.py  [code]
+- VERSION = "2.4.0"
++ VERSION = "2.5.0"
+
+### scripts/image_review.py  [code]
++ #!/usr/bin/env python3
++ """
++ """
++ huo15-img-prompt — Claude Vision 图像评审 v2.5
++ 把 Claude Vision 当作图像质量评审师。给一张图（本地路径或 URL）+ 原 prompt，
++ 输出五维结构化打分 + 缺陷列表 + 可执行修复建议（喂给下一轮迭代）。
++ 为什么这个能力 GPT-4o image gen / Imagen 内部做不到？
++   - 它们是端到端黑盒：prompt → 图，没有 prompt-image 闭环数据回流
++   - 我们在用户侧补这个回路，每张图都能产出 "下一轮怎么改 prompt" 的可执行指令
++   - 这就是 v2.5 的核心护城河：迭代提升而不是单次出图
++ 五维评分：
++   1. subject_match    主体准确度（图与 prompt 的吻合）
++   2. composition      构图（黄金分割、留白、视觉层次、引导线）
++   3. lighting         光影（光源逻辑、明暗关系、艺术化处理）
++   4. palette          色彩（和谐度、风格一致性、色温情绪）
++   5. technical        技术质量（锐度、噪点、artifact、anatomy 错误）
++ 调用：
++   image_review.py /path/to/image.png --prompt "原 prompt"
++   image_review.py /path/to/image.png --prompt "原 prompt"
++   image_review.py https://example.com/img.png -p "..." -j > review.json
++   image_review.py https://example.com/img.png -p "..." -j > review.json
++   image_review.py img.png --quick               # 简评，只给 overall 分
++   image_review.py a.png b.png c.png --rank      # 多图排名
++ 依赖：纯 urllib + ANTHROPIC_API_KEY，零 SDK
++ import sys
++ import os
++ import json
++ import base64
++ import argparse
++ import re
++ from typing import Dict, List, Optional, Tuple
++ from urllib.request import Request, urlopen
++ from urllib.error import HTTPError, URLError
++ VERSION = "2.5.0"
++ ANTHROPIC_BASE = os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com")
++ ANTHROPIC_VERSION = "2023-06-01"
++ DEFAULT_MODEL = "claude-sonnet-4-5"
++ # ─────────────────────────────────────────────────────────
++ # ─────────────────────────────────────────────────────────
++ # ─────────────────────────────────────────────────────────
++ # ─────────────────────────────────────────────────────────
++ # ─────────────────────────────────────────────────────────
++ # ─────────────────────────────────────────────────────────
++ # 评审 system prompt（启用 prompt caching，多图调用省 90% token）
++ def build_review_system_prompt(quick: bool = False) -> str:
++     if quick:
++         return """你是图像质量评审师。给一张图，输出严格 JSON：
++ {"overall_score": 0.0-10.0, "verdict": "PASS|RETRY|REJECT", "summary": "一句话总结"}
++ PASS ≥ 7.5, RETRY 5-7.5, REJECT < 5。只输出 JSON。"""
++     return """你是火一五图像质量评审师，专门给 T2I 出图打专业分 + 给可执行修复指令。
++ # 五维评分（每维 0-10 分）
++ 1. **subject_match**（主体准确度）
++    - 图中主体是否符合 prompt 描述？
++    - 数量、姿态、表情、服饰、动作是否对得上？
++    - 多余/缺失元素扣分
++ 2. **composition**（构图）
++    - 黄金分割 / 三分法 / 中心构图等运用是否合理？
++    - 视觉重心明确吗？引导线、留白、层次？
++    - 主体是否被边框切到、是否过分挤压？
++ 3. **lighting**（光影）
++    - 光源逻辑统一吗？阴影方向一致？
++    - 光质（硬/软、暖/冷）是否符合 prompt 的氛围？
++    - 高光/中调/暗部分布合理？过曝/欠曝？
++ 4. **palette**（色彩）
++    - 整体色调和谐吗？是否符合 prompt 风格？
++    - 互补色/邻近色/单色的运用？
++    - 色温情绪与主题契合？
++ 5. **technical**（技术质量）
++    - 锐度、噪点、压缩 artifact
++    - 解剖错误（多指、错位、扭曲）
++    - 文字渲染（如果有）
++    - 边缘清晰度、纹理细节
++ # 输出 JSON 严格 schema
++ ```json
++ {
++   "subject_match": {
++     "score": 8.5,
++     "good_points": ["亮点 1", "亮点 2"],
++     "issues": ["问题 1", "问题 2"]
++   },
++   "composition": {"score": ..., "good_points": [...], "issues": [...]},
++   "lighting":    {"score": ..., "good_points": [...], "issues": [...]},
++   "palette":     {"score": ..., "good_points": [...], "issues": [...]},
++   "technical":   {"score": ..., "good_points": [...], "issues": [...]},
++   "overall_score": 0.0-10.0,
++   "verdict": "PASS|RETRY|REJECT",
++   "actionable_fixes": [
++     {
++       "target": "subject_match|composition|lighting|palette|technical",
++       "fix": "具体怎么改 prompt（中英混合，可直接拼接）",
++       "priority": "high|medium|low"
++     }
++     }
++     }
++   ],
++   "summary": "一句话总结这张图的最强点和最弱点"
++ }
++ ```
++ # 评分标准
++ - **PASS** ≥ 7.5：可以发布
++ - **RETRY** 5-7.5：值得改一轮
++ - **REJECT** < 5：建议大改 prompt 或换风格
++ # 关键原则
++ - **actionable_fixes 必须能直接喂给下一轮 prompt** — 不要写"改善光线"，要写"add: golden hour rim light, soft fill from camera left"
++ - **issues 要具体** — 不要"构图不好"，要"主体偏左被切到，建议向中心移 15%"
++ - **good_points 也要具体** — 帮助保留下一轮的优势
++ - **overall_score 是加权平均**：subject_match × 0.3 + composition × 0.2 + lighting × 0.2 + palette × 0.15 + technical × 0.15
++ 只输出 JSON，不要包 markdown 代码块，不要前缀解释。"""
++ # IO + Vision API 调用
++ def load_image_b64(src: str) -> Tuple[str, str]:
++     """返回 (base64_string, media_type)。"""
++     if src.startswith(("http://", "https://")):
++         req = Request(src, headers={"User-Agent": "huo15-review/1.0"})
++         with urlopen(req, timeout=30) as r:
++             blob = r.read()
++     else:
++     else:
++     else:
++         with open(os.path.expanduser(src), "rb") as f:
++             blob = f.read()
++     if blob[:8] == b"\x89PNG\r\n\x1a\n":
++         media = "image/png"
++         media = "image/png"
++     elif blob[:3] == b"\xff\xd8\xff":
++         media = "image/jpeg"
++     elif blob[:6] in (b"GIF87a", b"GIF89a"):
++         media = "image/gif"
++     elif blob[:4] == b"RIFF" and blob[8:12] == b"WEBP":
++         media = "image/webp"
++     return base64.b64encode(blob).decode("ascii"), media
++ def call_claude_vision(image_src: str, prompt: str = "", quick: bool = False,
++                        model: str = DEFAULT_MODEL, max_tokens: int = 2048) -> Dict:
++     """调用 Claude Vision 评审一张图。"""
++     api_key = os.environ.get("ANTHROPIC_API_KEY")
++     if not api_key:
++         raise RuntimeError("缺少 ANTHROPIC_API_KEY 环境变量")
++     img_b64, media_type = load_image_b64(image_src)
++     user_content = []
++     user_content.append({
++         "type": "image",
++         "source": {"type": "base64", "media_type": media_type, "data": img_b64},
++     })
++     if prompt:
++         user_content.append({
++         user_content.append({
++             "type": "text",
++             "type": "text",
++             "text": f"<original_prompt>{prompt}</original_prompt>\n\n请评审这张图，输出 JSON。",
++         })
++         })
++             "text": "请评审这张图（无原 prompt 上下文，只看视觉品质），输出 JSON。",
++     body = {
++         "model": model,
++         "max_tokens": max_tokens,
++         "system": [
++             {
++                 "type": "text",
++                 "text": build_review_system_prompt(quick=quick),
++                 "cache_control": {"type": "ephemeral"},
++             }
++         ],
++         ],
++         "messages": [
++             {"role": "user", "content": user_content},
++             {"role": "assistant", "content": "{"},
++     req = Request(
++         f"{ANTHROPIC_BASE}/v1/messages",
++         data=json.dumps(body).encode("utf-8"),
++         headers={
++             "Content-Type": "application/json",
++             "x-api-key": api_key,
++             "anthropic-version": ANTHROPIC_VERSION,
++         },
++         method="POST",
++     )
++     )
++     try:
++     try:
++         with urlopen(req, timeout=180) as r:
++             return json.loads(r.read().decode("utf-8"))
++     except HTTPError as e:
++         err_body = e.read().decode("utf-8", errors="replace")
++         raise RuntimeError(f"Claude Vision HTTP {e.code}: {err_body}")
++     except URLError as e:
++         raise RuntimeError(f"Claude Vision 网络错误: {e}")
++ def parse_review_json(resp: Dict) -> Dict:
++     """从 Claude 响应中抽 JSON（已 prefill `{`）。"""
++     if "error" in resp:
++         raise RuntimeError(f"Claude API 错误: {resp['error']}")
++     text = ""
++     for block in resp.get("content", []):
++         if block.get("type") == "text":
++             text += block.get("text", "")
++     if not text:
++         raise RuntimeError(f"Claude 返回空内容")
++     full = "{" + text
++     depth = 0
++     end = -1
++     in_str = False
++     esc = False
++     for i, ch in enumerate(full):
++         if esc:
++             esc = False
++             continue
++             continue
++             continue
++             continue
++         if ch == "\\":
++             esc = True
++         if ch == '"':
++             in_str = not in_str
++         if in_str:
++         if ch == "{":
++             depth += 1
++         elif ch == "}":
++             depth -= 1
++             if depth == 0:
++                 end = i + 1
++                 break
++     if end == -1:
++         raise RuntimeError(f"未找到完整 JSON: {full[:300]}")
++     data = json.loads(full[:end])
++     usage = resp.get("usage", {})
++     data["_usage"] = {
++         "input_tokens": usage.get("input_tokens", 0),
++         "output_tokens": usage.get("output_tokens", 0),
++         "cache_read_input_tokens": usage.get("cache_read_input_tokens", 0),
++     data["_model"] = resp.get("model", "")
++     return data
++ # 评分聚合 / 显示
++ SCORE_EMOJI = lambda s: "🟢" if s >= 7.5 else ("🟡" if s >= 5 else "🔴")
++ def review_image(src: str, prompt: str = "", quick: bool = False,
++                  model: str = DEFAULT_MODEL) -> Dict:
++     resp = call_claude_vision(src, prompt=prompt, quick=quick, model=model)
++     parsed = parse_review_json(resp)
++     parsed["_image"] = src
++     return parsed
++ def print_review(r: Dict):
++     sep = "═" * 60
++     sep = "═" * 60
++     print(f"\n{sep}")
++     print(f"\n{sep}")
++     print(f"🔍 Claude Vision 图像评审 v{VERSION}")
++     print(f"📷 图像: {r.get('_image', '?')}")
++     print(f"🤖 模型: {r.get('_model', '?')}")
++     u = r.get("_usage", {})
++     print(f"📊 token: in={u.get('input_tokens',0)} / out={u.get('output_tokens',0)}")
++     overall = r.get("overall_score", 0)
++     verdict = r.get("verdict", "?")
++     emoji = SCORE_EMOJI(overall)
++     print(f"\n{emoji} 综合评分: {overall:.1f}/10  → {verdict}")
++     if r.get("summary"):
++         print(f"📝 总结: {r['summary']}")
++     if "subject_match" in r:  # 完整评审
++         print(f"\n📐 五维分项:")
++         for dim, label in [
++             ("subject_match", "主体准确"), ("composition", "构图"),
++             ("lighting", "光影"), ("palette", "色彩"), ("technical", "技术"),
++         ]:
++             d = r.get(dim, {})
++             score = d.get("score", 0)
++             print(f"   {SCORE_EMOJI(score)} {label:8s}: {score:4.1f}/10")
++             for issue in (d.get("issues") or [])[:2]:
++                 print(f"      ❌ {issue}")
++             for good in (d.get("good_points") or [])[:1]:
++                 print(f"      ✅ {good}")
++     fixes = r.get("actionable_fixes", []) or []
++     if fixes:
++         print(f"\n🔧 可执行修复（按优先级）:")
++         order = {"high": 0, "medium": 1, "low": 2}
++         for f in sorted(fixes, key=lambda x: order.get(x.get("priority", "low"), 3))[:5]:
++             p = f.get("priority", "low")
++             mark = "🔴" if p == "high" else ("🟡" if p == "medium" else "🟢")
++             print(f"   {mark} [{f.get('target', '?')}] {f.get('fix', '')}")
++     print(f"{sep}\n")
++     print(f"{sep}\n")
++ def rank_images(srcs: List[str], prompt: str = "", quick: bool = True,
++                 model: str = DEFAULT_MODEL) -> List[Dict]:
++     """多图排名：调用 review_image 然后按 overall_score 排序。"""
++     results = []
++     for s in srcs:
++         try:
++             r = review_image(s, prompt=prompt, quick=quick, model=model)
++             results.append(r)
++         except Exception as e:
++             results.append({"_image": s, "error": str(e), "overall_score": 0})
++     results.sort(key=lambda x: x.get("overall_score", 0), reverse=True)
++     return results
++ def print_ranking(ranked: List[Dict]):
++     print(f"🏆 多图评审排名 (n={len(ranked)})")
++     print(f"{sep}")
++     for i, r in enumerate(ranked, 1):
++         score = r.get("overall_score", 0)
++         emoji = SCORE_EMOJI(score)
++         if r.get("error"):
++             print(f"  {i}. ❌ {r.get('_image', '?')}: {r['error']}")
++         else:
++         else:
++             print(f"  {i}. {emoji} {score:4.1f}/10  {r.get('_image', '?')}")
++             if r.get("summary"):
+
+### scripts/render_prompt.py  [code]
+- VERSION = "2.4.0"
++ VERSION = "2.5.0"
+
+### scripts/reverse_prompt.py  [code]
+- VERSION = "2.4.0"
++ VERSION = "2.5.0"
+
+### scripts/safety_lint.py  [code]
+- VERSION = "2.4.0"
++ VERSION = "2.5.0"

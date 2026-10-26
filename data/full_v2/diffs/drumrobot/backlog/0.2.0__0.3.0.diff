@@ -1,0 +1,158 @@
+drumrobot/backlog  0.2.0 -> 0.3.0
+change_type: docs+code   changelog: - Added Plane external tracker synchronization support in `plane_sync.py`. - Updated and expanded tests for Plane sync functionality in `test_plane_sync.py`. - Removed obsolete `skill-card.md` file. - Updated changelog and documentation to reflect new external tracker integration.
+
+### CHANGELOG.md  [docs]
++ ## [0.3.0](https://github.com/es6kr/skills/compare/backlog-v0.2.0...backlog-v0.3.0) (2026-09-06)
++ ### Features
++ * **fix-plan:** add claim_item.py and wire it to plane_sync started-transition ([add4069](https://github.com/es6kr/skills/commit/add40691c3a68c1160a43259ca358b74e4bd7518))
++ * **fix-plan:** add plane_sync transition_issue_to_started ([0a98966](https://github.com/es6kr/skills/commit/0a9896631405139bcf2739127d0a79f3e12a139f))
++ ### Bug Fixes
++ * **backlog:** require HTTPS, refuse redirects, accept any 2xx in make_plane_request ([fb7b952](https://github.com/es6kr/skills/commit/fb7b952e4bbd67c588ed9450649eb152a20d2d62))
+
+### scripts/plane_sync.py  [code]
+-         return {"error": f"API token ({profile['plane_token_env']}) not set"}
+-     url = f"{profile['plane_host'].rstrip('/')}/api/v1/{path.lstrip('/')}"
+-         with urllib.request.urlopen(req, timeout=5) as resp:
+-             if resp.status in (200, 201):
+-                 return json.loads(resp.read().decode("utf-8"))
++         return None
++ class _NoRedirect(urllib.request.HTTPRedirectHandler):
++     """Refuse every redirect.
++     The API token rides in an `x-api-key` header, and urllib's default
++     redirect handler copies custom headers onto the follow-up request --
++     it only strips content headers. A redirect to an attacker-chosen host
++     would therefore forward the credential. Returning None makes urllib
++     raise the 3xx as an HTTPError instead of following it.
++     """
++     def redirect_request(self, req, fp, code, msg, headers, newurl):
++ def _build_opener() -> urllib.request.OpenerDirector:
++     """Opener that never follows redirects (see _NoRedirect)."""
++     return urllib.request.build_opener(_NoRedirect)
++         return {"error": f"API token ({profile.get('plane_token_env', 'plane_token')}) not set"}
++     host = str(profile.get("plane_host", "")).rstrip("/")
++     scheme = urllib.parse.urlparse(host).scheme
++     if scheme != "https":
++         # Never put the token on the wire in the clear.
++         return {
++             "error": f"refusing to send the Plane API token over a non-HTTPS host: "
++                      f"{host!r} (scheme {scheme or 'missing'!r}); set plane_host to an https:// URL"
++         }
++     url = f"{host}/api/v1/{path.lstrip('/')}"
++         with _build_opener().open(req, timeout=5) as resp:
++             # Any 2xx is success. PATCH commonly answers 204 No Content, which
++             # the old 200/201-only test reported as a failure even though the
++             # state transition had applied.
++             if 200 <= resp.status < 300:
++                 body = resp.read().decode("utf-8")
++                 if not body.strip():
++                     return {}
++                 return json.loads(body)
++     path = f"workspaces/{workspace}/projects/{project}/issues/{issue}/"
++     states = fetch_project_states(profile, workspace, project)
++ def transition_issue_to_started(profile: dict, workspace: str, project: str, issue: str) -> dict:
++     """PATCH a Plane issue's state to the project's `started`-group state.
++     Companion to transition_issue_to_done() -- same DELETE-free PATCH pattern,
++     targeting the "In Progress" state group instead of "Done". Intended to be
++     called at claim time (fix-plan claim_item.py) so a local [CLAIMED] lease
++     is reflected on the linked Plane issue, not just in fix_plan.md. Returns
++     {"error": ...} if the project has no started-group state or the PATCH
++     fails; otherwise the updated issue payload."""
++     started_state_id = find_state_id_by_group(states, "started")
++     if not started_state_id:
++         return {"error": f"No started-group state found for project {project}"}
++     return make_plane_request(profile, path, method="PATCH", data={"state": started_state_id})
+
+### scripts/test_plane_sync.py  [code]
++ import urllib.request
++         )
++         )
++     def _profile(self):
++         return {"plane_host": "https://plane.example.com", "plane_token": "tok"}
++         ):
++         return {
++             "plane_token": "tok",
++         }
++         self.assertIsNone(
++         captured = {}
++         def fake_request(profile, path, method="GET", data=None):
++             if path.endswith("states/"):
++             captured["path"] = path
++             captured["method"] = method
++             captured["data"] = data
++         with patch.object(plane_sync, "make_plane_request", side_effect=fake_request):
++         self.assertEqual(captured["method"], "PATCH")
++         self.assertNotIn("error", result)
++         with patch.object(plane_sync, "make_plane_request", return_value={"results": []}):
++         self.assertIn("error", result)
++         import inspect
++         self.assertNotIn('method="DELETE"', source)
++         self.assertNotIn("method='DELETE'", source)
++ class TestStartedStateTransition(unittest.TestCase):
++     """Companion to TestDoneStateTransition: when a local item is claimed
++     (fix-plan claim_item.py), its linked Plane issue should move to the
++     project's `started`-group state -- the same DELETE-free PATCH pattern
++     as transition_issue_to_done(), just targeting a different state group."""
++     def test_transition_issue_to_started_patches_state(self):
++                 return {"results": [
++                     {"id": "todo-id", "group": "unstarted"},
++                     {"id": "started-id", "group": "started"},
++                 ]}
++             return {"id": "issue1", "state": "started-id"}
++             result = plane_sync.transition_issue_to_started(self._profile(), "ws", "proj1", "issue1")
++             result = plane_sync.transition_issue_to_started(self._profile(), "ws", "proj1", "issue1")
++         self.assertEqual(captured["data"], {"state": "started-id"})
++     def test_transition_issue_to_started_no_started_state(self):
++     def test_transition_issue_to_started_no_delete_call(self):
++         source = inspect.getsource(plane_sync.transition_issue_to_started)
++             )
++             )
++ # --- Review-feedback regression tests (PR #451 consolidate) -----------------
++ class TestMakePlaneRequestTransport(unittest.TestCase):
++     """Rows 1 and 11: transport hardening and 2xx handling in make_plane_request."""
++     def _profile(self, host):
++             "plane_host": host,
++             "plane_token_env": "PLANE_API_TOKEN",
++     def test_rejects_non_https_host_without_sending_token(self):
++         # The token travels as an x-api-key header; a plaintext host would put
++         # it on the wire in the clear.
++         # patch.object on the module instance this test actually holds --
++         # patch("plane_sync...") would resolve the sys.modules copy that
++         # claim_item imported, leaving this assertion vacuous.
++         with unittest.mock.patch.object(plane_sync, "_build_opener") as mock_opener:
++             res = plane_sync.make_plane_request(
++             res = plane_sync.make_plane_request(
++                 self._profile("http://plane.example.com"), "workspaces/w/projects/"
++         mock_opener.assert_not_called()
++         self.assertIn("error", res)
++         self.assertIn("https", res["error"].lower())
++     def test_accepts_204_no_content_as_success(self):
++         # A PATCH that returns 204 applied successfully; treating it as a
++         # failure makes transition_issue_to_started report a false negative.
++         class FakeResp:
++             status = 204
++             def read(self):
++                 return b""
++             def __enter__(self):
++                 return self
++             def __exit__(self, *exc):
++                 return False
++         class FakeOpener:
++             def open(self, req, timeout=None):
++                 return FakeResp()
++         # Patch the opener, not urlopen: make_plane_request goes through a
++         # redirect-refusing opener rather than the module-level urlopen.
++         with unittest.mock.patch.object(
++             plane_sync, "_build_opener", return_value=FakeOpener()
++                 self._profile("https://plane.example.com"),
++                 "workspaces/w/projects/p/issues/i/",
++                 method="PATCH",
++                 data={"state": "s"},
++         self.assertNotIn("error", res)
++     def test_redirects_are_not_followed(self):
++         # urllib's default redirect handler re-sends custom headers, which
++         # would forward x-api-key to the redirect target.
++         opener = plane_sync._build_opener()
++         handler = next(
++             h for h in opener.handlers
++             if isinstance(h, urllib.request.HTTPRedirectHandler)
++             handler.redirect_request(None, None, 302, "Found", {}, "https://evil.example")

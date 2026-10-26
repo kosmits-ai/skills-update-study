@@ -1,0 +1,30 @@
+{
+  "fetched_at": "2026-10-26T14:41:24.810514+00:00",
+  "status": 200,
+  "versions": [
+    {
+      "version": "2.4.0",
+      "createdAt": 1789399444701,
+      "changelog": "v2.4.0 缺失数据不再\"一缺全灭\"：大盘温度 3 项即可出分 + 个股观测项缺失给中性兜底\n\n【大盘温度：≥3 项即可出分，按可用项权重归一】\n此前 market_temperature() 要求「均线 / 成交额 / 涨跌广度 / 破净比例」四项全齐才输出温度，\n缺任意一项整个温度分就变成 null（\"数据不足\"）——等于让缺一个指标掩盖掉另外三个已有信息。\n现改为拿到 ≥3 项即出分，分母改用可用项的权重和归一；不足 3 项才仍为\"数据不足\"。\n输出新增 coverage（可用权重占比）、used / missing（用上 / 缺失的项）、min_items（门槛=3），\nnotes 写明\"温度分由 N/4 项按权重归一得出（可用权重 …，覆盖率 …%）\"。\n示例：故意只给 3/4 项 → 旧口径\"数据不足\"，新口径按 82.4% 覆盖率归一给出 70.0 分（偏热）。\n\n【个股观测项缺失：不再一律计 0，改为中性默认分 60 兜底】\n此前 score_dimension() 对缺失项直接计 0，即\"缺一项 = 该项得 0 分\"，\n数据完整度不同的标的分数无法比较——而本技能的核心用法恰恰是跨快照跟踪评分变化。\n现把缺失处置拆成固定优先级的四层：\n  1. 补数据：按取数手册把字段取回来（首选）；\n  2. 派生：能从原始数据算的就自己算，本版新增 np_yoy 由净利润TTM / 去年同期利润派生\n     （两侧 period_end 需相差约一年，防拿错窗口硬算）；\n  3. 结构性缺失（IMPUTE 白名单：forecast / industry_boom）按总体期望分插补（沿用 2.2.0）；\n  4. 观测项缺失（公司应披露的财务 / 资金 / 技术项）按 MISSING_FILL 兜底，\n     默认 'neutral'：给中性默认分 60（NEUTRAL_FALLBACK=60），仍留在计分分母里。\n\n两个分母是分开的：all_weight（适用项权重）只算 coverage，used_weight（实际计分权重）只算 score。\nneutral 下两者相等，所以兜底不抬高覆盖率，MIN_COVERAGE=70 的 NR 门槛完全不受影响。\n备选策略 'renorm'（把缺项权重整块退出分母）保留但需显式开启——归一会让数据完整度不同的标的失去可比性，故不作默认。\n结果字段 data_quality.<维度> 新增 neutral_weight 与 neutral，报告新增\"按中性默认分兜底计价\"缺口面板。\n\n影响量化（示例）：ordinary 去掉一个 G 项（权重 15、原分 100）→ 旧口径 G = 65.3，新口径 G = 74.3，\n价值分 85.2；覆盖率 85% 仍高于门槛，照常出评级。数据齐全的样本分数完全不变（精准作用域）。\n\n已知偏置（已在文档中写明）：中性兜底值大于 0，所以\"漏报某观测项\"的标的会高于\n\"如实上报差数据（该项真实分低于 60）\"的标的。这是\"不给缺失好处\"与\"跨快照口径稳定\"之间的固有冲突，\n本版选了后者（可比性优先），缓解手段是先尽力补数据，并在横向比较时查看 data_quality.*.neutral。\n\n【其他】\n- 单元测试 77 个（+5）：新增\"中性兜底不抬高覆盖率\"\"兜底分低于满分\"\"renorm 把权重移出分母\"\n  \"np_yoy 由 TTM 派生\"\"温度 3/4 项归一 + 不足 3 项仍不可用\"\n- 示例新增「部分字段缺失样本」演示中性兜底；大盘块改为 3/4 项演示按权重归一\n- 文档同步：scoring-model / indicator-mapping / data-playbook / README / CHANGELOG / SKILL.md\n\n说明：跨版本快照一律 comparable=false，已有用户的评分基线会重建。\n纯 Python 标准库实现，无第三方依赖。仅供研究参考，不构成投资建议，不自动下单。",
+      "changelogSource": "user"
+    },
+    {
+      "version": "2.3.0",
+      "createdAt": 1789393106089,
+      "changelog": "v2.3.0 股息子项 + 行业景气度派生 + 大盘温度自算\n\n【新增股息子项：把\"持有理由\"变成可计算的分数】\nV 维度内新增股息率利差调节：dividend_spread_pct = 股息率 − 无风险利率（百分点），\n按 DIV_SPREAD_CURVE=[(-1,0),(0,50),(1,80),(2.5,100)] 计分，权重 DIV_V_WEIGHT=20。\nQ 维度内新增分红覆盖：dividend_coverage = 净利润TTM / 现金分红TTM（倍），\n按 DIV_COVERAGE_CURVE=[(0.8,0),(1.2,45),(1.7,75),(2.5,100)] 计分，权重 DIV_Q_WEIGHT=10。\n\n两处都已接入引擎：当且仅当利差与覆盖同时具备时才启用（dividend.enabled=true），\n结果新增 dividend 字段 {enabled, yield_pct, spread_pct, coverage, spread_score, coverage_score}，报告卡片与\n估值段同步展示。此前所有标的在股息轴上一律 0 信号，改为可区分：\n以真实持仓实测，宁沪高速利差分 93.7 > 京沪高铁 79.1 > 中国核电 55.7。\n\n实现注意：Q 维度原 6 项权重合计 100，直接新增第 7 项会把分母变成 110、静默稀释所有旧项。\n新增项接入时把其余 Q 项权重统一乘 (100−DIV_Q_WEIGHT)/100 = 0.9，保证 Q 合计仍为 100（已有回归测试）。\n\n【填实 industry_boom：不再对所有标的等额 50 分】\n此前 industry_boom 对全体标的按 IMPUTE 期望分 50 计价，是\"期望值信用\"、不含个股信息。\n现改为由真实行业财报派生：industry_boom_from_sector(np_yoy_pct, rev_yoy_pct) = 0.7×净利分 + 0.3×营收分，\n曲线 SECTOR_NP_CURVE=[(-20,0),(0,35),(10,60),(25,85),(50,100)]、\nSECTOR_REV_CURVE=[(-10,0),(0,40),(10,70),(25,100)]，输入字段 sector_np_yoy_pct / sector_rev_yoy_pct（申万行业财报）。\n\n派生优先于手填：派生成功会覆盖手填值，notes 会写明派生来源；行业数据缺失时仍回落期望分 50（保留兜底）。\n反作弊边界同步加固：checked_metrics 拒绝用户直接注入 industry_boom 这类派生值，只接受原始行业数据，派生一律引擎自算。\n\n【打通大盘温度：由原始序列自算】\n此前市场温度依赖外部给定的标量，多数情况下取默认值、失去意义。\n现新增 derive_market_indicators()，从原始时间序列自算三项：\n  · hs300_ma250_dev   ← hs300_close_series（沪深300 收盘）\n  · volume_ratio_5_250 ← turnover_series（全市场成交额近似）\n  · up_ratio_20d      ← advance_ratio_series（当日上涨占比扩到 20 日窗口）\n外部若直接给出标量则以外部值为准（不覆盖）；派生项继承源指标的 indicator_meta，\n返回的 derived 字段与 notes 会点名哪几项是自算的。\n\n【其他】\n- 单元测试 72 个（+18）：新增 DividendTests(7) / IndustryBoomTests(5) / MarketTemperatureTests(5) 及既有用例补充\n- 示例新增 dividend 红利样本，展示股息子项启用的完整链路；ordinary 的 G 由 76.9 → 80.3（行业派生生效）\n- 文档 data-playbook 修正 CLI 命令口径：quote→kline --limit 1、flow→fund flow、\n  dividend→dividend list、sector search→search --type sector\n\n纯 Python 标准库实现，无第三方依赖。仅供研究参考，不构成投资建议，不自动下单。",
+      "changelogSource": "user"
+    },
+    {
+      "version": "2.2.0",
+      "createdAt": 1789368897143,
+      "changelog": "v2.2.0 结构性缺失按期望分插补 + 配置填充顺序缺陷修复\n\n【修复 G 维度被系统性低估】\n此前 score_dimension 把缺失项直接计 0，而成长性维度的 forecast(20) 与 industry_boom(10) \n在很多标的上无第三方数据，导致这些标的 G 上限被硬压到 70 分，覆盖率恰好卡在 70% 门槛——\n再缺任一项即 NR。这等于把「没有机构覆盖」误判成「成长性差」。\n\n现新增白名单常量 IMPUTE = {forecast: 60, industry_boom: 50}，命中白名单的缺失项按总体\n期望分计价（forecast 期望分 = 0.25×beat100 + 0.40×inline70 + 0.15×flat40 + 0.20×miss0 ≈ 60），\n并在 data_quality.<维度>.imputed 与 notes 中留痕。\n\n白名单边界：只收第三方来源缺失、公司自身并不掌握的前瞻/行业项。公司自己披露的财务/资金/\n技术项（ROE、毛利率、负债率、资金流、波动率等）一律不插补，缺失仍贡献 0——否则漏报坏数据\n反而加分。这是有意的不对称。\n\n覆盖率不变：coverage 只统计真实数据权重，插补不抬高覆盖率，MIN_COVERAGE=70 的 NR 门槛不受影响。\n\n【修复配置填充的顺序依赖】\n原 allocate() 按代码排序逐只累加，分组剩余额度读取的是已被前面标的改过的状态，同行业内 3 只\n以上时排序靠前的两只先占满 30% 行业额度，总分最高的反而只剩残值（示例中曾出现 87.5 分标的\n只分到 3%、86.0 分标的却分到 15%）。\n\n现抽出 allocate_budget()，每轮基于同一份权重快照计算额度并一次性提交；分组额度不足时按 merit\n比例等比压缩，且压缩发生在单票上限之前。分配结果只由评分决定，与代码命名无关。\n\n【打包白名单修正】\nassets/icon.png 不再进包（SkillHub 服务端会以「不允许的文件类型」拒绝整个上传）；白名单改为\n必需（SKILL.md / scripts / references / config）与可选（assets 其余）两段。\n\n【其他】\n- 单元测试 54 个（+5），新增插补边界、留痕与配置顺序无关性回归测试\n- 示例新增 no_coverage 样本展示结构性缺失行为\n- 已知偏置：无机构覆盖标的（插补后 G=76.9）会高于有覆盖但预期落空（forecast='miss', G=67.9）\n  的标的。只要插补值 > 0 该倒挂无法消除，是本方案的固有代价\n- 跨版本分差一律 comparable=False，已有用户的评分基线会重建\n\n纯 Python 标准库实现，无第三方依赖。仅供研究参考，不构成投资建议，不自动下单。",
+      "changelogSource": "user"
+    },
+    {
+      "version": "0.1.0",
+      "createdAt": 1788797921132,
+      "changelog": "股票投资价值评分 v2.1.0 发布\n\n- 新增 A股自选与持仓批量数据获取与留痕、行业归类和数据质量验证，生成可追溯六维量化评分（价值/交易环境分）\n- 全面升级基本面情景估值模型，按行业情景定制公允价值，明确熊基牛三档假设，输出安全边际及主要数据缺口\n- 支持用户自定义风险政策和资产配置约束，按持仓、行业、产业链比例计算权重参考；因信息缺口时自动说明\n- 自动生成离线HTML报告与快照，明示估值日、评分归因、数据实时性和风险提示\n- 引入历史时点数据处理、逐日回测与调权注册，增加模型版本和数据覆盖率门槛，分离数据变动与权重调整归因\n- 明确拒绝自动下单，完全本地运行；仅A股，",
+      "changelogSource": "auto"
+    }
+  ]
+}

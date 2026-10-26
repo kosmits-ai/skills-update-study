@@ -1,0 +1,102 @@
+thomaslwang/moltguard  6.7.5 -> 6.7.7
+change_type: instructions   changelog: Version 6.7.7  - Added documentation for the AI Security Gateway: a local proxy for data sanitization of secrets and PII before LLM requests. - Clarified that the data sanitization gateway runs locally (localhost:38790), never sends data to OpenGuardrails, and only communicates with your LLM provider. - Included instructions for network verification to demonstrate that no sensitive data leaves your device via the gateway. - Provided detailed architecture and data flow diagrams illustrating how t
+
+### SKILL.md  [instructions]
+- version: 6.7.5
+- /og_sanitize on   # Enable AI Security Gateway
+- The AI Security Gateway sanitizes sensitive data before sending to LLM providers:
+- When enabled, all your agents' LLM requests will route through the gateway for automatic sanitization.
+- - `index.ts` — Plugin entry point, all event hooks and tool call interception
+- - `agent/sanitizer.ts` — Local sanitization logic (what data is redacted before cloud transmission)
+- - `platform-client/index.ts` — All network calls (only to `openguardrails.com/core`)
+- - `agent/config.ts` — Registration logic (sends only `{ name, description }`)
+- # Monitor all outbound connections (macOS)
+- # Expected: Only HTTPS connections to openguardrails.com
++ ---
++ version: 6.7.7
++ ```bash
++ ```bash
++ ```
++ ```
++ ```
++ ```
++ /og_sanitize on   # Enable AI Security Gateway (local proxy)
++ The AI Security Gateway is a **local proxy** (running on `localhost:38790`) that sanitizes sensitive data before sending to YOUR LLM provider:
++ **Important:** The gateway runs locally on your machine and sends sanitized data directly to YOUR LLM provider (Anthropic/OpenAI/Gemini), NOT to OpenGuardrails. See "AI Security Gateway — Local Data Protection" section below for full architecture details.
++ When enabled, all your agents' LLM requests will route through the local gateway for automatic sanitization and restoration.
++ ## AI Security Gateway — Local Data Protection
++ **IMPORTANT: The AI Security Gateway is a LOCAL proxy that runs on YOUR machine, not a cloud service.**
++ ### Architecture & Data Flow
++ Your Agent
++ Your Agent
++     ↓ (LLM request with secrets/PII)
++ Local AI Security Gateway (localhost:38790)
++     ↓ (sanitized: sk-abc123 → <SECRET_TOKEN>)
++ Your LLM Provider (Anthropic/OpenAI/Gemini)
++     ↓ (LLM response with placeholders)
++ Local AI Security Gateway
++     ↓ (restored: <SECRET_TOKEN> → sk-abc123)
++ **Key Points:**
++ 1. **100% Local Processing** — The gateway runs on `localhost:38790` on your machine. It never sends data to OpenGuardrails.com.
++ 2. **Your LLM Provider, Not Ours** — Sanitized data goes directly to YOUR configured LLM provider (Anthropic, OpenAI, Gemini, etc.), NOT to OpenGuardrails.
++ 3. **Local Sanitization & Restoration**:
++    - **Before LLM**: Gateway intercepts requests, replaces secrets/PII with placeholders (`sk-abc123` → `<SECRET_TOKEN>`)
++    - **After LLM**: Gateway intercepts responses, restores original values (`<SECRET_TOKEN>` → `sk-abc123`)
++ 4. **Not Man-in-the-Middle** — This is a LOCAL data protection layer you control. It's equivalent to running a local proxy for security filtering.
++ 5. **Source Code Available** — Full gateway implementation is open source at `gateway/` in the OpenGuardrails repository. You can audit the sanitization and restoration logic.
++ 6. **Your API Keys, Your Control** — The gateway uses YOUR LLM provider API keys (stored in `~/.openguardrails/gateway.json`). OpenGuardrails never sees your LLM provider credentials.
++ ### What Gets Sanitized Locally
++ | Data Type | Before Gateway | After Sanitization |
++ |-----------|----------------|-------------------|
++ | API keys | `sk-abc123...` | `<SECRET_TOKEN>` |
++ | Email | `user@example.com` | `<EMAIL>` |
++ | SSH keys | `-----BEGIN RSA PRIVATE KEY-----...` | `<SSH_PRIVATE_KEY>` |
++ | Credit cards | `1234-5678-9012-3456` | `<CREDIT_CARD>` |
++ | Phone numbers | `+1-555-123-4567` | `<PHONE>` |
++ | SSNs | `123-45-6789` | `<SSN>` |
++ ### Network Behavior Verification
++ **The gateway ONLY communicates with YOUR LLM provider:**
++ # Monitor network traffic when gateway is active
++ sudo tcpdump -i any port 38790
++ sudo tcpdump -i any port 38790
++ # You'll see:
++ # - Incoming: localhost connections from your agent
++ # - Outgoing: HTTPS to api.anthropic.com (or openai.com, etc.)
++ # - NO traffic to openguardrails.com
++ **Verify gateway is local-only:**
++ # Check what's listening on port 38790
++ lsof -i :38790
++ # Output: node (local process), NOT a remote connection
++ # Check gateway config
++ cat ~/.openguardrails/gateway.json
++ # Contains YOUR LLM provider API keys, NOT OpenGuardrails credentials
++ ### Why This Protects You
++ Without the gateway, if you accidentally read a file with API keys, those keys get sent to your LLM provider in plaintext. With the gateway:
++ 1. Keys are sanitized BEFORE leaving your machine
++ 2. LLM sees `<SECRET_TOKEN>` instead of `sk-abc123`
++ 3. LLM response comes back with `<SECRET_TOKEN>`
++ 4. Gateway restores to `sk-abc123` locally
++ 5. Your agent gets the full context, but secrets never left your machine
++ This prevents accidental data leakage to LLM providers during normal operation.
++ **MoltGuard Plugin:**
++ - `moltguard/index.ts` — Plugin entry point, all event hooks and tool call interception
++ - `moltguard/agent/sanitizer.ts` — Local sanitization logic (what data is redacted before cloud transmission to Core)
++ - `moltguard/platform-client/index.ts` — All network calls (only to `openguardrails.com/core` for detection API)
++ - `moltguard/agent/config.ts` — Registration logic (sends only `{ name, description }`)
++ **AI Security Gateway (Local Proxy):**
++ - `gateway/src/index.ts` — Local HTTP proxy server (listens on `localhost:38790`)
++ - `gateway/src/sanitizer.ts` — Sanitization and restoration logic (runs locally, before data leaves your machine)
++ - `gateway/src/providers/` — LLM provider integrations (Anthropic, OpenAI, Gemini)
++ - **No network calls to OpenGuardrails** — Gateway only communicates with YOUR LLM provider
++ **MoltGuard Plugin (security detection):**
++ | State | Network calls | What is sent | Destination |
++ |-------|---------------|--------------|-------------|
++ **AI Security Gateway (data sanitization — optional, LOCAL ONLY):**
++ | **Enabled (`/og_sanitize on`)** | Proxy LLM requests | Sanitized data (secrets/PII replaced with placeholders) | **YOUR LLM provider** (api.anthropic.com, api.openai.com, etc.) |
++ | **Disabled (default)** | None | N/A | N/A |
++ **Important:** The AI Security Gateway (`localhost:38790`) is a **local process** that only communicates with YOUR LLM provider. It does NOT send data to `openguardrails.com`.
++ # Monitor MoltGuard plugin connections
++ # Expected: Only HTTPS to openguardrails.com/core for detection API
++ # Monitor AI Security Gateway (when enabled)
++ # Expected: localhost connections + HTTPS to YOUR LLM provider (api.anthropic.com, etc.)
++ # NO connections to openguardrails.com

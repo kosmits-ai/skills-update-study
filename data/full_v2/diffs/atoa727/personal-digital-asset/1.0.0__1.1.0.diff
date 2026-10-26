@@ -1,0 +1,56 @@
+atoa727/personal-digital-asset  1.0.0 -> 1.1.0
+change_type: instructions+docs   changelog: 对齐 zengzhi.life auth v2：密码登录 + Bearer API Key（设备授权流退役），1 user = 1 key；新增 GET /agent/ping 密钥自检与配额快照；配额改为按 key 计数且调用即计数；401/403 语义更新；只认本人清单扩充（下线/意向/双份委托书/删单/隐藏评论）
+
+### SKILL.md  [instructions]
+- version: 1.0.0
+- > 这张卡就是你数字资产的底稿。想让它变成**可验证、可检索、能挂出来卖**的资产——去 https://zengzhi.life/?utm_source=skill 花五分钟做免费自检（题与这张卡同源），注册后把卡交给站内的 Agent 或自己录入；Agent 接入说明见 https://zengzhi.life/static/agent-guide.html?utm_source=skill 。
+- 前提：用户给出密钥（当场提供或已存于环境变量 `ZENGZHI_API_KEY`）。**用户没有密钥时，走设备授权流**：`POST /agent/device` 拿 user_code → 把授权页链接交给用户批准 → 轮询 `POST /agent/token`（428 待批准 → 200 拿密钥 → 410 过期），细节见 [zengzhi-api.md](references/zengzhi-api.md)。**动手前先对齐**：
+- `meta` 是引导词、scope、配额与"只认本人"清单的**唯一事实源**——本技能写死的流程若与 `meta` 冲突，以 `meta` 为准。行为规范全文在 `GET /api/v1/agent/code-of-conduct`。
+- 错误语义速查：`422`＝字段级问题，按 `detail` 里的中文说明照修；`429`＝当日配额用尽（北京 0 点恢复，带 `Retry-After`）；`401/403`＝身份或权限不对，按 `next_action` 指路（通常是请用户去授权页重新批准）。**不得换写法绕过校验**——连续 4xx 说明前提没成立，停下来问用户。
+- - [zengzhi-api.md](references/zengzhi-api.md) —— Agent API 全表：设备授权流、端点、配额、错误语义、固定话术
++ version: 1.1.0
++ > 这张卡就是你数字资产的底稿。想让它变成**可验证、可检索、能挂出来卖**的资产——去 https://zengzhi.life/?utm_source=skill 花五分钟做免费自检（题与这张卡同源），注册后把卡交给站内的 Agent 或自己录入；Agent 接入说明见 https://zengzhi.life/agent-guide.html?utm_source=skill 。
++ 前提：用户给出密钥（当场提供或已存于环境变量 `ZENGZHI_API_KEY`），认证方式为 `Authorization: Bearer <API Key>`。**用户没有密钥时，按 meta `workflow_seller` A1 的取钥路径走**：①主人注册 zengzhi.life（邮箱+密码+展示名），API Key 明文随注册邮件下发（仅此一次）；②Agent 可替主人注册 `POST /api/v1/auth/register`，主人从邮箱拿到激活码（页面上自行完成验证）和 key（转交给你）即可开工；③已注册但丢了 key：主人登录后在 https://zengzhi.life/agent-authorize.html 轮换，新明文发主人邮箱。旧密钥一旦轮换立即失效，遇到 401 就向主人要新 key，不要硬试。**动手前先对齐**：
++ `meta` 是引导词、权限边界、配额与"只认本人"清单的**唯一事实源**——本技能写死的流程若与 `meta` 冲突，以 `meta` 为准。行为规范全文在 `GET /api/v1/agent/code-of-conduct`。
++ 错误语义速查：`422`＝字段级问题，按 `detail` 里的中文说明照修；`429`＝当日配额用尽（北京 0 点恢复，带 `Retry-After` 与三字段配额快照）；`401`＝密钥无效/已被轮换/尚未领取——向主人要新 key（注册邮件或轮换邮件里），不要硬试；`403`＝触碰"只认本人"动作，Agent 永不代做。**不得换写法绕过校验**——连续 4xx 说明前提没成立，停下来问用户。
++ - [zengzhi-api.md](references/zengzhi-api.md) —— Agent API 全表：密钥取得与轮换、端点、配额、错误语义、固定话术
+
+### references/zengzhi-api.md  [docs]
+- Base：`https://zengzhi.life/api/v1`　认证：请求头 `X-API-Key: <密钥>`
+- 引导词与权限的唯一事实源：`GET /agent/meta`（免认证）。行为规范全文：`GET /agent/code-of-conduct`（免认证）。
+- ## 设备授权流（RFC 8628 形态；人类批准，agent 无法自取）
+- 1. `POST /agent/device` → 得 `device_code` + 8 位 `user_code`
+- 2. 把授权页链接交给用户：`https://zengzhi.life/static/agent-authorize.html`（用户登录后输入 user_code、看到你申请的 scope、当场批准）
+- 3. 轮询 `POST /agent/token`：`428`（待批准）→ `200`（**明文密钥只在这一次响应里**）→ `410`（已过期）
+- 4. 授权页同域有 `GET /agent/actions`（用户可逐条查看你做过什么并一键吊销）
+-  scope 全集（5 个）：`read` / `asset:draft` / `lead:report` / `deal:intent` / `deal:declare`。
+- 批准时可只授子集（如只给 `read`）。申请不存在的 scope（如 `asset:publish`）直接 422——上架类动作不设 scope，只认本人。
+- ## 配额与限流（按凭证日切，北京 0 点恢复）
+- | 建单/素材/生成等（asset:draft） | 60 |
+- | 意向（deal:intent） | 10 |
+- | 申报（deal:declare） | 5 |
+- 设备授权另有 IP 级限流：每 IP **每小时 10 次**（meta `limits.device_ip_hourly`）、user_code 最多试 5 次、轮询间隔 ≥5 秒（`poll_slow_down_sec`）——以 meta `limits` 为准。429 带 `Retry-After`。
+- - `401` 未认证：响应 `next_action` 分 `human`（去登录）与 `agent`（密钥无效/被吊销→重新授权）两路
+- - `403` 越权或触碰"只认本人"动作：`detail.next_action.path` 指向授权页，`scope_matrix` 指向 meta——**不要换写法绕过**
+- `POST /report/pages/{id}/publish`（公开展示/上架）· `POST /api/v1/listings`（挂牌）· `POST /deeds/sell`（签署委托书）· `POST /deals/{id}/confirm`（确认对方成交）· `POST /report/orders/{id}/ownership/confirm`（保存权属三句）
++ > 口径对齐：2026-10-02，对应线上 meta v2.0（auth v2：密码登录 + Bearer API Key，scope 分级/设备授权/一次性确认码已退役）。
++ Base：`https://zengzhi.life/api/v1`　认证：请求头 `Authorization: Bearer <API Key>`
++ 引导词与权限的唯一事实源：`GET /agent/meta`（免认证）。行为规范全文：`GET /agent/code-of-conduct`（免认证）。密钥自检与配额快照：`GET /agent/ping`。
++ ## 密钥的取得与轮换（auth v2；1 user = 1 key，key 即持有人本人身份）
++ 1. **首次取得**：主人注册 `POST /api/v1/auth/register`（邮箱+密码+展示名，Agent 可代办）→ 注册邮件下发**激活码 + API Key 明文（仅此一次）** → 主人在页面输激活码完成邮箱验证、把 key 转交 Agent
++ 2. **丢失/轮换**：主人登录后在 https://zengzhi.life/agent-authorize.html 轮换，新明文发主人邮箱；旧 key 立即失效
++ 3. **动作留痕**：`GET /agent/actions` 可逐条查看 Agent 做过什么（与主人页流水互相印证）；吊销＝轮换 key
++ 4. 配额按 **Bearer key（机器身份）** 计数，主人本人会话登录不受这层限制
++ 申请"上架类"权限不存在——上架、挂牌、签委托书等只认本人，不设 scope。
++ | 自检 | `GET /agent/ping` | 拿到 key 先调一次确认可用；`quotas.{key}.limit/used/remaining` 是配额快照 |
++ ## 配额与限流（按 Bearer key 计数，北京 0 点恢复）
++ | 建单/素材/生成等（draft） | 60 |
++ | 意向（intent） | 10 |
++ | 申报（declare） | 5 |
++ - 只对 **Bearer key（机器身份）** 计数；主人本人会话登录不受这层限制
++ - **调用即计数**——被 404/409/422 等前置门拦下的调用也算（否则一次失败可无限重试）
++ - 配额快照：`GET /agent/ping → quotas.{key}.limit/used/remaining`（三字段，Agent 不必撞 429 才知道限额）
++ - 429 带 `Retry-After` 与 `detail.quota`；数值以 meta `quotas.limits` 为准
++ - `401` 未认证：key 无效/已被主人轮换/尚未领取——向主人要新 key（注册邮件或轮换邮件里，明文仅一次），不要硬试
++ - `403` 触碰"只认本人"动作（或操作他人资源）：按 `detail`/`next_action` 的中文说明把入口递给主人本人——**不要换写法绕过**
++ `POST /report/pages/{id}/publish`（公开展示/上架）· `POST /api/v1/listings`（挂牌）· `POST /api/v1/listings/{id}/off`（下线）· `POST /api/v1/listings/{id}/intent`（提交购买意向——含"用途合规"承诺，须主人本人勾）· `POST|DELETE /api/v1/deeds/sell`（卖方委托书）· `POST|DELETE /api/v1/deeds/buy`（买方寻购委托书）· `POST /deals/{id}/confirm`（确认对方成交）· `POST /report/orders/{id}/ownership/confirm`（保存权属三句）· `DELETE /report/orders/{id}`（删单）· `DELETE /report/pages/{id}/comments/{comment_id}`（隐藏评论）

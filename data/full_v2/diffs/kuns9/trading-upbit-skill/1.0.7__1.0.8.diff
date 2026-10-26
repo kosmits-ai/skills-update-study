@@ -1,0 +1,443 @@
+kuns9/trading-upbit-skill  1.0.7 -> 1.0.8
+change_type: code   changelog: Version 1.0.8 of trading-upbit-skill  - Correct worker handling errors for buy orders
+
+### package-lock.json  [code]
+-   "name": "trading-upbit-skill",
+-       "name": "trading-upbit-skill",
+-       "bin": {
+-         "trading-upbit-skill": "skill.js"
++   "name": "upbit-trading-skill",
++       "name": "upbit-trading-skill",
++         "dotenv": "^17.3.1",
++       }
++     },
++       "engines": {
++     "node_modules/dotenv": {
++       "version": "17.3.1",
++       "resolved": "https://registry.npmjs.org/dotenv/-/dotenv-17.3.1.tgz",
++       "integrity": "sha512-IO8C/dzEb6O3F9/twg6ZLXz164a2fhTnEWb95H23Dm4OuN+92NmEAlTrupP9VW6Jm3sO26tQlqyvyi4CsnY9GA==",
++       "license": "BSD-2-Clause",
++         "node": ">=12"
++       "funding": {
++         "url": "https://dotenvx.com"
+
+### package.json  [code]
+-   "version": "1.0.0",
++   "version": "11.0.0",
+
+### scripts/execution/tradeExecutor.js  [code]
+-         Logger.info(`[EXECUTOR] 이벤트 처리 시작: ${event.type} - ${event.market}`);
+-         try {
+-             // 1. 리스크 평가
+-             const riskResult = await riskManager.evaluate(this.orderService.client, event);
+-             if (!riskResult.allow) {
+-                 Logger.warn(`[SKIP] 리스크 필터에 의해 생략됨: ${riskResult.reason} (${riskResult.detail || ''})`);
+-                 return false;
+-             }
+-             }
+-             // 2. 상태별 작업 및 전이
+-             if (event.type === 'BUY_SIGNAL') {
+-                 // 이미 진행 중인 포지션이 있는지 확인 (중복 주문 방지)
+-                 const data = await positionsRepo.load();
+-                 if (data.positions.some(p => p.market === event.market && (p.state === 'OPEN' || p.state === 'ENTRY_PENDING'))) {
+-                     Logger.warn(`[SKIP] 이미 해당 마켓의 포지션이 존재하여 생략함: ${event.market}`);
+-                     return false;
+-                 }
+-                 // 상태 전이: FLAT -> ENTRY_PENDING
+-                 await positionsRepo.createEntryPending(event.market, event.meta?.strategy || 'unknown', riskResult.budgetKRW);
+-                 // 실제 주문 실행 (시장가 매수)
+-                 const orderResult = this.dryRun
+-                 const orderResult = this.dryRun
+-                     ? { uuid: `dry_buy_${Date.now()}`, market: event.market, price: event?.payload?.price, volume: null }
+-                     : await this.orderService.placeMarketBuy(event.market, riskResult.budgetKRW);
+-                 Logger.info(this.dryRun
+-                 Logger.info(this.dryRun
+-                     ? `[DRYRUN] 시장가 매수 시뮬레이션: ${orderResult.uuid}`
+-                     : `[DONE] 시장가 매수 주문 완료: ${orderResult.uuid}`);
+-                 // 상태 전이: ENTRY_PENDING -> OPEN (실제 체결 확인은 FillWatcher에서 보완)
+-                 await positionsRepo.updateToOpen(event.market, orderResult);
+-                 return true;
+-                 return true;
+-             if (event.type === 'TARGET_HIT' || event.type === 'STOPLOSS_HIT' || event.type === 'TRAILING_STOP_HIT' || event.type === 'TAKEPROFIT_HARD') {
+-                 // 상태 전이: OPEN -> EXIT_PENDING
+-                 await positionsRepo.updateToExitPending(event.market, event.type);
+-                 // 실제 주문 실행 (시장가 매도)
+-                     ? { uuid: `dry_sell_${Date.now()}`, market: event.market, volume: riskResult.volume }
+-                     : await this.orderService.placeMarketSell(event.market, riskResult.volume);
+-                     ? `[DRYRUN] 시장가 매도 시뮬레이션: ${orderResult.uuid}`
+-                     : `[DONE] 시장가 매도 주문 완료: ${orderResult.uuid}`);
+-                 // 상태 전이: EXIT_PENDING -> CLOSED
+-                 await positionsRepo.updateToClosed(event.market, orderResult);
+-             return false;
+-         } catch (err) {
+-             Logger.error(`Trade Execution Error: ${err.message}`);
+-             throw err;
++         Logger.info(`[EXECUTOR] start type=${event.type} market=${event.market}`);
++         // 1) Risk evaluation (may call Upbit chance/accounts)
++         const riskResult = await riskManager.evaluate(this.orderService.client, event);
++         if (!riskResult.allow) {
++             Logger.warn(`[EXECUTOR] skip reason=${riskResult.reason} detail=${riskResult.detail || ''}`);
++             return { ok: false, disposition: 'SKIP', reason: riskResult.reason, detail: riskResult.detail || '' };
++         }
++         }
++         // 2) State transitions + order execution
++         if (event.type === 'BUY_SIGNAL') {
++             const data = await positionsRepo.load();
++             if (data.positions.some(p => p.market === event.market && (p.state === 'OPEN' || p.state === 'ENTRY_PENDING'))) {
++                 Logger.warn(`[EXECUTOR] skip duplicate position market=${event.market}`);
++                 return { ok: false, disposition: 'SKIP', reason: 'DUPLICATE_POSITION' };
++             const pending = await positionsRepo.createEntryPending(event.market, event.meta?.strategy || 'unknown', riskResult.budgetKRW);
++             const orderResult = this.dryRun
++             const orderResult = this.dryRun
++                 ? { uuid: `dry_buy_${Date.now()}`, market: event.market, price: event?.payload?.price, volume: null }
++                 : await this.orderService.placeMarketBuy(event.market, riskResult.budgetKRW);
++             Logger.info(this.dryRun
++             Logger.info(this.dryRun
++                 ? `[EXECUTOR] DRYRUN buy uuid=${orderResult.uuid}`
++                 : `[EXECUTOR] buy placed uuid=${orderResult.uuid}`);
++             await positionsRepo.updateToOpen(event.market, orderResult);
++             return { ok: true, disposition: 'DONE', action: 'BUY', uuid: orderResult.uuid };
++         if (event.type === 'TARGET_HIT' || event.type === 'STOPLOSS_HIT' || event.type === 'TRAILING_STOP_HIT' || event.type === 'TAKEPROFIT_HARD') {
++             await positionsRepo.updateToExitPending(event.market, event.type);
++                 ? { uuid: `dry_sell_${Date.now()}`, market: event.market, volume: riskResult.volume }
++                 : await this.orderService.placeMarketSell(event.market, riskResult.volume);
++                 ? `[EXECUTOR] DRYRUN sell uuid=${orderResult.uuid}`
++                 : `[EXECUTOR] sell placed uuid=${orderResult.uuid}`);
++             await positionsRepo.updateToClosed(event.market, orderResult);
++             return { ok: true, disposition: 'DONE', action: 'SELL', uuid: orderResult.uuid };
++         return { ok: false, disposition: 'SKIP', reason: 'UNKNOWN_EVENT_TYPE' };
+
+### scripts/state/positionsRepo.js  [code]
+- const path = require('path');
+- const { getResourcePaths } = require('./resources');
+- /**
+- /**
+-  * 포지션 저장소 (positionsRepo.js)
+-  * - 상태 머신 기반 포지션 관리
+-  * - FLAT -> ENTRY_PENDING -> OPEN -> EXIT_PENDING -> CLOSED
+-  */
+-     async load() {
+-         try {
+-             const data = await fs.readFile(POSITIONS_FILE, 'utf8');
+-             return JSON.parse(data);
+-         } catch (err) {
+-             return { positions: [] };
+-         }
+-         }
+-         }
+-         }
+-     }
+-     }
+-     }
+-     }
+-     }
+-     }
+-     async save(data) {
+-         await fs.writeFile(POSITIONS_FILE, JSON.stringify(data, null, 2));
+-     /**
+-     /**
+-     /**
+-      * 포지션 생성 (FLAT -> ENTRY_PENDING)
+-      */
+-      */
+-      */
+-      */
+-     async createEntryPending(market, strategy, budget) {
+-         const data = await this.load();
+-         const data = await this.load();
+-         const data = await this.load();
+-         const data = await this.load();
+-         const newPos = {
+-             id: `pos_${Date.now()}`,
+-             market,
+-             state: 'ENTRY_PENDING',
+-             entry: {
+-                 budgetKRW: budget,
+-                 createdAt: new Date().toISOString()
+-             },
+-             meta: { strategy }
+-         };
+-         data.positions.push(newPos);
+-         await this.save(data);
+-         return newPos;
+-      * 진입 완료 업데이트 (ENTRY_PENDING -> OPEN)
+-     async updateToOpen(market, orderResult) {
+-         const pos = data.positions.find(p => p.market === market && p.state === 'ENTRY_PENDING');
+-         if (pos) {
+-         if (pos) {
+-         if (pos) {
+-             pos.state = 'OPEN';
+-             pos.entry.orderUuid = orderResult.uuid;
+-             pos.entry.avgFillPrice = parseFloat(orderResult.price || 0);
+-             pos.entry.openedAt = new Date().toISOString();
+-             // trailing state (for aggressive mode)
+-             pos.exit = pos.exit || {};
+-             pos.exit.peakPrice = pos.exit.peakPrice ?? pos.entry.avgFillPrice;
+-             pos.exit.trailingActive = pos.exit.trailingActive ?? false;
+-             await this.save(data);
+-             await this.save(data);
+-             await this.save(data);
+-  * 현재가 기준 peakPrice 갱신 및 trailingActive 토글
+- async updatePeak(market, currentPrice, opts = {}) {
+-         pos.exit.peakPrice = currentPrice;
+-         pos.exit.peakPrice = currentPrice;
+-     if (opts.activate === true) {
+-         pos.exit.trailingActive = true;
+- }
+-      * 청산 대기 업데이트 (OPEN -> EXIT_PENDING)
+-     async updateToExitPending(market, reason) {
+-         const pos = data.positions.find(p => p.market === market && p.state === 'OPEN');
+-             pos.state = 'EXIT_PENDING';
+-             pos.exit = { reason, triggeredAt: new Date().toISOString() };
+-      * 포지션 종료 (EXIT_PENDING -> CLOSED)
+-     async updateToClosed(market, orderResult) {
+-         const pos = data.positions.find(p => p.market === market && p.state === 'EXIT_PENDING');
+-             pos.state = 'CLOSED';
+-             pos.exit.orderUuid = orderResult.uuid;
+-             pos.exit.closedAt = new Date().toISOString();
++ const { getResourcePaths, ensureResources } = require('./resources');
++  * Positions repository
++  * - Manages position state machine:
++  *   FLAT -> ENTRY_PENDING -> OPEN -> EXIT_PENDING -> CLOSED
++   async load() {
++     await ensureResources().catch(() => {});
++     await ensureResources().catch(() => {});
++     try {
++       const data = await fs.readFile(POSITIONS_FILE, 'utf8');
++       const parsed = JSON.parse(data);
++       if (!parsed || typeof parsed !== 'object') return { positions: [] };
++       if (!Array.isArray(parsed.positions)) parsed.positions = [];
++       return parsed;
++     } catch {
++       return { positions: [] };
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   async save(data) {
++     await fs.writeFile(POSITIONS_FILE, JSON.stringify(data, null, 2), 'utf8');
++   async createEntryPending(market, strategy, budget) {
++     const data = await this.load();
++     const data = await this.load();
++     const data = await this.load();
++     const data = await this.load();
++     const newPos = {
++       id: `pos_${Date.now()}`,
++       market,
++       state: 'ENTRY_PENDING',
++       entry: { budgetKRW: budget, createdAt: new Date().toISOString() },
++       meta: { strategy },
++     };
++     data.positions.push(newPos);
++     await this.save(data);
++     await this.save(data);
++     await this.save(data);
++     await this.save(data);
++     return newPos;
++   async updateToOpen(market, orderResult) {
++     const pos = data.positions.find(p => p.market === market && p.state === 'ENTRY_PENDING');
++     if (!pos) return;
++     if (!pos) return;
++     if (!pos) return;
++     pos.state = 'OPEN';
++     pos.entry.orderUuid = orderResult.uuid;
++     pos.entry.avgFillPrice = Number(orderResult.price || 0);
++     pos.entry.openedAt = new Date().toISOString();
++     // trailing state
++     pos.exit = pos.exit || {};
++     const base = Number(pos.entry.avgFillPrice || 0);
++     pos.exit.peakPrice = Number.isFinite(Number(pos.exit.peakPrice)) ? pos.exit.peakPrice : base;
++     pos.exit.trailingActive = !!pos.exit.trailingActive;
++   async updatePeak(market, currentPrice, opts = {}) {
++     const pos = data.positions.find(p => p.market === market && p.state === 'OPEN');
++       pos.exit.peakPrice = currentPrice;
++       pos.exit.peakPrice = currentPrice;
++     if (opts.activate === true) pos.exit.trailingActive = true;
++   async updateToExitPending(market, reason) {
++     pos.state = 'EXIT_PENDING';
++     pos.exit = { ...(pos.exit || {}), reason, triggeredAt: new Date().toISOString() };
++   async updateToClosed(market, orderResult) {
++     const pos = data.positions.find(p => p.market === market && p.state === 'EXIT_PENDING');
++     pos.state = 'CLOSED';
++     pos.exit = { ...(pos.exit || {}), orderUuid: orderResult.uuid, closedAt: new Date().toISOString() };
+
+### scripts/workers/eventWorker.js  [code]
+-  * 이벤트 워커 (eventWorker.js)
+-  * - events.json 감시 및 처리
+-  * - TradeExecutor 호출
+- const path = require('path');
+- const EVENTS_FILE = getResourcePaths().eventsFile;
+- const HEARTBEAT_FILE = getResourcePaths().heartbeatFile;
+- const WORKER_LOCK_FILE = getResourcePaths().workerLockFile;
+-     await ensureResources();
+-     let prev = {};
+-         const raw = await fs.readFile(HEARTBEAT_FILE, 'utf8');
+-         prev = JSON.parse(raw);
+-     } catch {
+-         prev = {};
+-     const payload = {
+-         ...prev,
+-         lastWorkerRunAt: new Date().toISOString(),
+-         lastWorkerSummary: summary,
+-     };
+-     await fs.writeFile(HEARTBEAT_FILE, JSON.stringify(payload, null, 2), 'utf8').catch(() => {});
+- async function processEvents() {
+-         const _paths = await ensureResources();
+-         Logger.info(`[paths] resourcesDir=${_paths.dir}`);
+-         const lockTtl = cfg.execution.workerLockTtlMs || 90000;
+-         const lock = await acquireLock(WORKER_LOCK_FILE, lockTtl, { kind: 'worker' });
+-         if (!lock.ok) {
+-             Logger.warn(`LOCKED worker (ageMs=${lock.ageMs}) - skip`);
+-             return;
+-             return;
+-         }
+-         }
+-         }
+-         const started = Date.now();
+-         let processed = 0;
+-         let errors = 0;
+-         const data = await fs.readFile(EVENTS_FILE, 'utf8').catch(() => '[]');
+-         let events = JSON.parse(data);
+-         const pendingEvents = events.filter(e => !e.processed);
+-         if (pendingEvents.length === 0) {
+-             Logger.info('[worker] pendingEvents=0 processed=0 errors=0');
+-             await writeHeartbeat({ pendingEvents: 0, processed: 0, errors: 0, durationMs: Date.now() - started });
+-             await releaseLock(WORKER_LOCK_FILE);
+-         for (const event of pendingEvents) {
+-             try {
+-                 const success = await executor.execute(event);
+-                 if (success) {
+-                     event.processed = true;
+-                     event.processed = true;
+-                     event.processedAt = new Date().toISOString();
+-                 } else {
+-                     // 리스크 등에 의해 거부된 경우도 처리 완료로 표시 (중복 실행 방지)
+-                 }
+-                 processed += 1;
+-             } catch (err) {
+-                 Logger.error(`Event Process Error (${event.id}): ${err.message}`);
+-                 errors += 1;
+-             }
+-         await fs.writeFile(EVENTS_FILE, JSON.stringify(events, null, 2));
+-         const durationMs = Date.now() - started;
+-         Logger.info(`[worker] pending=${pendingEvents.length} processed=${processed} errors=${errors} durationMs=${durationMs}`);
+-         Logger.info(`SUMMARY worker pending=${pendingEvents.length} processed=${processed} errors=${errors} durationMs=${durationMs}`);
+-         await writeHeartbeat({ pendingEvents: pendingEvents.length, processed, errors, durationMs });
+-         await releaseLock(WORKER_LOCK_FILE);
+-         Logger.error(`Worker Loop Error: ${err.message}`);
+-         try { await releaseLock(WORKER_LOCK_FILE); } catch {}
+-     await processEvents();
+-     (async function loop() {
+-         await processEvents();
+-         setTimeout(loop, cfg.execution.eventPollIntervalMs);
+-     })();
+-     Logger.info('⚙️ Event Worker Started');
+-     workerLoop();
++  * Event worker
++  * - Reads resources/events.json
++  * - Executes pending events via TradeExecutor
++  * - Updates resources/positions.json through PositionsRepo (called inside TradeExecutor)
++  * - Writes clear stdout logs for Cron run history
++ const { eventsFile: EVENTS_FILE, heartbeatFile: HEARTBEAT_FILE, workerLockFile: WORKER_LOCK_FILE, positionsFile: POSITIONS_FILE } = getResourcePaths();
++   await ensureResources();
++   let prev = {};
++   try {
++   try {
++   try {
++     prev = JSON.parse(await fs.readFile(HEARTBEAT_FILE, 'utf8'));
++   } catch {
++     prev = {};
++   }
++   }
++   }
++   }
++   }
++   const payload = {
++     ...prev,
++     lastWorkerRunAt: new Date().toISOString(),
++     lastWorkerSummary: summary,
++   };
++   await fs.writeFile(HEARTBEAT_FILE, JSON.stringify(payload, null, 2), 'utf8').catch(() => {});
++ function nowMs() { return Date.now(); }
++ async function processEventsOnce() {
++   const paths = await ensureResources();
++   Logger.info(`[paths] resourcesDir=${paths.dir}`);
++   Logger.info(`[paths] eventsFile=${EVENTS_FILE}`);
++   Logger.info(`[paths] positionsFile=${POSITIONS_FILE}`);
++   const lockTtl = cfg.execution.workerLockTtlMs || 90000;
++   const lock = await acquireLock(WORKER_LOCK_FILE, lockTtl, { kind: 'worker' });
++   if (!lock.ok) {
++     Logger.warn(`LOCKED worker (ageMs=${lock.ageMs}) - skip`);
++     return { pending: 0, processed: 0, errors: 0, skipped: 0, durationMs: 0, locked: true };
++   const started = nowMs();
++   let processed = 0;
++   let errors = 0;
++   let skipped = 0;
++   const raw = await fs.readFile(EVENTS_FILE, 'utf8').catch(() => '[]');
++   let events;
++     events = JSON.parse(raw);
++     if (!Array.isArray(events)) events = [];
++   } catch (e) {
++     Logger.error(`[worker] events.json parse failed: ${e.message}`);
++     await releaseLock(WORKER_LOCK_FILE);
++     await releaseLock(WORKER_LOCK_FILE);
++     return { pending: 0, processed: 0, errors: 1, skipped: 0, durationMs: nowMs() - started };
++   const pendingEvents = events.filter(e => !e.processed);
++   Logger.info(`[worker] pendingEvents=${pendingEvents.length}`);
++   if (pendingEvents.length === 0) {
++     const durationMs = nowMs() - started;
++     Logger.info(`[worker] processed=0 errors=0 skipped=0 durationMs=${durationMs}`);
++     Logger.info(`SUMMARY worker pending=0 processed=0 skipped=0 errors=0 durationMs=${durationMs}`);
++     await writeHeartbeat({ pendingEvents: 0, processed: 0, skipped: 0, errors: 0, durationMs });
++     return { pending: 0, processed: 0, errors: 0, skipped: 0, durationMs };
++   for (const event of pendingEvents) {
++     event.attempts = (event.attempts || 0) + 1;
++     event.lastAttemptAt = new Date().toISOString();
++       Logger.info(`[worker] PROCESS id=${event.id} type=${event.type} market=${event.market} attempts=${event.attempts}`);
++       const result = await executor.execute(event);
++       if (result && result.ok) {
++         event.processed = true;
++         event.processed = true;
++         event.processedAt = new Date().toISOString();
++         event.processedAt = new Date().toISOString();
++         event.result = { disposition: result.disposition, action: result.action, uuid: result.uuid };
++         processed += 1;
++         Logger.info(`[worker] DONE id=${event.id} action=${result.action} uuid=${result.uuid}`);
++       } else {
++         // For SKIP reasons: mark processed to avoid infinite retries.
++         const reason = result?.reason || 'SKIP';
++         event.result = { disposition: result?.disposition || 'SKIP', reason, detail: result?.detail || '' };
++         skipped += 1;
++         Logger.warn(`[worker] SKIP id=${event.id} reason=${reason}`);
++       }
++       errors += 1;
++       const msg = err?.message || String(err);
++       event.lastError = msg;
++       // Keep unprocessed for transient errors.
++       event.processed = false;
++       Logger.error(`[worker] ERROR id=${event.id} ${msg}`);
++   await fs.writeFile(EVENTS_FILE, JSON.stringify(events, null, 2), 'utf8');
++   // Also print positions count for visibility
++   let posCount = 0;
++     const p = JSON.parse(await fs.readFile(POSITIONS_FILE, 'utf8'));
++     posCount = Array.isArray(p.positions) ? p.positions.length : 0;
++   } catch {}
++   const durationMs = nowMs() - started;
++   Logger.info(`[worker] pending=${pendingEvents.length} processed=${processed} skipped=${skipped} errors=${errors} positions=${posCount} durationMs=${durationMs}`);
++   Logger.info(`SUMMARY worker pending=${pendingEvents.length} processed=${processed} skipped=${skipped} errors=${errors} positions=${posCount} durationMs=${durationMs}`);
++   await writeHeartbeat({ pendingEvents: pendingEvents.length, processed, skipped, errors, positions: posCount, durationMs });
++   await releaseLock(WORKER_LOCK_FILE);
++   return { pending: pendingEvents.length, processed, skipped, errors, positions: posCount, durationMs };
++   return processEventsOnce();
++   (async function loop() {
++       await processEventsOnce();
++     } catch (e) {
++       Logger.error(`[workerLoop] fatal: ${e.message || e}`);
++       process.exitCode = 1;
++     setTimeout(loop, cfg.execution.eventPollIntervalMs || 5000);
++   })();
++   Logger.info('⚙️ Event Worker Started');
++   workerLoop();

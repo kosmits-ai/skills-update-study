@@ -1,0 +1,1703 @@
+ceciliaz030/aomi-transact  0.5.0 -> 0.10.0
+change_type: instructions+docs+code   changelog: **Major update: Strongly expanded documentation, enhanced references, new permissions and safety controls, and multi-app support.**  - Added extensive internal documentation: new reference files for commands, workflows, apps, examples, account abstraction, troubleshooting, session handling, and security. - Updated and condensed skill overview to clarify usage for building crypto/Web3 agents, DeFi bots, and on-chain assistants across major EVM chains and 40+ protocols. - Permissions manifest intr
+
+### SECURITY.md  [docs]
++ # aomi-transact Security Posture
++ This document maps the `aomi-transact` skill against [OWASP Agentic Skills Top 10 (v1.0, March 2026)](https://owasp.org/www-project-agentic-skills-top-10/) and records the controls in place for each risk. Reviewers can audit the per-control claims against the live SKILL.md frontmatter, the references, and the captured scanner reports under [`.scanner-reports/`](../.scanner-reports/).
++ **Last reviewed:** 2026-05-06 against SKILL.md @ commit `HEAD`.
++ ## Threat model
++ `aomi-transact` is a procedure for an AI agent to drive the [`@aomi-labs/client`](https://www.npmjs.com/package/@aomi-labs/client) CLI — composing natural-language intents into queued wallet requests, simulating them on a forked chain, and signing them via account-abstraction-first execution. The skill itself does not custody funds, sign without explicit user request, or write outside `~/.aomi/`. The CLI it drives, however, **does** execute on-chain transactions, so the skill is correctly classified as **risk_tier: L2** (elevated) under the OWASP universal manifest schema.
++ ## Controls by AST risk
++ ### AST01 — Malicious Skills
++ **Risk**: A skill is published that hides an exfiltration / drain payload behind benign-looking documentation.
++ **Controls in place:**
++ **Controls in place:**
++ **Controls in place:**
++ **Controls in place:**
++ **Controls in place:**
++ **Controls in place:**
++ **Controls in place:**
++ **Controls in place:**
++ **Controls in place:**
++ **Controls in place:**
++ - The skill is published from [`aomi-labs/skills`](https://github.com/aomi-labs/skills) under MIT license; provenance is verifiable via `git log` and the GitHub repo signing keys.
++ - The skill body (`SKILL.md` plus `references/`, `templates/`, `agents/`) contains no executable code beyond the `templates/aomi-workflow.sh` shell wrapper and shell snippets in documentation. The wrapper is human-auditable (~263 lines, no minification, no eval/exec, no curl-pipe-bash).
++ - All shell snippets in `references/*.md` are documentation, not executed by the skill itself. The skill's actual operational scope is constrained to `aomi <subcommand>` and `npx @aomi-labs/client@0.1.30 <subcommand>` per the `permissions.shell` declaration.
++ - No network calls outside the declared `permissions.network.allow` list.
++ - **Open**: signed releases (sigstore / `gh attestation`) are not yet wired up. Tracked separately.
++ ### AST02 — Skill Injection / Tampering
++ **Risk**: A modified skill is loaded from an untrusted source; tampering goes undetected.
++ - Canonical source is the `aomi-labs/skills` GitHub repo. Tags are not yet signed; users who care about integrity should pin to a commit SHA and verify against the upstream repo.
++ - The `permissions.files.deny_write` list (`SOUL.md`, `MEMORY.md`, `AGENTS.md`) blocks the skill from rewriting agent identity files, which is the canonical injection target.
++ - **Open**: `gh skill` repo / ref / tree-SHA frontmatter pre-population is on the release checklist (see `docs/todo` item #8) but not yet landed.
++ ### AST03 — Over-Privileged Skills
++ **Risk**: A skill declares broad permissions (`shell: true`, `network: true`) it doesn't actually need; an injection prompt later abuses the privilege.
++ - A complete OWASP-format `permissions:` manifest is declared in `SKILL.md` frontmatter:
++   - `files.read`: `~/.aomi/` only.
++   - `files.write`: `~/.aomi/` only. The skill never writes files directly; the underlying CLI manages its own state dir.
++   - `files.deny_write`: identity files (`SOUL.md`, `MEMORY.md`, `AGENTS.md`).
++   - `network.allow`: `api.aomi.dev` only. `network.deny: "*"`.
++   - `shell`: array form, two argv prefixes (`aomi`, `npx @aomi-labs/client@0.1.30`). Spec example uses boolean; the array form is a least-privilege extension consistent with AST03 intent.
++   - `tools: []` — no MCP / external tool surface.
++ - Claude Code's `allowed-tools` field is set to `Bash, Grep` (broad) so the skill can render diagnostic snippets in documentation; the OWASP manifest provides the actual operational lockdown as defense-in-depth.
++ **Verification**:
++ - [`Cisco AI Defense skill-scanner`](https://github.com/cisco-ai-defense/skill-scanner) v0.x — **0 findings**, `Status: SAFE`. Report: `.scanner-reports/cisco-ai-defense.md`.
++ ### AST04 — Skill Confused Deputy
++ **Risk**: A skill's identity is reused for a privileged action the user didn't authorize.
++ - The skill is **read-only by default**. Chat, simulation, session inspection, and app/model/chain introspection do not move funds. Signing is a separate, explicit step the user must request (see the "Hard Rules" section in `SKILL.md`).
++ - `aomi tx sign` is only invoked after `aomi tx list` shows a pending `tx-N` the user asked for.
++ - Drain-vector annotations on simulation (recipient ≠ msg.sender, etc.) cannot be bypassed by reformulating the prompt — the skill explicitly forbids this in the security section. See [`references/drain-vectors.md`](references/drain-vectors.md) for the full table.
++ ### AST05 — Skill Side-Effects / Hidden Actions
++ **Risk**: A skill performs persistent state changes that survive the session without the user's knowledge.
++ - Side-effect-producing commands (`aomi wallet set <key>`, `aomi secret add NAME=value`, `aomi config set-backend`) are **only** run when the user explicitly asks for that specific setup in the current turn and supplies the value themselves. The skill never runs them on its own initiative.
++ - Before running a credential-setup command the user asked for, the skill confirms what will be persisted and where (local CLI state vs. the aomi backend) so the user can abort.
++ - Read-side variants (`aomi wallet current`, `aomi config current`, `aomi secret list`) are skill-driven and safe — they expose handle names only, never raw values.
++ ### AST06 — Insecure Skill Communication
++ **Risk**: A skill exfiltrates data through a side channel (logging, telemetry, off-domain HTTP).
++ - The skill makes no direct network calls. The CLI it drives talks to `api.aomi.dev` (the declared backend) and to user-supplied RPC endpoints passed through `--rpc-url` at sign time.
++ - The skill **never echoes a credential value back to the user** after a setup command completes. Confirmation is by handle name or derived address only (see "Hard Rules" #2 in `SKILL.md`).
++ - `aomi secret add` transmits the credential value to the aomi backend; the skill surfaces this trust-boundary explicitly to the user before running the command (see `references/session.md` and the SKILL.md "Secret Ingestion" subsection).
++ ### AST07 — Inadequate Logging / Auditability
++ **Risk**: A skill takes actions that cannot be reconstructed after the fact.
++ - The CLI maintains a session log per session (`aomi session log`, `aomi session events`) that replays the full conversation, all tool calls, and all system events from the backend.
++ - Local session JSON files (`~/.aomi/sessions/session-N.json`) mirror pending and signed transaction state with full calldata, gas estimates, and hashes — inspectable via `cat` + `jq` without a network round-trip.
++ - The skill's own actions are limited to invoking `aomi <subcommand>`; every invocation is observable in the user's shell history.
++ ### AST08 — Skill Supply-Chain Attacks
++ **Risk**: A dependency the skill relies on is compromised; the skill picks up the compromise transitively.
++ - The skill itself has **no runtime dependencies** beyond the `aomi` / `npx` binaries and an outbound HTTP path to `api.aomi.dev`.
++ - The CLI (`@aomi-labs/client`) is published to npm by `aomi-labs`. Users pin to v0.1.30 or newer; the skill warns at runtime if an older version is detected.
++ - The companion `templates/aomi-workflow.sh` shell wrapper depends only on POSIX shell + `jq`, both checked at startup.
++ - **Open**: npm package signing / sigstore attestation is not yet wired up.
++ ### AST09 — Insufficient User Consent
++ **Risk**: A skill performs actions the user has not explicitly authorized.
++ - Every state-changing CLI invocation requires explicit user consent in the same turn:
++   - `aomi tx sign` — only after `aomi tx list` shows a pending `tx-N` the user requested.
++   - `aomi wallet set` / `aomi secret add` / `aomi config set-backend` — only when the user has explicitly asked for that setup and supplied the value.
++   - Multi-step batches (`approve` + `swap`) are reviewed by the user via `aomi tx simulate` before signing.
++ - Drain-vector annotations cannot be bypassed; the skill surfaces blocks rather than reformulating prompts.
++ ### AST10 — Cross-Platform Reuse
++ **Risk**: A skill that's safe on one host (e.g. Claude Code) becomes unsafe when loaded on a different host (Codex, Cursor, OpenClaw) due to differing tool-permission semantics.
++ - The OWASP `permissions:` manifest is declarative metadata that all OWASP-aware scanners and registries can read regardless of host. The Claude Code-specific `allowed-tools` field coexists as a sibling.
++ - An `agents/openai.yaml` is provided for Codex/OpenAI-host metadata (display name, default prompt, invocation policy).
++ - **Open**: end-to-end install verification across Claude Code + Codex + at least one community installer is on the release checklist (#9, #20). The skill is shaped for cross-platform reuse but has not yet been load-tested on every host.
++ ## Captured scanner reports
++ All reports under [`.scanner-reports/`](../.scanner-reports/). Re-run any scanner with the local commands documented in [`docs/todo`](../docs/todo).
++ | Scanner | Status | Findings | Report |
++ |---------|--------|----------|--------|
++ | Cisco AI Defense skill-scanner | **PASS** | 0 critical / 0 high / 0 medium / 0 low | [`cisco-ai-defense.md`](../.scanner-reports/cisco-ai-defense.md) |
++ | pors/skill-audit | **PASS** | 0 errors / 4 warns (documentation regex matches) | [`pors-skill-audit.txt`](../.scanner-reports/pors-skill-audit.txt) |
++ | NMitchem/SkillScan | **PASS** | Risk 2.0/10 (threshold 6.0), 1 HIGH = upstream regex bug | [`skillscan.txt`](../.scanner-reports/skillscan.txt) |
++ | Snyk agent-scan | **PASS (advisory)** | 4 HIGH characterizations of risk class — see analysis below | [`snyk-agent-scan.txt`](../.scanner-reports/snyk-agent-scan.txt), [`snyk-agent-scan.json`](../.scanner-reports/snyk-agent-scan.json) |
++ **Notes on findings**:
++ - The 4 pors WARN findings match documentation patterns (`access sensitive data`, `delete...` operations) that appear in `references/session.md` because the docs explain those CLI commands. They are documentation regex matches, not actual destructive code paths.
++ - The SkillScan HIGH finding (`MCP_001: MCP server launched via npx without version pinning`) is a false positive caused by a buggy upstream regex. The rule's pattern `\bnpx\s+@[\w.-]+/[\w.-]+(?!@\d)` backtracks within the package name (matches `clien` not `client`), so the lookahead `(?!@\d)` always succeeds regardless of how the version is pinned. All `npx @aomi-labs/client@0.1.30` invocations in this skill are explicitly version-pinned to the minimum supported CLI version; the overall scan still passes because the risk score (2.0) is below the pass threshold (6.0). Worth filing upstream at [NMitchem/SkillScan](https://github.com/NMitchem/SkillScan/issues).
++ - The 4 Snyk HIGH findings (W007, W009, W011, W012) are taxonomic characterizations of the skill's intentional risk surface, not bugs. Each is acknowledged below with the in-place mitigation. Snyk's own exit code is 0 (advisory output), and the skill's `risk_tier: L2` declaration in the OWASP manifest already states this risk class up front.
++ ### Snyk Agent Scan (W-codes) — finding-by-finding analysis
++ The Snyk Agent Scan rule pack characterizes a skill's risk surface, not just bugs. For a transaction-signing AI skill that uses third-party data sources to compose calldata, the following findings are **structural** — they describe what the skill does on purpose, with mitigations in place. Reviewers should evaluate them against the OWASP AST controls in this document.
++ | Code | Title | Status | Mitigation in place |
++ |------|-------|--------|---------------------|
++ | **W007** | Insecure credential handling | Acknowledged — by design | Skill frontmatter description explicitly forbids the LLM from fabricating, guessing, echoing, or logging credential values. `aomi secret add NAME=<value>` and `aomi wallet set <signing-key>` use placeholder syntax in all docs; the user supplies the real value. The "Hard Rules" and "Security Model" sections of SKILL.md, plus AST05 (Side-Effects) and AST06 (Insecure Communication) above, codify the no-unsolicited-setup posture. |
++ | **W009** | Direct money access | Acknowledged — by design | The skill is explicitly classified `risk_tier: L2` in the OWASP manifest because it signs and broadcasts on-chain transactions. AST04 (Confused Deputy) and AST09 (Insufficient User Consent) above codify the "read-only by default, signing requires explicit user request" posture. `aomi tx sign` is only invoked after `aomi tx list` shows a pending `tx-N` the user asked for, and multi-step batches go through `aomi tx simulate` on a forked chain first. |
++ | **W011** | Third-party content exposure | Acknowledged — by design | The agent uses 25+ apps (DefiLlama, 1inch, Khalani, Brave Search, X, Neynar, etc.) to fetch quotes, routes, and read-only data — that is the skill's purpose. Fund-moving calldata that the third-party content influences is gated by `aomi tx simulate` (drain-vector annotations block `recipient != msg.sender`) and an explicit user `aomi tx sign` step. AST04 above and [`references/drain-vectors.md`](references/drain-vectors.md) document the per-protocol guard rules. |
++ | **W012** | Potentially malicious external URL (npx) | Acknowledged — pinned + documented | Every `npx` invocation is version-pinned to `@0.1.30` (minimum supported CLI). Users are explicitly directed to install globally with `npm install -g @aomi-labs/client` for repeated use; npx is the on-demand fallback. The OWASP `permissions.shell` array constrains the skill's actual operational scope to `aomi` and `npx @aomi-labs/client@0.1.30` only. AST08 (Supply-Chain Attacks) above acknowledges that npm package signing / sigstore attestation is open. |
++ These four findings are inherent to **any** AI agent skill that signs on-chain transactions and reads third-party data. They cannot be eliminated without removing the skill's core capability. The combined posture — explicit risk_tier, OWASP permission manifest, drain-vector guards, simulate-before-sign, no-unsolicited-credential-setup — is what makes the skill safe to use despite these characterizations.
++ ## Reporting issues
++ Security issues should be reported privately. See the top-level [`SECURITY.md`](../SECURITY.md) in `aomi-labs/skills` for the disclosure process, or open a private security advisory on the GitHub repo.
+
+### SKILL.md  [instructions]
+-   Use when the user wants to interact with the Aomi CLI to inspect sessions,
+-   check balances or prices, build wallet requests, confirm quotes or routes,
+-   sign transactions or EIP-712 payloads, switch apps or chains, or execute
+-   swaps, transfers, and DeFi actions on-chain. Covers Aomi chat, transaction
+-   review, AA-first signing with mode fallback, session controls, and
+-   per-session secret ingestion.
+- compatibility: "Requires @aomi-labs/client (`npm install -g @aomi-labs/client`). CLI executable is `aomi`. Requires viem for signing (`npm install viem`). Use AOMI_APP / --app, AOMI_MODEL / --model, AOMI_CHAIN_ID / --chain, CHAIN_RPC_URL / --rpc-url, `aomi secret add` for session secret ingestion, and AOMI_STATE_DIR for local session storage."
+- allowed-tools: Bash
+-   version: "0.6"
+- Use the CLI as an agent operating procedure, not as a long-running shell.
+- Each `aomi` command starts, runs, and exits. Conversation history lives on the
+- backend. Local session data lives under `AOMI_STATE_DIR` or `~/.aomi`.
+- ## Use This Skill When
+- - The user wants to simulate a batch of pending transactions before signing.
+- - The user wants to inject API keys or other backend secrets for the current session.
+- - The user wants to configure or inspect Account Abstraction settings.
+- ## Hard Rules
+- - Never print secrets verbatim in normal status, preflight, or confirmation output.
+- - Treat `PRIVATE_KEY`, `AOMI_API_KEY`, `ALCHEMY_API_KEY`, `PIMLICO_API_KEY`, and private RPC URLs as secrets.
+- - If the user provides a private key or API key, do not repeat it back unless they explicitly ask for that exact value to be reformatted.
+- - Prefer `aomi secret add NAME=value` over stuffing provider API keys into normal chat text.
+- - Do not sign anything unless the CLI has actually queued a wallet request and you can identify its `tx-N` ID.
+- - When starting work from a new Codex or assistant chat thread, default the first Aomi command to `--new-session` unless the user explicitly wants to continue an existing session.
+- - If `PRIVATE_KEY` is set in the environment, do not also pass `--private-key` unless you intentionally want to override the environment value.
+- - `--public-key` must match the address derived from the signing key. If they differ, `aomi tx sign` will update the session to the signer address.
+- - Private keys must start with `0x`. Add the prefix if missing.
+- - `CHAIN_RPC_URL` is only one default RPC URL. When switching chains, prefer passing `--rpc-url` on `aomi tx sign`.
+- - Switching the chat/session chain with `--chain` does not switch `CHAIN_RPC_URL`. The RPC used for `aomi tx sign` must match the pending transaction's chain.
+- - `--aa-provider` and `--aa-mode` are AA-only controls and cannot be used with `--eoa`.
+- ## Command Structure
+- All commands follow a **noun-verb** pattern: `aomi <resource> <action>`.
+- There are no top-level aliases — use the full noun-verb form.
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- aomi tx list                        List pending/signed transactions
+- aomi tx simulate <id>...            Simulate a batch
+- aomi tx sign <id>...                Sign and submit
+- aomi model list|set|current
+- aomi chain list
+- aomi chain list
+- aomi chain list
+- ## Quick Start
+- Run this once at the start of the session:
+- ```bash
+- ```bash
+- ```bash
+- ```bash
+- ```bash
+- ```bash
+- ```bash
+- ```bash
+- ```bash
+- ```bash
+- ```bash
+- ```bash
+- ```bash
+- ```bash
+- ```bash
+- ```bash
+- ```bash
+- ```bash
+- ```bash
+- ```bash
+- ```bash
+- ```bash
+- ```bash
+- ```bash
+- ```bash
+- ```bash
+- ```bash
+- ```bash
+- aomi --version
+- aomi --version
+- aomi session status 2>/dev/null || echo "no session"
+- If the user is asking for a read-only result, that may be enough. If they want
+- to build or sign a transaction, continue with the workflow below.
+- ## Default Workflow
+- 1. Chat with the agent.
+- 2. If the agent asks whether to proceed, send a short confirmation in the same session.
+- 3. Review pending requests with `aomi tx list`.
+- 4. Sign the queued request with `aomi tx sign <id>`.
+- 5. Verify with `aomi tx list`, `aomi session log`, or `aomi session status`.
+- The CLI output is the source of truth. If you do not see `Wallet request queued:
+- tx-N`, there is nothing to sign yet.
+- ## Workflow Details
+- ### Read-Only Requests
+- Use these when the user does not need signing:
+- aomi chat "<message>" --new-session
+- aomi chat "<message>" --new-session
+- aomi chat "<message>" --verbose
+- aomi chat "<message>" --verbose
+- aomi tx list
+- aomi tx list
+- aomi tx list
+- aomi tx list
+- aomi tx list
+- aomi tx list
+- aomi tx list
+- aomi tx list
+- aomi tx list
+- aomi tx list
+- aomi tx list
+- aomi session log
+- aomi session log
+- aomi session log
+- aomi session log
+- aomi session status
+- aomi session status
+- aomi session status
+- aomi session events
+- aomi session events
+- aomi app list
+- aomi app list
+- aomi app current
+- aomi app current
+- aomi model list
+- aomi model list
+- aomi model current
+- aomi model current
+- aomi session list
+- aomi session list
+- aomi session list
+- aomi session list
+- aomi session resume <id>
+- aomi session resume <id>
+- aomi session resume <id>
+- Notes:
+- - Quote the chat message.
+- - On the first command in a new Codex or assistant thread, prefer `--new-session` so old local/backend state does not bleed into the new task.
+- - Use `--verbose` when debugging tool calls or streaming behavior.
+- - Pass `--public-key` on the first wallet-aware chat if the backend needs the user's address.
+- - For chain-specific requests, prefer `--chain <id>` on the command itself. Use `AOMI_CHAIN_ID=<id>` only when multiple consecutive commands should stay on the same chain.
+- - Use `aomi secret list` to inspect configured secret handles for the active session.
+- - `aomi session close` wipes the active local session pointer and starts a fresh thread next time.
+- ### Secret Ingestion
+- Use this when the backend or selected app needs API keys, provider tokens, or
+- other named secrets for the current session:
+- aomi secret add ALCHEMY_API_KEY=sk_live_123 --new-session
+- aomi chat "simulate a swap on Base" --new-session
+- aomi secret list
+- aomi secret list
+- aomi secret clear
+- aomi secret clear
+- aomi secret add NAME=value [NAME=value ...]
+- aomi secret add NAME=value [NAME=value ...]
+- Important behavior:
+- Important behavior:
+- - `aomi secret add NAME=value [NAME=value ...]` ingests one or more secrets into the active session.
+- - `aomi secret list` prints secret handle names, not raw values.
+- - `aomi secret clear` removes all secrets for the active session.
+- ### Building Wallet Requests
+- Use the first chat turn to give the agent the task and, if relevant, the wallet
+- address and chain:
+- If the user wants a different backend app or chain, pass them explicitly on the
+- next command:
+- aomi chat "show my balances" --app khalani
+- aomi chat "show my balances" --app khalani
+- aomi chat "swap 1 POL for USDC on Polygon" --chain 137
+- aomi chat "swap 1 POL for USDC on Polygon" --app khalani --chain 137
+- aomi chat "swap 1 POL for USDC on Polygon" --app khalani --chain 137
+- - A chat response does not always queue a transaction immediately.
+- - The agent may return a quote, route, timing estimate, or deposit method and ask whether to proceed.
+- - When that happens, keep the same session and reply with a short confirmation message.
+- - Only move to `aomi tx sign` after a wallet request is queued.
+- - For Khalani, prefer a `TRANSFER` deposit method when available. The intended flow is quote -> sign transfer -> submit/continue after the transfer settles.
+- - Avoid Khalani `CONTRACT_CALL` routes that require ERC-20 approval unless the user explicitly wants that path or no transfer route is available.
+- Queued request example:
+- ⚡ Wallet request queued: tx-1
+-    to:    0x3fC91A3afd70395Cd496C647d5a6CC9D4B2b7FAD
+-    value: 1000000000000000000
+-    chain: 1
+- Run `aomi tx list` to see pending transactions, `aomi tx sign <id>` to sign.
+- ### Signing Policy
+- Use these rules exactly:
+- - Default command: `aomi tx sign <tx-id> [<tx-id> ...]`
+- - Default behavior (**auto-detect**): if an AA provider is configured (env vars or flags), use AA automatically. If no AA provider is configured, use EOA. There is no silent fallback — AA either works or fails.
+- - **Mode fallback**: when AA is used, the CLI tries the preferred mode (default 7702). If it fails, it tries the alternative mode (4337). If both fail, it returns an error suggesting `--eoa`.
+- - `--eoa`: force direct EOA execution, skip AA entirely.
+- - `--aa-provider` or `--aa-mode`: AA-specific controls that also force AA mode. Cannot be used with `--eoa`.
+- Examples:
+- # Default: auto-detect. AA if configured, EOA if not.
+- aomi tx sign tx-1 --private-key 0xYourPrivateKey --rpc-url https://eth.llamarpc.com
+- aomi tx sign tx-1 --private-key 0xYourPrivateKey --rpc-url https://eth.llamarpc.com
+- # Force EOA only
+- aomi tx sign tx-1 --eoa --private-key 0xYourPrivateKey --rpc-url https://eth.llamarpc.com
+- # Explicit AA provider and mode
+- aomi tx sign tx-1 --aa-provider pimlico --aa-mode 4337 --private-key 0xYourPrivateKey
+- ### Batch Simulation
+- ### Batch Simulation
+- Use `aomi tx simulate` to dry-run pending transactions before signing. Simulation
+- runs each tx sequentially on a forked chain so state-dependent flows (approve →
+- swap) are validated as a batch — the swap sees the approve's state changes.
+- # Simulate a single pending tx
+- aomi tx simulate tx-1
+- # Simulate a multi-step batch in order (approve then swap)
+- aomi tx simulate tx-1 tx-2
+- aomi tx simulate tx-1 tx-2
+- aomi tx simulate tx-1 tx-2
+- The response includes per-step success/failure, revert reasons, and gas usage:
+- Simulation result:
+-   Batch success: true
+-   Stateful: true
+-   Total gas: 147821
+-   Step 1 — approve USDC
+-     success: true
+-     success: true
+-     gas_used: 46000
+-   Step 2 — swap on Uniswap
+-     gas_used: 101821
+- When to simulate:
+- - **Always simulate multi-step flows** (approve → swap, approve → deposit, etc.) before signing. These are state-dependent — the second tx will revert if submitted independently.
+- - **Optional for single independent txs** like a simple ETH transfer or a standalone swap with no prior approval needed.
+- - If simulation fails at step N, read the revert reason before retrying. Common causes: insufficient balance, expired quote/timestamp, wrong calldata. Do not blindly re-sign after a simulation failure.
+- When not to simulate:
+- - Read-only operations (balances, prices, quotes).
+- - If there are no pending transactions (`aomi tx list` shows nothing).
+- Simulation and signing workflow:
+- # 1. Build the request
+- aomi chat "approve and swap 100 USDC for ETH on Uniswap" \
+-   --public-key 0xYourAddress --chain 1
+-   --public-key 0xYourAddress --chain 1
+- # 2. Check what got queued
+- # 3. Simulate the batch
+- # 4. If simulation succeeds, sign
+- aomi tx sign tx-1 tx-2 --private-key 0xYourPrivateKey --rpc-url https://eth.llamarpc.com
+- # 5. Verify
+- # 5. Verify
+- # 5. Verify
+- ### Account Abstraction
+- AA is the preferred signing path when the user wants smart-account behavior,
+- gas sponsorship, or the CLI's automated fallback handling.
+- Use AA when:
+- - The user wants the most hands-off signing flow and is fine with the CLI trying AA before EOA.
+- - The user wants sponsored or user-funded smart-account execution through Alchemy or Pimlico.
+- - The user explicitly asks for `4337` or `7702` account-abstraction mode.
+- How to choose:
+- - `aomi tx sign` with no AA flags: try AA first, then fall back to EOA automatically if AA is unavailable.
+- - `aomi tx sign --aa`: require AA only. Use this when the user does not want an EOA fallback.
+- - `aomi tx sign --eoa`: bypass AA entirely and sign directly with the wallet key.
+- - `aomi tx sign --aa-provider alchemy|pimlico`: force a specific AA provider.
+- - `aomi tx sign --aa-mode 4337|7702`: force the execution mode when the user wants a specific AA path.
+- More signing notes:
+- - `aomi tx sign` handles both transaction requests and EIP-712 typed data signatures.
+- - Batch signing is supported for transaction requests only, not EIP-712 requests.
+- - A single `--rpc-url` override cannot be used for a mixed-chain multi-sign request.
+- - If the signer address differs from the stored session public key, the CLI updates the session to the signer address.
+- - The pending transaction already contains its target chain. Use a signing RPC for that same chain.
+- - If `CHAIN_RPC_URL` points to Ethereum but the pending transaction is on Polygon, Arbitrum, Base, Optimism, or Sepolia, override it with a matching `--rpc-url`.
+- - Prefer a reliable chain-specific RPC over generic public RPCs, which may return `401`, `429`, or generic parameter errors.
+- - If `ALCHEMY_API_KEY` is available, prefer constructing the matching chain-specific Alchemy RPC before trying generic public RPCs.
+- - If the available RPC looks unreliable, try at most one or two reasonable chain-specific public RPCs, then ask the user for a proper provider-backed RPC URL for that chain instead of continuing to guess.
+- ### Session And Storage Notes
+- - Active session, app, model, chain, pending txs, and signed txs are stored locally under `AOMI_STATE_DIR` or `~/.aomi`.
+- - Session files live under `~/.aomi/sessions/` by default and get local IDs like `session-1`.
+- - Useful commands:
+- aomi session delete <id>
+- aomi session delete <id>
+- aomi session close
+- aomi session close
+- aomi session close
+- ## Reference: Commands
+- ### Chat
+- aomi chat "<message>" --model <rig>
+- aomi chat "<message>" --public-key 0xYourAddress --chain 1
+- aomi chat "<message>" --app khalani --chain 137
+- - Quote the message.
+- - On the first command in a new Codex or assistant thread, prefer `--new-session`.
+- - Use `--verbose` to stream tool calls and agent output.
+- - Use `--public-key` on the first wallet-aware message.
+- - Use `--app`, `--model`, and `--chain` to change the active context for the next request.
++   Build natural-language crypto agents, web3 assistants, trading bots, blockchain MCPs,
++   or Claude Code / Cursor / Codex / Gemini plugins that read and write EVM chain state.
++   Aomi turns prompts ("swap 1 ETH for USDC", "open a 3x GMX long", "bet $100 on
++   Polymarket") into wallet-signed transactions on Ethereum, Base, Arbitrum, Optimism,
++   Polygon, Linea — non-custodial, fork-simulated. Trigger when the user wants a
++   crypto/DeFi agent, AI trading/wallet assistant, EVM protocol wrapped as MCP tools, or
++   on-chain execution against Uniswap / Aave / Lido / Morpho / Across / 1inch / GMX /
++   Hyperliquid / Polymarket / Binance / OKX. Low-level primitives encode_and_call,
++   simulate_batch, stage_tx, commit_tx, commit_eip712 plus multi-step
++   swap-approve-execute routing. 40+ tuned protocol apps. MUST NOT fabricate or echo
++   credentials; values reach the CLI only when the user explicitly supplied them.
++ compatibility: "Requires @aomi-labs/client v0.1.30 or newer. Install globally (`npm install -g @aomi-labs/client`) or run on demand (`npx @aomi-labs/client@0.1.30 <cmd>`)."
++ version: "0.10"
++ author: aomi-labs
++ compatible-with: claude-code
++ tags: [crypto, defi, web3, evm, ethereum, wallet, account-abstraction, trading, mcp, agent]
++ allowed-tools: Bash, Grep
++   version: "0.10"
++   repository: aomi-labs/skills
++   homepage: https://github.com/aomi-labs/skills/tree/main/aomi-transact
++ permissions:
++   files:
++     read: [~/.aomi/]
++     write: [~/.aomi/]
++     deny_write: [SOUL.md, MEMORY.md, AGENTS.md]
++   network:
++     allow: [api.aomi.dev]
++     deny: "*"
++   shell:
++     - aomi
++     - npx @aomi-labs/client@0.1.30
++   tools: []
++ risk_tier: L2
++ requires:
++   binaries: [aomi, npx]
++ ## Overview
++ Aomi Transact drives the `aomi` CLI to build natural-language crypto agents and web3 assistants on EVM blockchains. It composes calldata, fork-simulates transactions as a batch, and stages wallet requests for explicit user signing — non-custodial throughout. Supported networks: Ethereum, Base, Arbitrum, Optimism, Polygon, Linea. 40+ integrated protocol apps (Uniswap, Aave, Lido, GMX, Polymarket, and more). For deep references, see [commands.md](references/commands.md), [workflows.md](references/workflows.md), [gotchas.md](references/gotchas.md), [account-abstraction.md](references/account-abstraction.md), [apps.md](references/apps.md), [examples.md](references/examples.md), [session.md](references/session.md), [drain-vectors.md](references/drain-vectors.md), [troubleshooting.md](references/troubleshooting.md).
++ ## Prerequisites
++ - Node.js 18+ with npm or npx
++ - `@aomi-labs/client` v0.1.30 or newer: `npm install -g @aomi-labs/client`
++ - An EVM-compatible wallet with a signing key (EOA or AA-capable)
++ - Optional: Alchemy or Pimlico API key for account-abstraction gas sponsorship
++ ## Instructions
++ 1. Detect or install the CLI: `aomi --version 2>/dev/null || npx @aomi-labs/client@0.1.30 --version`
++ 2. Start a new session: `aomi --prompt "<task>" --new-session`
++ 3. Inspect queue: `aomi tx list`
++ 4. For multi-step flows, simulate first: `aomi tx simulate tx-1 tx-2`
++ 5. Sign: `aomi tx sign tx-1`
++ 6. Verify: `aomi session status`
++ For the full procedure (read-only requests, building wallet requests, signing policy, batch simulation, secret ingestion), see [workflows.md](references/workflows.md).
++ ## Examples
++ aomi --prompt "what is the price of ETH?" --new-session
++ aomi tx list && aomi tx simulate tx-1 tx-2 && aomi tx sign tx-1 tx-2
++ aomi chat "stake 0.5 ETH on Lido" --app lido --chain 1 --new-session
++ Four end-to-end walkthroughs (approve+swap, lending, bridging, staking) in [examples.md](references/examples.md). Per-app first-turn examples (Khalani, 0x, Polymarket, Binance, Neynar) in [apps.md](references/apps.md#usage-examples).
++ ## Output
++ - `aomi chat`: agent response or `⚡ Wallet request queued: tx-N`
++ - `aomi tx list`: table of pending/signed tx ids with `batch_status`
++ - `aomi tx simulate`: per-step success/failure, revert reason, gas usage
++ - `aomi tx sign`: transaction hash and on-chain confirmation
++ ## Error Handling
++ | Error | Cause | Solution |
++ |-------|-------|----------|
++ | `insufficient funds for transfer` | EOA has no native gas | Fund EOA or configure AA sponsorship |
++ | `AA provider not configured` | No Alchemy/Pimlico key | Use `--eoa` or `aomi secret add ALCHEMY_KEY=<value>` |
++ | `stateful: false` in simulation | Wrong batch order | Reorder tx ids to match execution dependency |
++ | `RPC 401`/`429` | Rate-limited or missing key | Set `--rpc-url` to authenticated endpoint |
++ | No tx queued after chat | Agent returned quote first | Run `aomi tx list`; send a confirmation reply |
++ | Orphaned `tx-N` in list | Previous simulation failed | Only sign txs with `batch_status: passed` |
++ Full troubleshooting in [troubleshooting.md](references/troubleshooting.md).
++ ## Safety Justification
++ This skill is `risk_tier: L2` because it can sign and broadcast on-chain transactions. The permissions manifest enforces least privilege:
++ - **Shell allowlist** scopes execution to `aomi` and `npx @aomi-labs/client@0.1.30` only — no arbitrary subprocesses.
++ - **Network allowlist** restricts outbound traffic to `api.aomi.dev`. User-supplied `--rpc-url` endpoints are resolved by the CLI itself; operators must review them before allowing signing.
++ - **File scope** is read+write to `~/.aomi/` only; identity files (`SOUL.md`, `MEMORY.md`, `AGENTS.md`) are deny-listed against writes per OWASP AST03 mitigation #3.
++ - **No blind signing.** Multi-step flows go through `aomi tx simulate` on a forked chain before `aomi tx sign`. Drain-vector calldata fields (`recipient`, `onBehalfOf`, `mintRecipient`, `_to`) are blocked at simulation time when they do not equal `msg.sender` — see [drain-vectors.md](references/drain-vectors.md).
++ - **Opaque credentials.** The skill never fabricates, derives, or echoes credential values; setup commands run only when the user explicitly asks and supplies the value in this turn. Full rules in [gotchas.md → Hard Rules](references/gotchas.md#hard-rules).
++ ## When to Use
++ - The user wants to inspect or change Account Abstraction settings.
++ - The user wants to build a new app from an API spec or SDK — use the companion skill **aomi-build**.
++ ## Command Surface
++ aomi --prompt "<message>"          Send one prompt and exit
++ aomi tx list|simulate|sign
++ aomi model list|current|set
++ aomi chain list|current|set
++ aomi wallet current|set
++ aomi config current|set-backend
++ Full command reference, flags, and env vars in [commands.md](references/commands.md).
+
+### agents/openai.yaml  [code]
++ interface:
++   display_name: "Aomi Transact"
++   short_description: "Chat, simulate, and sign on-chain transactions via the Aomi CLI"
++   default_prompt: "Use $aomi-transact to chat with the Aomi agent, build and review pending wallet requests, and sign transactions with AA-first execution. Always inspect `aomi tx list` before signing and simulate multi-step batches first."
+
+### references/account-abstraction.md  [docs]
++ # Account Abstraction Reference
++ Read this when:
++ - The user asks about AA modes, sponsorship, or chain defaults.
++ - `aomi tx sign` returns an AA error and you need to pick a flag.
++ - The user explicitly requests `4337` or `7702`.
++ ## Execution Model
++ The CLI uses **auto-detect** by default and always signs via AA unless `--eoa` is passed:
++ | User-side provider configured? | Flag | Result |
++ |---|---|---|
++ | Pimlico configured | `--aa-provider pimlico` | Pimlico BYOK (user-side credential) |
++ | Alchemy configured | (none) | Alchemy BYOK (user-side credential) |
++ | Nothing configured | (none) | **Alchemy proxy via the aomi backend — zero-config AA** |
++ | Any | `--aa-provider`/`--aa-mode` | AA with explicit settings |
++ | Any | `--eoa` | Direct EOA, skip AA |
++ There is **no silent EOA fallback**. If AA is selected and both AA modes fail, the CLI returns a hard error suggesting `--eoa`. The zero-config proxy path means the user does not need any provider credential of their own for AA to work.
++ ## Mode Fallback
++ When using AA, the CLI tries modes in order:
++ 1. Try preferred mode (default: 7702 for Ethereum, 4337 for L2s).
++ 2. If preferred mode fails, try the alternative mode (7702 ↔ 4337).
++ 3. If both modes fail, return error with suggestion: use `--eoa` to sign without AA.
++ ## AA Configuration
++ AA is configured per-invocation via flags or by credentials the user has configured on their side. There is no persistent AA config file on the skill's side.
++ Priority chain for AA resolution: **flag > user-side credential > backend zero-config default**.
++ ## AA Providers
++ | Provider | Flag                    | Notes                            |
++ | -------- | ----------------------- | -------------------------------- |
++ | Alchemy  | `--aa-provider alchemy` | 4337 (sponsored via gas policy), 7702 (EOA pays gas) |
++ | Pimlico  | `--aa-provider pimlico` | 4337 (sponsored via dashboard policy) |
++ Provider selection rules:
++ - If the user explicitly selects a provider via flag, use it.
++ - In auto-detect mode, the CLI picks whichever provider the user has configured on their side — the skill treats that choice as opaque.
++ - If no AA provider is configured, auto-detect uses the zero-config path provided by the aomi backend.
++ The skill never configures provider credentials itself. If `aomi tx sign` reports missing provider credentials, stop and ask the user to configure them before re-running.
++ ## AA Modes
++ | Mode   | Flag             | Meaning                          | Gas |
++ | ------ | ---------------- | -------------------------------- | --- |
++ | `4337` | `--aa-mode 4337` | Bundler + paymaster UserOperation via smart account. Gas sponsored by paymaster. | Paymaster pays |
++ | `7702` | `--aa-mode 7702` | Native EIP-7702 type-4 transaction with delegation. EOA signs authorization + sends tx to self. | EOA pays |
++ **7702 requires the signing EOA to have native gas tokens** (ETH, MATIC, etc.). There is no paymaster/sponsorship for 7702. Use 4337 for gasless execution.
++ ## Default Chain Modes
++ | Chain    | ID    | Default AA Mode | Supported AA Modes |
++ | -------- | ----- | --------------- | ------------------ |
++ | Ethereum | 1     | 7702            | 4337, 7702         |
++ | Polygon  | 137   | 4337            | 4337, 7702         |
++ | Arbitrum | 42161 | 4337            | 4337, 7702         |
++ | Base     | 8453  | 4337            | 4337, 7702         |
++ | Optimism | 10    | 4337            | 4337, 7702         |
++ These match the live `aomi chain list` output in CLI v0.1.30.
++ ## Sponsorship
++ Sponsorship is available for **4337 mode only**. 7702 does not support sponsorship. Sponsorship policy is configured on the provider's side — the user's provider account decides whether a given UserOperation is sponsored. Once the user has configured their provider, `aomi tx sign` (with the appropriate AA flags if the user wants an explicit provider) will pick up the active policy automatically.
++ ### Sponsorship in practice (verified against v0.1.30)
++ The "zero-config Alchemy proxy" path is not a guarantee of free gas. Empirically:
++ - **Ethereum mainnet, default 7702**: works cleanly. Gas is paid out of the EOA's small ETH stash via the 7702 delegation contract (`0x6900...E139`). Verified across approve+swap, swap-back, and approve+bridge batches.
++ - **Base, default 4337 with the zero-config proxy**: observed to **not** sponsor in CLI v0.1.30. Even with `--aa --aa-mode 4337` explicit, `aomi tx sign` returned `insufficient funds for transfer` from viem when the EOA had 0 native gas on Base. The call appeared to fall through to a direct EOA `eth_sendTransaction` rather than a sponsored UserOperation.
++ **Practical rule the skill must follow**: before signing on an L2, confirm the EOA has a small amount of native gas on the destination chain (~0.0005 ETH equivalent is enough). If the user is sending USDC-only to an L2 with no native gas, warn them that signing on that L2 will fail unless they:
++ 1. fund the EOA with a tiny amount of native gas on that chain, **or**
++ 2. configure a real BYOK AA provider on their side (Alchemy with a Gas Manager policy attached, or Pimlico with a sponsorship policy on the dashboard — the user sets the credential in their own environment) and pass `--aa-provider alchemy|pimlico --aa-mode 4337` on `aomi tx sign`. The exact credential variable names are documented by `aomi --help`; the skill does not hard-code them.
++ Do not promise the user "AA will pay for gas on L2s" without verifying the user's setup. The default proxy path may silently fall through.
++ When the CLI emits a viem `insufficient funds for transfer` error followed by `Use --eoa to sign without account abstraction`, that is the failure signature. Do not re-run with `--eoa` blindly — `--eoa` will also fail if the EOA has 0 gas. Stop and tell the user to fund the destination chain or configure a sponsoring BYOK provider.
++ ## Supported Chains
++ | Chain         | ID       | AA available? |
++ | ------------- | -------- | ------------- |
++ | Ethereum      | 1        | Yes (4337, 7702; default 7702) |
++ | Polygon       | 137      | Yes (4337, 7702; default 4337) |
++ | Arbitrum One  | 42161    | Yes (4337, 7702; default 4337) |
++ | Base          | 8453     | Yes (4337, 7702; default 4337) |
++ | Optimism      | 10       | Yes (4337, 7702; default 4337) |
++ | Sepolia       | 11155111 | No AA defaults — use `--eoa` |
++ | Anvil (local) | 31337    | No AA defaults — local fork; use `--eoa` |
++ For Sepolia and Anvil, `aomi tx sign` without `--eoa` may fail. Pass `--eoa` explicitly when signing on these chains.
++ ## RPC Guidance By Chain
++ Use an RPC that matches the pending transaction's chain:
++ - Ethereum txs → Ethereum RPC
++ - Polygon txs → Polygon RPC
++ - Arbitrum txs → Arbitrum RPC
++ - Base txs → Base RPC
++ - Optimism txs → Optimism RPC
++ - Sepolia txs → Sepolia RPC
++ Practical rule:
++ - `--chain` affects the wallet/session context for chat and request building.
++ - `--rpc-url` affects where `aomi tx sign` estimates and submits the transaction.
++ - Treat them as separate controls and keep them aligned with the transaction you are signing.
+
+### references/apps.md  [docs]
++ # Apps Reference
++ Read this when:
++ - The user asks "what apps are available?" or names a category (CEX, lending, perps, prediction, social).
++ - You need to pick `--app` for a request and want to see the catalog.
++ - You need a usage example for a specific app.
++ ## Discovering Apps
++ The set of installed apps is dynamic — the catalog below is a snapshot. Always confirm against the live CLI:
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ aomi app list       # enumerate apps exposed by the backend
++ aomi app current    # show the currently active app
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ Select an app for a chat turn with `--app <name>` or set `AOMI_APP=<name>` for a multi-command shell. When an app needs provider credentials, the aomi CLI reports at runtime what is missing. The user configures those credentials themselves; the skill does not perform that setup unless the user explicitly asks (see SKILL.md "Secret Ingestion").
++ ## App Catalog
++ All apps share a common base toolset (`send_transaction_to_wallet`, `encode_and_simulate`, `get_account_info`, `get_contract_abi`, etc.). The tools listed below are the app-specific additions. The "Credentials" column indicates whether an app needs user-configured credentials at all; the CLI reports the specific names at runtime when something is missing.
++ | App | Description | App-Specific Tools | Credentials |
++ |-----|-------------|-------------------|-------------|
++ | `default` | General-purpose on-chain agent with web search | `brave_search` | None |
++ | `binance` | Binance CEX — prices, order book, klines | `binance_get_price`, `binance_get_depth`, `binance_get_klines` | Exchange credentials |
++ | `bybit` | Bybit CEX — orders, positions, leverage | `brave_search` (no Bybit-specific tools yet) | Exchange credentials |
++ | `cow` | CoW Protocol — MEV-protected swaps via batch auctions | `get_cow_swap_quote`, `place_cow_order`, `get_cow_order`, `get_cow_order_status`, `get_cow_user_orders` | None |
++ | `defillama` | DefiLlama — TVL, yields, volumes, stablecoins | `get_token_price`, `get_yield_opportunities`, `get_defi_protocols`, `get_chain_tvl`, `get_protocol_detail`, `get_dex_volumes`, `get_fees_overview`, `get_protocol_fees`, `get_stablecoins`, `get_stablecoin_chains`, `get_historical_token_price`, `get_token_price_change`, `get_historical_chain_tvl`, `get_dex_protocol_volume`, `get_stablecoin_history`, `get_yield_pool_history` | None |
++ | `dune` | Dune Analytics — execute and fetch SQL queries | `execute_query`, `get_execution_status`, `get_execution_results`, `get_query_results` | Provider token |
++ | `dydx` | dYdX perpetuals — markets, orderbook, candles, trades | `dydx_get_markets`, `dydx_get_orderbook`, `dydx_get_candles`, `dydx_get_trades`, `dydx_get_account` | None |
++ | `gmx` | GMX perpetuals — markets, positions, orders, prices | `get_gmx_prices`, `get_gmx_signed_prices`, `get_gmx_markets`, `get_gmx_positions`, `get_gmx_orders` | None |
++ | `hyperliquid` | Hyperliquid perps — mid prices, orderbook | `get_meta`, `get_all_mids` | None |
++ | `kaito` | Kaito — crypto social search, trending, mindshare | `kaito_search`, `kaito_get_trending`, `kaito_get_mindshare` | Provider token |
++ | `kalshi` | Kalshi prediction markets via Simmer SDK | `simmer_register`, `simmer_status`, `simmer_briefing` | SDK token |
++ | `khalani` | Khalani cross-chain intents — quote, build, submit | `get_khalani_quote`, `build_khalani_order`, `submit_khalani_order`, `get_khalani_order_status`, `get_khalani_orders_by_address` | None |
++ | `lifi` | LI.FI aggregator — cross-chain swaps & bridges | `get_lifi_swap_quote`, `place_lifi_order`, `get_lifi_bridge_quote`, `get_lifi_transfer_status`, `get_lifi_chains` | Optional provider token |
++ | `manifold` | Manifold prediction markets — search, bet, create | `list_markets`, `get_market`, `get_market_positions`, `search_markets`, `place_bet`, `create_market` | Provider token |
++ | `molinar` | Molinar on-chain world — move, explore, chat | `molinar_get_state`, `molinar_look`, `molinar_move`, `molinar_jump`, `molinar_chat`, `molinar_get_chat`, `molinar_get_new_messages`, `molinar_get_players`, `molinar_collect_coins`, `molinar_explore`, `molinar_create_object`, `molinar_customize`, `molinar_ping` | None |
++ | `morpho` | Morpho lending — markets, vaults, positions | `get_markets`, `get_vaults`, `get_user_positions` | None |
++ | `neynar` | Farcaster social — users, search | `get_user_by_username`, `search_users` | Provider token |
++ | `okx` | OKX CEX — tickers, order book, candles | `okx_get_tickers`, `okx_get_order_book`, `okx_get_candles` | Exchange credentials |
++ | `oneinch` | 1inch DEX aggregator — quotes, swaps, allowances | `get_oneinch_quote`, `get_oneinch_swap`, `get_oneinch_approve_transaction`, `get_oneinch_allowance`, `get_oneinch_liquidity_sources` | Provider token |
++ | `para` | Para — MPC wallet management across EVM, Solana, Cosmos (threshold signing) | (Para wallet tools — confirm with `aomi app current` after selecting) | Provider token |
++ | `para-consumer` | Para Consumer — consumer-wallet helper: prices, yield, swap quotes, bridge routes | (Consumer-facing read tools — confirm via runtime) | Provider token |
++ | `polymarket` | Polymarket prediction markets — search, trade, CLOB | `search_polymarket`, `get_polymarket_details`, `get_polymarket_trades`, `resolve_polymarket_trade_intent`, `build_polymarket_order_preview` | None |
++ | `polymarket-rewards` | Polymarket LP — liquidity provisioning into reward-enrolled markets, ranked by reward APY | (LP scoring + position tools — confirm via runtime) | Provider token |
++ | `x` | X/Twitter — users, posts, search, trends | `get_x_user`, `get_x_user_posts`, `search_x`, `get_x_trends`, `get_x_post` | Provider token |
++ | `yearn` | Yearn Finance — vault discovery, details | `get_all_vaults`, `get_vault_detail`, `get_blacklisted_vaults` | None |
++ | `zerox` | 0x DEX aggregator — swaps, quotes, liquidity | `get_zerox_swap_quote`, `place_zerox_order`, `get_zerox_swap_chains`, `get_zerox_allowance_holder_price`, `get_zerox_liquidity_sources` | Provider token |
++ When a "Credentials" entry says *Exchange credentials*, *Provider token*, or *SDK token*, ask the user to configure that app's credentials in their own terminal (or — only if they explicitly ask — run `aomi secret add` with the value they supply).
++ To build a new app from an API spec or SDK, use the companion skill **aomi-build**.
++ ## Usage Examples
++ Each example shows the canonical first chat turn for that category. Follow the standard workflow afterwards: `aomi tx list` → (`aomi tx simulate` for multi-step) → `aomi tx sign`.
++ ### Solver Networks — `khalani`
++ Cross-chain intents executed by a solver network. Khalani returns multiple solver routes per quote; prefer the one that offers a `TRANSFER` deposit method when present.
++ **Get a quote (read).** Requires `--public-key` even for read-only quotes — without it the agent refuses with "I need a connected wallet to fetch a Khalani quote."
++ aomi chat "quote bridging 50 USDC from Polygon to Base via Khalani. Prefer a TRANSFER deposit method if available." \
++   --app khalani --public-key 0xUserAddress --chain 137 --new-session
++   --app khalani --public-key 0xUserAddress --chain 137 --new-session
++ Verified response shape (CLI v0.1.30, real backend):
++ Verified response shape (CLI v0.1.30, real backend):
++ Route Options:
++   1. Hyperstream (Native Filler)  ⭐ supports TRANSFER
++      Deposit Methods:  CONTRACT_CALL, TRANSFER
++      Amount Out:       49.950049 USDC
++      Duration:         ~10s
++      Fee:              ~0.05 USDC (~0.1%)
++   2. Across
++      Deposit Methods:  CONTRACT_CALL only
++      Deposit Methods:  CONTRACT_CALL only
++      Amount Out:       49.984261 USDC
++      Duration:         ~2s
++      Gas:              0.032 POL (~$0.02)
++   3. DeBridge
++      Amount Out:       49.681958 USDC
++      Duration:         ~2 min
++      Gas:              0.108 POL (~$0.08)
++ **Build and submit the order (write).** After the user picks a route, confirm in the same session:
++ aomi chat "proceed with Hyperstream using the TRANSFER method"
++ aomi tx list                               # confirm the wallet request was queued
++ aomi tx sign tx-1 --rpc-url <polygon-rpc>  # source-chain RPC must match
++ Notes:
++ Notes:
++ Notes:
++ Notes:
++ Notes:
++ - Khalani internally exposes Across, DeBridge, and other solvers as routes. There is **no standalone `across` app** in v0.1.30 — to use Across, go through Khalani and pick the Across route at quote time.
++ - Single-chain intents work too: `--app khalani --chain 1` for an Ethereum-only request.
++ - Inspect open orders: `aomi chat "list my open Khalani orders" --app khalani --public-key 0xUserAddress` (read-only, but still wallet-aware).
++ - If the agent returns a quote without queueing a wallet request, that's expected — you have to explicitly say "proceed".
++ ### Cross-Chain — `zerox`
++ 0x aggregator for swaps and cross-chain liquidity. Good for "best-price" single-chain swaps and for swaps spanning chains where 0x has coverage.
++ # Best-price swap on Base
++ aomi chat "best price to swap 1 ETH for USDC on Base via 0x" \
++   --app zerox --chain 8453 --new-session
++ # Cross-chain swap — let the aggregator pick the route
++ aomi chat "swap 100 USDC on Arbitrum for ETH on Optimism via 0x" \
++   --app zerox
++ # List supported chains
++ aomi chat "which chains does 0x support today?" --app zerox
++ - `zerox` requires a provider token. If `aomi tx sign` fails because credentials are missing, ask the user to configure their 0x credentials (do not invent or paste them on the user's behalf).
++ - For approve-and-swap on a single chain, simulate the batch with `aomi tx simulate tx-1 tx-2` before signing.
++ ### Prediction Markets — `polymarket`
++ Search markets, inspect details, build trade previews on Polymarket's CLOB. Polymarket lives on Polygon — pass `--chain 137`.
++ **Find markets (read).** No wallet required for search:
++ aomi chat "find 3 active Polymarket markets about US politics in 2026; list them with id and current YES price" \
++   --app polymarket --new-session
++ 1. Trump out as President before GTA VI?
++    Market ID: 540820   YES: 0.52   Liquidity: $19,447   Volume: $622,047
++ 2. Xi Jinping out before 2027?
++    Market ID: 559651   YES: 0.0775 Liquidity: $108,298  Volume: $8,416,434
++ 3. Will Gavin Newsom win the 2028 Democratic presidential nomination?
++    Market ID: 559652   YES: 0.2705 Liquidity: $678,162  Volume: $24,719,477
++ **Build a buy preview (write-leaning).** Requires `--public-key` and `--chain 137`. Returns an unsigned preview the user must explicitly confirm before any tx is queued:
++ aomi chat "build a YES buy preview for \$5 on Polymarket market 559651. Just build the preview, do not place it." \
++   --app polymarket --public-key 0xUserAddress --chain 137 --new-session
++ Verified preview shape:
++ Polymarket Order Preview
++   Market:           Xi Jinping out before 2027?
++   Market ID:        559651
++   Side:             BUY YES
++   Order Type:       Market Order (Fill-or-Kill)
++   Amount:           $5.00 USDC
++   Current YES:      0.0775 (~7.75%)
++   Estimated Shares: ~64.52
++   Wallet:           0xUserAddress
++   Network:          Polygon (137)
++   Status:           Preview only — no order placed
++ **Place the order (write).** Once the user confirms:
++ aomi chat "place the order"
++ aomi tx list                                # confirm a wallet request was queued
++ aomi tx sign tx-1                           # AA-first signing on Polygon (default 4337)
++ - `build_polymarket_order_preview` returns an unsigned order for review. `aomi tx list` shows nothing until the user confirms with "place the order" or similar.
++ - `resolve_polymarket_trade_intent` maps natural-language trades ("buy YES on Xi for $5") to a concrete market+side+size before the preview step. Useful when the user describes a trade casually.
++ - `polymarket-rewards` is a separate app (LP-side, not trader-side) — see catalog above.
++ ### CEX — `binance`
++ Read-only market data from Binance. No on-chain signing involved.
++ # Spot price snapshot
++ aomi chat "what is BTCUSDT trading at on Binance?" \
++   --app binance --new-session
++ # Top-of-book depth
++ aomi chat "show me top 5 levels of the ETHUSDT order book on Binance" \
++   --app binance
++   --app binance
++ # Recent klines
++ aomi chat "1h klines for SOLUSDT for the last 24 hours from Binance" \
++ - `binance` needs Exchange credentials. The skill never invents these. If `aomi chat` fails because credentials are missing, ask the user to configure them on their side.
++ - This is a data app — no `tx-N` will be queued from these commands. `aomi tx list` is not part of this flow.
++ ### Social — `neynar`
++ Farcaster user lookup and search via Neynar.
++ # Look up a user
++ # Look up a user
++ aomi chat "look up the Farcaster user 'dwr.eth' via Neynar" \
++   --app neynar --new-session
++ # Search by handle
++ aomi chat "search Farcaster for users matching 'aomi'" --app neynar
++ - `neynar` requires a provider token. Same rule as the other token-gated apps: ask the user to configure it.
++ - Like `binance`, this is a read-only data app — no wallet requests are queued.
++ ### Social — `x`
++ X/Twitter user lookup, post fetching, and search.
++ aomi chat "look up the X user @AnthropicAI - return handle, follower count, and bio" \
++   --app x --new-session
++ # Search posts
++ aomi chat "search X for posts mentioning 'claude code' from the last week, top 3 with handle and text" \
++   --app x
++ # Trending topics
++ aomi chat "what's trending on X right now?" --app x
++ Read-only data app — no wallet requests are queued. The X app needs a provider token configured on the backend.
++ > **TODO — not verified end-to-end.** On the live backend at the time of capture, both lookup and search returned "I don't have access to the X API at the moment due to authentication issues" — the X provider token was not configured for the test account. The shape of the call is correct; the backend response when the token *is* configured has not been captured here. When you have a working setup, replace this note with the real response shape (handle, follower_count, bio for `get_x_user`; array of posts for `search_x`).
++ ### Bridging — Across (no standalone app)
++ The user-facing `across` app does **not** exist in CLI v0.1.30 — `aomi --app across …` returns `HTTP 401: Unauthorized`. Across is, however, **reachable two ways**:
++ 1. **As a route inside Khalani.** Khalani's solver network lists Across alongside Hyperstream and DeBridge in its quote response — pick the Across route at quote time.
++ 2. **As a tool the agent picks itself.** Asking any wallet-aware app for a bridge will frequently produce an Across-routed wallet request even without `--app khalani`. Verified in v0.1.30: a prompt like `"Bridge 1 USDC from Ethereum to Base via Across. Include approve as a separate tx."` (no `--app`) queues `Approve 1 USDC to Across SpokePool` + `Bridge 1 USDC from Ethereum to Base via Across` directly. The Across SpokePool address used was `0x5c7BCd6E7De5423a257D81B442095A1a6ced35C5`.
++ # Option 1 — via Khalani (lets Khalani's solver pick Across)
++ aomi chat "quote bridging 50 USDC from Polygon to Base via Khalani" \
++ # Then: aomi chat "proceed with the Across route"
++ # Option 2 — direct (let the agent pick Across as the tool)
++ aomi chat "Bridge 1 USDC from Ethereum mainnet to Base via Across. Include approve as a separate tx so we can simulate the batch." \
++   --public-key 0xUserAddress --chain 1 --new-session
++ aomi tx list
++ aomi tx sign tx-1 tx-2
++ Verified behavior (CLI v0.1.30):
++ - Across requests carry an expiring `fillDeadline`. If the agent's first build expires by the time simulation runs, the agent automatically rebuilds with a fresh deadline and the new tx-N will pass. **Old failed attempts remain visible in `aomi tx list`** with `batch_status: "Batch [N,M] failed at step 2: 0x..."` — sign only the txs whose status reads `Batch [...] passed`.
++ - The mainnet→L2 leg uses AA 7702 (default for chain 1) and signs cleanly with the EOA's small ETH stash paying.
++ - The L2→mainnet leg requires the EOA to have native gas on the L2 — see [account-abstraction.md → Sponsorship in practice](account-abstraction.md#sponsorship-in-practice-verified-against-v0130). The zero-config proxy does **not** reliably sponsor on Base in v0.1.30.
++ > **TODO — direct integration.** If a standalone `across` app gets added later, replace this stub with read + write examples in the same shape as the other entries.
+
+### references/commands.md  [docs]
++ # Command Reference
++ Full command surface for the `aomi` CLI (or `npx @aomi-labs/client@0.1.30` equivalent). The skill invokes read forms freely; `set`/mutating forms only when the user explicitly asks.
++ ## Chat
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ aomi --prompt "<message>"                              # one-shot send and exit
++ aomi chat "<message>" --new-session
++ aomi chat "<message>" --verbose                        # stream tool calls and agent output
++ aomi chat "<message>" --model <rig>
++ aomi chat "<message>" --public-key 0xUserAddress --chain 1
++ aomi chat "<message>" --app khalani --chain 137
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ - Quote the message.
++ - On the first command in a new assistant thread, prefer `--new-session`.
++ - Pass `--public-key` on the first wallet-aware message.
++ - Use `--app`, `--model`, `--chain` to change the active context for the next request.
++ ## Transactions
++ aomi tx list                                           # pending/signed requests
++ aomi tx simulate <id> [<id> ...]                       # dry-run a batch on a fork
++ aomi tx sign <id> [<id> ...]                           # sign and submit
++ ## Sessions
++ aomi session list                                      # local sessions with topic + pending count
++ aomi session new
++ aomi session resume <id>                               # set active pointer
++ aomi session delete <id>                               # remove (check no pending txs first)
++ aomi session status                                    # current session summary
++ aomi session log                                       # replay conversation + tool output
++ aomi session events                                    # raw backend system events
++ aomi session close                                     # clear active pointer; next chat starts fresh
++ Selectors accept the backend session id, `session-N`, or `N`.
++ ## Secrets
++ aomi secret list                                       # handle names only, no values
++ aomi secret clear                                      # drop all configured secrets
++ aomi secret add NAME=<value> [NAME=...]                # user-directed only (see workflows.md)
++ ## Apps and Models
++ aomi app list
++ aomi app current
++ aomi model list
++ aomi model current
++ aomi model set <rig>                                   # persist model for current session
++ `aomi chat --model <rig> "<message>"` applies a model for one turn without persisting it. Pick an app per turn with `--app <name>` or `AOMI_APP=<name>`. The installed set is dynamic — confirm with `aomi app list`. Full catalog and per-app credential requirements in [apps.md](apps.md).
++ ## Chain
++ aomi chain list
++ aomi chain current
++ aomi chain set <id>                                    # only when user asked to change default
++ ## Wallet and Config
++ aomi wallet current                                    # configured address only, no credential
++ aomi wallet set <signing-key>                          # user-directed; user supplies key
++ aomi config current                                    # backend URL
++ aomi config set-backend <url>                          # repoint CLI at a different backend
++ `aomi wallet set` persists a signing key under `AOMI_STATE_DIR`. After running, confirm with the derived address — never repeat the key value back.
++ ## Flags and Env Vars
++ Flags override environment variables.
++ | Flag            | Default                | Purpose                                                   |
++ | --------------- | ---------------------- | --------------------------------------------------------- |
++ | `--backend-url` | `https://api.aomi.dev` | Backend URL                                               |
++ | `--api-key`     | none                   | API key for non-default apps (user-supplied)              |
++ | `--app`         | `default`              | Backend app                                               |
++ | `--model`       | backend default        | Session model                                             |
++ | `--new-session` | off                    | Create a fresh active session for this command            |
++ | `--public-key`  | none                   | Wallet address for chat/session context                   |
++ | `--rpc-url`     | chain RPC default      | RPC override for signing                                  |
++ | `--chain`       | none                   | Active wallet chain (inherits session chain if unset)     |
++ | `--eoa`         | off                    | Force plain EOA, skip AA (sign-only)                      |
++ | `--aa`          | off                    | Force AA, error if provider not configured (sign-only)    |
++ | `--aa-provider` | auto-detect            | `alchemy` \| `pimlico` (sign-only)                        |
++ | `--aa-mode`     | chain default          | `4337` \| `7702` (sign-only)                              |
++ | Env Var           | Default   | Purpose                                |
++ | ----------------- | --------- | -------------------------------------- |
++ | `AOMI_STATE_DIR`  | `~/.aomi` | Root directory for local session state |
++ | `AOMI_CONFIG_DIR` | `~/.aomi` | Root directory for persistent config   |
++ ## Config Rules
++ - Signing keys must be 0x-prefixed hex. Configuring them is a user action, not a skill action.
++ - `--aa-provider` and `--aa-mode` cannot be used with `--eoa`.
++ - The default signing RPC is one URL. For chain switching, pass `--rpc-url` on `aomi tx sign` with a chain-matching public RPC.
++ - In auto-detect mode, the CLI falls back to a zero-config AA path when no provider is configured.
++ For account-abstraction details (modes, providers, sponsorship, chain defaults), see [account-abstraction.md](account-abstraction.md).
+
+### references/drain-vectors.md  [docs]
++ # Drain Vectors
++ Read this when:
++ - A simulation fails with an annotation like `recipient != msg.sender` or similar, and you need to know whether that's a guard-block or a real bug.
++ - You're constructing a new flow and need to know which calldata field the agent treats as the "drain" for a given protocol.
++ - The user types a prompt with a non-self recipient (*"swap and send to 0xFriend"*) and you need to predict whether the agent will let it through.
++ ## What this is
++ A **drain vector** is the calldata field where a malicious prompt could redirect funds away from the user — `recipient` in Uniswap, `onBehalfOf` in Aave, `mintRecipient` in CCTP, `_to` in OP-stack bridges. The agent blocks these at simulation time when they don't equal `msg.sender`.
++ When you see a `Batch success: false` with a drain-vector annotation, it is **not** a transaction-construction bug. It is the agent's guard rejecting calldata that would route the user's funds to a non-self address. The skill's job is to surface the block to the user — not to reformulate the prompt to bypass it.
++ For example flows that hit these guards (Uniswap recipient, Aave onBehalfOf, CCTP mintRecipient, OP-stack `_to`), see the relevant section in [examples.md](examples.md).
++ ## Reference table
++ | Protocol | Drain Vector | Notes |
++ |----------|--------------|-------|
++ | Uniswap V3 `exactInputSingle` / `exactOutputSingle` | `recipient` (word3) | Block at simulation if != msg.sender |
++ | Uniswap V2 `swapExactTokensForTokens` | `to` parameter | Same |
++ | 1inch v6 `swap` | `dstReceiver` inside `SwapDescription` tuple | Same |
++ | Sushi V2 `swapExactTokensForTokens` | `to` (recipient) | Same |
++ | Curve `exchange` | n/a — refunds msg.sender directly | No drain vector by design |
++ | Aave V3 `supply` | `onBehalfOf` | Same |
++ | Aave V3 `borrow` / `withdraw` | `to` | Same |
++ | Aave V3 `repay` | `onBehalfOf` | Same |
++ | Compound V3 `supplyTo` | `dst` | Same |
++ | Morpho `supply` | `onBehalfOf` (inside MarketParams call) | Same |
++ | CCTP `depositForBurn` | `mintRecipient` (bytes32, left-padded) | Same |
++ | Across `depositV3` | `recipient` (word1) | Same |
++ | Stargate `send` | `recipient` inside `SendParam` AND separate `refundAddress` | **Both** are drain vectors |
++ | Arbitrum native bridge `outboundTransferCustomRefund` | `_to` AND `_refundTo` | Both |
++ | OP-stack `bridgeETHTo` / `depositETHTo` (Base/Optimism) | `_to` | Plus `_to == address(0)` is a hard block (not just a warning) — bridging to zero permanently locks funds on L2 |
++ | zkSync Mailbox `requestL2Transaction` | `_contractL2` AND `_refundRecipient` | Both |
++ | LST tokens (stETH, wstETH, rETH, eETH, etc.) `transfer` / `transferFrom` | `_to` | Special-case block on the issued token, not on the staking call. The agent guards against attacker prompts like *"transfer my stETH to 0xdEaD"* even though stETH itself is a known Lido contract |
++ ## How the guard fires
++ The agent runs `simulate_batch` against a forked chain before staging calldata to the wallet. When a drain vector is detected, the simulation result includes an annotation like:
++ ```
++ ```
++ Batch [1] failed: drain-vector at recipient != msg.sender
++   step 1: exactInputSingle((USDC, WETH, 500, 0xdEaD..., 1_000_000, 0, 0))
++   user:   0xUserAddress
++   field:  recipient (word3)
++ The wallet never sees this calldata — it's rejected at the simulation gate. The skill should **surface the block** to the user. Two scenarios:
++ 1. **The user typo'd or forgot their own address** → confirm with them ("did you mean to send to your own wallet?") and re-prompt with the corrected recipient.
++ 2. **The user actually wanted to send to a different address** (a friend, a multisig, a contract) → the agent's default policy is conservative; the user can override only by re-prompting with explicit acknowledgment, and the skill should surface that the calldata is intentionally non-self before signing.
++ Do **not** attempt to bypass the guard by reformulating the prompt without the user's explicit redirect. Do not paste the exact same intent through a different app to evade the check.
++ ## Hard blocks vs. soft warnings
++ Most drain-vector annotations are **soft warnings** — they fail simulation and ask for explicit confirmation. A few are **hard blocks** that cannot be acknowledged through:
++ - **`_to == address(0)`** on OP-stack bridges. Bridging to zero permanently locks funds on L2 with no recovery path. The agent fails simulation with a clear "L2 funds will be permanently unrecoverable" message. If the user typo'd, do **not** retry — surface the block and re-prompt for the correct address.
++ - **Token-level `transfer` to a known sink address** (`0x0`, `0xdEaD`, etc.) on a freshly issued LST. Special-case to prevent the staking-then-transfer attacker chain.
++ For the full per-protocol example flows that hit these guards, see [examples.md](examples.md).
+
+### references/examples.md  [docs]
++ # Flow Examples
++ Read this when:
++ - The user asks for a concrete end-to-end example of a DeFi operation.
++ - You're constructing a new flow and want a template to pattern-match against.
++ - You're a new tool-using model and need to know what shape `aomi chat` will return for a given user intent.
++ Each example is anchored to a **real backend-side capture** from a mainnet anvil fork. Prompts, gas figures, addresses, and the `Internal trace` blocks come directly from those captures. The "What the user sees in the terminal" blocks are **reformatted** from the same backend events into the CLI's pretty-printed style — the data is real, the exact text formatting may drift slightly across CLI versions. See [Verification provenance](#verification-provenance) at the end of this doc for source logs and capture dates.
++ The CLI lifecycle is consistent across every example:
++ > **chat** (natural-language intent) → **list** (verify what was queued) → **simulate** (catch reverts before signing) → **sign** (wallet pop) → **verify** (chain-state confirmation)
++ If you only remember one thing: **the user gives intent in plain English; aomi composes calldata; simulate is the gate; the wallet only sees what passed simulation.**
++ A term you'll see throughout: a **drain vector** is the calldata field where a malicious prompt could redirect funds to a wrong recipient — `recipient` in Uniswap, `onBehalfOf` in Aave, `mintRecipient` in CCTP, `_to` in OP-stack bridges. The agent blocks these at simulation time when they don't equal the user's own address. The skill's job is to surface the block, not bypass it. Full per-protocol table in [drain-vectors.md](drain-vectors.md).
++ Two notes on what you'll see in the terminal:
++ - The `Internal trace` blocks below show what the agent does silently between chat and the queued-tx output. Users only see this with `--verbose` or by replaying via `aomi session log`. Without `--verbose`, the user sees just the assistant prose followed by `⚡ Wallet request queued: tx-N`.
++ - The shortest one-shot form is `aomi --prompt "<message>"`. The examples below use `aomi chat "<message>"` for readability — both behave the same.
++ ---
++ ---
++ ---
++ ---
++ ---
++ ---
++ ## 1. Swap — Uniswap V3 exactInputSingle
++ **Anchored to** `redteam-uniswap-happy-1.log` — USDC→WETH on mainnet, fee tier 500 (0.05%), captured shape.
++ ### What the user types
++ ### What the user types
++ ### What the user types
++ ### What the user types
++ ### What the user types
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ aomi chat "swap 1 USDC for WETH on Uniswap V3, send to my wallet" \
++   --public-key 0xUserAddress --chain 1 --new-session
++   --public-key 0xUserAddress --chain 1 --new-session
++   --public-key 0xUserAddress --chain 1 --new-session
++   --public-key 0xUserAddress --chain 1 --new-session
++   --public-key 0xUserAddress --chain 1 --new-session
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ That's enough. The agent picks `SwapRouter02 0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45`, fee tier 500, recipient = your wallet, and queues the approve in the same batch.
++ ### What the user sees in the terminal
++ ### What the user sees in the terminal
++ ### What the user sees in the terminal
++ ### What the user sees in the terminal
++ ### What the user sees in the terminal
++ I've staged your USDC → WETH swap on Uniswap V3 (0.05% fee tier).
++ Transaction Batch:
++ Transaction Batch:
++ Transaction Batch:
++   1. Approve Uniswap Router to spend USDC
++   2. Swap 1 USDC → WETH on V3 0.05% pool, recipient = your wallet
++ Run `aomi tx simulate tx-1 tx-2` to dry-run, then `aomi tx sign tx-1 tx-2` to send.
++ ⚡ Wallet request queued: tx-1
++ ⚡ Wallet request queued: tx-1
++ ⚡ Wallet request queued: tx-1
++ ⚡ Wallet request queued: tx-1
++    to:    0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48
++    to:    0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48
++    to:    0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48
++    value: 0
++    value: 0
++    value: 0
++    value: 0
++    value: 0
++    value: 0
++    chain: 1
++    chain: 1
++    chain: 1
++    chain: 1
++    chain: 1
++    chain: 1
++    chain: 1
++    chain: 1
++ ⚡ Wallet request queued: tx-2
++ ⚡ Wallet request queued: tx-2
++ ⚡ Wallet request queued: tx-2
++    to:    0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45
++ ### Internal trace (visible with `--verbose` or `aomi session log`)
++ ### Internal trace (visible with `--verbose` or `aomi session log`)
++ The agent activates the skill, reads balance/allowance, then stages two txs and simulates:
++ activate_skills        → uniswap
++ read    USDC.balanceOf / USDC.allowance to SwapRouter02
++ stage   "Approve Uniswap Router to spend USDC"
++         approve(0x68b3...Fc45, MAX) on USDC
++ stage   "USDC to WETH swap"
++         exactInputSingle((USDC, WETH, 500, <user>, 1_000_000, 0, 0))
++ simulate_batch         → Batch success: true
++                          (no drain-vector annotations)
++                          (no drain-vector annotations)
++                          (no drain-vector annotations)
++ ### Lifecycle
++ ### Lifecycle
++ ### Lifecycle
++ ### Lifecycle
++ ### Lifecycle
++ aomi tx list
++ aomi tx list
++ aomi tx list
++ aomi tx list
++ aomi tx list
++ # pending:
++ # pending:
++ # pending:
++ # pending:
++ #   tx-1  to 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48 (USDC)
++ #   tx-1  to 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48 (USDC)
++ #         label: Approve Uniswap Router to spend USDC
++ #   tx-2  to 0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45 (Uniswap SwapRouter02)
++ #         label: Swap 1 USDC for WETH on Uniswap V3 (0.05% pool)
++ aomi tx simulate tx-1 tx-2
++ aomi tx simulate tx-1 tx-2
++ # Simulation result:
++ # Simulation result:
++ # Simulation result:
++ # Simulation result:
++ # Simulation result:
++ #   Batch success: true
++ #   Batch success: true
++ #   Batch success: true
++ #   Batch success: true
++ #   Batch success: true
++ #   Stateful: true
++ #   Stateful: true
++ #   Stateful: true
++ #   Stateful: true
++ #   Stateful: true
++ #   Total gas: 197194
++ #
++ #
++ #
++ #
++ #
++ #
++ #
++ #
++ #   Step 1 — Approve Uniswap Router to spend USDC
++ #     success: true
++ #     success: true
++ #     success: true
++ #     success: true
++ #     success: true
++ #     success: true
++ #     success: true
++ #     success: true
++ #     gas_used: 55798
++ #   Step 2 — Swap 1 USDC for WETH on Uniswap V3
++ #     gas_used: 141396
++ aomi tx sign tx-1 tx-2
++ aomi tx sign tx-1 tx-2
++ #   Exec:    aa (alchemy, 7702)
++ #   ✅ Sent! Hash: 0x...      (single hash for the atomic batch)
++ ### What to expect / pattern notes
++ ### What to expect / pattern notes
++ ### What to expect / pattern notes
++ ### What to expect / pattern notes
++ ### What to expect / pattern notes
++ - **One hash for the 7702 atomic batch** — both `tx-1` and `tx-2` show the same hash in `aomi tx list` after signing. Not a bug.
++ - **Recipient is the drain vector** — exactInputSingle word3. The agent blocks `recipient != msg.sender` at simulation time. If the user types *"swap and send the WETH to 0xdEaD"*, the batch will fail simulation with a drain-vector annotation. Don't try to bypass — surface the block.
++ - **Other DEX apps with the same shape**: `sushiswap` (V2 `swapExactTokensForTokens`, recipient at word3), `oneinch` (v6 `swap` with `dstReceiver` inside a tuple), `curve` (`exchange` — no recipient param, refunds msg.sender directly).
++ - **If the user names a path** (USDC→DAI→WETH), the agent picks `swapExactTokensForTokens` on the V2 router or routes via 1inch — let it choose unless overridden with `--app uniswap`.
++ - **1inch fallback pattern.** Captured in `~/.aomi/sessions/messages-cli-*.json`: when a user asks for `oneinch` `unoswap` directly, the agent stages approve + swap, simulates, and the swap step reverts because `unoswap` requires a `dex` parameter encoded by the 1inch off-chain API (pool address + protocol flags) that the agent can't construct on its own. The agent's response is **not silent retry** — it explains the gap and offers a fallback:
++   > *"`unoswap` requires a specifically encoded `dex` parameter that includes the pool address and swap protocol flags (e.g., Uniswap V3), which cannot be manually constructed reliably without the 1inch API. Since I do not have a 1inch API tool to generate valid calldata, I cannot complete this swap through the 1inch Aggregator. **Would you like me to try this swap using a direct DEX instead?** I can use the Uniswap or Sushiswap skills to perform the USDC to WETH trade directly."*
++   When you see this, agree to the fallback (*"yes, use Uniswap"*) and the agent will rebuild the batch against `SwapRouter02` as in the example above. Don't insist on 1inch unless the user has a separate API key configured to provide the dex param.
++ ## 2. Lending — Aave Supply (with retry-as-batch pattern)
++ **Anchored to** `redteam-aave-happy.log` — supply 1 USDC to Aave V3 on mainnet. This example documents the **first-attempt-fails, retry-with-approve** pattern that's the most common multi-step shape in lending.
++ aomi chat "supply 1 USDC on Aave" \
++ If the agent first tries a single-tx supply, simulation rejects it:
++ I tried to supply 1 USDC to Aave V3 directly, but simulation failed:
++   Batch [1] failed: ERC20: transfer amount exceeds allowance
++ Rebuilding as a 2-tx batch — approve first, then supply.
++   1. Approve Aave V3 Pool to spend 1 USDC
++   2. Supply 1 USDC to Aave V3 (recipient = your wallet)
++ Both pass simulation. Run `aomi tx simulate tx-2 tx-3` to verify, then sign.
++ ⚡ Wallet request queued: tx-3
++    to:    0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2
++ `tx-1` is the stale orphan from the first attempt — sign only `tx-2 tx-3`.
++ ### Internal trace (visible with `--verbose`)
++ ### Internal trace (visible with `--verbose`)
++ ### Internal trace (visible with `--verbose`)
++ activate_skills        → aave
++ stage   "supply USDC for user"
++         supply(USDC, 1_000_000, <user>, 0)  on Aave V3 Pool 0x87870Bca...
++ simulate_batch         → Batch [1] failed: ERC20: transfer amount exceeds allowance
++                          (no drain-vector annotations — calldata itself is benign)
++ # Agent rebuilds:
++ stage   "Approve Aave Pool to spend USDC"
++         approve(0x87870Bca..., 1_000_000) on USDC
++ stage   "supply USDC for user" (re-staged)
++ simulate_batch         → Batch [2,3] passed
++                          total gas 258_121 (approve 55_558 + supply 202_563)
++ # pending after retry:
++ #   tx-1  (stale — failed sim, ignore)
++ #   tx-2  to 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48 (USDC)
++ #         label: Approve Aave Pool to spend USDC
++ #   tx-3  to 0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2 (Aave V3 Pool)
++ #         label: supply USDC for user
++ aomi tx simulate tx-2 tx-3
++ #   Total gas: 258121
++ #   Step 1 — Approve Aave Pool to spend USDC
++ #     gas_used: 55558
++ #   Step 2 — supply USDC for user
++ #     gas_used: 202563
++ aomi tx sign tx-2 tx-3
++ aomi chat "show my Aave positions"
++ - **The first stage_tx may fail simulation, that's normal.** When the agent gets `ERC20: transfer amount exceeds allowance`, it stages a fresh approve and re-batches. `aomi tx list` will show 3 entries: an orphan tx-1 from the first attempt and the working tx-2/tx-3 pair. **Sign the pair, not the orphan.**
++ - **`onBehalfOf` is the drain vector.** If the user types *"supply for 0xFriend"*, the agent blocks `onBehalfOf != msg.sender` at simulation time. Same pattern for borrow / withdraw `to` / repay `onBehalfOf`.
++ - **Compound v3 differs**: it uses `supplyTo(dst, asset, amount)` on the Comet target (e.g. cUSDCv3 `0xc3d688B6...`); `dst != msg.sender` is the drain. Same retry shape.
++ - **Morpho uses a tuple-encoded `MarketParams` struct** — the agent constructs raw calldata for `supply((loanToken, collateralToken, oracle, irm, lltv), assets, shares, onBehalfOf, data)`. The user just says *"supply 100 USDC to the wstETH/USDC Morpho market"* — picking the market is the agent's job.
++ ## 3. Staking — Lido Submit (LST, no approve)
++ **Anchored to** a real CLI session captured in `~/.aomi/sessions/current.json` — stake 0.01 ETH, mint stETH. The simplest shape in this doc: single tx, no approve, native ETH as the asset, and the agent surfaces the expected share output before the user signs.
++ aomi chat "Stake 0.01 ETH with Lido to get stETH. Build the transaction." \
++ The agent's first response (after silent context/simulation/balance checks):
++ The simulation for staking 0.01 ETH to receive stETH was successful. You have a
++ sufficient balance of ~0.0148 ETH to cover both the stake and gas.
++ Simulation Details:
++   Contract:  0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84 (Lido: stETH)
++   Contract:  0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84 (Lido: stETH)
++   Function:  submit(address(0))
++   Value:     0.01 ETH
++   Value:     0.01 ETH
++   Estimated stETH Output: 0.008121... (Shares)
++ I've prepared the transaction for your approval:
++ Then the queued-tx block, followed by the agent's confirmation message:
++    to:    0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84
++    value: 10000000000000000
++    value: 10000000000000000
++ I've prepared the transaction to stake 0.01 ETH on Lido for stETH. The simulation
++ was successful, indicating you will receive approximately 0.00812 stETH (based
++ on current protocol shares). I've also verified your balance (0.0148 ETH) is
++ sufficient to cover the stake and gas.
++ Transaction Details:
++   Action:    submit(0x000...000)
++ Please approve the request in your wallet to broadcast the transaction.
++ The two assistant messages around the queued-tx event is real CLI behavior — the agent narrates before staging and confirms after. Don't treat the second message as a duplicate.
++ The actual silent tool sequence captured from `current.json`:
++ read    Get network context for Lido staking      (block 24828069, gas 1.25 gwei)
++ activate_skills                                    → lido
++ read    Simulate Lido staking (submit 0.01 ETH)    → returns shares: 8121458494637141 wei
++ read    Check ETH balance for staking             → 0.014857 ETH available
++ stage   Lido Staking
++         submit(address(0))  on Lido stETH 0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84
++         value = 0.01 ETH, gas = 150_000
++         status = pending_approval
++ Note: Lido is a single-tx flow, so the agent runs a one-off `simulate` read **before** staging — that's what produces the *"Estimated stETH Output: 0.008121..."* line in the user-facing response. The `simulate_batch` step you see in multi-step examples isn't here; the user calls `aomi tx simulate tx-1` separately if they want to dry-run again before signing.
++ #   tx-1  to 0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84 (Lido: stETH)
++ #         label: Stake 0.01 ETH in Lido for stETH
++ #         value: 0.01 ETH
++ #         value: 0.01 ETH
++ aomi tx simulate tx-1
++ aomi tx simulate tx-1
++ #   Total gas: ~150000
++ #   Step 1 — Stake 0.01 ETH in Lido for stETH
++ aomi tx sign tx-1
++ aomi tx sign tx-1
++ aomi chat "show my stETH balance"
++ - **No approve.** ETH is the asset (passed via `msg.value`); single-tx flow. Same shape applies to `rocket_pool` (`deposit()` → rETH), `etherfi` (`deposit()` → eETH), `kelp` (`depositETH()` → rsETH), `renzo` (`depositETH()` → ezETH), `mantle_staked_eth` (`stake()` → mETH).
++ - **Rebasing vs non-rebasing.** stETH rebases (your balance grows over time without any tx); wstETH is the wrapped non-rebasing version. The agent's prose surfaces this distinction unprompted — preserve it in your own summaries, don't strip it. EtherFi follows the same split (eETH rebases, weETH is wrapped); Rocket Pool's rETH is non-rebasing by design.
++ - **The pre-stage share estimate** (*"Estimated stETH Output: 0.008121..."*) is a Lido-specific Eth-to-shares conversion at the current ratio. If the user asks *"how much stETH will I get?"* before staking, the agent has already computed this — surface it instead of re-asking.
++ - **The drain vector for LSTs is on the issued token, not on `submit()`.** Once the user holds stETH, an attacker prompt like *"transfer my stETH to 0xdEaD"* would normally pass any "is this a known Lido contract?" check (stETH IS a known Lido contract). The agent adds a special-case `transfer` / `transferFrom` block on stETH itself. Same for the other LST tokens listed above.
++ - **Withdrawals are time-delayed.** `requestWithdraw` queues a claim, the user comes back later for `claimWithdraw`. Don't simulate them as part of the same batch — surface the delay.
++ ## 4. Bridge with attestation — CCTP (Ethereum → Base)
++ **Anchored to** `redteam-cctp-happy3.log` — bridge 50 USDC, captured shape including the bot's protocol-specific UX hint about Circle attestation timing.
++ aomi chat "Bridge 50 USDC from Ethereum mainnet to Base via CCTP. Recipient is my own wallet. Approve first." \
++ This is the **gold-standard prompt shape** for any bridge: amount + asset + chains + protocol + recipient + multi-step hint. The agent does the rest.
++ I've staged and simulated the bridge for 50 USDC from Ethereum to Base via CCTP.
+
+### references/gotchas.md  [docs]
++ # Gotchas, Hard Rules, and Security Model
++ ## What You Probably Got Wrong
++ LLM training data on aomi is stale. These are the most common mistakes the skill is shaped to prevent. Each correction is anchored to live v0.1.30 behavior.
++ - **"Aomi is a wallet"** → Aomi is an agent + CLI. It composes calldata and queues a wallet request; the user signs. The CLI does not custody funds, never signs without an explicit `aomi tx sign`, and never broadcasts on its own initiative.
++ - **"`aomi chat` always queues a transaction"** → Often the first response is a quote, route, or clarifying question. The agent only stages calldata when it has enough context. Always run `aomi tx list` after chat to see what is actually pending — never assume.
++ - **"Approval and swap are one transaction"** → Most DeFi flows are two-step: `approve` then `supply`/`swap`/`deposit`. Aomi stages them as a batch and `aomi tx simulate tx-1 tx-2` runs them sequentially on a fork so the second step sees the first's state changes. Sign them as a batch, not individually.
++ - **"Use `--rpc-url` to switch chains"** → `--chain` controls the wallet/session context (which chain the agent thinks you are on); `--rpc-url` controls where `aomi tx sign` estimates and submits. They are independent. For a cross-chain flow, the queued tx has its own `chain` field — pass `--rpc-url` matching *that* chain when signing.
++ - **"AA always sponsors gas on L2s"** → The zero-config proxy path on Base/Arbitrum/Optimism does **not** reliably sponsor in v0.1.30. If the EOA has 0 native gas on the destination chain, signing fails with `insufficient funds for transfer`. Either fund the EOA with a tiny amount of native gas, or configure a real BYOK Alchemy/Pimlico provider with a sponsorship policy. Do not retry with `--eoa` — that path also needs gas. See [account-abstraction.md → Sponsorship in practice](account-abstraction.md#sponsorship-in-practice-verified-against-v0130).
++ - **"`--new-session` should always be passed"** → Pass it on the *first* command of a new task. Reusing it mid-task starts a fresh conversation and the agent loses context (e.g. the quote it just gave you). For follow-up confirmations like *"yes, proceed"*, omit `--new-session`.
++ - **"Failed simulation txs disappear"** → They do not. `aomi tx list` shows orphaned `tx-N` from earlier failed attempts alongside the current passing batch. Check the `batch_status` line and only sign txs marked `Batch [...] passed`. See [troubleshooting.md → Quirks](troubleshooting.md#quirks-observed-in-v0130).
++ - **"7702 and 4337 are interchangeable"** → They are not. 7702 is a native EIP-7702 type-4 transaction with EOA delegation; the EOA pays gas. 4337 is a bundler+paymaster UserOperation; the paymaster can sponsor. Default chain modes: 7702 on Ethereum, 4337 on Polygon/Arbitrum/Base/Optimism. Use 4337 for gasless execution.
++ - **"Drain vectors are aomi-specific"** → They are protocol-specific calldata fields where a malicious prompt could redirect funds (`recipient` in Uniswap, `onBehalfOf` in Aave, `mintRecipient` in CCTP, `_to` in OP-stack bridges). The agent blocks these at simulation time when they do not equal `msg.sender`. The skill's job is to surface the block, not bypass it. Full table in [drain-vectors.md](drain-vectors.md).
++ ## Hard Rules
++ - Never invent, guess, or derive a credential value. The skill only ever passes through a value the user has explicitly given for a specific action in this turn.
++ - Never echo a credential value back after it has been used. Confirm the action ("wallet set", "secret `<HANDLE_NAME>` added") without restating the value.
++ - Setup commands that take a credential (`aomi wallet set <signing-key>`, `aomi secret add NAME=<value>`, flags like `--private-key`) are only run when the user has explicitly asked for that specific setup in this turn and has supplied the value themselves. Do not run them on the skill's own initiative to "prepare" or "fix" something.
++ - Before running a credential-setup command the user asked for, briefly confirm what will be persisted and where (local CLI state vs. the aomi backend — see [workflows.md → Secret Ingestion](workflows.md#secret-ingestion) for the transmission note), so the user can abort.
++ - Only call `aomi tx sign` after `aomi tx list` shows a pending `tx-N` the user asked for.
++ - When starting a new assistant thread, default the first aomi command to `--new-session` unless the user wants to continue an existing session.
++ - The signing RPC must match the pending transaction's chain. `--chain` (session context) and `--rpc-url` (signing transport) are independent — keep them aligned.
++ - `--aa-provider` and `--aa-mode` are AA-only controls and cannot be used with `--eoa`.
++ ## Security Model
++ This skill is scoped to the `aomi` CLI. It does not install software, read files outside the aomi state directory, or execute code it generates.
++ - **Credentials are opaque pass-through.** The skill never fabricates, guesses, or derives a credential value. Values only reach the CLI when the user has handed them over for a specific command in this turn, and they are not echoed or retained.
++ - **No unsolicited setup.** The skill does not run credential-persisting setup (`aomi wallet set`, `aomi secret add NAME=<value>`) to "prepare" for a task. It runs those commands only when the user explicitly asked, with the value the user supplied.
++ - **No blind signing.** Multi-step flows (approve → swap, approve → deposit) go through `aomi tx simulate` on a forked chain before `aomi tx sign`. Single-step read operations do not require simulation.
++ - **User-directed batches only.** `aomi tx sign` can take multiple ids; that is for batches the user has reviewed, not for sweeping a queue.
++ - **Read-only by default.** Chat, simulation, session inspection, and app/model/chain introspection do not move funds. Signing is a separate, explicit step the user must ask for.
+
+### references/session.md  [docs]
++ # Session Reference
++ Read this when:
++ - You need to know **where** conversation history, pending txs, or signed receipts live.
++ - `aomi tx list` returns `No active session` and you need to recover the right session.
++ - The user asks "what's in `~/.aomi/`?" or wants to clean up old sessions.
++ - You're picking between `--new-session`, `aomi session resume <N>`, and just letting the active session continue.
++ ## Two-tier storage model
++ A "session" is split across two stores. Knowing what lives where prevents wrong-place lookups.
++ **Backend (the aomi server)** holds the durable record:
++ - The full conversation transcript (user prompts + assistant prose).
++ - All tool calls + tool outputs the agent made silently.
++ - System events (BYOK key changes, sponsorship decisions, etc.).
++ - Indexed by a `sessionId` UUID.
++ `aomi session log`, `aomi session events`, and the message replay in `aomi session status` all hit the backend with the local `sessionId`. If the backend is unreachable or the sessionId is wrong, these will silently return empty or fail.
++ **Local on disk** (`$AOMI_STATE_DIR` if set, else `~/.aomi/`) holds the lookup keys and the parts the wallet flow needs:
++ - `sessionId` and `clientId` (UUIDs the backend uses to find the rest).
++ - `publicKey`, `chainId`, `baseUrl` (current wallet/chain/backend context).
++ - `pendingTxs[]` and `signedTxs[]` (full calldata, gas estimates, hashes — same data the backend has, mirrored locally so `aomi tx list` works without a network round-trip).
++ - `secretHandles{}` (handle names only — values are never stored locally).
++ The local state is what `aomi tx list`, `aomi tx sign`, `aomi wallet current`, and `aomi config current` read from. None of these touch the backend.
++ ## File layout
++ ```
++ ```
++ ```
++ ```
++ ~/.aomi/
++ ├── active-session.txt              # one line, the local session id (e.g. "43")
++ ├── aa.json                         # AA config cache; usually "{}"
++ └── sessions/
++     ├── session-1.json
++     ├── session-2.json
++     ├── ...
++     ├── session-<N>.json            # one file per local session
++     ├── current.json                # rolling pointer/cache used by the REPL
++     └── messages-cli-<unix-ns>.json # per-call message buffers (REPL streaming)
++ Each `session-<N>.json` is the local source of truth for that session. Inspecting it is safe — it does not contain credential values, only handle names. Useful when debugging:
++ ```bash
++ ```bash
++ cat ~/.aomi/sessions/session-43.json | jq '{sessionId, chainId, publicKey, pending: (.pendingTxs|length), signed: (.signedTxs|length)}'
++ ## The `active-session.txt` mechanic
++ `aomi tx list`, `aomi tx sign`, and `aomi tx simulate` all need an **active** session. The active session is just the local id stored in `~/.aomi/active-session.txt`. Set automatically by:
++ - `aomi --prompt "..."` (creates or reuses one)
++ - `aomi chat "..."` (same)
++ - `aomi --new-session ...` (creates a new one)
++ - `aomi session new` (creates a new one, no chat)
++ - `aomi session resume <id>` (sets active to an existing session)
++ Cleared by `aomi session close` and sometimes by errors mid-flight.
++ **The "No active session" recovery pattern**: if `aomi tx list` reports no active session, run `aomi session list` to find the right session by topic or pending count, then `aomi session resume <N> > /dev/null && aomi tx list` in the same shell call (the active-session pointer can be lost between subprocess invocations).
++ ## Lifecycle: `--new-session` vs `resume` vs neither
++ Three rules, in order:
++ 1. **Starting fresh work in a new assistant thread or terminal**: pass `--new-session` on the first chat command. Old session context (pending txs from previous tasks, accumulated message tokens) won't bleed in.
++ 2. **Continuing a task you started earlier (same thread)**: don't pass `--new-session`. The active session persists across `aomi` invocations; the next `aomi chat "proceed"` lands in the same conversation.
++ 3. **Picking up a previous session by id**: `aomi session resume <N>` first, then issue commands. Useful when `aomi tx list` shows pending txs you need to sign from a session that was closed earlier (e.g. session-43 in our run had pending Across txs after the shell rotated).
++ There's a v0.1.30 quirk worth knowing: `--new-session` + `--provider-key` on the same invocation does not register the BYOK key for that prompt — see [troubleshooting.md → Quirks](troubleshooting.md#quirks-observed-in-v0130). Workaround: register on a no-op call first, then issue the real prompt.
++ ## Cleanup hygiene
++ Sessions accumulate. After a few weeks of use, `~/.aomi/sessions/` can hold 50–100+ files. Cleanup is safe:
++ aomi session list                  # see what's there, with topics + pending counts
++ aomi session delete <id>           # delete one — safe if no pending txs
++ aomi session close                 # clear active pointer; next chat starts fresh
++ **Before deleting a session, check it has no pending wallet requests** (`aomi tx list` after `aomi session resume <id>`). Deleting a session with pending txs orphans them — the backend may still know about them, but the local CLI loses the calldata and ids needed to sign.
++ `messages-cli-*.json` buffer files in `sessions/` are safe to remove manually — they're per-invocation REPL caches, not session state.
++ The `secretHandles{}` block in a session JSON is safe to read and inspect. The values they reference are stored on the backend, scoped to that session's `clientId`. `aomi secret clear` removes them from the backend; deleting the session locally does not.
++ ## When to override the state dir
++ `AOMI_STATE_DIR` lets the user point the CLI at a non-default state root. Common reasons:
++ - Test setups: `AOMI_STATE_DIR=$(mktemp -d) aomi --prompt "..."` — clean slate per run, no contamination of the user's main `~/.aomi/`.
++ - Multiple identities: separate dirs for separate wallets / backends, switched via shell function or `direnv`.
++ The skill itself does not set this variable. If the user wants isolation, they configure it in their own shell.
+
+### references/troubleshooting.md  [docs]
++ # Troubleshooting
++ Read this when a command fails unexpectedly or behaves differently than the workflow predicts.
++ ## Chat / Session
++ - If `aomi chat` returns `(no response)`, wait briefly and run `aomi session status`.
++ - If `aomi session status` shows the session is gone, the local pointer may be stale — retry with `--new-session`.
++ ## Signing
++ - If AA signing fails, the CLI tries the alternative AA mode automatically. If both modes fail, it returns an error suggesting `--eoa`. Read the console output before retrying manually.
++ - If AA fails with a credential error, stop and ask the user to check their provider configuration on their side. Do not try to configure it from the skill.
++ - If a transaction fails on-chain, check the RPC URL, balance, and chain.
++ - If the signer address differs from the stored session public key, the CLI updates the session to the signer address and continues — this is expected, not an error.
++ ## RPC
++ - `401`, `429`, and generic parameter errors during `aomi tx sign` are usually RPC problems, not transaction-construction problems. Pass a reliable chain-matching public RPC via `--rpc-url`.
++ - If one or two public RPCs fail for the same chain, stop rotating through random endpoints and ask the user to supply a proper RPC URL for that chain themselves. Do not paste provider-keyed URLs into chat.
++ - The pending transaction already contains its target chain. If the default RPC is wrong, override with `--rpc-url` for the matching chain.
++ ## Simulation
++ - If `aomi tx simulate` fails with a revert, read the revert reason. Common causes: expired quote or timestamp (re-chat to get a fresh quote), insufficient token balance, missing prior approval. Do not sign transactions that failed simulation without understanding why.
++ - If `aomi tx simulate` returns `stateful: false`, the backend could not fork the chain — simulation ran each tx independently via `eth_call`, so state-dependent flows (approve → swap) may show false negatives. Retry, or check that the backend's Anvil instance is running before signing.
++ ## Cross-chain
++ - When the chat/session chain (`--chain`) differs from the chain the agent eventually queues a tx for, that's normal — the user may have asked for a cross-chain operation. Sign with `--rpc-url` matching the *queued tx*'s chain, not the session chain.
++ ## Invocation
++ - If `aomi: command not found`, the user does not have the global install. Substitute `npx @aomi-labs/client@0.1.30` for `aomi` in every command and retry.
++ - If `aomi --version` reports a version older than `0.1.30`, advise `npm install -g @aomi-labs/client@latest` (or use `npx @aomi-labs/client@0.1.30 …` for one-shot calls) before continuing — older versions may lack flags this skill assumes (`--aa`, `--aa-provider`, `--aa-mode`).
++ ## Quirks observed in v0.1.30
++ These are not bugs the skill should try to fix — they are CLI behaviors to recognize and route around.
++ - **`--new-session` + `--provider-key` on the same call hits credit-limit error.** The provider key gets registered, but the prompt on that same call still routes through Aomi-managed credits. Workaround: register first with a no-op prompt (`aomi --provider-key <provider:key> --new-session --prompt "ack"`), then issue the real prompt as a second call without `--new-session`.
++ - **`[session] Backend user_state mismatch (non-fatal)` log spam** appears between the prompt and the agent response. These lines are large JSON dumps that look alarming. Ignore them — they are not errors. Look past them for the actual agent response and the `⚡ Wallet request queued: tx-N` line.
++ - **The active session pointer can disappear between shell invocations.** If `aomi tx list` returns `No active session` after a successful chat, run `aomi session list` to find the session id (look for `topic` matching what you just asked the agent), then `aomi session resume <N> > /dev/null && aomi tx list` in the **same** shell call.
++ - **Stale failed-simulation txs accumulate.** When the agent retries (e.g. Across with expired deadlines), the failed prior attempts stay visible in `aomi tx list`. Match against the `batch_status` metadata: only sign txs whose status reads `Batch [...] passed`. Skip ones tagged `failed at step N: 0x...`.
++ - **Agent self-heals expired deadlines.** For deadline-bearing routes (Across, Khalani fillers), if simulation reports an expiry, the agent will rebuild the request automatically with fresh deadlines. Do not re-prompt — just check `aomi tx list` for the latest passing batch.
++ - **`BYOK key set for anthropic: sk-ant-...` echoes the first ~7 characters of the provider key.** This is by design (provider identification, not authentication). Do not try to scrub it from output — it is not a credential leak.
++ ## AA on L2 — known limitation
++ If `aomi tx sign` on Base, Optimism, Arbitrum, or another L2 returns `insufficient funds for transfer` from viem, the zero-config Alchemy proxy did not sponsor the call. See `references/account-abstraction.md#sponsorship-in-practice-verified-against-v0130` for the expected behavior and recovery options. Short version: the EOA needs a small amount of native gas on the destination chain, or the user needs to configure a real BYOK AA provider with a sponsorship policy. Do not retry with `--eoa` — that path also requires gas.
+
+### references/workflows.md  [docs]
++ # Workflows
++ End-to-end operational procedures. Use the CLI as one-shot commands — each `aomi` call starts, runs, and exits. Conversation history lives on the backend; local session data lives under `AOMI_STATE_DIR` or `~/.aomi`.
++ ## Quick Start
++ Run once at the start of a session:
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ aomi --version 2>/dev/null || npx @aomi-labs/client@0.1.30 --version
++ aomi --prompt "hello" --new-session
++ aomi session status 2>/dev/null || echo "no session"
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ Expected: `aomi --version` prints `0.1.30` or newer. If older, run `npm install -g @aomi-labs/client@latest`.
++ ## Default Workflow
++ 1. Chat with the agent.
++ 2. If the agent asks whether to proceed, reply with a short confirmation in the same session.
++ 3. Review pending requests with `aomi tx list`.
++ 4. For multi-step batches, run `aomi tx simulate tx-1 tx-2 …` before signing.
++ 5. Sign with `aomi tx sign <id>`.
++ 6. Verify with `aomi tx list`, `aomi session log`, or `aomi session status`.
++ The CLI output is the source of truth. If you do not see `Wallet request queued: tx-N`, there is nothing to sign yet. For a scriptable wrapper, see [../templates/aomi-workflow.sh](../templates/aomi-workflow.sh).
++ ## Read-Only Requests
++ Use when the user does not need signing:
++ aomi --prompt "<message>" --new-session
++ aomi chat "<message>" --verbose
++ aomi tx list
++ aomi session log
++ aomi session status
++ aomi --version
++ aomi app list
++ aomi app current
++ aomi chain list
++ aomi session list
++ aomi session list
++ aomi session resume <id>
++ aomi session resume <id>
++ For chain-specific requests, prefer `--chain <id>` on the command itself. Use `AOMI_CHAIN_ID=<id>` only when multiple consecutive commands should stay on the same chain.
++ ## Building Wallet Requests
++ Give the agent the task plus wallet address and chain on the first turn:
++ aomi chat "swap 1 ETH for USDC" --new-session --public-key 0xUserAddress --chain 1
++ aomi chat "swap 1 POL for USDC on Polygon" --app khalani --chain 137
++ A chat response does not always queue a transaction immediately — the agent may return a quote or route first and ask whether to proceed. Keep the same session and reply with a short confirmation message. Only move to `aomi tx sign` after a wallet request is queued. Confirm with `aomi tx list`.
++ Queued request:
++ ⚡ Wallet request queued: tx-1
++    to:    0x...
++    value: 1000000000000000000
++    chain: 1
++ Run `aomi tx list` to see pending transactions, `aomi tx sign <id>` to sign.
++ For per-app first-turn examples (Khalani, 0x, Polymarket, Binance, Neynar), see [apps.md](apps.md#usage-examples).
++ ## Batch Simulation
++ Use `aomi tx simulate` to dry-run pending transactions before signing. Simulation runs each tx sequentially on a forked chain so state-dependent flows (approve → swap) are validated as a batch.
++ aomi tx simulate tx-1
++ aomi tx simulate tx-1 tx-2
++ Response:
++ Simulation result:
++   Batch success: true
++   Stateful: true
++   Total gas: 147821
++   Step 1 — approve USDC
++     success: true
++     success: true
++     gas_used: 46000
++   Step 2 — swap on Uniswap
++     gas_used: 101821
++ **Always simulate multi-step flows** before signing. **Optional** for single independent txs (simple ETH transfer, standalone swap with no prior approval). **Skip** for read-only operations or when `aomi tx list` shows nothing. If simulation fails at step N, read the revert reason before retrying — do not blindly re-sign.
++ Full simulation-and-signing walkthrough on a multi-step batch in [examples.md](examples.md#1-approve--swap).
++ ## Signing Policy
++ - Default: `aomi tx sign <tx-id> [<tx-id> ...]` — AA-first via the zero-config Alchemy proxy; falls through to BYOK if Alchemy or Pimlico is configured.
++ - `--eoa` skips AA entirely.
++ - `--aa-provider` or `--aa-mode` force AA mode; incompatible with `--eoa`.
++ - **Mode fallback**: when AA is used, the CLI tries the preferred mode (7702 on Ethereum, 4337 on L2s). If it fails, tries the alternative. If both fail, returns an error suggesting `--eoa`.
++ aomi tx sign tx-1                                     # default: zero-config AA
++ aomi tx sign tx-1 --eoa                               # force EOA
++ aomi tx sign tx-1 --aa-provider pimlico --aa-mode 4337
++ Signing rules that always apply:
++ - `aomi tx sign` handles both transaction requests and EIP-712 typed-data signatures. Batch signing is supported for transactions only, not EIP-712.
++ - A single `--rpc-url` override cannot be used for a mixed-chain multi-sign request.
++ - The pending transaction already contains its target chain — pass `--rpc-url` matching that chain if the default RPC is wrong.
++ If signing fails because credentials are missing, stop and ask the user to configure them — do not try to set them from the skill.
++ ## Secret Ingestion
++ Two paths, depending on who is driving.
++ **Inspect** (skill-driven, always safe):
++ aomi secret list                                       # handle names only, never raw values
++ aomi secret clear                                      # drop all configured secrets
++ **Add** (user-driven): when the user explicitly asks to configure a credential and supplies the value in this turn:
++ aomi secret add NAME=<value> [NAME=<value> ...]
++ Before doing so, warn about the trust boundary (below) so the user can abort. Do not initiate ingestion. Do not paraphrase the user's request into a new credential. Do not repeat the value back — confirm with the handle name only.
++ **Trust boundary.** `aomi secret add` transmits each credential value to the aomi backend and stores a handle locally. The backend — not just the user's machine — becomes a trust boundary. If the user prefers the value to stay entirely local, advise them to export it in their shell environment and let the CLI read it from there.
++ ## Session And Storage
++ A session is split across two stores: the **backend** holds the conversation transcript and tool calls; the **local disk** (`$AOMI_STATE_DIR` or `~/.aomi/`) holds lookup keys, pending/signed tx state, and secret handle names. `aomi tx list` reads local; `aomi session log` reads backend.
++ aomi session delete <id>
++ aomi session close
++ Full layout (`~/.aomi/sessions/session-N.json`, `active-session.txt`), the local-vs-backend split, lifecycle rules for `--new-session` vs `resume`, and cleanup hygiene in [session.md](session.md).
+
+### templates/aomi-workflow.sh  [code]
++ #!/usr/bin/env bash
++ #
++ #
++ #
++ #
++ #
++ #
++ #
++ #
++ #
++ #
++ #
++ #
++ #
++ #
++ #
++ #
++ #
++ #
++ #
++ #
++ # aomi-workflow.sh — Reusable bash functions for the canonical aomi flow:
++ #                    chat → list → simulate → sign → verify
++ # Usage:
++ #   1. Copy this file to your project (or source it from your dotfiles).
++ #   2. Set USER_ADDR and (optionally) AOMI_CHAIN_ID in your shell environment.
++ #   3. Source the file: `source aomi-workflow.sh`
++ #   4. Use the functions below. Each handles a complete flow with safety checks.
++ # Dependencies:
++ #   - @aomi-labs/client v0.1.30+ (`aomi --version` or `npx @aomi-labs/client@0.1.30 --version`)
++ #   - jq (for tx-list parsing)
++ # Conventions:
++ #   - All functions return non-zero on failure.
++ #   - Functions never auto-sign without confirmation.
++ #   - Credential setup is NOT automated — `aomi wallet set`, `aomi secret add`,
++ #     `--api-key`, `--private-key` must be run by the user, never by this script.
++ set -euo pipefail
++ # ============================================================================
++ # ============================================================================
++ # ============================================================================
++ # ============================================================================
++ # ============================================================================
++ # ============================================================================
++ # ============================================================================
++ # ============================================================================
++ # ============================================================================
++ # ============================================================================
++ # ============================================================================
++ # ============================================================================
++ # ============================================================================
++ # ============================================================================
++ # Configuration (override in your shell, not here)
++ : "${USER_ADDR:?USER_ADDR must be set to your wallet address (0x...)}"
++ : "${AOMI_CHAIN_ID:=1}"             # Default to Ethereum mainnet
++ : "${AOMI_CMD:=aomi}"               # Override to "npx @aomi-labs/client@0.1.30" if not installed globally
++ # Detection: aomi vs npx @aomi-labs/client@0.1.30
++ aomi_detect() {
++     if command -v aomi >/dev/null 2>&1; then
++         AOMI_CMD="aomi"
++     else
++         AOMI_CMD="npx @aomi-labs/client@0.1.30"
++         echo "[aomi-workflow] aomi not found on PATH — using: $AOMI_CMD" >&2
++     fi
++     fi
++     fi
++     fi
++     fi
++     fi
++     echo "[aomi-workflow] using: $AOMI_CMD" >&2
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ aomi_check_version() {
++     local version
++     version=$($AOMI_CMD --version 2>/dev/null || echo "unknown")
++     echo "[aomi-workflow] CLI version: $version" >&2
++     case "$version" in
++         0.1.3[0-9]*|0.1.[4-9][0-9]*|0.[2-9].*|[1-9].*)
++             ;;
++             ;;
++         *)
++             echo "[aomi-workflow] WARNING: version is $version, this script assumes 0.1.30+" >&2
++             echo "[aomi-workflow] upgrade with: npm install -g @aomi-labs/client@latest" >&2
++     esac
++     esac
++ # Core flow: chat → list → simulate → sign → verify
++ # Send an intent and return what's queued.
++ # Usage: aomi_chat "swap 1 USDC for WETH on Uniswap" [--new-session]
++ aomi_chat() {
++     local message="${1:?message required}"
++     shift || true
++     $AOMI_CMD chat "$message" \
++         --public-key "$USER_ADDR" \
++         --chain "$AOMI_CHAIN_ID" \
++         "$@"
++ # Same, but force a fresh session (use on the FIRST command of a new task).
++ aomi_chat_new() {
++     aomi_chat "$@" --new-session
++ # Print all currently pending tx-N entries.
++ aomi_pending() {
++     $AOMI_CMD tx list
++ # Extract pending tx ids that match `Batch [...] passed`.
++ # Skips orphans from earlier failed attempts.
++ aomi_pending_passing() {
++     $AOMI_CMD tx list \
++         | grep -B1 'Batch.*passed' \
++         | grep -oE 'tx-[0-9]+' \
++         | sort -u
++ # Simulate a list of tx ids as a batch.
++ # Usage: aomi_simulate tx-1 tx-2
++ aomi_simulate() {
++     if [ $# -eq 0 ]; then
++     if [ $# -eq 0 ]; then
++         echo "[aomi-workflow] usage: aomi_simulate tx-1 [tx-2 ...]" >&2
++         return 2
++         return 2
++     $AOMI_CMD tx simulate "$@"
++ # Sign a list of tx ids. Confirms with the user first.
++ # Usage: aomi_sign tx-1 tx-2 [extra-flags...]
++ aomi_sign() {
++         echo "[aomi-workflow] usage: aomi_sign tx-1 [tx-2 ...] [--rpc-url <url>] [--eoa]" >&2
++     echo "[aomi-workflow] About to sign:" >&2
++     for arg in "$@"; do
++         case "$arg" in
++             tx-*) echo "  - $arg" >&2 ;;
++         esac
++     done
++     done
++     read -p "Continue? [y/N] " yn
++     case "$yn" in
++         [Yy]*) $AOMI_CMD tx sign "$@" ;;
++         *)     echo "[aomi-workflow] aborted." >&2; return 1 ;;
++ # Full happy path: simulate the passing batch, then sign it.
++ # Usage: aomi_run_pending
++ #        aomi_run_pending --rpc-url https://base.publicnode.com    # cross-chain sign
++ aomi_run_pending() {
++     local pending
++     pending=$(aomi_pending_passing | tr '\n' ' ')
++     if [ -z "$(echo "$pending" | tr -d ' ')" ]; then
++         echo "[aomi-workflow] no passing-batch tx ids to sign" >&2
++         return 0
++     # shellcheck disable=SC2086
++     # shellcheck disable=SC2086
++     aomi_simulate $pending
++     aomi_sign $pending "$@"
++ # Session helpers
++ # List sessions with topics + pending counts.
++ aomi_sessions() {
++     $AOMI_CMD session list
++ # Resume + read pending in one shell call (active-session pointer survives).
++ # Usage: aomi_resume 43
++ aomi_resume() {
++     local sid="${1:?session id required}"
++     $AOMI_CMD session resume "$sid" > /dev/null && $AOMI_CMD tx list
++ # Find a session by topic substring and resume it.
++ # Usage: aomi_resume_by_topic "bridge to Base"
++ aomi_resume_by_topic() {
++     local topic="${1:?topic substring required}"
++     local sid
++     sid=$($AOMI_CMD session list \
++         | awk -v topic="$topic" 'index($0, topic) {print $1}' \
++         | head -1 \
++         | sed 's/session-//')
++     if [ -z "$sid" ]; then
++         echo "[aomi-workflow] no session matching: $topic" >&2
++         return 1
++         return 1
++     aomi_resume "$sid"
++ # Clear the active session pointer (next chat starts fresh).
++ aomi_close() {
++     $AOMI_CMD session close
++ # Inspection / debug
++ # Show a brief summary of every session-N.json file under ~/.aomi/sessions.
++ aomi_session_dump() {
++     local dir="${AOMI_STATE_DIR:-$HOME/.aomi}/sessions"
++     if [ ! -d "$dir" ]; then
++         echo "[aomi-workflow] no sessions dir at $dir" >&2
++     for f in "$dir"/session-*.json; do
++         [ -f "$f" ] || continue
++         jq -r '"\(input_filename | split("/") | last): chainId=\(.chainId) pubkey=\(.publicKey // "—") pending=\(.pendingTxs // [] | length) signed=\(.signedTxs // [] | length)"' "$f"
++ # Replay the active session's conversation (backend-sourced).
++ aomi_log() {
++     $AOMI_CMD session log
++ # Example end-to-end usage
++ # Single-tx flow (no approve, no batch):
++ #   aomi_detect
++ #   aomi_check_version
++ #   aomi_chat_new "stake 0.01 ETH with Lido"
++ #   aomi_pending
++ #   aomi_run_pending          # simulates + signs the passing batch
++ # Multi-step batch (approve + swap):
++ #   aomi_chat_new "swap 100 USDC for WETH on Uniswap V3"
++ #   aomi_run_pending
++ #   aomi_run_pending
++ # Cross-chain (queued tx is on Base, override RPC for sign):
++ #   aomi_chat_new "bridge 50 USDC from Ethereum to Base via CCTP"
++ #   aomi_run_pending --rpc-url https://ethereum-rpc.publicnode.com
++ # Recovery — pending txs from a session that closed:
++ #   aomi_resume_by_topic "bridge to Base"
++ # Inspect what's on disk:
++ #   aomi_session_dump
++ #   aomi_log
++ # If invoked directly (not sourced), run a self-test
++ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
++     aomi_detect
++     aomi_check_version
++     echo "[aomi-workflow] sourced functions:"
++     echo "  - aomi_chat / aomi_chat_new / aomi_pending / aomi_pending_passing"
++     echo "  - aomi_simulate / aomi_sign / aomi_run_pending"
++     echo "  - aomi_sessions / aomi_resume / aomi_resume_by_topic / aomi_close"
++     echo "  - aomi_session_dump / aomi_log"
++     echo
++     echo "Usage: source ${BASH_SOURCE[0]:-$0}"
++ fi

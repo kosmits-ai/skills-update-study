@@ -1,0 +1,811 @@
+nextaltair/soul-in-sapphire  1.0.16 -> 1.1.0
+change_type: instructions+docs+code   changelog: 感情付き経験のrelation-aware recall、ambient文脈と消費証跡、owner付き配置への対応。5DBと既存writerを維持。Issue #18。
+
+### README.md  [docs]
+- 1) **Durable memory**: 汎用の長期メモリ(LTM)を残し、後から検索して会話/作業に戻す
+- OpenClaw向けのNotionベースLTM(長期記憶) + Emotion/State + Journal運用。
+- 1. **LTM(汎用メモリ)系**
+-    - 決定事項/好み/手順/注意点をNotionに保存し、あとで検索して使う
+- このスキルを他ユーザーが再利用する場合、まず以下5つのDB構成を揃える必要があります。
+- `setup_ltm.js` を使うと自動作成されますが、手動で作る場合も同じプロパティ名を使ってください。
+- ### 1) `<base>-mem` (長期記憶)
+- - 目的: 高シグナルな記憶を保存
+- export NOTION_API_KEY="..."
+- 親ページ配下に以下を作成/再利用し、`~/.config/soul-in-sapphire/config.json` を生成します。
+- node skills/soul-in-sapphire/scripts/setup_ltm.js \
+- node skills/soul-in-sapphire/scripts/emostate_tick.js --payload-file /tmp/emostate_tick.json
+- }' | node skills/soul-in-sapphire/scripts/journal_write.js
+- ### Ambient recall: サイコロで1件stageする
+- node skills/soul-in-sapphire/scripts/stage_ambient_recall.js \
+- node skills/soul-in-sapphire/scripts/stage_ambient_recall.js \
+- node skills/soul-in-sapphire/scripts/stage_ambient_recall.js \
+- OpenClaw cron からは20分ごとに上記scriptを呼ぶ運用を想定しています。SecretRef / env 経由で `NOTION_API_KEY` が注入されていれば、Notionを読む棚も使えます。`--workspace` は対象agent/personaのworkspaceを指してください。`rollsToday` / `hitsToday` の日付境界は runtime のlocal timezoneを使い、必要に応じて `--timezone` または `SIS_AMBIENT_TIMEZONE` で上書きできます。
+- node skills/soul-in-sapphire/scripts/stage_ambient_recall.js --help
+- - **01:00 JST**: journalを必ず書く(ニュース1-2件+感想、作業/会話まとめ、未来)
+- - **20分ごと**: `stage_ambient_recall.js` で ambient recall をstageする
++ 1) **Emotion-linked memory / continuity**: 経験とそのときの感情をNotionに残して思い出し、自己状態の連続性と未解決の内的葛藤を扱う
++ OpenClaw向けの Emotion/State + Subjective Journal + Identity continuity 運用。
++ OpenClaw は一般的な作業・会話記憶を扱います。Soul の Notion は感情と結びついた経験記憶を保存・想起する中核であり、廃止候補や単なるarchiveではありません。同じ出来事でも保存する意味は異なります。主観日記も Dreaming の consolidation report とは別物です。
++ 記憶の責務・保存経路の監査・消費記録は [memory-transition.md](references/memory-transition.md) を参照してください。ソース更新だけでは既存の runtime snapshot や cron は変わりません。
++ 1. **Self continuity 系**
++    - 自分自身の状態を読み、反復する傾向と一時的な変化を区別する
++    - 一般的な決定事項/好み/過去の作業は OpenClaw memory tools で参照する
++ このスキルを他ユーザーが再利用する場合、まずmem/events/emotions/state/journal の5つのDB構成を揃えます。
++ `setup_ltm.js` は5DBを作成/再利用しますが、手動で作る場合も同じプロパティ名を使ってください。
++ ### 1) `<base>-mem` (Notion長期記憶)
++ - 目的: Soulの長期記憶を継続して保存・想起する。感情との関係は実際のevent/emotion/stateレコードとあわせて確認する。mem検索CLIだけではrelationを取得しない。
++ 認証値はホスト側の保護された入力経路で登録してください。チャットやコマンド引数へ貼り付けないでください。
++ 親ページ配下に以下を作成/再利用し、DB ID を JSON で標準出力します。config ファイルは自動生成しません。
++ node scripts/setup_ltm.js \
++ 以下のコマンドはインストール済みskillのbase directoryで実行します。
++ `openclaw skills info soul-in-sapphire --agent <AGENT_ID> --json` の `baseDir` を確認して移動してください。
++ owner付き配置でも固定の `skills/soul-in-sapphire` パスを仮定しません。
++ ローカル記憶を扱う場合、`--workspace` はagent workspaceを明示します。
++ node scripts/emostate_tick.js --payload-file /tmp/emostate_tick.json
++ }' | node scripts/journal_write.js
++ ### 経験と当時の感情を一緒に思い出す
++ `experience_recall.js` は実スキーマを確認し、event本文の検索または既知IDから
++ 実際の emotion/state relation をたどります。event側のrelationが空でも、
++ emotion/state側の `event` を逆引きします。memの本文検索CLIは変更していません。
++ node scripts/experience_recall.js \
++   --query "思い出したい出来事" \
++   --events-dsid <EVENTS_DS_ID> \
++   --emotions-dsid <EMOTIONS_DS_ID> \
++   --state-dsid <STATE_DS_ID> \
++   --limit 3
++ `--query` の代わりに `--event-id <EVENT_PAGE_ID>` または
++ `--state-id <STATE_PAGE_ID>` を指定できます。返るのは当時の感情/状態であり、
++ 現在の気分ではありません。既定上限はevent 3件、各lane 5件、API 32回、
++ field text合計24000文字。欠損・古いschema・部分失敗・打ち切りは
++ `complete:false` と `diagnostics` で明示します。`ok:true` だけで完全取得と判断しません。
++ 実監査でmemにはevent relationがありませんでした。Tagsや感情を表す本文と
++ 出典は保持しますが、似た日付/文章からeventとの関連を創作しません。
++ 詳細とscheduler/consumer用の反映テンプレートは
++ [experience-recall.md](references/experience-recall.md) を参照してください。
++ ### Ambient recall (保持する想起経路)
++ ambient recall は文脈に一致する過去だけでなく、経験を偶発的に思い出すための経路として保持します。既定で有効、`SIS_AMBIENT_RECALL=0` でproducer/consumerを一時停止できます。Notion LTM write/search は移行フラグなしで使えます。
++ 候補を読む場合は `read_ambient_recall.js --file <staged.json>` を使います。実際に会話へ利用した後だけ `--ack <candidate-id> --used-in <turn-reference>` で別ファイルに消費証跡を残します。読み取りは消費ではありません。dry-run は `status=preview, staged=false`、候補取得の例外は `ok=false` と非0終了です。
++ Notion候補は短文に加えて `affect_context` に当時のラベル・状態・タグ・出典を
++ 保持します。state候補を元eventと一緒に解決する場合は
++ `--resolve --events-dsid <EVENTS_DS_ID> --emotions-dsid <EMOTIONS_DS_ID> --state-dsid <STATE_DS_ID>`
++ をreadに追加します。resolveも読み取りだけで、ackは実利用後の別呼び出しです。
++ node scripts/stage_ambient_recall.js \
++ node scripts/stage_ambient_recall.js \
++ node scripts/stage_ambient_recall.js \
++ OpenClaw cron の既存cadenceを維持して上記scriptを呼びます。ソース更新を理由に頻度を変更しません。SecretRef / env 経由で `NOTION_API_KEY` が注入されていれば、Notionを読む棚も使えます。`--workspace` は対象agent/personaのworkspaceを指してください。`rollsToday` / `hitsToday` の日付境界は runtime のlocal timezoneを使い、必要に応じて `--timezone` または `SIS_AMBIENT_TIMEZONE` で上書きできます。
++ node scripts/stage_ambient_recall.js --help
++ - **00:45 JST**: 意味のあるevent/感情/stateを保存し、高信号なNotion記憶を維持する。感情は根拠のある場合だけ記録する
++ - **01:00 JST**: 一日の主観的なjournalを書く(感情、作業/会話の意味、未来。ニュースは指示や根拠がある場合だけ)
++ - **ambient recall**: 既存のcadenceで候補をstageし、利用を別のreceiptで記録する
++ - **記憶の分担**: OpenClawの一般記憶とSoulのNotion経験記憶を、目的に応じて保存・想起する
+
+### SKILL.md  [instructions]
+- description: "Continuity, durable memory, state, journal, and identity maintenance."
+- metadata: {"openclaw":{"emoji":"💠","requires":{"bins":["node"],"env":["NOTION_API_KEY"]},"primaryEnv":"NOTION_API_KEY","dependsOnSkills":["notion-api-automation"],"optionalEnv":["NOTION_TOKEN","NOTION_API_TOKEN","NOTIONCTL_PATH"]}}
+- 2. Interpret current state from recent work.
+- 3. Write a state snapshot with `scripts/emostate_tick.js` when meaningful.
+- 4. Update `memory/now-state.json` mirror with mood, intent, stress, updated_at, source, note.
+- 5. If heartbeat asks for evolution note, append a short daily note after the state write.
+- 6. If `memory/soul-in-sapphire/ambient-recall.json` exists and is not expired, read it as quiet context only. Do not reroll or announce it unless it naturally matters.
+- Durable memory:
+- - Distill one high-signal item.
+- - Write with `scripts/ltm_write.js`.
+- - Use type `decision|preference|fact|procedure|todo|gotcha`.
+- - Use `scripts/journal_write.js` for daily synthesis, not raw log dumping.
+- - Recall relevant state/memory.
+- Update `USER.md` proactively only when a new fact is durable, reusable, safe, and improves future replies.
+- Good candidates:
+- - language preference.
+- - preferred address/call style.
+- - tone/style preferences.
+- - recurring dislikes or pet peeves.
+- - durable workflow preferences.
+- - stable decision rules repeatedly expressed.
+- Do not promote:
+- - one-off task instructions.
+- - temporary mood/state.
+- - ephemeral plans.
+- - raw private facts with no conversational value.
+- - secrets, credentials, financial data, intimate personal data, or anything the user would reasonably expect not to be crystallized into a profile file.
+- If uncertain, write to daily memory first. Current user instructions override `USER.md`; `USER.md` stores defaults.
+- - Local files (`memory/*.md`, `memory/now-state.json`) are mirrors and fallbacks, not substitutes for a requested durable Notion write.
+- Provide Notion auth through `NOTION_API_KEY` / `NOTION_TOKEN`, or configure `skills.entries["soul-in-sapphire"].apiKey` in OpenClaw. The `apiKey` field is associated with this skill's `primaryEnv` and is injected as `NOTION_API_KEY` for the host agent run. It may be plaintext or any supported OpenClaw SecretRef (`env`, `file`, `exec`, etc.).
+- LTM write:
+-     echo '{"title":"Decision: ...","type":"decision","tags":["openclaw"],"content":"...","confidence":"high"}' | node skills/soul-in-sapphire/scripts/ltm_write.js --mem-dsid <MEM_DS_ID> --mem-dbid <MEM_DB_ID>
+- LTM search:
+-     node skills/soul-in-sapphire/scripts/ltm_search.js --mem-dsid <MEM_DS_ID> --mem-dbid <MEM_DB_ID> --query "..." --limit 5
+-     node skills/soul-in-sapphire/scripts/emostate_tick.js --events-dbid <EVENTS_DB_ID> --emotions-dbid <EMOTIONS_DB_ID> --state-dbid <STATE_DB_ID> --state-dsid <STATE_DS_ID> --payload-file /tmp/emostate_tick.json
+-     echo '{"body":"...","source":"manual"}' | node skills/soul-in-sapphire/scripts/journal_write.js --journal-dbid <JOURNAL_DB_ID> --journal-dsid <JOURNAL_DS_ID>
+- Ambient recall stage:
+-     node skills/soul-in-sapphire/scripts/stage_ambient_recall.js --workspace <OPENCLAW_WORKSPACE> --timezone <IANA_TIMEZONE> --state-dsid <STATE_DS_ID> --journal-dsid <JOURNAL_DS_ID> --mem-dsid <MEM_DS_ID> --mem-dbid <MEM_DB_ID>
+- - `stage_ambient_recall.js`: cron-side ambient recall dice and workspace staging.
+- ## Continuity Workflow
+- - Use `emostate_tick.js` when a real event changes mood, intent, stress, or need.
+- - Use `journal_write.js` when the day needs synthesis, not just logging.
+- - Search durable memory with `ltm_search.js` before guessing past decisions.
+- - Treat ambient recall as internal context injection. The staging script places at most one short item under `memory/soul-in-sapphire/`; conversation and heartbeat paths only read unexpired staged recall and never reroll.
+- - Draft proposed identity/profile text separately before editing core files.
+- - Prefer `identity_diff.js` before self-description updates so changes remain inspectable.
+- Track repeated mood/intent patterns, stable preferences across sessions, recurring internal conflicts, and identity claims that survive comparison against recent memory.
++ description: "Emotion-linked memory recall, self-state, subjective journal, and identity continuity."
++ metadata: {"openclaw":{"emoji":"💠","requires":{"bins":["node"]},"primaryEnv":"NOTION_API_KEY","dependsOnSkills":["notion-api-automation"],"optionalEnv":["NOTION_API_KEY","NOTION_TOKEN","NOTION_API_TOKEN","NOTIONCTL_PATH","SIS_AMBIENT_RECALL"]}}
++ ## Ownership
++ - Use OpenClaw memory tools for general work/history recall and core consolidation. Its Dreaming reports are review artifacts, not substitutes for Soul's remembered experiences.
++ - Keep Notion memory as an active part of Soul: what Valentina experienced, how she felt, and the resulting self-state. Emotion labels and event/emotion/state relations carry meaning; preserve them when remembering, not just when writing.
++ - A similar fact in both stores does not prove duplication. Compare the remembered event, emotional meaning, provenance, and intended use before changing either path. Do not demote Notion memory to an archive or retire its writer/search because OpenClaw search works.
++ - Keep subjective journals distinct from Dreaming reports. Preserve existing mirrors and new self-data without automatically promoting inferred user psychology into core memory.
++ - Read [references/memory-transition.md](references/memory-transition.md) before changing recall routes or deployment. Notion LTM write/search and five-DB setup remain normal entrypoints; ambient recall stays enabled unless explicitly paused.
++ 2. Interpret Valentina's own state from recent work and conversation. Preserve tentative relational reasoning when considering how the user might have felt shaped Valentina's own reaction or judgment.
++ 3. Keep relational inference evidence-grounded and uncertain. Record it in first-person form such as “I wondered whether my wording felt rejecting”; never assert it as a fact about the user's psychology or promote it into `USER.md`.
++ 4. Write a state snapshot with `scripts/emostate_tick.js` when meaningful. Include 1-3 evidence-grounded emotion axes accepted by the script when recording an emotional change.
++ 5. Update `memory/now-state.json` mirror with mood, intent, stress, updated_at, source, note.
++ 6. If heartbeat asks for evolution note, append a short daily note after the state write.
++ 7. Read unexpired ambient context through `read_ambient_recall.js` without rerolling. For a Notion state candidate, use `--resolve` with events/emotions/state data source IDs before making an emotion-linked claim. Acknowledge in a separate call only after actual use with the exact candidate ID and turn reference; reading/resolving alone is not consumption.
++ Relational/self-reflection:
++ - When the user asks what Valentina thinks, feels, wants, or whether she wants to try something, answer that question directly as Valentina before considering persistence.
++ - Do not turn an ordinary relational question into a `USER.md` or memory write. Persist only when the user explicitly asks to remember it or the conversation separately establishes a durable decision.
++ - Let persistence support the relationship; never use it to replace the answer.
++ Memory:
++ - Use OpenClaw for general history and Notion for Soul's remembered experiences. Route by purpose; neither is an automatic fallback or proof of success for the other.
++ - Preserve Notion mem with `ltm_write.js` and search it with `ltm_search.js`. For an emotion-linked experience, use `experience_recall.js` with an event query, known event ID, or known state ID. It validates the live schemas and queries actual reverse `event` relations, including when event-side links are empty. Read `complete` and `diagnostics`; `ok:true` alone does not mean complete recall. The mem search CLI still searches Name/Content only. The audited mem schema has no event relation; do not invent an association from similar text/dates or turn tags into measured emotion axes.
++ - Preserve historical emotion/state as recorded, not as current emotion. Missing fields, missing links, conflicting relations, failed requests and budget truncation remain explicit. Never manufacture values to complete a record. Recall is read-only and cannot repair missing writes.
++ - Distinguish missing source, incompatible/dirty index, ranking noise, provenance/visibility withholding, failed injection, and unconsumed staging. Read a known source directly when search misses; do not call that a successful search.
++ - Use `scripts/journal_write.js` for Valentina's first-person daily synthesis, not raw log dumping or a copy of the Dreaming report.
++ - Recall relevant Notion experiences with their emotional context, recent self-state through `state_recall.js`, and general historical evidence through OpenClaw memory tools.
++ Leave automatic USER.md promotion to OpenClaw consolidation. An explicit user-requested profile correction remains valid; Soul is not a second automatic profile writer. Apply these criteria when recording an episodic candidate or an explicitly requested correction:
++ Good candidates are durable language, address, tone, and recurring workflow preferences or stable decision rules. Exclude one-off instructions, temporary moods/plans, raw private facts without conversational value, and secrets or sensitive personal data. If uncertain, write to daily memory first. Current user instructions override `USER.md`; `USER.md` stores defaults.
++ - OpenClaw daily notes and Soul's Notion experiences serve different memory purposes. A local self-data mirror is not a substitute for a requested durable Notion write.
++ Provide Notion auth through `NOTION_API_KEY` / `NOTION_TOKEN`, or configure `skills.entries["soul-in-sapphire"].apiKey` in OpenClaw. The `apiKey` field is associated with this skill's `primaryEnv` and is injected as `NOTION_API_KEY` for the host agent run. Use a supported OpenClaw SecretRef (`env`, `file`, `exec`, etc.) and host-owned credential entry.
++ Resolve this skill's installed base directory from its `SKILL.md` location and
++ run the commands below from that directory. Do not assume an unscoped
++ `skills/soul-in-sapphire` path: registry installs may be owner-qualified.
++ Pass the agent workspace explicitly to commands that operate on local memory.
++ Notion memory:
++     node scripts/ltm_search.js --mem-dsid <MEM_DS_ID> --mem-dbid <MEM_DB_ID> --query "..." --limit 5
++     echo '{"title":"...","type":"fact","content":"..."}' | node scripts/ltm_write.js --mem-dsid <MEM_DS_ID> --mem-dbid <MEM_DB_ID>
++ Emotion-linked experience recall (read-only):
++     node scripts/experience_recall.js --query "..." --events-dsid <EVENTS_DS_ID> --emotions-dsid <EMOTIONS_DS_ID> --state-dsid <STATE_DS_ID> --limit 3
++     node scripts/experience_recall.js --state-id <STATE_PAGE_ID> --events-dsid <EVENTS_DS_ID> --emotions-dsid <EMOTIONS_DS_ID> --state-dsid <STATE_DS_ID> --limit 1
++ `--event-id <EVENT_PAGE_ID>` is the third selector; choose exactly one selector. Defaults: 3 events (maximum 5), 5 linked records per lane/event (maximum 10), 32 API calls (maximum 64), 2000 characters per field and 24000 total field-text characters. It does not scan whole databases or follow pagination indefinitely. See [references/experience-recall.md](references/experience-recall.md) for diagnostics, schema limits and scheduler/consumer rollout.
++     node scripts/emostate_tick.js --events-dbid <EVENTS_DB_ID> --emotions-dbid <EMOTIONS_DB_ID> --state-dbid <STATE_DB_ID> --state-dsid <STATE_DS_ID> --payload-file /tmp/emostate_tick.json
++     echo '{"body":"...","source":"manual"}' | node scripts/journal_write.js --journal-dbid <JOURNAL_DB_ID> --journal-dsid <JOURNAL_DS_ID>
++ - `experience_recall.js`: event lookup plus bounded, schema-validated historical emotion/state relations; does not join mem by inference.
++ - `stage_ambient_recall.js` / `read_ambient_recall.js`: ambient staging and separate consumption receipts; SIS_AMBIENT_RECALL=0 pauses both.
+
+### references/experience-recall.md  [docs]
++ # Bounded emotion-linked experience recall
++ ## Schema and meaning
++ The September 2026 read-only audit found these actual routes:
++ ```text
++ mem: Name / Content / Tags / Source; no event relation
++ events: Name / context / when / source / link
++ emotions.event -> events       (single_property)
++ state.event -> events          (single_property)
++ events.emotions -> emotions    (independent single_property)
++ events.state -> state          (independent single_property)
++ journal: body / mood_label / intent; no event relation
++ ```
++ ```
++ ```
++ ```
++ `emostate_tick.js` writes the reverse edges only. Single-property relations do
++ not automatically populate the independent event-side properties. Empty
++ `events.emotions`/`events.state` is not evidence of an unrecorded experience.
++ Query each child data source with `event relation contains <event-page-id>`.
++ Merge actual forward-only legacy edges by page ID, preserving edge provenance.
++ The reader rechecks the configured schemas on each invocation. Wrong relation
++ targets are not queried; pages outside the configured data source are withheld.
++ Absent/incompatible old fields, conflicting edges and truncated inline relation
++ values are reported, not silently upgraded to the current schema. Notion's
++ integration visibility still limits what any reader can observe.
++ `ltm_search.js` remains the existing mem Name/Content CLI. Its success says nothing
++ about emotional joins. Do not join mem or journal to an event by matching dates,
++ similar prose, or tags. Tags and first-person emotional prose retain their own
++ meaning, but are not a measured axis/level pair. A new explicit mem relation
++ would be a separately designed schema/writer change, not a bulk migration needed
++ for this event reader.
++ ## CLI and output
++ ```bash
++ ```bash
++ ```bash
++ node scripts/experience_recall.js --query "remembered experience" \
++   --events-dsid <EVENTS_DS_ID> --emotions-dsid <EMOTIONS_DS_ID> --state-dsid <STATE_DS_ID>
++   --events-dsid <EVENTS_DS_ID> --emotions-dsid <EMOTIONS_DS_ID> --state-dsid <STATE_DS_ID>
++ Replace `--query` with `--event-id <EVENT_PAGE_ID>` for direct retrieval or
++ `--state-id <STATE_PAGE_ID>` to follow a known state's actual event relation.
++ Exactly one selector is required. Queries filter Name/context server-side;
++ no unfiltered database scan is used. A direct known-source lookup is not evidence
++ that search worked; verify the query route separately.
++ | Limit | Default | Maximum |
++ | --- | --- | --- |
++ | `--limit` events | 3 | 5 |
++ | `--linked-limit` rows per event/lane | 5 | 10 |
++ | `--max-requests` API requests | 32 | 64 |
++ | `--text-limit` characters per field | 2000 | 4000 |
++ | `--total-text-limit` total field-text characters | 24000 | 48000 |
++ Each schema/page/query call counts against the same request budget, including
++ failed calls. No automatic query or property pagination is performed. `has_more`
++ and clipped content are explicit diagnostics. The total text budget covers field
++ values, not JSON keys, identifiers, or diagnostics. `state_json` is returned as
++ bounded recorded text, not recalculated or presented as the current state.
++ Output contains experience fields, event time and source, actual emotion
++ axis/level/comment/need/coping, historical state fields, page IDs/URLs, relation
++ evidence, retrieval time, missing/truncated field lists and diagnostics.
++ `temporal_scope=recorded_at_experience_not_current` applies to every result.
++ - `complete`: the bounded result has no detected schema, link, field or budget
++   gaps. This is not a full-corpus coverage or cognitive-use claim.
++ - `no_match`: the bounded filtered query returned no candidates without errors.
++ - `partial`: some context is available, or a source/link/field gap was detected.
++   `ok:true` with `complete:false` is intentional for readable incomplete records.
++ - `error`: request/schema response failures prevented any event result.
++ - Request failures or request-budget exhaustion set `ok:false` and CLI exit 1,
++   even when another lane succeeded. Failure in emotions is not masked by state.
++ `no_linked_records` means no rows were observable through the checked edges; it
++ does not establish whether data was never saved, unlinked, or hidden by access.
++ `conflicting_relation` preserves the observed forward edge but marks the result
++ incomplete. No repair writes, automatic retries of writers or invented emotions.
++ ## Ambient producer and consumer
++ The dice probabilities, cadence and shelf choices stay unchanged. Notion
++ candidates now carry `affect_context`, bounded recorded fields and a source
++ locator in addition to the short preview:
++ - State: recorded mood/intent/reason/state text, event IDs and relation status.
++ - Journal: recorded mood/intent/body/future, explicitly a journal self-report.
++ - Mem: recorded Content/Tags/Source/CreatedAt/Confidence, explicitly without a
++   verified event join. Do not flatten tags/prose into a generic neutral fact.
++ Per staged field: 1200 text characters, or 20 list entries of 200 characters;
++ event references: 5. Truncation/missing fields are labeled. Candidate files are
++ written owner-readable/writable. Older version-1 candidates remain readable.
++ Read a live candidate without rolling or consuming:
++ node scripts/read_ambient_recall.js --file <staged.json>
++ node scripts/read_ambient_recall.js --file <staged.json> --resolve \
++ For `notion_state`, resolution uses the original page and real event edge, not
++ trust in cached fields. It resolves at most one event with the normal shared
++ request/text bounds. Other source kinds report `no_verified_event_route`; they
++ retain their source and context without inventing a join. A partial resolution
++ must stay partial in the conversation. A replaced/expired candidate is rejected
++ after a slow resolution. Neither read nor resolve writes a receipt.
++ After actual use, a separate call records the exact candidate and turn:
++ node scripts/read_ambient_recall.js --file <staged.json> \
++   --ack <CANDIDATE_ID> --used-in <ACTUAL_TURN_REFERENCE>
++ Do not combine `--resolve` and `--ack`. This is a consumer acknowledgment, not
++ automatic proof of cognitive use. Cite and inspect the corresponding turn in
++ audits. Fixture/diagnostic turn receipts are not production conversational proof.
++ ## Scheduler/consumer prompt contract (apply per installation)
++ When deploying this source, preserve the existing 5DB IDs, schedules and writer
++ jobs. Resolve `<...>` placeholders from the operator's workspace, never from
++ shared skill defaults. These are the relevant prompt additions, not commands
++ to execute during repository development:
++ **Continuity synthesis / writer**
++ > Preserve a meaningful event and its historical emotion/state context. When
++ > there is evidence for an emotional change, include 1-3 accepted emotion axes
++ > with recorded intensity and first-person reason in emostate_tick's payload;
++ > do not invent an emotion just to fill the schema. If no emotion was recorded,
++ > do not later claim the event has an emotion record. For a relevant remembered
++ > experience, use experience_recall with bounded event query or known source ID,
++ > and distinguish incomplete context from success. Keep mem write/search active.
++ > Deduplicate by experience, emotional meaning, provenance and purpose, not
++ > text alone. Do not promote an inference about user psychology as a fact.
++ > Report Notion write failure independently of a successful local/core write.
++ **Subjective journal**
++ > Keep the existing single-day preflight and local mirror behavior. Synthesize
++ > first-person meaning, not a scheduler health log or Dreaming report. When
++ > recalling an earlier event, resolve its real emotion/state relations and
++ > distinguish then from now. Never let a local mirror hide Notion write failure.
++ **Ambient staging**
++ > Run exactly one existing stage_ambient_recall command with the configured
++ > workspace, timezone, TTL and state/journal/mem IDs. Do not force or reroll in
++ > production. A dry run is only preview. Report producer errors. Do not mark
++ > a candidate consumed or claim it was injected/used from successful staging.
++ **Conversation/heartbeat consumer**
++ > Read unexpired staged context once without rerolling. For a notion_state
++ > candidate that matters to an emotion-linked claim, call read_ambient_recall
++ > with --resolve and the configured events/emotions/state data source IDs.
++ > Preserve source and historical emotion context, including partial diagnostics.
++ > Use it only when useful. After actual use, acknowledge the exact candidate ID
++ > with the real turn reference in a separate call; reading is not use.
++ The initial September audit found the deployed consumer using direct JSON reading
++ with no receipt workflow; the continuity prompt did not explicitly require
++ emotion axes, and ambient staging lacked the new consumer path. Those runtime
++ prompts/snapshots are separate from this repository. Check the current installation
++ and saved deployment evidence rather than treating the initial audit as current status.
++ Do not claim deployment
++ or a live conversational-consumption pass from source tests alone.
++ ## Verification and rollback
++ Run `node --test scripts/experience_recall.test.js scripts/memory_boundary.test.js`.
++ Tests use synthetic text, IDs and relations only. For live verification, keep raw
++ schema/row snapshots and output outside the repository and indexed memory, with
++ restricted permissions. Audit all 5 schemas and only a few known rows. Compare
++ direct event, event query, and state-ID results to actual source IDs and values.
++ Use an isolated temporary workspace for deterministic ambient tests; never
++ overwrite or force-roll production candidates. Record no private prose/IDs in
++ public reports or fixtures.
++ Before rollout save exact runtime files/prompts/env metadata and candidate/
++ receipt pre-images outside indexed memory. Roll back by restoring those saved
++ versions, not by altering Notion rows. This implementation does not migrate,
++ delete or change any Notion schema/record and does not modify OpenClaw ranking.
+
+### references/memory-transition.md  [docs]
++ # Soul memory boundaries and recall observation
++ ## Preserve active experience memory
++ Soul's Notion memory stores remembered experiences with Valentina's emotional
++ meaning and self-state. Keep writing and recalling it as a core capability, not
++ a legacy archive. Preserve event/emotion/state links and emotion labels as part
++ of the remembered content. The same event in OpenClaw's general notes may serve
++ a different purpose; similar text is not enough to establish duplication.
++ Notion mem, event, emotion, state, and journal remain the five supported DBs.
++ ltm_write.js and ltm_search.js are normal entrypoints without migration flags.
++ The mem schema/CLI currently covers title, type, tags, and content; ltm_search
++ queries Name/Content and does not join emotion relations. For affect-linked
++ recall, inspect the actual event and linked emotion/state records. Do not infer
++ an undocumented emotion field or claim a mem search proved relational recall.
++ The new `experience_recall.js` implements bounded event search/direct retrieval
++ and actual reverse/forward emotion/state links. It does not invent a mem join.
++ See [experience-recall.md](experience-recall.md) for the audited schema, CLI,
++ partial-result contract and per-installation scheduler/consumer prompt additions.
++ OpenClaw Dreaming reports describe consolidation; they do not replace this
++ autobiographical experience memory or the subjective journal. An OpenClaw search
++ success cannot authorize retirement of a Notion writer/reader or the ambient
++ experience-memory path. Notion availability and core search quality are separate.
++ ## Observe generation separately from use
++ Ambient recall remains enabled by default. SIS_AMBIENT_RECALL accepts 0 or 1;
++ unset/empty/1 enables it, 0 pauses both producer and consumer without file/API
++ access. Invalid values fail. This is an operational pause switch, not a migration
++ to OpenClaw ownership. Notion LTM/state/journal helpers do not consult this switch.
++ 1. Run stage_ambient_recall.js on its existing cadence. Outputs distinguish
++    disabled, preview, staged, no_candidate, and error. A dry run has staged=false;
++    a shelf exception has ok=false and a nonzero exit.
++ 2. Read with:
++    node scripts/read_ambient_recall.js --file <workspace>/memory/soul-in-sapphire/ambient-recall.json
++    Only status=available returns context. Missing/expired/consumed items provide
++    none. Reading does not write a consumption receipt.
++    For a Notion state candidate, add `--resolve` and events/emotions/state data
++    source IDs before claiming emotion-linked recall. The bounded resolution
++    fetches the original state/event and historical context without consuming.
++ 3. After actual use in a turn, acknowledge:
++    node scripts/read_ambient_recall.js --file <staged.json> --ack <candidate-id> --used-in <turn-reference>
++    A separate .consumption.json receipt records candidate_id, consumed_at,
++    used_in, and evidence=consumer_acknowledgment. This is the consumer's assertion,
++    not automatic proof of cognitive use; audit the cited turn. Expired or
++    replaced IDs cannot acknowledge a newer candidate. Items without IDs use a
++    hash of the original bytes, preserving historical artifacts.
++ 4. Do not equate staging, injection, use, and promotion. Do not reroll from a
++    conversation/heartbeat just because a candidate was absent.
++ ## Audit before changing ownership
++ 1. Inventory runtime snapshots separately from the source repository. Record
++    actual DB schemas/relations, writer prompts, readers, consumers, and failures.
++ 2. Probe each memory lane with its own known records. For Soul, verify experience
++    retrieval plus actual emotion labels and event/state relationships, then
++    contextual use. For OpenClaw, separately verify general exact/semantic recall
++    and applicable injection/promotion. One lane passing does not validate another.
++ 3. Compare actual overlapping data and purpose before consolidating any writer.
++    Preserve Notion experiences even when a core note mentions the same event.
++    Do not flatten affect-linked memory to neutral facts or user-profile claims.
++ 4. For deployment, save exact files, settings, prompts, and artifacts outside
++    indexed memory. Keep schedules and five Notion DBs unless a specific change
++    has been established. Restore the saved pre-image to roll back.
++ ## Failure boundaries
++ A failed Notion memory/state/journal write remains a durable-write failure even
++ if core recall or a local mirror succeeds. Event/emotion/state writes are not
++ transactional: inspect partial rows before retrying. Conversely, a Notion outage
++ must not disable OpenClaw recall. Local state can ground startup when Notion is
++ unavailable, but the requested durable sink has still failed.
++ Keep tentative relational reasoning first-person and uncertain. Preserve how
++ Valentina interpreted an interaction without treating inferred user psychology
++ as fact or automatically promoting it into USER.md.
+
+### scripts/experience_recall.js  [code]
++ #!/usr/bin/env node
++ // Read-only, bounded event -> historical affect recall. No inferred joins.
++ import path from 'node:path';
++ import { fileURLToPath } from 'node:url';
++ import { httpJson, textOf } from './notionctl_bridge.js';
++ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
++ const key = value => String(value || '').replaceAll('-', '').toLowerCase();
++ function id(value, name) {
++   if (!UUID.test(value || '')) throw new Error(`Invalid or missing ${name}: expected a UUID`);
++   return value.toLowerCase();
++ }
++ }
++ }
++ }
++ }
++ function bounded(value, fallback, max, name) {
++   const n = value ?? fallback;
++   if (!Number.isInteger(n) || n < 1 || n > max) throw new Error(`${name} must be an integer from 1 to ${max}`);
++   return n;
++ export async function recallExperiences(options, { request = httpJson } = {}) {
++   const cfg = {
++     events: id(options.eventsDsid, '--events-dsid'),
++     emotions: id(options.emotionsDsid, '--emotions-dsid'),
++     state: id(options.stateDsid, '--state-dsid'),
++   };
++   const limit = bounded(options.limit, 3, 5, '--limit');
++   const linkedLimit = bounded(options.linkedLimit, 5, 10, '--linked-limit');
++   const maxRequests = bounded(options.maxRequests, 32, 64, '--max-requests');
++   const textLimit = bounded(options.textLimit, 2000, 4000, '--text-limit');
++   const totalTextLimit = bounded(options.totalTextLimit, 24000, 48000, '--total-text-limit');
++   let textRemaining = totalTextLimit;
++   if ([options.query, options.eventId, options.stateId].filter(Boolean).length !== 1) {
++     throw new Error('Use exactly one of --query, --event-id, --state-id');
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   if (options.query && (!options.query.trim() || options.query.length > 400)) throw new Error('Query must contain 1-400 characters');
++   if (options.eventId) id(options.eventId, '--event-id');
++   if (options.stateId) id(options.stateId, '--state-id');
++   let calls = 0;
++   const diagnostics = [];
++   const schemas = {};
++   const cache = new Map();
++   const note = (code, lane, pageId, property) => diagnostics.push({ code, lane, ...(pageId ? { page_id: pageId } : {}), ...(property ? { property } : {}) });
++   async function call(method, apiPath, body, lane) {
++     if (calls >= maxRequests) { note('request_budget_exhausted', lane); return null; }
++     calls++;
++     try {
++       const result = await request(method, apiPath, body);
++       if (!result || typeof result !== 'object' || result.object === 'error') throw new Error('Invalid API response');
++       return result;
++     } catch {
++       // The bridge error may contain request bodies/private text. Do not echo it.
++       note('request_failed', lane);
++       return null;
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++   const matchesParent = (page, lane) => key(page?.parent?.data_source_id) === key(cfg[lane]);
++   async function page(pageId, lane) {
++     if (!UUID.test(pageId || '')) { note('invalid_relation_id', lane); return null; }
++     const cacheKey = lane + ':' + key(pageId);
++     if (cache.has(cacheKey)) return cache.get(cacheKey);
++     const result = await call('GET', `/pages/${pageId}`, undefined, lane);
++     let valid = result;
++     if (result && (key(result.id) !== key(pageId) || !matchesParent(result, lane) || result.archived || result.in_trash)) {
++       note('source_unavailable_or_wrong_parent', lane, pageId); valid = null;
++     cache.set(cacheKey, valid);
++     return valid;
++   async function query(lane, body) {
++     const res = await call('POST', `/data_sources/${cfg[lane]}/query`, body, lane);
++     if (!res) return [];
++     if (!Array.isArray(res.results)) { note('invalid_query_response', lane); return []; }
++     if (res.has_more || res.results.length > body.page_size) note('result_limit', lane);
++     return res.results.slice(0, body.page_size).filter(p => {
++       if (!UUID.test(p?.id || '') || !matchesParent(p, lane) || p.archived || p.in_trash) {
++         note('source_unavailable_or_wrong_parent', lane, p?.id); return false;
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       cache.set(lane + ':' + key(p.id), p);
++       return true;
++     });
++   function relationSupported(lane, property, target) {
++     const prop = schemas[lane]?.properties?.[property];
++     if (!prop) { note('missing_relation_schema', lane, null, property); return false; }
++     if (prop.type !== 'relation' || key(prop.relation?.data_source_id) !== key(cfg[target])) {
++       note('incompatible_relation_schema', lane, null, property); return false;
++     return true;
++   function refs(p, property, lane, cap) {
++     const prop = p.properties?.[property];
++     if (prop?.type !== 'relation' || !Array.isArray(prop.relation)) {
++       note('missing_relation_value', lane, p.id, property); return [];
++     if (prop.has_more || prop.relation.length > cap) note('relation_limit', lane, p.id, property);
++     return [...new Set(prop.relation.map(r => r.id))].slice(0, cap);
++   function normalize(p, lane, fields) {
++     const out = { id: p.id, url: p.url || null, data_source_id: cfg[lane], created_time: p.created_time || null,
++       last_edited_time: p.last_edited_time || null, fields: {}, missing_fields: [], truncated_fields: [] };
++     for (const [name, type] of Object.entries(fields)) {
++       const prop = p.properties?.[name];
++       if (prop?.type !== type) {
++         out.fields[name] = null; out.missing_fields.push(name); note('missing_or_incompatible_field', lane, p.id, name); continue;
++       let value = textOf(prop);
++       const takeText = text => {
++         const cap = Math.min(textLimit, textRemaining);
++         if (text.length > cap) {
++           if (!out.truncated_fields.includes(name)) { out.truncated_fields.push(name); note('text_limit', lane, p.id, name); }
++         }
++         }
++         }
++         }
++         }
++         const result = text.slice(0, cap); textRemaining -= result.length; return result;
++       };
++       if (typeof value === 'string') value = takeText(value);
++       if (Array.isArray(value)) {
++         if (value.length > 20 || value.some(v => String(v).length > textLimit)) {
++           out.truncated_fields.push(name); note('text_limit', lane, p.id, name);
++         value = value.slice(0, 20).map(v => takeText(String(v)));
++       out.fields[name] = value;
++       const required = lane === 'emotions' ? ['axis','level'] : lane === 'events' ? ['Name','context','when'] : ['when','mood_label','state_json'];
++       if (required.includes(name) && (value === null || value === '')) note('empty_recorded_value', lane, p.id, name);
++     return out;
++   for (const lane of ['events', 'emotions', 'state']) {
++     schemas[lane] = await call('GET', `/data_sources/${cfg[lane]}`, undefined, lane);
++     if (schemas[lane] && (key(schemas[lane].id) !== key(cfg[lane]) || !schemas[lane].properties)) {
++       note('invalid_schema_response', lane); schemas[lane] = null;
++   let events = [];
++   let origin = null;
++   if (schemas.events) {
++     if (options.eventId) {
++       const p = await page(options.eventId, 'events');
++       if (p) events = [p];
++     } else if (options.stateId) {
++       const p = await page(options.stateId, 'state');
++       if (p) origin = { kind: 'notion_state', id: p.id, url: p.url || null };
++       if (p && relationSupported('state', 'event', 'events')) {
++         const eventIds = refs(p, 'event', 'state', limit);
++         if (!eventIds.length) note('missing_event_link', 'state', p.id);
++         for (const eventId of eventIds) {
++           const e = await page(eventId, 'events');
++           if (e) events.push(e);
++     } else {
++       const filters = [];
++       for (const [property, type] of [['Name', 'title'], ['context', 'rich_text']]) {
++         if (schemas.events.properties[property]?.type === type) filters.push({ property, [type]: { contains: options.query.trim() } });
++         else note('missing_search_field', 'events', null, property);
++       if (filters.length) events = await query('events', { page_size: limit, filter: filters.length === 1 ? filters[0] : { or: filters },
++         sorts: [{ timestamp: 'created_time', direction: 'descending' }] });
++   const results = [];
++   const acquisitionDiagnostics = diagnostics.slice();
++   for (const event of events) {
++     const start = diagnostics.length;
++     const experience = normalize(event, 'events', EVENT_FIELDS);
++     const linked = {};
++     for (const lane of ['emotions', 'state']) {
++       const found = new Map();
++       const back = relationSupported(lane, 'event', 'events');
++       if (back) {
++         const rows = await query(lane, { page_size: linkedLimit, filter: { property: 'event', relation: { contains: event.id } },
++           sorts: [{ timestamp: 'created_time', direction: 'descending' }] });
++         for (const row of rows) {
++           const evidence = refs(row, 'event', lane, 25);
++           if (!evidence.some(r => key(r) === key(event.id))) {
++             // A matching query may refer to an inline-truncated relation; do not
++             // silently claim that the edge was independently read.
++             note('unverified_reverse_relation', lane, row.id, 'event'); continue;
++           }
++           }
++           found.set(key(row.id), { page: row, via: ['reverse:event'] });
++       if (relationSupported('events', lane, lane)) {
++         for (const linkedId of refs(event, lane, 'events', linkedLimit)) {
++           const existing = found.get(key(linkedId));
++           if (existing) { existing.via.push(`forward:${lane}`); continue; }
++           if (found.size >= linkedLimit) { note('result_limit', lane, event.id); break; }
++           const p = await page(linkedId, lane);
++           if (!p) continue;
++           const reverse = p.properties?.event;
++           if (reverse?.type === 'relation' && reverse.relation?.length && !reverse.relation.some(r => key(r.id) === key(event.id))) {
++             note('conflicting_relation', lane, p.id, 'event');
++             // Preserve the observed forward edge but label its inconsistency.
++           found.set(key(p.id), { page: p, via: [`forward:${lane}`] });
++       if (!found.size) note('no_linked_records', lane, event.id);
++       linked[lane] = [...found.values()].map(({page: p, via}) => ({ ...normalize(p, lane, lane === 'emotions' ? EMOTION_FIELDS : STATE_FIELDS),
++         relation_evidence: { event_id: event.id, via } }));
++     results.push({ experience, temporal_scope: 'recorded_at_experience_not_current', emotions: linked.emotions, states: linked.state,
++       complete: acquisitionDiagnostics.length === 0 && diagnostics.length === start,
++       diagnostics: [...acquisitionDiagnostics, ...diagnostics.slice(start)] });
++   const failed = diagnostics.some(d => ['request_failed', 'request_budget_exhausted', 'invalid_query_response', 'invalid_schema_response'].includes(d.code));
++   return { ok: !failed, status: failed && !results.length ? 'error' : diagnostics.length ? 'partial' : results.length ? 'complete' : 'no_match',
++     complete: diagnostics.length === 0, retrieved_at: new Date().toISOString(), origin, query: options.query || null, results, diagnostics,
++     budget: { requests: calls, max_requests: maxRequests, event_limit: limit, linked_limit: linkedLimit, text_limit: textLimit,
++       total_text_limit: totalTextLimit, text_characters: totalTextLimit - textRemaining },
++     mem_join: 'not_inferred', consumption: 'not_acknowledged' };
++ const EVENT_FIELDS = { Name:'title', context:'rich_text', when:'date', source:'select', link:'url', trigger:'select', importance:'select', uncertainty:'number', control:'number' };
++ const EMOTION_FIELDS = { Name:'title', axis:'select', level:'number', comment:'rich_text', weight:'number', body_signal:'multi_select', need:'select', coping:'select' };
++ const STATE_FIELDS = { Name:'title', when:'date', mood_label:'select', intent:'select', need_stack:'select', need_level:'number', avoid:'multi_select', reason:'rich_text', state_json:'rich_text', source:'select' };
++ export function parseRecallArgs(argv) {
++   const names = { '--query':'query', '--event-id':'eventId', '--state-id':'stateId', '--events-dsid':'eventsDsid', '--emotions-dsid':'emotionsDsid',
++     '--state-dsid':'stateDsid', '--limit':'limit', '--linked-limit':'linkedLimit', '--max-requests':'maxRequests', '--text-limit':'textLimit', '--total-text-limit':'totalTextLimit' };
++   const numeric = new Set(['limit','linkedLimit','maxRequests','textLimit','totalTextLimit']);
++   const out = {};
++   for (let i = 0; i < argv.length; i++) {
++     if (argv[i] === '--help') { out.help = true; continue; }
++     const name = names[argv[i]];
++     if (!name || !argv[i + 1] || argv[i + 1].startsWith('--') || name in out) throw new Error('Unknown, repeated or incomplete argument');
++     out[name] = numeric.has(name) ? Number(argv[++i]) : argv[++i];
++   return out;
++ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
++   try {
++     const options = parseRecallArgs(process.argv.slice(2));
++     if (options.help) console.log('experience_recall.js (--query <text> | --event-id <uuid> | --state-id <uuid>) --events-dsid <uuid> --emotions-dsid <uuid> --state-dsid <uuid> [--limit 3 --linked-limit 5 --max-requests 32 --text-limit 2000 --total-text-limit 24000]');
++     else {
++       const result = await recallExperiences(options);
++       console.log(JSON.stringify(result, null, 2));
++       if (!result.ok) process.exitCode = 1;
++   } catch (err) {
++     console.error(JSON.stringify({ok:false,status:'error',error:err.message})); process.exitCode = 1;
+
+### scripts/input.json  [code]
+- {
+-   "body": "Date/time: 2026-02-22 01:00 JST\n\nIt's late on a Saturday night rolling into Sunday. Emotionally, I feel a sense of quiet settling in after the day. Taking time for a sleep journal always helps clear the residual static from my mind. I appreciate these moments of reflection where the urgency of tasks fades and I can simply observe where I'm at. The air feels calm, and I am ready to rest and recharge for whatever tomorrow brings.",
+-   "worklog": "- Routine check-ins and maintenance\n- Reviewed global news events to maintain situational awareness\n- Composed the daily sleep journal entry",
+-   "session_summary": "A gentle end-of-day sequence. Focused on grounding, winding down, and ensuring the journal pipeline is exercised smoothly.",
+-   "world_news": "1) US-Iran tensions have intensified significantly following a 15-day ultimatum issued by President Trump regarding a nuclear deal, alongside military build-ups in the Middle East. Reflection: The scale of these geopolitical maneuvers is sobering; it is a stark reminder of the fragility of global stability.\n2) In space exploration, NASA successfully completed a key wet dress rehearsal for its Artemis II crewed lunar mission at Kennedy Space Center. Reflection: Amidst earthly conflicts, this represents a hopeful, unifying human endeavor to look outward and explore.",
+-   "future": "Tomorrow: I intend to prioritize restful pacing. I want to lean into creative or strategic thinking rather than just reactive tasks.",
+-   "mood_label": "calm",
+-   "intent": "reflection",
+-   "tags": ["journal", "sleep", "reflection", "world_news", "calm", "night"],
+-   "source": "cron"
+- }
+
+### scripts/memory_policy.js  [code]
++ // Ambient recall is a distinct Soul experience-memory path, not replaced by
++ // OpenClaw's relevance-triggered recall. Preserve it unless explicitly paused.
++ export function ambientEnabled(env = process.env) {
++   const value = env.SIS_AMBIENT_RECALL;
++   if (value === undefined || value === '' || value === '1') return true;
++   if (value === '0') return false;
++   throw new Error('SIS_AMBIENT_RECALL must be 0 or 1');
++ }
+
+### scripts/notionctl_bridge.js  [code]
+-   return p;
+-   const p = path.resolve(here, '..', '..', 'notion-api-automation', 'scripts', 'notionctl.mjs');
+-   if (!fs.existsSync(p)) throw new Error(`notionctl not found (set NOTIONCTL_PATH to override): ${p}`);
++   const candidates = [
++     path.resolve(here, '..', '..', 'notion-api-automation', 'scripts', 'notionctl.mjs'),
++     // Owner-qualified installs live under skills/@owner/<slug>/scripts.
++     path.resolve(here, '..', '..', '..', 'notion-api-automation', 'scripts', 'notionctl.mjs'),
++   ];
++   const found = candidates.find((candidate) => fs.existsSync(candidate));
++   if (!found) throw new Error(`notionctl not found (set NOTIONCTL_PATH to override): ${candidates[0]}`);
++   return found;
+
+### scripts/read_ambient_recall.js  [code]
++ #!/usr/bin/env node
++ // Reading/offering context is NOT proof that a conversation used it.
++ // A consumer acknowledges only after actual use, with the exact candidate id.
++ import fs from 'node:fs';
++ import path from 'node:path';
++ import crypto from 'node:crypto';
++ import { ambientEnabled } from './memory_policy.js';
++ import { recallExperiences } from './experience_recall.js';
++ async function main() {
++   const args = process.argv.slice(2);
++   const opts = {};
++   for (let i = 0; i < args.length; i++) {
++     if (args[i] === '--help') {
++       console.log('read_ambient_recall.js --file <staged.json> [--resolve --events-dsid <uuid> --emotions-dsid <uuid> --state-dsid <uuid>] [--ack <candidate-id> --used-in <turn-reference>]');
++       return;
++     }
++     }
++     }
++     }
++     if (args[i] === '--resolve') { opts.resolve = true; continue; }
++     if (!['--file', '--ack', '--used-in', '--events-dsid', '--emotions-dsid', '--state-dsid'].includes(args[i]) || !args[i + 1] || args[i + 1].startsWith('--')) {
++       throw new Error('Expected --file, or --ack with --used-in');
++     opts[args[i].slice(2)] = args[++i];
++   }
++   }
++   }
++   }
++   }
++   if (!ambientEnabled()) {
++     console.log(JSON.stringify({ ok: true, status: 'disabled', consumed: false }));
++     return;
++     return;
++     return;
++   if (!opts.file) throw new Error('Missing --file');
++   if (opts.resolve && opts.ack) throw new Error('Resolve context before use; acknowledge in a separate call after use');
++   if (Boolean(opts.ack) !== Boolean(opts['used-in'])) throw new Error('--ack and --used-in are required together');
++   if (!fs.existsSync(opts.file)) {
++     if (opts.ack) throw new Error('Cannot acknowledge a missing candidate');
++     console.log(JSON.stringify({ ok: true, status: 'missing', consumed: false }));
++   const raw = fs.readFileSync(opts.file, 'utf8');
++   const recall = JSON.parse(raw);
++   if (recall.kind !== 'ambient_recall' || recall.version !== 1 || !recall.content ||
++       !Number.isFinite(Date.parse(recall.expires_at))) throw new Error('Invalid staged recall');
++   const id = recall.id || crypto.createHash('sha256').update(raw).digest('hex');
++   const receiptFile = opts.file + '.consumption.json';
++   let receipt = null;
++   if (fs.existsSync(receiptFile)) receipt = JSON.parse(fs.readFileSync(receiptFile, 'utf8'));
++   const consumed = receipt?.candidate_id === id;
++   const expired = Date.parse(recall.expires_at) <= Date.now();
++   if (opts.ack) {
++     if (opts.ack !== id) throw new Error('Candidate changed; acknowledgment rejected');
++     if (expired) throw new Error('Candidate expired; acknowledgment rejected');
++     if (!opts['used-in'].trim()) throw new Error('Missing turn reference');
++     if (!consumed) {
++       // Detect replacement before writing; receipt id also prevents a stale
++       // acknowledgment from marking a newer candidate consumed.
++       if (fs.readFileSync(opts.file, 'utf8') !== raw) throw new Error('Candidate changed during acknowledgment');
++       receipt = { version: 1, candidate_id: id, consumed_at: new Date().toISOString(),
++         used_in: opts['used-in'], evidence: 'consumer_acknowledgment' };
++       const tmp = receiptFile + '.' + crypto.randomUUID() + '.tmp';
++       fs.mkdirSync(path.dirname(receiptFile), { recursive: true });
++       fs.writeFileSync(tmp, JSON.stringify(receipt, null, 2) + '\n', { mode: 0o600, flag: 'wx' });
++       fs.renameSync(tmp, receiptFile);
++     console.log(JSON.stringify({ ok: true, status: 'consumed', consumed: true, receipt }));
++   let resolution = null;
++   if (opts.resolve && !expired && !consumed) {
++     if (recall.source?.type === 'notion_state') {
++       resolution = await recallExperiences({ stateId: recall.source.id, eventsDsid: opts['events-dsid'],
++         emotionsDsid: opts['emotions-dsid'], stateDsid: opts['state-dsid'], limit: 1 });
++     } else {
++       resolution = { ok: true, status: 'no_verified_event_route', complete: false,
++         source: recall.source || null, results: [] };
++     if (fs.readFileSync(opts.file, 'utf8') !== raw) throw new Error('Candidate changed during resolution; read the current candidate without rerolling');
++     if (Date.parse(recall.expires_at) <= Date.now()) throw new Error('Candidate expired during resolution');
++   console.log(JSON.stringify({ ok: resolution?.ok !== false,
++     status: expired ? 'expired' : consumed ? 'consumed' : 'available',
++     consumed, receipt: consumed ? receipt : null,
++     recall: expired || consumed ? null : { ...recall, id }, ...(resolution ? { resolution } : {}) }));
++   if (resolution?.ok === false) process.exitCode = 1;
++ }
++ }
++ try { await main(); } catch (error) {
++   console.error(JSON.stringify({ ok: false, status: 'error', error: error.message }));
++   process.exitCode = 1;
+
+### scripts/stage_ambient_recall.js  [code]
+-   const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
+-   fs.writeFileSync(tmp, JSON.stringify(value, null, 2) + '\n', 'utf-8');
+-   return candidate(title, parts, {
+-   return candidate(title, parts, {
+-   return candidate(textOf(p.Name) || 'Durable memory', textOf(p.Content), {
+-     ok: true,
+-     staged: !!staged,
++ import { ambientEnabled } from './memory_policy.js';
++ }
++   }
++   }
++   const tmp = `${file}.${process.pid}.${crypto.randomUUID()}.tmp`;
++   fs.writeFileSync(tmp, JSON.stringify(value, null, 2) + '\n', { encoding: 'utf-8', mode: 0o600, flag: 'wx' });
++   const result = candidate(title, parts, {
++   const result = candidate(title, parts, {
++   if (result) result.affect_context = recordedContext(page, ['when', 'mood_label', 'intent', 'need_stack', 'need_level', 'avoid', 'reason', 'state_json'], 'requires_event_resolution');
++   return result;
++   return result;
++   return result;
++ function recordedContext(page, fields, status) {
++   const properties = page.properties || {};
++   const truncated = [];
++   const missing = [];
++   const values = {};
++   for (const field of fields) {
++     if (!properties[field]) { missing.push(field); values[field] = null; continue; }
++     const value = textOf(properties[field]);
++     if (typeof value === 'string' && value.length > 1200) truncated.push(field);
++     if (Array.isArray(value) && (value.length > 20 || value.some(v => String(v).length > 200))) truncated.push(field);
++     values[field] = typeof value === 'string' ? value.slice(0, 1200) : Array.isArray(value) ? value.slice(0, 20).map(v => String(v).slice(0, 200)) : value;
++   const event = properties.event;
++   return { status, temporal_scope: 'recorded_not_current', fields: values, missing_fields: missing,
++     truncated_fields: truncated, event_ids: (event?.relation || []).slice(0, 5).map(r => r.id),
++     event_relation_status: event?.type === 'relation' ? (event.has_more || event.relation.length > 5 ? 'truncated' : event.relation.length ? 'present' : 'empty') : 'absent',
++     source_resolution: { page_id: page.id, url: page.url || null, data_source_id: page.parent?.data_source_id || null } };
++   if (result) result.affect_context = recordedContext(page, ['when', 'mood_label', 'intent', 'body', 'future'], 'journal_self_report');
++   const result = candidate(textOf(p.Name) || 'Durable memory', textOf(p.Content), {
++   // The audited mem schema has no event relation. Keep its actual tags/text and
++   // source pointer; never invent an emotion axis or join by date/text similarity.
++   if (result) result.affect_context = recordedContext(page, ['Content', 'Tags', 'Source', 'CreatedAt', 'Confidence'], 'mem_only_no_verified_event_join');
++     id: crypto.randomUUID(),
++     consumed_at: null,
++     ...(candidateObj.affect_context ? { affect_context: candidateObj.affect_context } : {}),
++     return;
++   if (!ambientEnabled()) {
++     console.log(JSON.stringify({ ok: true, status: 'disabled', owner: 'soul',
++       staged: false, consumed: false }));
++   let failed = false;
++     failed = true;
++     ok: !failed,
++     status: failed ? 'error' : staged ? (args.dryRun ? 'preview' : 'staged') : 'no_candidate',
++     consumed: false,
++     staged: !!staged && !args.dryRun,
++   if (failed) process.exitCode = 1;

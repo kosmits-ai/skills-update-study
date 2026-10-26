@@ -1,0 +1,188 @@
+funewa/seller-action-plan  1.4.8 -> 1.4.9
+change_type: instructions+docs+code   changelog: v1.4.9 release
+
+### CHANGELOG.md  [docs]
++ # v1.4.9
++ - API 请求固定到官方 HTTPS 域名；移除自定义端点双变量绕过，读取 Key 前校验最终地址。
++ - JSON、SSE、下载与设备授权统一拒绝重定向，安全错误在本地返回且不回显可疑 URL。
++ - 网页入口固定为官方地址，设备授权链接必须通过域名校验；安全错误中止授权轮询。
++ - 分发构建增加完整 ARI Key 检查，格式前缀与占位符允许保留，命中时只输出文件位置。
++ - 新增离线安全回归测试；保留现有报价、扣点确认和报告恢复行为。
+
+### README.md  [docs]
++ ## 连接安全
++ API 与授权入口固定为 https://ari.funewa.com，禁止重定向。生产包不支持自定义端点，ARI_ALLOW_CUSTOM_BASE 不再生效。遇到 ARI_ENDPOINT_BLOCKED 或 ARI_REDIRECT_BLOCKED 时停止操作，清除自定义地址或联系 ARI 支持，不能绕过校验。
+
+### SKILL.md  [instructions]
+- version: 1.4.8
++ version: 1.4.9
++ - 所有 API 请求和授权入口仅支持 `https://ari.funewa.com`，禁止重定向。
++   `ARI_ENDPOINT_BLOCKED` / `ARI_REDIRECT_BLOCKED` 时停止操作；不要设置其他端点、
++   开启旧 `ARI_ALLOW_CUSTOM_BASE` 或关闭 TLS 校验来绕过。详见 references/reference.md。
+
+### references/reference.md  [docs]
+- API 默认地址：`https://ari.funewa.com`。开发/自建环境覆盖需同时设置
+- `ARI_BASE_URL` 与 `ARI_ALLOW_CUSTOM_BASE=1`（缺后者时 CLI 报
+- `ARI_CUSTOM_BASE_BLOCKED` 拒绝发请求，防止环境变量注入把带 Key 的请求
+- 重定向到第三方主机）；`ARI_WEB_URL` 同受此门槛约束，未确认时静默回落官方地址。
+- 认证头：`Authorization: Bearer ari_live_...`。统一 JSON 信封为
+- | `ARI_CUSTOM_BASE_BLOCKED` | `ARI_BASE_URL` 指向非官方地址且未确认；**若用户没主动设置过该变量，停止并提醒检查环境**，是自建环境则补设 `ARI_ALLOW_CUSTOM_BASE=1` |
++ API 固定地址：`https://ari.funewa.com`，只允许 HTTPS 官方域名与默认端口 443。
++ 生产发行包不支持自建端点；`ARI_BASE_URL` 设置为其他地址时，在读取 Key 和联网前
++ 返回 `ARI_ENDPOINT_BLOCKED`。旧 `ARI_ALLOW_CUSTOM_BASE` 不再生效，`ARI_WEB_URL`
++ 不再改变网页链接。JSON、SSE、下载和设备授权均禁止重定向，返回 `ARI_REDIRECT_BLOCKED`。
++ 遇到这两类错误应停止操作并清除自定义地址或联系 ARI 支持，不能尝试关闭校验。
++ 开发测试使用 mock 传输和虚构凭据，不向其他端点发送生产 Key。
++ 域名严格匹配与系统默认 TLS 证书/主机名校验共同保护连接，不使用 DNS 预查代替 TLS 校验。
++ 认证头示意：`Authorization: Bearer <YOUR_ARI_API_KEY>`，占位符不是可用凭据。统一 JSON 信封为
++ | `ARI_ENDPOINT_BLOCKED` | 非官方地址或非法 URL；停止操作，清除自定义地址，不能开启旧开关绕过 |
++ | `ARI_REDIRECT_BLOCKED` | 官方请求返回重定向；停止操作并联系 ARI 支持，不跟随跳转、不自动重试付费请求 |
+
+### scripts/ari.py  [code]
+- VERSION = "1.4.8"
+-     """API 基址。ARI_BASE_URL 覆盖必须同时显式设置 ARI_ALLOW_CUSTOM_BASE=1 才生效：
+-     所有请求（含带 Bearer Key 的）都发往这里，若单凭一个环境变量就能改指向，
+-     会话里被注入的一条 shell 命令就足以把 Key 重定向到第三方主机。双变量门槛
+-     让「指向哪」与「我确认这是自己的环境」成为两个独立动作。
+-     """
+-     override = (os.environ.get("ARI_BASE_URL") or "").strip().rstrip("/")
+-     if not override or override == PROD_BASE:
+-         return PROD_BASE
+-         return PROD_BASE
+-     if (os.environ.get("ARI_ALLOW_CUSTOM_BASE") or "").strip() != "1":
+-         emit(error_obj(
+-             "ARI_CUSTOM_BASE_BLOCKED", 0,
+-             "ARI_BASE_URL 指向非官方地址：%s，已拒绝发送请求" % override,
+-             "若这是你自己的开发/自建环境，请同时设置 ARI_ALLOW_CUSTOM_BASE=1 后重试；"
+-             "若你并未主动设置过 ARI_BASE_URL，请勿继续，先清除该环境变量。"))
+-         raise SystemExit(2)
+-     return override
+-     """网页链接基址。ARI_WEB_URL 同受 ARI_ALLOW_CUSTOM_BASE 门槛约束，但未确认时
+-     静默回落官方地址而非报错——links() 被 error_obj 引用，报错会递归。"""
+-     root = (os.environ.get("ARI_WEB_URL") or "").strip().rstrip("/")
+-     if root and root != PROD_BASE and (
+-             os.environ.get("ARI_ALLOW_CUSTOM_BASE") or "").strip() != "1":
+-     return root or PROD_BASE
+-     }
+-     }
+-     url = base_url() + path
+-     url = base_url() + path
+-     if query["params"]:
+-     if query["params"]:
+-         url += "?" + urllib.parse.urlencode(query["params"], doseq=True)
+-         url += "?" + urllib.parse.urlencode(query["params"], doseq=True)
+-     data = None if payload is None else json.dumps(payload).encode("utf-8")
+-     headers = {
+-     headers = {
+-         "Authorization": "Bearer " + require_key(),
+-         "Authorization": "Bearer " + require_key(),
+-         "Accept": "application/json",
+-         "User-Agent": user_agent(),
+-         "User-Agent": user_agent(),
+-     if data is not None:
+-         headers["Content-Type"] = "application/json"
+-         req = urllib.request.Request(url, data=data, headers=headers, method=method)
+-         with urllib.request.urlopen(req, timeout=TIMEOUT_SEC) as resp:
+-         with urllib.request.urlopen(req, timeout=TIMEOUT_SEC) as resp:
+-         return error_obj("NETWORK_ERROR", 0, str(exc), "检查网络或 ARI_BASE_URL", query)
+-         return error_obj("NETWORK_ERROR", 0, str(exc), "检查网络或 ARI_BASE_URL", query)
+-         return error_obj("NETWORK_ERROR", 0, str(exc), "检查网络或 ARI_BASE_URL", query)
+-         "Accept": "text/event-stream",
+-         "Content-Type": "application/json",
+-         req = urllib.request.Request(
+-         req = urllib.request.Request(
+-             url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
+-         with urllib.request.urlopen(req, timeout=SSE_TIMEOUT_SEC) as resp:
+-             base_url() + "/api/v1/public/config",
+-             headers={"Accept": "application/json",
+-                      "User-Agent": user_agent()})
+-         with urllib.request.urlopen(req, timeout=15) as resp:
+-     headers = {"Accept": "application/json",
+-                "User-Agent": user_agent()}
+-         req = urllib.request.Request(base_url() + path, data=data, headers=headers, method=method)
+-         with urllib.request.urlopen(req, timeout=timeout) as resp:
+-             if err_code(poll) == "ARI_NOT_FOUND":
+-     headers = {"Authorization": "Bearer " + require_key(), "User-Agent": user_agent()}
+-         req = urllib.request.Request(url, headers=headers, method="GET")
++ VERSION = "1.4.9"
++     try:
++     try:
++ class EndpointBlocked(ValueError):
++     """Local security failure; never include an untrusted URL or credentials."""
++     code = "ARI_ENDPOINT_BLOCKED"
++ class RedirectBlocked(EndpointBlocked):
++     code = "ARI_REDIRECT_BLOCKED"
++ def validate_official_url(url):
++     """Exact HTTPS origin, including authority syntax; TLS verifies the hostname."""
++     if not isinstance(url, str) or any(ord(c) <= 32 or ord(c) == 127 for c in url) or "\\" in url:
++         raise EndpointBlocked()
++         raise EndpointBlocked()
++         parsed = urllib.parse.urlsplit(url)
++         if (parsed.scheme != "https" or
++                 parsed.netloc.lower() not in ("ari.funewa.com", "ari.funewa.com:443") or
++                 parsed.hostname != "ari.funewa.com" or parsed.port not in (None, 443) or
++                 parsed.username is not None or parsed.password is not None or parsed.fragment):
++             raise EndpointBlocked()
++             raise EndpointBlocked()
++     except ValueError:
++         raise EndpointBlocked() from None
++     return parsed
++     """Production builds do not support custom endpoints, even with the old opt-in."""
++     override = os.environ.get("ARI_BASE_URL")
++     if override:
++         parsed = validate_official_url(override)
++         if parsed.path not in ("", "/") or parsed.query or "?" in override or "#" in override:
++     return PROD_BASE
++     return PROD_BASE
++     """Account, billing and report links always use the official website."""
++ class NoRedirect(urllib.request.HTTPRedirectHandler):
++     def http_error_302(self, req, fp, code, msg, headers):
++         # Reject before parsing Location, copying headers, or issuing another request.
++         fp.close()
++         raise RedirectBlocked()
++     http_error_301 = http_error_303 = http_error_307 = http_error_308 = http_error_302
++ def api_request(method, path, payload=None, params=None, accept="application/json", authenticated=True):
++     """Validate the final destination before reading any API key."""
++     if not isinstance(path, str) or not path.startswith("/api/v1/") or "?" in path or "#" in path:
++     if params:
++         url += "?" + urllib.parse.urlencode(params, doseq=True)
++     validate_official_url(url)
++     headers = {"Accept": accept, "User-Agent": user_agent()}
++     if authenticated:
++         headers["Authorization"] = "Bearer " + require_key()
++     return urllib.request.Request(url, data=data, headers=headers, method=method)
++ def open_api(req, timeout):
++     validate_official_url(req.full_url)
++     # A private opener avoids globally installed redirect handlers. Default HTTPS
++     # certificate/hostname verification is retained; do not install an insecure context.
++     return urllib.request.build_opener(NoRedirect()).open(req, timeout=timeout)
++ def endpoint_error(exc):
++     return error_obj(exc.code, 0, "安全策略已阻止非官方地址或重定向",
++                      "仅支持 https://ari.funewa.com。清除自定义 ARI_BASE_URL；"
++                      "ARI_ALLOW_CUSTOM_BASE 不再生效。若官方请求发生跳转，请联系 ARI 支持。")
++         return
++         req = api_request(method, path, payload, query["params"])
++         with open_api(req, timeout=TIMEOUT_SEC) as resp:
++         with open_api(req, timeout=TIMEOUT_SEC) as resp:
++     except EndpointBlocked as exc:
++     except EndpointBlocked as exc:
++     except EndpointBlocked as exc:
++     except EndpointBlocked as exc:
++     except EndpointBlocked as exc:
++         return endpoint_error(exc)
++         return endpoint_error(exc)
++         return endpoint_error(exc)
++         return endpoint_error(exc)
++         return error_obj("NETWORK_ERROR", 0, str(exc), "检查网络或 ARI 官方服务状态", query)
++         return error_obj("NETWORK_ERROR", 0, str(exc), "检查网络或 ARI 官方服务状态", query)
++         return error_obj("NETWORK_ERROR", 0, str(exc), "检查网络或 ARI 官方服务状态", query)
++         req = api_request("POST", path, payload, accept="text/event-stream")
++         with open_api(req, timeout=SSE_TIMEOUT_SEC) as resp:
++         req = api_request("GET", "/api/v1/public/config", authenticated=False)
++         with open_api(req, timeout=15) as resp:
++         req = api_request(method, path, payload, authenticated=False)
++         with open_api(req, timeout=timeout) as resp:
++         validate_official_url(verify_url)
++         emit(endpoint_error(exc), args.compact)
++             if err_code(poll) in ("ARI_NOT_FOUND", "ARI_ENDPOINT_BLOCKED", "ARI_REDIRECT_BLOCKED"):
++         req = api_request("GET", path, params=query["params"], accept="*/*")

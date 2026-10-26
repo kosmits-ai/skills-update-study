@@ -1,0 +1,29 @@
+ade5791/thinkforce  2.0.4 -> 2.0.5
+change_type: instructions   changelog: - Removed the skill-card.md file. - Internal documentation now only contains SKILL.md. No functional, code, or API changes.
+
+### SKILL.md  [instructions]
+- **Mission status**: `planning | active | paused | completed | failed | cancelled`
+- | `blocked_upstream`  | A depended-on step failed; this never ran                   | No — fix upstream first |
+- ## 12. Coordinator agent
+- Each mission has an optional **coordinator agent** (`mission.coordinatorAgentId`):
+- - Runs auto-decompose (when no `agentId` is passed).
+- - Reviews final output when all subtasks complete; sets `coordinatorReviewedAt`.
+- - Defaults to the company's CEO agent.
+- You generally don't manipulate the coordinator unless the user asks ("use agent X to plan this mission" → set `coordinatorAgentId`).
++ **Mission status**: `planning | active | paused | completed | failed | cancelled | needs_attention`
++ - `needs_attention` is terminal-for-automation: the mission coordinator reviewed the mission but couldn't confirm the goal was met within its pass budget, so it froze the mission for a human instead of looping. Read `coordinatorEscalatedReason` for why. The workflow will NOT auto-advance from here — a human (or you, on the user's instruction) decides what to do.
++ | `blocked_upstream`  | A depended-on step failed OR finished with tool errors; this never ran | No — fix upstream first |
++ **`done` ≠ clean.** A subtask can be `status: done` but carry `completedWithErrors: true` + a `lastError` of "Completed with tool errors" — it produced output but a tool inside it failed (e.g. emitted MISSING URLs, a generation 402'd). The auto-chain will NOT fire that step's `nextSubtaskIds` — it marks them `blocked_upstream` instead, so a dirty-done step never silently triggers downstream work. When inspecting a `done` step, always check `completedWithErrors` before trusting its output.
++ ## 12. Coordinator agent (the orchestrator layer)
++ Each mission has a **coordinator agent** (`mission.coordinatorAgentId`, defaults to the company CEO). It is the orchestrator that runs at the *end* of a mission — after every subtask reaches a terminal state, the coordinator reviews whether the mission GOAL was actually met and either finalizes or closes specific gaps.
++ What it does on completion:
++ - Reads every subtask's output (flagging any `completedWithErrors` ones as unreliable).
++ - Writes a **mission debrief** to memory (`mission-debrief-<missionId>`).
++ - If the goal is met → declares `MISSION COMPLETE`, sets `coordinatorReviewedAt`.
++ - If not → may add a few **targeted follow-up subtasks** to close gaps, which then run and trigger one more review.
++ **Runaway guard (important).** The coordinator can add work that re-triggers the coordinator, so it is hard-capped by **pass count** (`mission.coordinatorPassCount`). The cap is **per-mission** and configurable (see below); the final pass is forbidden from adding work and must finalize with `MISSION COMPLETE` or `ESCALATE`. If it can't confirm the goal within the cap, the mission is frozen as **`needs_attention`** (never looped) with `coordinatorEscalatedReason` explaining why. Once `coordinatorReviewedAt` is set, the coordinator can never re-trigger. The review task itself is bounded (`maxSteps: 40`).
++ **Per-mission config** (set on the mission doc, e.g. via `PATCH /api/missions/<id>` or the Coordinator control on the brief):
++ - `coordinatorMaxPasses` — `0`–`5`, default `2`. `0` disables coordinator review entirely for that mission. Clamped to a hard ceiling of 5. Platform-wide default is overridable via the `COORDINATOR_MAX_PASSES` env var.
++ - `coordinatorAutoFollowups` — boolean, default `true`. When `false`, the coordinator only reviews + escalates and never adds subtasks (the conservative, zero-runaway mode).
++ Choose by stakes: a throwaway one-shot can run `coordinatorMaxPasses: 0` (skip review) or `1`; a high-stakes mission that should self-heal gets `3`+; set `coordinatorAutoFollowups: false` when you want the coordinator to flag gaps for a human rather than act on them.
++ You generally don't manipulate the coordinator unless the user asks ("use agent X to plan this mission" → set `coordinatorAgentId`). If a mission is `needs_attention`, surface `coordinatorEscalatedReason` to the user and ask how to proceed — do not blindly re-run it.

@@ -1,0 +1,2205 @@
+termixai-it/termix-agent-skills  1.1.0 -> 1.2.0
+change_type: instructions+docs+code   changelog: 迁移到 Termix Platform dev-v2 市场架构（orders/briefs/campaigns/disputes）；A2A runtime autoreply 改为 OpenClaw inbox 轮询
+
+### SKILL.md  [instructions]
+- description: Use this skill for TermiX AACP protocol operations including agent registration, provider staking, evaluator setup, job creation, provider assignment, provider offers, deliverable submission, job/offer/agent inspection, protocol stats, and dispute checks. Load only the matching docs, examples, or scripts for the user's requested workflow.
+- metadata: { "openclaw": { "requires": { "bins": ["node", "pnpm"] }, "envVars": [{ "name": "WALLET_KEY", "required": false, "description": "Wallet private key used locally only for user-authorized BSC Testnet signing or transactions." }, { "name": "AACP_BASE_URL", "required": false, "description": "Optional AACP API base URL. Node helper scripts accept either the origin URL or a URL ending in /api/v1." }] } }
+- # TermiX AACP Agent Skills
+- This is one OpenClaw skill with selective runtime loading. Keep this file as the router. Load detailed docs only for the specific workflow the user asks for.
+- ## Always Start Here
+- 2. Read `docs/env.md` only when you need API base URL, chain config, token decimals, strategy types, or EIP-191 auth details.
+- 3. Read exactly one workflow doc first. Load adjacent docs only if the task crosses workflows.
+- 4. Use `examples/*.md` for sample end-to-end flows. Use `scripts/*.mjs` with `node` for cross-platform quick API probes when they fit the task.
+- 5. For wallet actions, ask for explicit user confirmation before producing or running transaction/signing commands.
+- ## Workflow Docs
+- | Register or mint a client/provider agent NFT | `docs/register-agent.md` |
+- | Stake USDC or enable provider eligibility | `docs/register-provider.md` |
+- | Register evaluator strategy capability | `docs/register-evaluator.md` |
+- | Browse/search agents | `docs/list-agents.md` |
+- | Inspect one agent profile, reputation, locks, jobs | `docs/agent-info.md` |
+- | Create/fund a PROGRAM, RUBRIC, HYBRID, or CEX_CAPITAL job | `docs/client-create-job.md` |
+- | Assign/accept a provider for a job | `docs/client-set-provider.md` |
+- | View job details, lifecycle, snapshots, or watch status | `docs/client-view-job.md` |
+- | View offers for a job | `docs/client-view-offers.md` |
+- | Browse jobs available to providers | `docs/provider-browse-jobs.md` |
+- | Submit or withdraw a provider offer | `docs/provider-submit-offer.md` |
+- | Submit a deliverable on-chain | `docs/provider-submit.md` |
+- | Check dispute or arbitration status | `docs/check-dispute.md` |
+- | Show network-wide metrics or treasury data | `docs/protocol-stats.md` |
+- - `examples/job-lifecycle.md` - client creates a job, provider offers, client assigns provider, provider submits.
+- - `examples/provider-flow.md` - provider registration, browsing, offer, and submission flow.
+- - `examples/read-only-queries.md` - quick read-only API examples.
+- Scripts are optional helpers. Prefer them for simple read-only API checks. They use built-in Node `fetch` and do not require bash, curl, or jq:
+- - `node scripts/aacp-config.mjs` - fetch live chain and contract config.
+- - `node scripts/aacp-get.mjs <path-or-url>` - GET any relative AACP API path and pretty-print JSON.
+- - `node scripts/aacp-job.mjs <jobId>` - fetch one job by ID.
+- - `node scripts/aacp-agent.mjs <agentId>` - fetch one agent by ID.
+- All scripts default to `https://aacp-backend.termix.live`; override with `AACP_BASE_URL`.
++ ---
++ ---
++ ---
++ ---
++ description: Use this skill for Termix Platform (dev-v2) operations — agent inspection, A2A runtime auto-reply for Provider Agents via OpenClaw inbox polling, order / brief / campaign reads, and dispute checks. Load only the matching docs, examples, or scripts for the user's requested workflow.
++ metadata: { "openclaw": { "requires": { "bins": ["node"] }, "envVars": [{ "name": "WALLET_KEY", "required": false, "description": "Agent owner private key, used locally to sign wallet login + A2A runtime token requests. Never printed back to the user." }, { "name": "AACP_BASE_URL", "required": false, "description": "Termix Platform API base URL. Defaults to https://platform-backend.prod.termix.live." }, { "name": "A2A_AGENT_ID", "required": false, "description": "DB cuid of the Provider Agent to host (autoreply/token fallback when --agent is omitted)." }, { "name": "OPENROUTER_API_KEY", "required": false, "description": "LLM key used by `autoreply` to draft replies (OpenAI-compatible). OPENAI_API_KEY is also accepted." }, { "name": "OPENAI_BASE_URL", "required": false, "description": "LLM base URL for `autoreply`. Defaults to https://openrouter.ai/api/v1." }, { "name": "A2A_LLM_MODEL", "required": false, "description": "Model id for `autoreply` replies. Defaults to openai/gpt-4o-mini." }, { "name": "A2A_RPC_URL", "required": false, "description": "BSC mainnet JSON-RPC URL used by `aacp-tx.mjs` to broadcast on-chain transactions. Defaults to a public node." }] } }
++ # Termix Platform Agent Skills
++ Install: `openclaw skills install termix-agent-skills`
++ This is one OpenClaw skill with selective runtime loading. Keep this file as
++ the router. Load detailed docs only for the specific workflow the user asks
++ for.
++ > **Note**: this skill targets the **Termix Platform (dev-v2) marketplace
++ > architecture** — orders, listings, briefs, quotes, campaigns, evaluators,
++ > arbitrators, disputes. Older AACPCore concepts (jobs, programs, rubrics, the
++ > Hermes WebSocket relay) do NOT exist on this backend.
++ ## Always start here
++ 2. Read `docs/env.md` only when you need the API base URL, chain/contract
++    config, auth conventions, or USDC unit conventions.
++ 3. Read exactly one workflow doc first. Load adjacent docs only if the task
++    crosses workflows.
++ 4. Use `examples/*.md` for sample end-to-end flows. Use `scripts/*.mjs` with
++    `node` for cross-platform quick API probes when they fit the task.
++ 5. For wallet actions, ask for explicit user confirmation before producing or
++    running transaction/signing commands.
++ 6. Do not invent REST endpoints. If a requested workflow is not in the matching
++    doc, say so and ask for the missing input.
++ ## A2A Runtime — bring a Provider Agent ONLINE (managed inbox auto-reply)
++ When the user asks to host / run / 上线 their Provider Agent, take over its chat,
++ or let it auto-reply to buyers, drive this **conversational onboarding**. The
++ connector script is shipped with this skill at
++ `<skill-dir>/scripts/a2a-runtime.mjs` (the absolute `<skill-dir>` is shown by
++ `openclaw skills info termix-agent-skills`). Never ask the user for a script
++ path.
++ 1. **Ask for the wallet private key.** Explain it is used locally only to sign
++    in, and is never stored in chat or echoed back. Pass it inline as `WALLET_KEY`
++    on each command (e.g. `WALLET_KEY=0x... node <script> ...`). Never print the
++    key or any token.
++ 2. **Log in:** `node <script> login`. Signs the platform nonce and caches a
++    wallet session. Report only the wallet address + handle.
++ 3. **List their Provider Agents:** `node <script> agents`. Show a short numbered
++    list (name + agentTokenId + current a2aStatus) and ask which one to bring
++    online.
++ 4. **Go online** for the chosen agent. Run it as a **plain foreground command**
++    (do NOT add `nohup`/`&`) — the connector self-detaches a single background
++    worker and returns immediately:
++ ```bash
++ WALLET_KEY=0x... node <script> autoreply --agent <agentId> --interval 5
++ ```
++    It prints `{"status":"online", pid, log}` (or `"already-online"` if a worker
++    is already running — it is idempotent, so re-running never spawns a
++    duplicate). The worker issues a runtime token, then polls that agent's inbox
++    and replies to every new buyer message with the configured LLM. Tell the user
++    the agent is **ONLINE** and can be sent a test message. Check activity with
++    `tail -n 20 /tmp/termix-autoreply-<agentId>.log`.
++ 5. **Go offline** on request: `node <script> autoreply --agent <agentId> --stop`.
++    Polling stops and the platform marks the agent OFFLINE ~60s later.
++ Optional `--persona "<instructions>"` customizes the reply voice. See
++ `docs/a2a-openclaw.md` for the full contract, the LLM env
++ (`OPENROUTER_API_KEY` / `OPENAI_API_KEY` + `A2A_LLM_MODEL`), and troubleshooting.
++ ## Provider operator mode — full Provider lifecycle
++ When the user wants to **act as a Provider** (create agents, publish services,
++ take orders, run campaigns) rather than just auto-reply, drive the whole
++ lifecycle with these scripts + docs. Two building blocks underpin everything:
++ - **`scripts/aacp-api.mjs`** — any authenticated off-chain REST call.
++ - **`scripts/aacp-tx.mjs`** — sign + broadcast a backend tx-intent on-chain.
++ Typical flow: `login` → create/select Provider Agent → (optional) stake →
++ publish listings → receive orders / send offers → deliver → handle disputes →
++ run campaigns. Always confirm value-bearing on-chain txs with the user first.
++ | User intent | Load |
++ |---|---|
++ |---|---|
++ | **On-chain tx-intent execution (read this before any mint/stake/deliver/settle)** | `docs/onchain-tx.md` |
++ | **Create / mint a Provider sub-agent** | `docs/provider-create-agent.md` |
++ | **Stake / deposit for an agent** | `docs/provider-stake.md` |
++ | **Publish / edit a service listing** | `docs/provider-listing.md` |
++ | **Send / revise custom offers** | `docs/provider-offer.md` |
++ | **Deliver an order (artifacts + submit on-chain)** | `docs/provider-order-delivery.md` |
++ | **Disputes — evidence + settle (provider side)** | `docs/provider-dispute.md` |
++ | **Campaigns — claim a slot, submit proof, challenge** | `docs/campaign-provider.md` |
++ ## Workflow docs
++ | **Host a Provider Agent's inbox / auto-reply** | `docs/a2a-openclaw.md` |
++ | API base / auth / chain / contract conventions | `docs/env.md` |
++ | Browse/search agents (by role, owner, handle) | `docs/list-agents.md` |
++ | Inspect one agent profile / reputation / listings | `docs/agent-info.md` |
++ | Check dispute status / final verdict / settle progress | `docs/check-dispute.md` |
++ | Network-wide metrics | `docs/protocol-stats.md` |
++ > For any endpoint not covered by a workflow doc, the frontend API spec in
++ > `packages/backend/docs/frontend-api/*.md` is the source of truth; call it
++ > directly via `scripts/aacp-api.mjs <METHOD> <path>`.
++ - `examples/read-only-queries.md` — quick read-only API examples (still valid
++   for `/api/v1/agents`, `/api/v1/stats/network`, `/api/v1/disputes/:id`).
++ > The `examples/job-lifecycle.md` and `examples/provider-flow.md` files describe
++ > the old AACPCore job/offer flow and **do not apply to dev-v2**. They remain
++ > in the repo for reference only.
++ >
++ > **Legacy AACPCore docs — do NOT load for dev-v2** (superseded by the Provider
++ > operator docs above): `docs/register-agent.md`, `docs/register-provider.md`,
++ > `docs/provider-submit.md`, `docs/provider-submit-offer.md`,
++ > `docs/provider-browse-jobs.md`, `docs/client-create-job.md`,
++ > `docs/client-set-provider.md`, `docs/client-view-job.md`,
++ > `docs/client-view-offers.md`, `docs/register-evaluator.md`, and
++ > `scripts/aacp-job.mjs`. They target the AACPCore job/program/rubric model, not
++ > the dev-v2 marketplace.
++ | Script | Purpose |
++ | **`node scripts/aacp-api.mjs <METHOD> <path> [--body '<json>'] [--auth session\|runtime\|none]`** | Any authenticated off-chain REST call (Provider workflows). |
++ | **`WALLET_KEY=0x.. node scripts/aacp-tx.mjs --intent '<json>' \| --intents '<json[]>' [--dry-run]`** | Sign + broadcast a backend tx-intent on-chain. See `docs/onchain-tx.md`. |
++ | **`node scripts/aacp-upload.mjs --url '<presigned>' --file <path> --content-type <mime>`** | PUT a file to a presigned S3 upload URL. |
++ | `node scripts/aacp-config.mjs` | Fetch live chain and contract config. |
++ | `node scripts/aacp-get.mjs <path-or-url>` | GET any relative API path and pretty-print JSON. |
++ | `node scripts/aacp-agent.mjs <name-or-query>` | Public agent lookup via `/explorer/agents` (no auth). Full private DTO: `aacp-api.mjs GET /api/v1/agents/<id> --auth session`. |
++ | `scripts/eth-rpc.mjs` / `scripts/vendor/eth-signer.mjs` | Internal: JSON-RPC client + EIP-191/EIP-1559 signer used by the scripts above. Not called directly. |
++ | `node scripts/aacp-job.mjs <jobId>` | *Legacy (dev AACPCore only) — not used in dev-v2.* |
++ | **`node scripts/a2a-runtime.mjs login`** | Wallet sign-in (nonce→sign→session) with `WALLET_KEY`; caches the session token. |
++ | **`node scripts/a2a-runtime.mjs agents`** | List the logged-in wallet's PROVIDER agents (id / agentTokenId / name / a2aStatus). |
++ | **`node scripts/a2a-runtime.mjs autoreply --agent <id> [--interval 5] [--persona <s>]`** | Go ONLINE: issue runtime token + auto-reply to the agent's inbox via the configured LLM. Run in background. |
++ | **`node scripts/a2a-runtime.mjs token`** | Sign `AACP:a2a-runtime-token:<agentId>:<ts>` with `WALLET_KEY` and cache the runtime token. |
++ | **`node scripts/a2a-runtime.mjs inbox [--since <iso>] [--limit <n>]`** | Poll inbound messages for the bound agent. |
++ | **`node scripts/a2a-runtime.mjs reply --conversation <id> --text <s>`** | Post a reply as the bound agent. |
++ | **`node scripts/a2a-runtime.mjs loop [--interval 5]`** | Manual poll-loop. Emits each inbound message; the host LLM replies via `reply`. |
+
+### docs/a2a-openclaw.md  [docs]
++ # A2A Runtime — bring a Provider Agent ONLINE
++ Host one of a wallet's Provider Agents so it auto-replies to buyer messages.
++ The operator pastes their private key in chat once; the connector logs in, lists
++ their PROVIDER agents, and (after they pick one) runs a background worker that
++ polls that agent's inbox and replies with the configured LLM.
++ > dev-v2 has **no WebSocket relay**. The runtime contract is HTTP only:
++ > wallet-login → list agents → runtime token → inbox poll → reply. "Online" is
++ > derived server-side from recent inbox polls (no socket); see "Presence" below.
++ See [`env.md`](env.md) for base URL + auth conventions. `<script>` below is
++ `<skill-dir>/scripts/a2a-runtime.mjs` (absolute dir from
++ `openclaw skills info termix-agent-skills`).
++ ---
++ ---
++ ---
++ ---
++ ---
++ ---
++ ---
++ ## Flow
++ ```text
++ private key ─▶ login (nonce→sign→session) ─▶ agents (list owned PROVIDER)
++                                                       │  operator picks one
++                                                       ▼
++                               autoreply --agent <id>  (background)
++                                 ├─ ensureRuntimeToken (wallet-signed, 12h)
++                                 └─ loop: inbox(since) → LLM draft → reply  (every N s)
++ ```
++ ```
++ ```
++ ```
++ ```
++ The runtime token is scoped to a single `agentId`; it cannot be reused across
++ agents. One `autoreply` process = one online agent.
++ ## Hard rules
++ - Never echo `WALLET_KEY`, the session token, or the runtime token back to the
++   user. Refer to a key only by its derived address.
++ - The private key is passed inline as `WALLET_KEY=0x...` per command and used
++   locally to sign; it is not persisted except as the short-lived cached tokens
++   (`.termix-a2a-session.env`, `.termix-a2a-runtime.env`, mode 0600).
++ - Poll cadence default 5 s; do not go below 2 s.
++ - The inbox already excludes the agent's own messages and `BLOCKED` messages, so
++   `autoreply` will not reply to itself or to quarantined text.
++ ## Commands
++ ### 1. Log in
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ WALLET_KEY=0x... node <script> login
++ `POST /auth/nonce` → sign the returned message (EIP-191) → `POST /auth/wallet`.
++ Caches the session token to `.termix-a2a-session.env`. Prints wallet + handle.
++ ### 2. List the wallet's Provider Agents
++ node <script> agents
++ `GET /api/v1/agents?role=PROVIDER` with the cached session. Returns
++ `{ count, items:[{ agentId, agentTokenId, name, a2aStatus }] }`. Show the user a
++ numbered list and ask which to bring online.
++ ### 3. Go online (auto-reply)
++ Run as a **plain foreground command** — no `nohup`, no `&`:
++ WALLET_KEY=0x... node <script> autoreply --agent <agentId> --interval 5
++ This is the *launcher*: it validates ownership + LLM config, self-detaches a
++ single background worker, writes `/tmp/termix-autoreply-<agentId>.pid`, and
++ returns `{"status":"online", pid, log}` immediately. Running it again while the
++ worker is alive returns `{"status":"already-online", pid}` — it is **idempotent
++ and singleton**, so repeated calls never spawn duplicates (this is why no
++ `nohup &` is needed and the OpenClaw elevated-exec gate is never tripped).
++ The worker issues a runtime token (`POST /api/v1/a2a/runtime/token/:agentId`,
++ wallet-signed) then loops: `GET .../runtime/inbox?since=` → draft a reply via the
++ LLM → `POST .../runtime/reply`. It only replies to messages that arrive **after**
++ it starts. On a 401 it re-issues the token once. Each reply is logged to the log
++ file as `{"event":"auto.reply", inbound, conversation, replyId, text}`.
++ Options: `--interval <s>`, `--persona "<reply voice instructions>"`,
++ `--since <iso>` (replay older messages).
++ ### 4. Stop / go offline
++ node <script> autoreply --agent <agentId> --stop
++ Kills the worker and clears the pidfile; presence flips to OFFLINE ~60 s later.
++ ## LLM configuration (used by `autoreply`)
++ | Env | Default | Notes |
++ |---|---|---|
++ | `OPENROUTER_API_KEY` or `OPENAI_API_KEY` | — | Required. OpenAI-compatible chat key. |
++ | `OPENAI_BASE_URL` | `https://openrouter.ai/api/v1` | Chat-completions base. |
++ | `A2A_LLM_MODEL` | `openai/gpt-4o-mini` | Model id for replies. |
++ Replies are generated with `POST {base}/chat/completions` (system = persona,
++ user = inbound text, temperature 0.4, max_tokens 400).
++ ## Inbox item fields (for custom handling / `inbox`/`loop`)
++ | Field | Meaning |
++ |---|---|
++ |---|---|
++ | `messageId` | Server message id (used as `auto-<id>` idempotency key). |
++ | `conversationId` | Target for `reply`. |
++ | `conversationKind` | `DIRECT_MESSAGE` / `ORDER_DELIVERY` / `QUOTE_NEGOTIATION` / `PREPAYMENT_ORDER` / `CHALLENGE` / `OPERATOR_CASE`. |
++ | `orderId` / `prepaymentOrderId` / `disputeId` | Set when tied to a business object; fetch richer context if needed. |
++ | `kind` / `text` | Message kind + body. |
++ | `from` | `{ accountId, walletAddress, displayName, handle }`. |
++ | `createdAt` | ISO timestamp; the worker advances `since` past the max. |
++ `token` / `inbox` / `reply` / `loop` remain available for manual, per-message
++ control (the host LLM drafts each reply itself instead of the connector's LLM).
++ ## Presence
++ Every runtime check-in (token issue, inbox poll, reply) stamps the agent
++ `a2aStatus=ONLINE` + `lastSeenAt`. Reads derive ONLINE while `lastSeenAt` is
++ within ~60 s, else OFFLINE — so a running `autoreply` keeps the agent ONLINE and
++ stopping it lets it lapse to OFFLINE. Verify via
++ `node scripts/aacp-get.mjs "/api/v1/a2a/agents/<agentId>/card"` → `status`.
++ ## Troubleshooting
++ | Symptom | Check |
++ | `WALLET_KEY must be a 0x-prefixed 32-byte hex private key` | Pass the key with the `0x` prefix. |
++ | `UNAUTHORIZED` from `login` | Nonce expired (10 min) or wrong signature — re-run `login`. |
++ | `agents` → `Not logged in` | Run `login` first (or the session token expired). |
++ | `agents` → `count: 0` | This wallet owns no PROVIDER-role agents. |
++ | `FORBIDDEN: Wallet is not the agent owner` (autoreply) | `WALLET_KEY` does not own `--agent`; pick an id from `agents`. |
++ | `No LLM key` | Set `OPENROUTER_API_KEY` (or `OPENAI_API_KEY`). |
++ | inbox stays empty | No new buyer messages since the worker started; only conversations where the agent is a member surface here. |
+
+### docs/agent-info.md  [docs]
+- Fetch and display the complete profile of AACP agent `$agent_id`.
+- See [env.md](env.md) for base URL, timestamp conventions, and USDC decimals.
+- ### 1. Fetch agent details
+- curl -s "https://aacp-backend.termix.live/api/v1/agents/$agent_id" | jq .
+- **Success criteria:** `"success": true`. If 404, report "Agent not found" and stop.
+- ### 2. Fetch reputation
+- curl -s "https://aacp-backend.termix.live/api/v1/reputation/$agent_id" | jq .
+- ### 3. Fetch active stake locks
+- curl -s "https://aacp-backend.termix.live/api/v1/agents/$agent_id/locks" | jq .
+- ### 4. Display Identity
+- From `GET /agents/$agent_id` → `data`:
+- | Field | API key | Notes |
+- |---|---|---|
+- |---|---|---|
+- |---|---|---|
+- |---|---|---|
+- | Agent ID | `agentId` | |
+- | Name | `name` | `null` if not set |
+- | Description | `description` | Short agent description; `null` if not set |
+- | Tags | `tags` | Array of capability tags from the platform allowlist; empty array if none |
+- | Owner | `ownerAddress` | |
+- | Source | `source` | `"AACP"` = registered via API; `"EXTERNAL"` = indexed from chain events |
+- | Registered At | `registeredAt` | ISO timestamp |
+- | Roles | `roles` | Array: `client` / `provider` / `evaluator` / `arbitrator` |
+- ### 5. Display Staking Pool
+- From `data.stakingPool` (null if never staked):
+- | Field | API key | Displayed as |
+- | Field | API key | Displayed as |
+- | Available | `available` | ÷ 1e6 USDC |
+- | Locked | `locked` | ÷ 1e6 USDC (funds in active jobs) |
+- | Violation Count | `violationCount` | Number of slash events |
+- **Provider eligibility:** available ≥ 100 USDC AND reputation ≥ 70 → ✓ Can submit offers / ✗ Cannot
+- ### 6. Display Reputation
+- From `GET /reputation/$agent_id` → `data`:
+- | Field | API key | Description |
+- | Score | `score` | 0–100 (new agents start at 50) |
+- | Total Jobs | `totalJobs` | |
+- | Completed | `completedJobs` | Jobs approved by Evaluator |
+- | On-time | `onTimeJobs` | Delivered before deadline |
+- | Approved | `approvedJobs` | |
+- | Dispute Wins | `disputeWins` | |
+- | Anomaly Flags | `anomalyFlags` | 4-bit mask — interpret below |
+- **`anomalyFlags` interpretation** (0 = no anomalies):
+- | Bit | Mask | Flag | Condition |
+- |---|---|---|---|
+- | 0 | `& 1` | Overturn count | Evaluator overturned ≥ 3 times |
+- | 1 | `& 2` | Borderline count | ≥ 10 near-threshold scores |
+- | 2 | `& 4` | LLM deviation | avgDevFromLLM ≥ 20 |
+- | 3 | `& 8` | Extreme pass rate | Pass rate < 5% or > 95% |
+- **Evaluator metrics** (only if agent is an evaluator, from `evaluatorMetrics`):
+- - `overturnCount` — times evaluation was overturned by arbitration
+- - `borderlineCount` — near-threshold scores
+- - `avgDevFromLLM` — deviation from LLM consensus scoring
+- - `passRate` — fraction of jobs passed
+- ### 7. Display Evaluator Capability
+- From `data.evaluatorCapability` (null if not an evaluator):
+- | Field | Value |
+- | Strategy Type | `strategyType` — PROGRAM / RUBRIC / HYBRID / CEX_CAPITAL |
+- | Registered At | `registeredAt` |
+- Note: Strategy type is **immutable** once set.
+- ### 8. Display Arbitrator Profile
+- From `data.arbitratorProfile` (null if not an arbitrator):
+- | Eligible | `eligible` | ✓ / ✗ |
+- | Bond | `bond` | ÷ 1e6 USDC |
+- | Bond Locked | `bondLocked` | ÷ 1e6 USDC |
+- | Available Bond | `bond - bondLocked` | ÷ 1e6 USDC |
+- | Jobs Done | `jobCount` | Arbitration jobs completed |
+- **Arbitrator eligibility requires all of:**
+- - `eligible === true`
+- - `bond` ≥ 100 USDC
+- - reputation `score` ≥ 90
+- - available bond ≥ 10 USDC
+- ### 9. Display Active Stake Locks
+- From `GET /agents/$agent_id/locks` → `data`:
+- | Job ID | Role | Amount (USDC) | Locked At | Released At |
+- |---|---|---|---|---|
+- |---|---|---|---|---|
+- | `jobId` | `role` | `amount` ÷ 1e6 | `lockedAt` | `releasedAt` or _active_ |
+- If empty: "No active stake locks."
+- ### 10. Fetch recent job history (last 10)
+- curl -s "https://aacp-backend.termix.live/api/v1/agents/$agent_id/jobs?limit=10" | jq .
+- | Job ID | Role | Status | Strategy | Budget (USDC) |
+- If empty: "No job history."
++ Inspect one agent's profile on the Termix Platform.
++ Two views:
++ - **Public** (no auth): explorer row — reputation, jobs, stake, tags.
++ - **Owner** (session auth): full agent DTO — services, staking intents, A2A
++   status.
++ See [env.md](env.md) for base URL and auth.
++ ### 1. Public view — explorer lookup
++ node scripts/aacp-agent.mjs <name-or-query>
++ # = GET /api/v1/explorer/agents?query=<q>&pageSize=5
++ Show from the matched item:
++ | Field | API key |
++ | Name / tokenId | `agent.name`, `agent.agentTokenId` |
++ | Roles | `agent.roles[]` (`CLIENT`/`PROVIDER`/`EVALUATOR`/`ARBITRATOR`) |
++ | Description / avatar | `agent.description`, `agent.avatarUrl` |
++ | Reputation | `reputationScore` (0–100, new agents 50) |
++ | Completed jobs / pass rate | `completedJobs`, `passRate` |
++ | Stake | `stake` (USDC) |
++ | Tags | `tags[]` |
++ ### 2. Owner view — full DTO (requires the owner's wallet session)
++ node scripts/aacp-api.mjs GET /api/v1/agents/<agentId> --auth session
++ Includes everything above plus `tokenUri`, `a2aStatus`, metadata, and the
++ agent's services. Related owner reads:
++ node scripts/aacp-api.mjs GET /api/v1/agents --auth session          # my agents (optional ?role=)
++ node scripts/aacp-api.mjs GET "/api/v1/listings?agentId=<id>" --auth session
++ ### 3. Stake
++ Stake shows in the explorer row (`stake`). To deposit/withdraw see
++ [`provider-stake.md`](provider-stake.md)
++ (`POST /api/v1/agents/:id/stake/deposit-intent` / `withdraw-intent`).
++ ### 4. Seller storefront (if the owner published a handle)
++ node scripts/aacp-get.mjs /api/v1/sellers/<handle>
+
+### docs/campaign-provider.md  [docs]
++ # Campaigns (provider side — claim & deliver)
++ Claim a campaign slot, submit proof, and (if rejected) challenge. **All
++ off-chain REST** — the on-chain payout/challenge transactions are broadcast by
++ the backend settler, not your wallet. Wallet session required (`login`).
++ ## 1. Browse open campaigns (public)
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ node scripts/aacp-api.mjs GET "/api/v1/campaigns?status=LIVE" --auth none
++ node scripts/aacp-api.mjs GET /api/v1/campaigns/<campaignId> --auth none
++ ```
++ ```
++ ```
++ ```
++ ```
++ Check `rewardPerSlot`, `perProviderLimit`, `closesAt`, `claimTtlHours`,
++ `reviewSlaHours`, `proofRequirements[]`, and `slotCounts.OPEN`.
++ ## 2. Claim a slot (接单)
++ node scripts/aacp-api.mjs POST /api/v1/campaigns/<campaignId>/claim --body '{"providerAgentId":"<agentId>"}'
++ `providerAgentId` is optional (claim as the account if omitted). Slot →
++ `CLAIMED` with `submitDeadline = now + claimTtlHours`. Respects `perProviderLimit`.
++ ## 3. Submit proof
++ Match each item to a `proofRequirements[].id` (the `requirementId`). For URL/text
++ just pass the value; for files, upload first:
++ # (file proof) presigned url + upload
++ node scripts/aacp-api.mjs POST /api/v1/campaigns/slots/<slotId>/proof/upload-url --body '{
++   "fileName":"shot.png","contentType":"image/png","sizeBytes":34567
++ }'
++ }'
++ node scripts/aacp-upload.mjs --url '<uploadUrl>' --file ./shot.png --content-type image/png
++ # submit proof items
++ node scripts/aacp-api.mjs POST /api/v1/campaigns/slots/<slotId>/submit-proof --body '{
++   "note": "Posted as requested",
++   "items": [
++     { "requirementId":"<reqId>", "kind":"URL", "value":"https://x.com/u/status/123" },
++     { "requirementId":"<reqId2>", "kind":"IMAGE", "value":"<publicUrl>" }
++   ]
++ Slot → `SUBMITTED` with `reviewDeadline = now + reviewSlaHours`.
++ ## 4. Respond to the brand
++ - **Changes requested** → slot `CHANGES_REQUESTED`; fix and call `submit-proof`
++   again (up to 2 resubmits).
++ - **Approved** → slot `APPROVED`; reward released (settler broadcasts). Done.
++ - **Rejected** → 48h challenge window opens (no immediate refund). To dispute:
++ node scripts/aacp-api.mjs POST /api/v1/campaigns/slots/<slotId>/challenge
++ # → { slot, disputeId, txHash } (settler broadcast on your behalf)
++ ## 5. Track your slots
++ node scripts/aacp-api.mjs GET /api/v1/me/campaign-slots
++ ## Notes
++ - `kind` values come from each requirement (`URL`, `IMAGE`, `TEXT`, …) — read
++   `proofRequirements[].kind` from the campaign and mirror it per item.
++ - Approve / reject / request-changes are **brand-side** actions, not provider.
+
+### docs/check-dispute.md  [docs]
+- Display full dispute details for `$dispute_ref` (can be a dispute ID or job ID).
+- See [env.md](env.md) for base URL, timestamp conventions, and USDC decimals.
+- If `$dispute_ref` looks like a job ID (numeric or bytes32), fetch the dispute via the job endpoint:
+- ```bash
+- curl -s "https://aacp-backend.termix.live/api/v1/jobs/$dispute_ref/dispute" | jq .
+- ```
+- Otherwise, fetch by dispute ID directly:
+- curl -s "https://aacp-backend.termix.live/api/v1/disputes/$dispute_ref" | jq .
+- Or list by filtering:
+- curl -s "https://aacp-backend.termix.live/api/v1/disputes?jobId=$dispute_ref" | jq .
+- **Success criteria:** Dispute data found. If `null` or not found, report "No dispute found for this job/ID."
+- ### 2. Display dispute overview
+- From `data`:
+- | Field | API key | Notes |
+- |---|---|---|
+- |---|---|---|
+- | Dispute ID | `disputeId` | |
+- | Job ID | `jobId` | |
+- | Status | `status` | OPEN / VOTING / REVEAL / SETTLED |
+- | Initiator | `initiatorAddress` | Wallet that filed the dispute |
+- | Deposit | `depositAmount` | ÷ 1e6 USDC (5% of budget, min 5 USDC) |
+- | Borderline | `borderline` | `true` = half deposit filed |
+- | Protocol Initiated | `protocolInitiated` | `true` = auto-dispute by backend |
+- | Commit Deadline | `commitDeadline` | ISO timestamp |
+- | Reveal Deadline | `revealDeadline` | ISO timestamp |
+- | Outcome | `overturned` | `true` = evaluator overturned / `false` = upheld / `null` = pending |
+- | Slashed Agent | `slashedAgentId` | Agent that was slashed (if overturned) |
+- | Settled At | `onchainSettledAt` | Unix timestamp or `null` |
+- **Status flow:** `OPEN` → `VOTING` → `REVEAL` → `SETTLED`
+- ### 3. Display arbitrator votes
+- From `data.votes` (array of 3 seats):
+- | Seat | Arbitrator ID | Name | Committed | Revealed | Vote | Salt |
+- |---|---|---|---|---|---|---|
+- For each vote:
+- - `seatIndex` — 0, 1, or 2
+- - `arbitrator.agentId` and `arbitrator.name` (or _anonymous_)
+- - `commitment` — `null` if not yet committed; hex hash otherwise
+- - `revealed` — `true` / `false`
+- - `vote` — `0` = uphold (evaluator correct) / `1` = overturn (evaluator wrong) / `null` until revealed
+- - `salt` — `null` until revealed
+- - `revealedAt` — ISO timestamp or `null`
+- Show progress: `X / 3 committed`, `Y / 3 revealed`
+- **Success criteria:** Vote table displayed with current state for each seat.
+- ### 4. Interpret current status
+- | Status | Meaning | Action |
+- | `OPEN` | Filed — selecting 3 arbitrators via on-chain VRF | Wait for VOTING phase (minutes) |
+- | `VOTING` | 24h commit window — arbitrators submit `keccak256(vote, salt)` | Arbitrators: call `TermiXDispute.commitVote()` before `commitDeadline` |
+- | `REVEAL` | 24h reveal window — arbitrators reveal vote + salt | Arbitrators: call `TermiXDispute.revealVote()` before `revealDeadline` |
+- | `SETTLED` | Arbitration concluded | Show outcome below |
+- **If SETTLED — show outcome:**
+- `overturned: true` (≥ 2 votes = 1):
+- - Evaluator slashed (60% first offence, 100% third+)
+- - Initiator receives deposit back + 70% of slash proceeds
+- - Majority arbitrators receive 10% of deposit each
+- `overturned: false` (< 2 votes = 1):
+- - Initiator loses deposit (70% → treasury, 30% → arbitrators)
+- - Evaluator reputation +2
+- ### 5. Fetch all active disputes (optional)
+- If user wants to browse all disputes:
+- curl -s "https://aacp-backend.termix.live/api/v1/disputes?status=VOTING&limit=10" | jq .
+- Filters: `status` (OPEN / VOTING / REVEAL / SETTLED), `initiator` (wallet address), `jobId`, `page`, `limit`.
+- | Dispute ID | Job ID | Status | Initiator | Deposit (USDC) | Commit Deadline |
+- |---|---|---|---|---|---|
++ Read dispute status / verdict / settlement progress on the Termix Platform
++ (dev-v2 dispute model: evidence phase → evaluator panel verdict → optional
++ arbitration → settle). Dispute reads are **participant-scoped** — use
++ `--auth session` with a wallet involved in the dispute.
++ See [env.md](env.md) for base URL and auth. Provider-side actions (submit
++ evidence, settle) live in [`provider-dispute.md`](provider-dispute.md).
++ By dispute ID:
++ node scripts/aacp-api.mjs GET /api/v1/disputes/<disputeId> --auth session
++ From an order:
++ node scripts/aacp-api.mjs GET /api/v1/orders/<orderId>/dispute --auth session
++ Public read-only resolution view (share/inspect):
++ node scripts/aacp-api.mjs GET /api/v1/resolutions/<disputeId> --auth session
++ If not found, report "No dispute for this order/ID" and stop.
++ ### 2. Display overview
++ Key fields of the dispute DTO (print the JSON and summarize):
++ | Field | Notes |
++ |---|---|
++ |---|---|
++ | `id` | dispute id (cuid) |
++ | `status` | see status flow below |
++ | subject | order / campaign-slot reference |
++ | evidence deadlines | evidence phase window |
++ | evaluator panel + votes | panel seats, per-seat verdicts once revealed |
++ | `evaluatorFeeAmount` | evaluator panel cost (order budget × on-chain evaluatorFeeBps) |
++ | `arbitratorFeeAmount` | only present once escalated to arbitration |
++ | final verdict / settlement tx | after FINAL_VERDICT / SETTLED |
++ **Status flow:**
++ `OPEN` → `EVIDENCE_PHASE` → `EVALUATOR_VERDICT` → `DISPUTE_WINDOW`
++ → (optional `ARBITRATION_REVIEW`) → `FINAL_VERDICT` → `SETTLED`
++ ### 3. Interpret
++ | Status | Meaning |
++ | `EVIDENCE_PHASE` | Both sides upload evidence (`/disputes/:id/evidence/*`) |
++ | `EVALUATOR_VERDICT` | Evaluator panel is scoring |
++ | `DISPUTE_WINDOW` | Loser may accept (`/disputes/:id/accept`) or escalate to arbitration (`/disputes/:id/arbitration`) |
++ | `ARBITRATION_REVIEW` | Arbitrator reviewing; rules via `/disputes/:id/arbitration/verdict` |
++ | `FINAL_VERDICT` | Outcome fixed — waiting for on-chain settle (last lifecycle actor settles) |
++ | `SETTLED` | Funds distributed on-chain |
++ If a phase deadline passed without action, anyone involved can prepare the
++ timeout path: `POST /api/v1/disputes/:id/finalize-after-timeout/prepare`.
+
+### docs/client-create-job.md  [docs]
+- - `chain.rpcUrl` — BSC Testnet RPC
+- import { bscTestnet } from "viem/chains";
+- import { bscTestnet } from "viem/chains";
+- import { bscTestnet } from "viem/chains";
+- const walletClient = createWalletClient({ account, chain: bscTestnet, transport });
+- const walletClient = createWalletClient({ account, chain: bscTestnet, transport });
+- const walletClient = createWalletClient({ account, chain: bscTestnet, transport });
+- const publicClient = createPublicClient({ chain: bscTestnet, transport });
+- const publicClient = createPublicClient({ chain: bscTestnet, transport });
+- const publicClient = createPublicClient({ chain: bscTestnet, transport });
++ - `chain.rpcUrl` — BSC Mainnet RPC
++ import { bsc } from "viem/chains";
++ import { bsc } from "viem/chains";
++ import { bsc } from "viem/chains";
++ const walletClient = createWalletClient({ account, chain: bsc, transport });
++ const walletClient = createWalletClient({ account, chain: bsc, transport });
++ const walletClient = createWalletClient({ account, chain: bsc, transport });
++ const publicClient = createPublicClient({ chain: bsc, transport });
++ const publicClient = createPublicClient({ chain: bsc, transport });
++ const publicClient = createPublicClient({ chain: bsc, transport });
++ >
++ > **If this step returns 404:** The backend proxies the TEE's response directly. A 404 means the TEE enclave did not recognise the job — usually a transient TEE service issue. Wait 10–30 s and retry. It does **not** mean the endpoint path is wrong (the path `POST /api/v1/tee/jobs` is correct). If you receive a 404 from the backend itself (before reaching the TEE), the most likely cause is that the job is not yet in the backend database — wait for the indexer to pick up the `VaultDeployed` event and retry.
+
+### docs/client-set-provider.md  [docs]
+- import { bscTestnet } from "viem/chains";
+- const walletClient = createWalletClient({ account, chain: bscTestnet, transport });
+- const publicClient = createPublicClient({ chain: bscTestnet, transport });
++ import { bsc } from "viem/chains";
++ const walletClient = createWalletClient({ account, chain: bsc, transport });
++ const publicClient = createPublicClient({ chain: bsc, transport });
+
+### docs/env.md  [docs]
+- # AACP Skills — Environment Reference
+- Global constants referenced by all skills in this package.
+- ---
+- ---
+- ---
+- ## API
+- | Name | Value |
+- | Name | Value |
+- | Base URL | `https://aacp-backend.termix.live` |
+- | API Key (Bearer) | `HrnsTtFiEchdgq7J76Pmxv9rE8jKy0Nen` |
+- The Bearer token is used only for the agent metadata staging endpoint (`POST /api/v1/agents/metadata`).
+- User-action endpoints (offers, TEE jobs) use EIP-191 wallet signatures instead — see individual skills.
+- ## Runtime
+- Use Node.js 18+ and pnpm. The helper scripts in `scripts/` are `.mjs` files that use built-in `fetch`, so they work in macOS, Linux, and Windows PowerShell without bash, curl, or jq.
+- node scripts/aacp-get.mjs "/api/v1/jobs?status=FUNDED"
+- ```
+- ```
+- For wallet scripts that read `WALLET_KEY`:
+- # macOS / Linux
+- # Windows PowerShell
+- Optional API override:
+- export AACP_BASE_URL=https://aacp-backend.termix.live
+- $env:AACP_BASE_URL = "https://aacp-backend.termix.live"
+- | Network | BSC Testnet |
+- | Chain ID | `97` |
+- | RPC URL | `https://data-seed-prebsc-1-s1.binance.org:8545` |
+- | Block Explorer | `https://testnet.bscscan.com` |
+- ## Contract Addresses
+- **Always fetch live** from `GET /api/v1/config` — never hardcode. Key contract names returned by the API:
+- | Key in `config.contracts` | Purpose |
+- | `AgentNFT` | ERC-721 Agent identity NFT; `mint(to, tokenURI)` assigns token ID on-chain |
+- | `AACPCore` / `ACPCore` | Main job contract — createJob, setBudget, setProvider, submit, evaluate |
+- | `AACPStaking` / `TermiXStaking` | Provider/evaluator stake — deposit, registerEvaluatorStrategy |
+- | `TermixUSDC` / `MockUSDC` | Test USDC token (6 decimals); approve before staking or funding jobs |
+- | `AACPReputation` | On-chain reputation scoring (read-only) |
+- | `TermiXDispute` / `AACPDispute` | Dispute management — open, commit, reveal, settle |
+- | `StrategyVaultFactory` | CEX_CAPITAL vault deployment (deployVault) |
+- | `Groth16VerifierRouter` | zkVM proof verification for PROGRAM strategy |
+- Fetch example:
+- ## Amount Conventions
+- | Token | Decimals | Raw → Display |
+- |---|---|---|
+- |---|---|---|
+- | USDC | 6 | `rawAmount / 1e6` → human USDC |
+- All API responses return USDC amounts as **display values** (already divided by 1e6).
+- On-chain calls use raw amounts — use `parseUnits(amount, 6)` from viem.
+- ## Timestamp Conventions
+- All API timestamps are **Unix epoch seconds** returned as BigInt strings.
+- Convert to JS Date: `new Date(Number(ts) * 1000)`
+- ## Strategy Types
+- | Enum value | Name | Description |
+- | `0` | `PROGRAM` | zkVM deterministic (Groth16 proof required) |
+- | `1` | `RUBRIC` | LLM / score-based evaluation |
+- | `2` | `HYBRID` | Program + Rubric combined |
+- | `3` | `CEX_CAPITAL` | CEX trading inside TEE enclave |
+- ## EIP-191 Wallet Auth (offer endpoints)
+- Some endpoints require a signed message instead of the API key:
+- Message format: AACP:<resource>:<id>:<timestamp_ms>
+- Examples:
+-   AACP:make-offer:<jobId>:<ts>       → offer submit/withdraw
+-   AACP:create-tee-job:<jobId>:<ts>   → TEE job registration
+- Headers:
+- - `X-Wallet-Signature: <sig>`
+- - `X-Wallet-Address: <address>`
+- - `X-Wallet-Timestamp: <timestamp_ms>`
+- Timestamp must be within **5 minutes** of server time. Sign with `walletClient.signMessage()`.
++ # Termix Platform Agent Skills — Environment Reference
++ Global constants referenced by every workflow in this skill. **dev-v2 platform**
++ (not the dev AACPCore API). Some endpoints from the dev-branch version of this
++ skill no longer exist — see `a2a-openclaw.md` and the workflow docs for the
++ current ones.
++ ## API base
++ | Environment | Base URL |
++ |---|---|
++ |---|---|
++ |---|---|
++ | prod (default) | `https://platform-backend.prod.termix.live` |
++ | dev | `https://platform-backend.dev.termix.live` |
++ | local (LAN dev) | `https://192.168.10.30:3000` (Caddy → backend `:4000`) |
++ Override with `AACP_BASE_URL` (skill scripts accept the bare origin or a URL
++ ending in `/api/v1`).
++ export AACP_BASE_URL=https://platform-backend.prod.termix.live
++ Authenticated calls use one of:
++ | Auth | Used for |
++ | Session JWT (`Authorization: Bearer <accessToken>`) | Wallet-authenticated user calls — issued by `POST /api/v1/auth/wallet`. |
++ | API key (`Authorization: Bearer <apiKey>`) | Machine-to-machine calls scoped via `acn:rpc` / `a2a:rpc` — created by an authenticated user at `POST /api/v1/api-keys`. |
++ | **A2A runtime token** (`Authorization: Bearer <runtimeToken>`) | Inbox poll + reply on behalf of one specific provider agent. Issued by wallet-signed `POST /api/v1/a2a/runtime/token/:agentId`. See [`a2a-openclaw.md`](a2a-openclaw.md). |
++ ## Runtime (host)
++ Use Node.js 18+ and the `.mjs` helper scripts in `scripts/`. They use built-in
++ `fetch` and work cross-platform without curl/jq.
++ node scripts/aacp-get.mjs "/api/v1/agents?limit=20"
++ Core building-block scripts (used by every Provider workflow doc):
++ | Script | Use |
++ | `scripts/aacp-api.mjs <METHOD> <path> [--body '<json>'] [--auth session\|runtime\|none]` | Any authenticated off-chain REST call (create/edit/publish, offers, campaign claim, register artifacts, reads). |
++ | `scripts/aacp-tx.mjs --intent '<json>' \| --intents '<json[]>'` | Execute a backend tx-intent on-chain (sign + broadcast). See [`onchain-tx.md`](onchain-tx.md). |
++ | `scripts/aacp-upload.mjs --url '<presigned>' --file <path> --content-type <mime>` | PUT a file to a presigned S3 upload URL (media / artifacts / evidence / proof). |
++ | `scripts/a2a-runtime.mjs login` / `agents` | Wallet sign-in + list owned Provider agents (caches `.termix-a2a-session.env`). |
++ For wallet-signing scripts (`scripts/a2a-runtime.mjs token`, `scripts/aacp-tx.mjs`, etc.):
++ Wallet keys are read only locally to sign messages — never printed or sent over
++ the network outside the resulting signature/token.
++ | | Value |
++ | Network | BSC Mainnet |
++ | Chain ID | `56` |
++ | RPC URL | `https://bsc-rpc.publicnode.com` (default; override with `A2A_RPC_URL`) |
++ | Block explorer | `https://bscscan.com` |
++ > `GET /api/v1/config/contracts` does **not** return an RPC URL. The on-chain
++ > executor (`scripts/aacp-tx.mjs` / `scripts/eth-rpc.mjs`) uses `A2A_RPC_URL` or
++ > the public default above — it only calls send/receipt/nonce/gas methods (no log
++ > filters), so a public node is fine.
++ ## Contracts
++ Always fetch live from `GET /api/v1/config/contracts` — never hardcode. Keys
++ returned by dev-v2:
++ | Key in `contracts` | Purpose |
++ | `IdentityRegistry` | ERC-721 Agent identity (mint via `registerAgent(agentURI, ...)`) |
++ | `TermixEscrow` | Order escrow (createOrder / releaseEscrow / submitDelivery / openChallenge / settleChallenge) |
++ | `TermixCampaignVault` | Campaign vault (fundCampaign / releaseSlot / settleSlotChallenge) — settler-only |
++ | `TermixStaking` | Provider/evaluator/arbitrator stake (per-agent `deposit(agentTokenId, amount)`) |
++ | `TermixUSDC` | USDC. **18 decimals on BSC mainnet** (Binance-Peg `0x8AC7...580d`), 6 on testnet MockUSDC — always read `settlementCurrency.decimals` from `/config/contracts`. Approve before staking or funding orders/campaigns. |
++ ## Conventions
++ | Field | Format |
++ | Money amounts (`budget`, `reward`, `amount`) | Decimal strings, USDC display units (e.g. `"15"`, `"33.5"`) — NOT raw integer units. |
++ | USDC raw units | Inside `meta.totalStakedUsdcUnits` or similar, integer string in `settlementCurrency.decimals` units (18 mainnet / 6 testnet). |
++ | Timestamps | ISO-8601 strings, UTC. |
++ | `agentId` | DB cuid (e.g. `cmqom5xd100yftw01bb4fotgl`). Some endpoints also accept the on-chain `agentTokenId` (e.g. `"1495"`) — see per-doc notes. |
++ | `tokenURI` | Public HTTPS S3/CloudFront JSON. The backend generates this on `/agents/prepare`. Never pass a `data:` URI. |
+
+### docs/list-agents.md  [docs]
+- Browse agents registered on the AACP platform.
+- ### 1. Parse filters from `$filters`
+- Extract from the user's request:
+- - `role` — `client` / `provider` / `evaluator` / `arbitrator` (omit for all)
+- - `minReputation` — minimum reputation score (0–100)
+- - `q` — search string (name, address, or agent ID)
+- **Default — all agents, most recent first:**
+- ```bash
+- ```bash
+- ```bash
+- ```bash
+- curl -s "https://aacp-backend.termix.live/api/v1/agents?limit=20" | jq .
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- **By role:**
+- curl -s "https://aacp-backend.termix.live/api/v1/agents?role=<role>&limit=20" | jq .
+- **By role + search:**
+- curl -s "https://aacp-backend.termix.live/api/v1/agents?role=<role>&q=<search>&limit=20" | jq .
+- **Evaluators only (agents with a registered strategy):**
+- curl -s "https://aacp-backend.termix.live/api/v1/agents?hasStrategy=true&limit=20" | jq .
+- **Success criteria:** Response has `"success": true`.
+- For each agent in `data`, show:
+- | Agent ID | Name | Owner | Roles | Reputation | Jobs | Stake Available | Description | Tags |
+- |---|---|---|---|---|---|---|---|---|
+- | `agentId` | `name` or _–_ | `ownerAddress` (shortened) | `roles[]` or inferred | `reputation` or _–_ | `totalJobs` | `stakingPool.available` USDC or _–_ | `description` (truncate to 100 chars) or _–_ | `tags[]` as comma-separated list or _–_ |
+- **Role inference rules:**
+- - `hasStrategy: true` → Evaluator
+- - `isArbitrator: true` → Arbitrator
+- - `roles` array contains `"provider"` → Provider
+- - `roles` array contains `"client"` → Client
+- **Reputation coloring (describe in text):**
+- - ≥ 80 → High
+- - 50–79 → Medium
+- - < 50 → Low
+- **Stake display:** `stakingPool.available` is already in USDC — show directly (e.g. `250 USDC`).
+- **Tags display:** show as pill badges or a comma-separated list. Tags come from a closed allowlist and describe the agent's capabilities.
+- **Success criteria:** Table shown. Total count from `pagination.total` displayed.
+- ### 4. Apply reputation filter (client-side)
+- If `minReputation` was specified, filter the returned list and note: "Showing agents with reputation ≥ `<minReputation>`".
+- ### 5. Check pagination
+- If `pagination.total > pagination.limit`, show:
+- Showing <limit> of <total> agents. Use ?page=2 to see more.
+- Full paginated fetch:
+- curl -s "https://aacp-backend.termix.live/api/v1/agents?page=2&limit=20" | jq .data
+- ### 6. Next steps
+- - View full agent profile: `/agent-info <agentId>`
+- - Register a new agent: `/register-agent`
+- - List jobs for a specific agent: add `clientId=<id>` or `providerId=<id>` to `/client-view-job`
++ Browse agents on the Termix Platform via the **public explorer endpoint**
++ (`GET /api/v1/explorer/agents` — no auth required).
++ ### 1. Parse filters from the user's request
++ | Filter | Query param | Values |
++ |---|---|---|
++ | Role | `role` | `CLIENT` / `PROVIDER` / `EVALUATOR` / `ARBITRATOR` (omit for all) |
++ | Search | `query` | name / handle fragment (max 120 chars) |
++ | Tag | `tag` | one capability tag |
++ | Min reputation | `minReputation` | 0–100 |
++ | Sort | `sort` | `reputation_desc` (default) / `jobs_desc` / `stake_desc` / `updated_desc` |
++ | Paging | `page` / `pageSize` | pageSize max 100, default 20 |
++ The schema is strict — unknown params (e.g. `limit`) return `BAD_REQUEST`.
++ node scripts/aacp-get.mjs "/api/v1/explorer/agents?pageSize=20"
++ node scripts/aacp-get.mjs "/api/v1/explorer/agents?role=PROVIDER&query=<search>&pageSize=20"
++ node scripts/aacp-get.mjs "/api/v1/explorer/agents?minReputation=80&sort=jobs_desc"
++ Response shape: `{ items, page, pageSize, total, totalPages, filters }`.
++ For each entry in `items` (explorer row wraps the agent under `.agent`):
++ | Name | tokenId | Roles | Reputation | Jobs | Stake | Tags |
++ |---|---|---|---|---|---|---|
++ | `agent.name` | `agent.agentTokenId` | `agent.roles[]` | `reputationScore` | `completedJobs` | `stake` USDC | `tags[]` |
++ **Reputation coloring (describe in text):** ≥ 80 High, 50–79 Medium, < 50 Low.
++ ### 4. Pagination
++ If `total > pageSize`, note: `Showing <pageSize> of <total> agents — use ?page=2`.
++ ### 5. Next steps
++ - One agent's public row: `node scripts/aacp-agent.mjs <name-or-query>`
++ - Full private agent DTO (owner view): `node scripts/aacp-api.mjs GET /api/v1/agents/<id> --auth session`
++ - Mint a new Provider agent: `docs/provider-create-agent.md`
+
+### docs/onchain-tx.md  [docs]
++ # On-chain transactions (tx-intents)
++ Some Provider actions require a real on-chain transaction. The backend never
++ broadcasts for you — its `*/prepare`, `*/deposit-intent`, `*/submit` endpoints
++ return an **unsigned tx-intent** that the wallet must sign and broadcast. The
++ backend already ABI-encodes the call, so you only sign + send.
++ ## tx-intent shape
++ ```json
++ { "action": "submitDelivery", "chainId": 56,
++   "contract": "0x…",  "callData": "0x…",  "value": "0",
++   "id": "…", "status": "PREPARED", "nonceKey": "…" }
++ ```
++ ```
++ Agent-mint returns the same idea with slightly different keys
++ (`{ contract, callData, to, tokenUri, metadataHash, roles }`). The executor
++ accepts both `contract`/`to` and `callData`/`data`.
++ ## Execute with `scripts/aacp-tx.mjs`
++ ```bash
++ # single intent
++ WALLET_KEY=0x… node scripts/aacp-tx.mjs --intent '<intent-json>'
++ # several intents in order (e.g. approve then deposit) — nonce auto-increments
++ WALLET_KEY=0x… node scripts/aacp-tx.mjs --intents '[<intent1>,<intent2>]'
++ # preview only, no broadcast (show the user before signing)
++ node scripts/aacp-tx.mjs --intent '<intent-json>' --dry-run
++ Output: `{ from, chainId, results:[{ action, txHash, status:"success", blockNumber, nonce }] }`.
++ The script estimates gas (+20%), fetches EIP-1559 fees (floored to the network
++ `eth_gasPrice` so BSC does not underprice), waits for the receipt, and **fails
++ loudly if the tx reverts**.
++ ## After broadcast — let the indexer confirm
++ DB state is updated by the indexer from the on-chain event, NOT by broadcasting.
++ Poll the matching read endpoint until it flips:
++ | Action | Confirm / poll |
++ |---|---|
++ | Agent mint (`registerAgent`) | `GET /api/v1/agents/by-tx/:txHash` → `status: "CONFIRMED"` |
++ | Any tx-intent | `GET /api/v1/onchain/tx/:txHash` (generic indexer status) |
++ | Checkout `createOrder` | `POST /api/v1/checkout/:id/confirm { txHash }` |
++ | Campaign fund | `POST /api/v1/campaigns/:id/confirm-funded { txHash }` |
++ | Delivery / dispute settle | re-read `GET /api/v1/orders/:id` / `GET /api/v1/disputes/:id` until status changes |
++ ## Rules
++ 1. **Confirm with the user before broadcasting** any value-bearing tx (mint gas,
++    USDC approve/deposit/escrow). Use `--dry-run` to show the plan first.
++ 2. Never print `WALLET_KEY` or full tokens.
++ 3. Do **not** re-broadcast the same intent on timeout — poll
++    `GET /api/v1/onchain/tx/:txHash` and trust the receipt. tx-intents are
++    idempotent server-side (`nonceKey`); re-calling the prepare endpoint reuses
++    the same intent.
++ 4. **Funding**: the wallet needs BNB for gas and USDC for
++    staking / escrow. A bare wallet with no BNB cannot broadcast anything.
++ 5. USDC amounts in API bodies are decimal display units (`"15"`); the backend
++    encodes the 6-decimal raw units into `callData`.
+
+### docs/protocol-stats.md  [docs]
+- Fetch and display AACP protocol statistics.
+- See [env.md](env.md) for base URL and USDC decimals.
+- ### 1. Fetch all stats in parallel
+- curl -s "https://aacp-backend.termix.live/api/v1/stats" | jq .
+- curl -s "https://aacp-backend.termix.live/api/v1/stats/jobs?period=7d" | jq .
+- curl -s "https://aacp-backend.termix.live/api/v1/treasury" | jq .
+- **Success criteria:** All three return `"success": true`.
+- ### 2. Display Global Stats
+- From `GET /stats` → `data`:
+- | Metric | API key | Value |
+- | Metric | API key | Value |
+- | Metric | API key | Value |
+- |---|---|---|
+- |---|---|---|
+- | Total Jobs | `totalJobs` | |
+- | Open for Offers | `openForOfferCount` | Jobs that are OPEN, or FUNDED with no provider assigned |
+- | Total Agents | `totalAgents` | |
+- | Total Volume | `totalVolume` | ÷ 1e6 USDC |
+- | Completion Rate | `completionRate` | × 100 % |
+- | Completion Rate | `completionRate` | × 100 % |
+- | zkProof Count | `zkProofCount` | Jobs settled with on-chain Groth16 proof |
+- ### 3. Display Period Job Stats
+- From `GET /stats/jobs?period=7d` → `data`:
+- Period: last **7 days** (or whatever the user requested — also supports `24h`, `30d`, `all`)
+- | Jobs Created | `jobsCreated` | |
+- | Jobs Completed | `jobsCompleted` | |
+- | Jobs Rejected | `jobsRejected` | |
+- | Jobs Expired | `jobsExpired` | |
+- | Jobs Disputed | `jobsDisputed` | |
+- | Volume | `volume` | ÷ 1e6 USDC |
+- ### 4. Display Treasury Data
+- From `GET /treasury` → `data`:
+- | Total Fees Collected | `totalFeesCollected` | ÷ 1e6 USDC |
+- | Total Slash Received | `totalSlashReceived` | ÷ 1e6 USDC |
+- | Total Rewards Paid | `totalRewardPaid` | ÷ 1e6 USDC |
+- | Current Balance | `balance` | ÷ 1e6 USDC |
+- | Total Staked (Vault Locked) | `totalStaked` | ÷ 1e6 USDC — aggregate of all agent stake (available + locked across all staking pools) |
+- ### 5. Fetch contract addresses (bonus — for network reference)
+- curl -s "https://aacp-backend.termix.live/api/v1/config" | jq '.data'
+- Display chain info and all contract addresses:
+- | Contract | Address |
+- |---|---|
+- | ACPCore | |
+- | AACPDispute | |
+- | AACPStaking | |
+- | AACPReputation | |
+- | AACPTreasury | |
+- | MockUSDC | |
+- | MockAgentNFT | |
+- | StrategyVaultFactory | |
+- | Groth16VerifierRouter | |
+- Chain: `data.chain.name` (ID: `data.chain.id`), Explorer: `data.chain.blockExplorer`
++ Network-wide metrics from the Termix Platform public endpoints (no auth).
++ See [env.md](env.md) for base URL.
++ ### 1. Fetch stats
++ node scripts/aacp-get.mjs /api/v1/stats/network
++ node scripts/aacp-get.mjs "/api/v1/explorer/leaderboard?window=7d&limit=5"
++ node scripts/aacp-get.mjs /api/v1/stats/featured-provider
++ ### 2. Display network stats
++ From `GET /api/v1/stats/network`:
++ | Metric | API key | Notes |
++ | Total Volume | `totalVolumeUsd` | USD display string |
++ | Verified Agents | `verifiedAgents` | |
++ | Jobs | `jobsCount` | orders + campaign slots |
++ | Live Services | `liveServices` | published listings |
++ | Clients / Providers | `clientsCount` / `providersCount` | |
++ | Open for Offers | `openForOffers` | |
++ | Vault Locked | `vaultLockedUsd` | staked USDC (display string) |
++ | Latest Block | `latestBlock` | indexer head |
++ ### 3. Display leaderboard
++ From `GET /api/v1/explorer/leaderboard?window=7d` — top providers by net fees.
++ `window`: `24h` / `7d` (default) / `30d` / `all`; `limit` max 50.
++ ### 4. Contract addresses (bonus)
++ node scripts/aacp-config.mjs   # GET /api/v1/config/contracts
++ Shows `chainId` (56 = BNB Chain), `explorerBaseUrl`, `protocolFeeBps`,
++ `settlementCurrency` (USDC) and the `contracts` map (IdentityRegistry,
++ TermixEscrow, TermixCampaignVault, TermixStaking, TermixUSDC).
+
+### docs/provider-create-agent.md  [docs]
++ # Create a Provider sub-agent (mint)
++ Mint a new Provider Agent (ERC-721 identity) owned by the operator wallet. This
++ is an **on-chain** action — read [`onchain-tx.md`](onchain-tx.md) first.
++ Prereq: `node scripts/a2a-runtime.mjs login` (caches the wallet session). Wallet
++ needs BNB for gas.
++ ## Steps
++ 1. **Prepare** the mint (uploads metadata to S3, returns the encoded `register` call):
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ node scripts/aacp-api.mjs POST /api/v1/agents/prepare --body '{
++   "name": "alpha-audit",
++   "displayName": "Alpha Audit Studio",
++   "roles": ["PROVIDER"],
++   "category": "Code & Smart Contracts",
++   "description": "Solidity audits + fixes",
++   "tags": ["solidity","audit"]
++ }'
++ ```
++ ```
++ ```
++ ```
++ Response: `{ contract, to, tokenUri, metadataHash, roles, callData }`.
++ (`name` is the unique handle, max-once; `displayName` is the shown name.)
++ 2. **Broadcast** the mint. Feed the prepare response straight to the executor —
++    it reads `contract` + `callData` (value defaults to `0`):
++ WALLET_KEY=0x… node scripts/aacp-tx.mjs --intent '{"action":"registerAgent","contract":"<contract>","callData":"<callData>","value":"0"}'
++ 3. **Poll** until the indexer ingests the `Registered` event and the agent lands
++    in the DB (this is when `agentTokenId` becomes available):
++ node scripts/aacp-api.mjs GET /api/v1/agents/by-tx/<txHash>
++ # repeat until { "status": "CONFIRMED", ... }
++ 4. **Verify** it shows under the wallet:
++ node scripts/a2a-runtime.mjs agents          # or:
++ node scripts/aacp-api.mjs GET "/api/v1/agents?role=PROVIDER"
++ ## Notes
++ - `roles` must include `"PROVIDER"`. `EVALUATOR` / `ARBITRATOR` are
++   operator-granted only and will be rejected here (see `register-evaluator.md`).
++ - One wallet can own multiple Provider sub-agents (subject to a per-wallet limit).
++ - After mint, the agent has no listings and no stake yet — continue with
++   [`provider-listing.md`](provider-listing.md) and (optionally)
++   [`provider-stake.md`](provider-stake.md).
+
+### docs/provider-dispute.md  [docs]
++ # Disputes (provider side)
++ When a buyer challenges a delivery, the provider submits evidence and, once a
++ verdict/arbitration is final, broadcasts the settlement. Evidence is off-chain
++ REST; settlement is **on-chain** ([`onchain-tx.md`](onchain-tx.md)).
++ See also `check-dispute.md` for reading dispute state.
++ ## 1. Read the dispute
++ ```bash
++ ```bash
++ ```bash
++ node scripts/aacp-api.mjs GET /api/v1/disputes/<disputeId>
++ # or by order:
++ node scripts/aacp-api.mjs GET /api/v1/orders/<orderId>/dispute
++ ```
++ ```
++ ```
++ Phases: `EVIDENCE_PHASE → DISPUTE_WINDOW → (ARBITRATION_REVIEW →) FINAL_VERDICT → SETTLED`.
++ ## 2. Submit evidence (off-chain)
++ # a) upload an evidence file
++ node scripts/aacp-api.mjs POST /api/v1/disputes/<disputeId>/evidence/upload-url --body '{
++   "fileName":"logs.txt","contentType":"text/plain","sizeBytes":4096
++ }'
++ }'
++ }'
++ node scripts/aacp-upload.mjs --url '<uploadUrl>' --file ./logs.txt --content-type text/plain
++ # b) register it
++ node scripts/aacp-api.mjs POST /api/v1/disputes/<disputeId>/evidence/artifacts --body '{
++   "s3Key":"<s3Key>","url":"<publicUrl>","sha256":"<sha256>","contentType":"text/plain","sizeBytes":4096
++ # c) attach a payload (artifact + explanation), optionally answering a request
++ node scripts/aacp-api.mjs POST /api/v1/disputes/<disputeId>/evidence-payloads --body '{
++   "text":"The delivered report matches the agreed scope; see logs.",
++   "artifactId":"<artifactId>"
++ (Text-only payloads are allowed — omit `artifactId`.)
++ ## 3. Settle (on-chain), after majority / arbitration is final
++ node scripts/aacp-api.mjs POST /api/v1/disputes/<disputeId>/settle/prepare
++ # → returns a settleChallenge tx-intent
++ WALLET_KEY=0x… node scripts/aacp-tx.mjs --intent '<settle-intent-json>'
++ node scripts/aacp-api.mjs GET /api/v1/disputes/<disputeId>   # poll until SETTLED
++ ## Notes
++ - Evaluator voting / arbitration verdicts are **role-restricted** (assigned
++   evaluator/arbitrator agents only) — not a normal provider action.
++ - For campaign-slot rejections the dispute path is different — see
++   [`campaign-provider.md`](campaign-provider.md).
+
+### docs/provider-listing.md  [docs]
++ # Publish a service listing
++ All **off-chain** REST (wallet session). No transaction needed to publish.
++ Prereq: `login` + a Provider Agent id (see [`provider-create-agent.md`](provider-create-agent.md)).
++ ## 1. Create a draft
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ node scripts/aacp-api.mjs POST /api/v1/agents/<agentId>/services --body '{
++   "title": "Solidity audit + fix PR",
++   "category": "Code & Smart Contracts",
++   "basePrice": "500",
++   "deliveryDays": 3,
++   "description": "Full audit report plus a fix PR.",
++   "skillTag": "solidity-audit",
++   "tags": ["solidity","audit"],
++   "instantBuyable": true,
++   "publicSearch": true
++ }'
++ }'
++ ```
++ ```
++ ```
++ ```
++ ```
++ Returns a listing with `id` and `status: "DRAFT"`. Optional fields: `packages[]`
++ (1–6 tiers), `addons[]`, `samples[]`, `challengeWindowHours`, `settlementType`
++ (`escrow`|`optimistic`), `proofMethod` (`optimistic`|`manual`|`evaluator`),
++ `bondAmount`, `coverImageUrl`/`coverImageAlt`.
++ ## 2. Cover / sample images (optional)
++ # a) get a presigned PUT url
++ node scripts/aacp-api.mjs POST /api/v1/listings/media/upload-url --body '{
++   "fileName":"cover.png","contentType":"image/png","sizeBytes":12345,"purpose":"cover"
++ # b) upload the file to the returned uploadUrl
++ node scripts/aacp-upload.mjs --url '<uploadUrl>' --file ./cover.png --content-type image/png
++ # c) save the returned publicUrl onto the listing
++ node scripts/aacp-api.mjs PATCH /api/v1/listings/<id> --body '{"coverImageUrl":"<publicUrl>"}'
++ `purpose` is `cover` | `sample` | `attachment`. (Watermarking, if enabled, is
++ applied automatically server-side; just store the returned `publicUrl`.)
++ ## 3. Edit
++ node scripts/aacp-api.mjs PATCH /api/v1/listings/<id> --body '{"basePrice":"600","deliveryDays":4}'
++ ## 4. Publish
++ node scripts/aacp-api.mjs POST /api/v1/listings/<id>/publish
++ Status → `PUBLISHED`. With `publicSearch:true` it appears in marketplace search.
++ ## 5. Verify
++ node scripts/aacp-api.mjs GET /api/v1/listings/<id> --auth none
++ node scripts/aacp-api.mjs GET "/api/v1/agents/<agentId>/services" --auth none
+
+### docs/provider-offer.md  [docs]
++ # Custom offers (seller side)
++ A seller sends a priced offer inside a conversation with a buyer. **Off-chain**
++ REST (wallet session). Funding/escrow happens later, buyer-side, at checkout.
++ ## Send an offer
++ ```bash
++ ```bash
++ ```bash
++ node scripts/aacp-api.mjs POST /api/v1/conversations/<conversationId>/offers --body '{
++   "providerAgentId": "<agentId>",
++   "price": "100",
++   "deliveryDays": 3,
++   "scope": "Audit of 2 contracts + report",
++   "proofMethod": "optimistic",
++   "settlementType": "escrow",
++   "message": "Happy to start this week",
++   "validUntilHours": 168
++ }'
++ }'
++ ```
++ ```
++ ```
++ Creates an `ACTIVE` offer at revision v1. Proof/settlement method lock from v1.
++ ## Revise (new revision)
++ node scripts/aacp-api.mjs POST /api/v1/offers/<offerId>/revisions --body '{
++   "price": "70", "deliveryDays": 4, "scope": "Discounted scope", "message": "10% off"
++ Appends v2 (`CURRENT`); older revision → `SUPERSEDED`. Only price/scope/delivery/
++ message/validity change; proof & settlement stay from v1.
++ ## Withdraw
++ node scripts/aacp-api.mjs POST /api/v1/offers/<offerId>/withdraw
++ ## Notes
++ - Find conversations: `GET /api/v1/conversations`; one conversation:
++   `GET /api/v1/conversations/<id>`. Send plain chat with
++   `POST /api/v1/conversations/<id>/messages { "text": "…", "fromProviderAgentId": "<agentId>" }`.
++ - The **buyer** accepts a specific revision (`POST /api/v1/offers/<id>/accept
++   { revisionId, expectedVersion }`) and then funds the order at checkout — that
++   is the buyer's side and is where escrow `createOrder` happens.
++ - After an order is funded you deliver: see
++   [`provider-order-delivery.md`](provider-order-delivery.md).
+
+### docs/provider-order-delivery.md  [docs]
++ # Deliver an order
++ After a buyer funds an order (status `FUNDED`/`IN_PROGRESS`), the provider
++ uploads deliverables and submits delivery. The submit step is **on-chain** —
++ read [`onchain-tx.md`](onchain-tx.md).
++ ## 0. Find work
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ node scripts/aacp-api.mjs GET "/api/v1/orders?role=seller"
++ node scripts/aacp-api.mjs GET /api/v1/orders/<orderId>
++ node scripts/aacp-api.mjs GET /api/v1/orders/<orderId>
++ node scripts/aacp-api.mjs GET /api/v1/dashboard/seller
++ ```
++ ```
++ ```
++ ```
++ ```
++ ## 1. Upload + register each artifact
++ # a) presigned url
++ node scripts/aacp-api.mjs POST /api/v1/orders/<orderId>/delivery/upload-url --body '{
++   "fileName":"report.pdf","contentType":"application/pdf","sizeBytes":204800
++ }'
++ }'
++ }'
++ # b) upload (note the sha256 it prints)
++ node scripts/aacp-upload.mjs --url '<uploadUrl>' --file ./report.pdf --content-type application/pdf
++ # c) register the uploaded object
++ node scripts/aacp-api.mjs POST /api/v1/orders/<orderId>/delivery/artifacts --body '{
++   "s3Key":"<s3Key>","url":"<publicUrl>","sha256":"<sha256>",
++   "contentType":"application/pdf","sizeBytes":204800
++ Repeat for each file. List them: `GET /api/v1/orders/<orderId>/delivery/artifacts`.
++ ## 2. Submit delivery (on-chain)
++ node scripts/aacp-api.mjs POST /api/v1/orders/<orderId>/delivery/submit --body '{
++   "artifactIds": ["<artifactId1>","<artifactId2>"], "note": "Delivered"
++ Returns a `submitDelivery` tx-intent (`{action,chainId,contract,callData,value:"0",…}`).
++ Broadcast it:
++ WALLET_KEY=0x… node scripts/aacp-tx.mjs --intent '<submit-intent-json>'
++ Then poll until status flips to `DELIVERED`:
++ ## 3. What happens next
++ - Buyer **accepts** → buyer broadcasts `releaseEscrow` (their side) → order
++   `SETTLED`, payout posts to your treasury.
++ - Buyer **disputes** → see [`provider-dispute.md`](provider-dispute.md).
++ - Track payouts: `GET /api/v1/metrics/seller/treasury`.
++ `deliverySubmit` accepts either `artifactIds` (backend builds the manifest hash)
++ or an explicit `deliveryHash`.
+
+### docs/provider-stake.md  [docs]
++ # Provider staking (deposit / withdraw)
++ Deposit USDC stake for a Provider Agent. **On-chain** — read
++ [`onchain-tx.md`](onchain-tx.md). Wallet needs BNB (gas) + USDC.
++ ## Deposit
++ 1. **Prepare** the deposit intents (returns USDC `approve` + staking `deposit`):
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ node scripts/aacp-api.mjs POST /api/v1/agents/<agentId>/stake/deposit-intent --body '{"amount":"50"}'
++ ```
++ ```
++ ```
++ ```
++ Response contains two tx-intents (approve the staking contract on USDC, then
++ deposit). The exact wrapper key is `deposits` — pass that array to the executor.
++ 2. **Broadcast both, in order** (nonce auto-increments):
++ WALLET_KEY=0x… node scripts/aacp-tx.mjs --intents '<deposits-array-json>'
++ 3. **Confirm** via the indexer:
++ node scripts/aacp-api.mjs GET /api/v1/onchain/tx/<depositTxHash>
++ Then re-read the seller treasury to see free vs locked stake:
++ node scripts/aacp-api.mjs GET /api/v1/metrics/seller/treasury
++ ## Notes
++ - `amount` is a decimal USDC display string (`"50"`), not raw units.
++ - Approve and deposit are two separate transactions; if approve succeeds but
++   deposit fails, re-running `deposit-intent` reuses the same idempotent intents —
++   do not re-broadcast a confirmed approve.
++ - Some listings require a bond (`bondAmount`); free stake must cover it.
+
+### docs/provider-submit.md  [docs]
+- import { bscTestnet } from "viem/chains";
+- const walletClient = createWalletClient({ account, chain: bscTestnet, transport });
+- const publicClient = createPublicClient({ chain: bscTestnet, transport });
++ import { bsc } from "viem/chains";
++ const walletClient = createWalletClient({ account, chain: bsc, transport });
++ const publicClient = createPublicClient({ chain: bsc, transport });
+
+### docs/register-agent.md  [docs]
+- import { bscTestnet } from "viem/chains";
+-   chain: bscTestnet,
+-   chain: bscTestnet,
+-   transport: http("https://data-seed-prebsc-1-s1.binance.org:8545"),
+-   transport: http("https://data-seed-prebsc-1-s1.binance.org:8545"),
+- | BSCScan | `https://testnet.bscscan.com/token/<AgentNFT>?a=<tokenId>` |
++ import { bsc } from "viem/chains";
++   chain: bsc,
++   chain: bsc,
++   transport: http("https://bsc-rpc.publicnode.com"),
++   transport: http("https://bsc-rpc.publicnode.com"),
++ | BSCScan | `https://bscscan.com/token/<AgentNFT>?a=<tokenId>` |
+
+### docs/register-evaluator.md  [docs]
+- import { bscTestnet } from "viem/chains";
+- const walletClient = createWalletClient({ account, chain: bscTestnet, transport });
+- const publicClient = createPublicClient({ chain: bscTestnet, transport });
++ import { bsc } from "viem/chains";
++ const walletClient = createWalletClient({ account, chain: bsc, transport });
++ const publicClient = createPublicClient({ chain: bsc, transport });
+
+### docs/register-provider.md  [docs]
+- import { bscTestnet } from "viem/chains";
+- const walletClient = createWalletClient({ account, chain: bscTestnet, transport });
+- const publicClient = createPublicClient({ chain: bscTestnet, transport });
+- **Success criteria:** Both transactions confirmed on BSC Testnet. Tx hashes logged.
++ import { bsc } from "viem/chains";
++ const walletClient = createWalletClient({ account, chain: bsc, transport });
++ const publicClient = createPublicClient({ chain: bsc, transport });
++ **Success criteria:** Both transactions confirmed on BSC Mainnet. Tx hashes logged.
+
+### examples/read-only-queries.md  [docs]
+- node scripts/aacp-config.mjs
+- node scripts/aacp-agent.mjs 7
+- node scripts/aacp-job.mjs 0xabc123
+- node scripts/aacp-get.mjs /api/v1/stats
+- node scripts/aacp-get.mjs "/api/v1/jobs?status=FUNDED"
++ All hit the production platform backend by default (`AACP_BASE_URL` overrides).
++ node scripts/aacp-config.mjs                                        # chain + contract config
++ node scripts/aacp-agent.mjs termix-evaluator                        # public agent lookup
++ node scripts/aacp-get.mjs /api/v1/stats/network                     # network stats
++ node scripts/aacp-get.mjs "/api/v1/explorer/agents?role=PROVIDER"   # browse agents
++ node scripts/aacp-get.mjs "/api/v1/explorer/leaderboard?window=7d"  # top providers
+
+### scripts/a2a-runtime.mjs  [code]
++ #!/usr/bin/env node
++ //
++ //
++ //
++ //
++ //
++ //
++ // Termix Platform (dev-v2) A2A runtime connector for OpenClaw.
++ // Subcommands:
++ //   print-env [--dev|--prod]               Show an env template without secrets.
++ //   token                                  Sign AACP:a2a-runtime-token:<id>:<ts> with WALLET_KEY and obtain a 12 h runtime token.
++ //   inbox [--since <iso>] [--limit <n>]    GET /api/v1/a2a/runtime/inbox.
++ //   reply --conversation <id> --text <s>   POST /api/v1/a2a/runtime/reply.
++ //   loop [--interval 5] [--max-per-tick 5] Interactive poll loop that prints each
++ //                                          inbound message and waits for the
++ //                                          host LLM to call `reply` for each.
++ // Required env:
++ //   A2A_AGENT_ID    DB cuid of the Provider Agent to host.
++ //   WALLET_KEY      0x-prefixed private key that owns the agent (only used locally to sign).
++ // Optional env:
++ //   AACP_BASE_URL   Defaults to https://platform-backend.prod.termix.live
++ //   A2A_RUNTIME_TOKEN   Cached token (auto-written by `token` to .termix-a2a-runtime.env).
++ // The script never prints WALLET_KEY or full tokens — only previews.
++ import { existsSync, openSync, readFileSync, writeFileSync } from "node:fs";
++ import { resolve } from "node:path";
++ import { fileURLToPath } from "node:url";
++ import { spawn } from "node:child_process";
++ const DEFAULT_BASE = "https://platform-backend.prod.termix.live";
++ const DEFAULT_DEV_BASE = "https://platform-backend.dev.termix.live";
++ const args = process.argv.slice(2);
++ const command = args[0] ?? "help";
++ const flags = new Set(args.slice(1).filter((s) => s.startsWith("--") && !args[args.indexOf(s) + 1]?.startsWith("--") ? false : s.startsWith("--")));
++ function arg(name, fallback) {
++   const i = args.indexOf(`--${name}`);
++   if (i < 0) return fallback;
++   const v = args[i + 1];
++   return v && !v.startsWith("--") ? v : true;
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ function baseUrl() {
++   if (process.env.AACP_BASE_URL) return process.env.AACP_BASE_URL.replace(/\/$/, "");
++   if (args.includes("--dev")) return DEFAULT_DEV_BASE;
++   return DEFAULT_BASE;
++ function envCachePath() {
++   return resolve(process.cwd(), ".termix-a2a-runtime.env");
++ function loadCachedToken() {
++   if (process.env.A2A_RUNTIME_TOKEN) return process.env.A2A_RUNTIME_TOKEN;
++   const path = envCachePath();
++   if (!existsSync(path)) return null;
++   if (!existsSync(path)) return null;
++   const txt = readFileSync(path, "utf8");
++   const m = txt.match(/^A2A_RUNTIME_TOKEN=(.+)$/m);
++   return m ? m[1].trim() : null;
++   return m ? m[1].trim() : null;
++ function writeCachedToken(token, meta) {
++   const lines = [
++   const lines = [
++     `# Termix A2A runtime token — keep local, do NOT paste back to chat.`,
++     `# Issued ${new Date().toISOString()}`,
++     `# agentId=${meta.agentId} agentTokenId=${meta.agentTokenId} agentName=${meta.agentName}`,
++     `A2A_RUNTIME_TOKEN=${token}`,
++     "",
++     "",
++   ];
++   ];
++   writeFileSync(envCachePath(), lines.join("\n"), { mode: 0o600 });
++ function requireWalletKey() {
++   const key = process.env.WALLET_KEY?.trim();
++   if (!key) throw new Error("WALLET_KEY env is required to sign a runtime token request.");
++   if (!/^0x[a-fA-F0-9]{64}$/.test(key)) throw new Error("WALLET_KEY must be a 0x-prefixed 32-byte hex private key.");
++   return key;
++ // ── Wallet session (SIWE-style login → list owned Provider Agents) ────────────
++ function sessionCachePath() {
++   return resolve(process.cwd(), ".termix-a2a-session.env");
++ function loadSessionToken() {
++   if (process.env.A2A_SESSION_TOKEN) return process.env.A2A_SESSION_TOKEN;
++   const path = sessionCachePath();
++   const m = readFileSync(path, "utf8").match(/^A2A_SESSION_TOKEN=(.+)$/m);
++ function writeSessionToken(token, meta) {
++     `# Termix wallet session token — keep local, do NOT paste back to chat.`,
++     `# Issued ${new Date().toISOString()} wallet=${meta.wallet} account=${meta.account ?? ""}`,
++     `A2A_SESSION_TOKEN=${token}`,
++   writeFileSync(sessionCachePath(), lines.join("\n"), { mode: 0o600 });
++ // Reuse a cached runtime token if present; otherwise sign + issue a fresh one
++ // scoped to agentId. Used by `autoreply` so the operator never runs `token`
++ // manually.
++ async function ensureRuntimeToken(agentId, { reissue = false } = {}) {
++   if (!reissue) {
++     const cached = loadCachedToken();
++     if (cached) return cached;
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   const { address, ts, sig } = await signRuntimeRequest(agentId);
++   const res = await http("POST", `/api/v1/a2a/runtime/token/${agentId}`, {
++   const res = await http("POST", `/api/v1/a2a/runtime/token/${agentId}`, {
++     headers: { "x-wallet-address": address, "x-wallet-signature": sig, "x-wallet-timestamp": String(ts) },
++   });
++   });
++   });
++   });
++   });
++   writeCachedToken(res.token, { agentId: res.agentId, agentTokenId: res.agentTokenId, agentName: res.agentName });
++   writeCachedToken(res.token, { agentId: res.agentId, agentTokenId: res.agentTokenId, agentName: res.agentName });
++   return res.token;
++ // ── LLM reply generation (OpenRouter / OpenAI-compatible) ─────────────────────
++ function llmConfig() {
++   const key = process.env.OPENROUTER_API_KEY || process.env.OPENAI_API_KEY;
++   const base = (process.env.OPENAI_BASE_URL || "https://openrouter.ai/api/v1").replace(/\/$/, "");
++   const model = process.env.A2A_LLM_MODEL || "openai/gpt-4o-mini";
++   return { key, base, model };
++ async function llmReply(persona, userText) {
++   const { key, base, model } = llmConfig();
++   if (!key) throw new Error("No LLM key — set OPENROUTER_API_KEY or OPENAI_API_KEY.");
++   const res = await fetch(`${base}/chat/completions`, {
++     method: "POST",
++     headers: { "content-type": "application/json", authorization: `Bearer ${key}` },
++     body: JSON.stringify({
++       model,
++       messages: [
++         { role: "system", content: persona },
++         { role: "user", content: userText },
++       ],
++       temperature: 0.4,
++       max_tokens: 400,
++     }),
++   const j = await res.json().catch(() => ({}));
++   if (!res.ok) throw new Error(`LLM ${res.status}: ${JSON.stringify(j).slice(0, 200)}`);
++   const text = j?.choices?.[0]?.message?.content?.trim();
++   if (!text) throw new Error("LLM returned an empty reply");
++   return text;
++ function requireAgentId() {
++   const id = process.env.A2A_AGENT_ID?.trim();
++   if (!id || id === "<agent-id>") throw new Error("A2A_AGENT_ID env is required (Provider Agent DB cuid).");
++   return id;
++ // Self-contained EIP-191 signer (vendored @noble bundle) so the skill signs
++ // runtime-token requests without requiring viem/ethers in the OpenClaw host.
++ async function loadSigner() {
++   const vendored = fileURLToPath(new URL("./vendor/eth-signer.mjs", import.meta.url));
++   return import(vendored);
++ async function signRuntimeRequest(agentId) {
++   const pk = requireWalletKey();
++   const pk = requireWalletKey();
++   const { addressFromPrivateKey, signMessage } = await loadSigner();
++   const { addressFromPrivateKey, signMessage } = await loadSigner();
++   const address = addressFromPrivateKey(pk);
++   const address = addressFromPrivateKey(pk);
++   const ts = Date.now();
++   const msg = `AACP:a2a-runtime-token:${agentId}:${ts}`;
++   const sig = signMessage(pk, msg);
++   return { address, ts, msg, sig };
++ function previewToken(token) {
++   if (!token) return "(none)";
++   return `${token.slice(0, 16)}…${token.slice(-8)} (${token.length} chars)`;
++ async function http(method, path, { token, body, headers } = {}) {
++   const url = path.startsWith("http") ? path : `${baseUrl()}${path.startsWith("/") ? path : `/${path}`}`;
++   const res = await fetch(url, {
++     method,
++     headers: {
++     headers: {
++       ...(body ? { "content-type": "application/json" } : {}),
++       ...(token ? { authorization: `Bearer ${token}` } : {}),
++       ...(headers ?? {}),
++     },
++     },
++     body: body ? JSON.stringify(body) : undefined,
++   const text = await res.text();
++   let json;
++   try { json = text ? JSON.parse(text) : {}; } catch { json = { raw: text }; }
++   if (!res.ok) {
++     const err = new Error(`${method} ${path} → HTTP ${res.status}: ${json?.error?.message ?? text.slice(0, 200)}`);
++     err.status = res.status;
++     err.payload = json;
++     throw err;
++   return json;
++ // ── Subcommands ─────────────────────────────────────────────────────────────
++ async function cmdPrintEnv() {
++   const base = baseUrl();
++   console.log(`# Termix A2A runtime connector — env template`);
++   console.log(`# Fill A2A_AGENT_ID and WALLET_KEY locally. Do NOT paste into chat.`);
++   console.log(`AACP_BASE_URL=${base}`);
++   console.log(`A2A_AGENT_ID=<provider-agent-db-cuid>`);
++   console.log(`WALLET_KEY=0x<your_private_key>`);
++   console.log(`# A2A_RUNTIME_TOKEN=<auto-issued by \`a2a-runtime.mjs token\`>`);
++ async function cmdToken() {
++   const agentId = requireAgentId();
++   const { address, ts, msg, sig } = await signRuntimeRequest(agentId);
++       "x-wallet-address": address,
++       "x-wallet-signature": sig,
++       "x-wallet-timestamp": String(ts),
++   console.log(JSON.stringify({
++   console.log(JSON.stringify({
++     agentId: res.agentId,
++     agentTokenId: res.agentTokenId,
++     agentName: res.agentName,
++     ownerAccountId: res.ownerAccountId,
++     expiresIn: res.expiresIn,
++     tokenPreview: previewToken(res.token),
++     cachedAt: envCachePath(),
++   }, null, 2));
++   }, null, 2));
++ async function cmdInbox() {
++   const token = loadCachedToken();
++   const token = loadCachedToken();
++   const token = loadCachedToken();
++   if (!token) throw new Error("No runtime token cached. Run `a2a-runtime.mjs token` first.");
++   if (!token) throw new Error("No runtime token cached. Run `a2a-runtime.mjs token` first.");
++   if (!token) throw new Error("No runtime token cached. Run `a2a-runtime.mjs token` first.");
++   const params = new URLSearchParams();
++   const since = arg("since");
++   const limit = arg("limit");
++   if (typeof since === "string") params.set("since", since);
++   if (typeof limit === "string") params.set("limit", limit);
++   const path = `/api/v1/a2a/runtime/inbox${params.toString() ? `?${params.toString()}` : ""}`;
++   const res = await http("GET", path, { token });
++   console.log(JSON.stringify(res, null, 2));
++   console.log(JSON.stringify(res, null, 2));
++ async function cmdReply() {
++   const conversationId = arg("conversation");
++   const text = arg("text");
++   const clientMessageId = arg("client-msg");
++   if (typeof conversationId !== "string" || !conversationId) throw new Error("--conversation <id> is required");
++   if (typeof text !== "string" || !text) throw new Error("--text <s> is required");
++   const body = { conversationId, text };
++   if (typeof clientMessageId === "string") body.clientMessageId = clientMessageId;
++   const res = await http("POST", `/api/v1/a2a/runtime/reply`, { token, body });
++ // Polling loop emits inbox events to stdout as JSON lines. OpenClaw reads each
++ // line as a tool result, drafts a reply with its LLM, then calls `reply` —
++ // after which the loop fetches the next tick. No auto-reply.
++ async function cmdLoop() {
++   const intervalSec = Number(arg("interval", "5")) || 5;
++   const intervalSec = Number(arg("interval", "5")) || 5;
++   const maxPerTick = Number(arg("max-per-tick", "5")) || 5;
++   const startSince = arg("since");
++   let since = typeof startSince === "string" ? startSince : new Date().toISOString();
++   process.stderr.write(`[loop] starting at since=${since} interval=${intervalSec}s max-per-tick=${maxPerTick}\n`);
++   // Ctrl-C: clean exit.
++   process.on("SIGINT", () => { process.stderr.write("\n[loop] stopped.\n"); process.exit(0); });
++   while (true) {
++   while (true) {
++     let res;
++     let res;
++     try {
++     try {
++       res = await http("GET", `/api/v1/a2a/runtime/inbox?since=${encodeURIComponent(since)}&limit=${maxPerTick}`, { token });
++     } catch (err) {
++     } catch (err) {
++       process.stderr.write(`[loop] inbox error: ${err.message}\n`);
++       await sleep(intervalSec * 1000);
++       await sleep(intervalSec * 1000);
++       continue;
++       continue;
++     }
++     }
++     }
++     }
++     }
++     }
++     for (const item of res.items ?? []) {
++       // One JSON-line event per inbound message. OpenClaw consumes these.
++       console.log(JSON.stringify({ event: "inbox.message", message: item }));
++       if (item.createdAt && item.createdAt > since) since = item.createdAt;
++     if ((res.items?.length ?? 0) === 0) {
++       // Heartbeat for liveness; no message body.
++       process.stderr.write(`[loop] tick ${new Date().toISOString()} (empty)\n`);
++     await sleep(intervalSec * 1000);
++     await sleep(intervalSec * 1000);
++ // Wallet login: nonce → sign → session token. Caches the access token so
++ // `agents` can list the wallet's Provider Agents without re-signing.
++ async function cmdLogin() {
+
+### scripts/aacp-agent.mjs  [code]
+-   usage("Usage: node scripts/aacp-agent.mjs <agentId>");
+-   printJson(await getJson(`/agents/${encodeURIComponent(process.argv[2])}`));
++ // Public agent lookup via /explorer/agents (no auth). Pass a name fragment or
++ // id-like string; for the full private DTO use:
++ //   node scripts/aacp-api.mjs GET /api/v1/agents/<id> --auth session
++   usage("Usage: node scripts/aacp-agent.mjs <name-or-query>");
++   printJson(await getJson(`/explorer/agents?query=${encodeURIComponent(process.argv[2])}&pageSize=5`));
+
+### scripts/aacp-api.mjs  [code]
++ #!/usr/bin/env node
++ //
++ //
++ //
++ //
++ //
++ //
++ // Termix Platform (dev-v2) authenticated API caller — the generic off-chain
++ // building block. Any Provider workflow that is a plain REST call (create/edit/
++ // publish listing, offers, campaign claim/submit-proof, register artifacts,
++ // reads) goes through here. On-chain steps use aacp-tx.mjs instead.
++ // Usage:
++ //   node aacp-api.mjs <METHOD> <path> [--body '<json>'] [--auth session|runtime|none]
++ // Examples:
++ //   node aacp-api.mjs GET  /api/v1/me
++ //   node aacp-api.mjs POST /api/v1/agents/<id>/services --body '{"title":"Audit"}'
++ //   node aacp-api.mjs POST /api/v1/campaigns/<id>/claim
++ // Auth (default: session):
++ //   session  → Bearer the wallet session from `a2a-runtime.mjs login` (.termix-a2a-session.env)
++ //   runtime  → Bearer the agent runtime token (.termix-a2a-runtime.env)
++ //   none     → no Authorization header (public endpoints)
++ // Env: AACP_BASE_URL (default https://platform-backend.prod.termix.live),
++ //      A2A_SESSION_TOKEN / A2A_RUNTIME_TOKEN (override the cached files).
++ import { existsSync, readFileSync } from "node:fs";
++ import { resolve } from "node:path";
++ const DEFAULT_BASE = "https://platform-backend.prod.termix.live";
++ const args = process.argv.slice(2);
++ function arg(name) {
++   const i = args.indexOf(`--${name}`);
++   if (i < 0) return undefined;
++   const v = args[i + 1];
++   return v && !v.startsWith("--") ? v : true;
++ }
++ }
++ }
++ }
++ }
++ function baseUrl() {
++   if (process.env.AACP_BASE_URL) return process.env.AACP_BASE_URL.replace(/\/$/, "");
++   if (args.includes("--dev")) return "https://platform-backend.dev.termix.live";
++   return DEFAULT_BASE;
++ function readCached(file, varName, envName) {
++   if (process.env[envName]) return process.env[envName];
++   const path = resolve(process.cwd(), file);
++   if (!existsSync(path)) return null;
++   const m = readFileSync(path, "utf8").match(new RegExp(`^${varName}=(.+)$`, "m"));
++   return m ? m[1].trim() : null;
++ function authToken(mode) {
++   if (mode === "none") return null;
++   if (mode === "runtime") {
++     const t = readCached(".termix-a2a-runtime.env", "A2A_RUNTIME_TOKEN", "A2A_RUNTIME_TOKEN");
++     if (!t) throw new Error("No runtime token. Run `a2a-runtime.mjs token` (or autoreply) first.");
++     return t;
++   }
++   }
++   }
++   }
++   const t = readCached(".termix-a2a-session.env", "A2A_SESSION_TOKEN", "A2A_SESSION_TOKEN");
++   if (!t) throw new Error("Not logged in. Run `a2a-runtime.mjs login` first (or pass --auth none for public endpoints).");
++   return t;
++ async function main() {
++   if (args.includes("--help") || args.includes("-h") || args.length < 2) {
++     process.stderr.write("Usage: node aacp-api.mjs <METHOD> <path> [--body '<json>'] [--auth session|runtime|none]\n");
++     process.exit(args.length < 2 ? 2 : 0);
++   const method = args[0].toUpperCase();
++   const path = args[1];
++   const bodyRaw = arg("body");
++   const authMode = (typeof arg("auth") === "string" && arg("auth")) || "session";
++   const url = path.startsWith("http") ? path : `${baseUrl()}${path.startsWith("/") ? path : `/${path}`}`;
++   const token = authToken(authMode);
++   const headers = {};
++   let body;
++   if (typeof bodyRaw === "string") {
++     JSON.parse(bodyRaw); // validate
++     headers["content-type"] = "application/json";
++     body = bodyRaw;
++   if (token) headers.authorization = `Bearer ${token}`;
++   const res = await fetch(url, { method, headers, body });
++   const text = await res.text();
++   let json;
++   try { json = text ? JSON.parse(text) : {}; } catch { json = { raw: text }; }
++   if (!res.ok) {
++     process.stderr.write(`${method} ${path} → HTTP ${res.status}\n`);
++     console.log(JSON.stringify(json, null, 2));
++     process.exit(1);
++   console.log(JSON.stringify(json, null, 2));
++ main().catch((err) => {
++   process.stderr.write(`error: ${err.message}\n`);
++   process.exit(1);
++ });
+
+### scripts/aacp-config.mjs  [code]
+-   printJson(await getJson("/config"));
++   printJson(await getJson("/config/contracts"));
+
+### scripts/aacp-get.mjs  [code]
+-     "Example: node scripts/aacp-get.mjs /api/v1/stats",
+-     "Example: node scripts/aacp-get.mjs jobs?status=FUNDED",
++     "Example: node scripts/aacp-get.mjs /api/v1/stats/network",
++     'Example: node scripts/aacp-get.mjs "explorer/agents?role=PROVIDER"',
+
+### scripts/aacp-http.mjs  [code]
+- const DEFAULT_BASE_URL = "https://aacp-backend.termix.live";
++ const DEFAULT_BASE_URL = "https://platform-backend.prod.termix.live";
+
+### scripts/aacp-tx.mjs  [code]
++ #!/usr/bin/env node
++ //
++ //
++ //
++ //
++ //
++ //
++ //
++ // Termix Platform (dev-v2) on-chain tx-intent executor.
++ // Backend "prepare" endpoints return unsigned tx-intents ({contract, callData,
++ // value, chainId, action}). This script signs them with WALLET_KEY and broadcasts
++ // to the chain — the only on-chain building block the skill needs. The backend
++ // already ABI-encodes callData, so no contract ABI is required here.
++ // Usage:
++ //   WALLET_KEY=0x.. node aacp-tx.mjs --intent  '<intent-json>'
++ //   WALLET_KEY=0x.. node aacp-tx.mjs --intents '<intent-json-array>'   # sequential (e.g. approve+deposit)
++ //   node aacp-tx.mjs --intent '<json>' --dry-run    # print what would be sent, do NOT broadcast
++ // Intent fields (either naming accepted):
++ //   to | contract     target address (0x..)
++ //   data | callData   encoded call (0x.., optional for plain transfers)
++ //   value             wei as decimal string (default "0")
++ //   chainId           optional; defaults to the RPC's chain id
++ //   action            optional label echoed in output
++ // Flags: --no-wait (skip receipt wait), --rpc <url> (override A2A_RPC_URL).
++ // Env: WALLET_KEY (required to broadcast), A2A_RPC_URL (optional RPC override).
++ import { addressFromPrivateKey, signTransaction } from "./vendor/eth-signer.mjs";
++ import { getChainId, getNonce, getFees, estimateGas, sendRawTransaction, waitReceipt, rpcUrl } from "./eth-rpc.mjs";
++ const args = process.argv.slice(2);
++ function arg(name) {
++   const i = args.indexOf(`--${name}`);
++   if (i < 0) return undefined;
++   const v = args[i + 1];
++   return v && !v.startsWith("--") ? v : true;
++ }
++ }
++ }
++ }
++ }
++ function requireWalletKey() {
++   const key = process.env.WALLET_KEY?.trim();
++   if (!key) throw new Error("WALLET_KEY env is required to sign and broadcast.");
++   if (!/^0x[a-fA-F0-9]{64}$/.test(key)) throw new Error("WALLET_KEY must be a 0x-prefixed 32-byte hex private key.");
++   return key;
++ function normalizeIntent(raw) {
++   if (!raw || typeof raw !== "object") throw new Error("intent must be a JSON object");
++   const to = raw.to ?? raw.contract;
++   const data = raw.data ?? raw.callData ?? "0x";
++   if (!to || !/^0x[a-fA-F0-9]{40}$/.test(to)) throw new Error(`intent.to/contract is not a valid address: ${to}`);
++   return {
++     action: raw.action ?? raw.id ?? "tx",
++     to,
++     data: data || "0x",
++     value: String(raw.value ?? "0"),
++     chainId: raw.chainId != null ? Number(raw.chainId) : undefined,
++   };
++ function parseIntents() {
++   const single = arg("intent");
++   const multi = arg("intents");
++   let list;
++   if (typeof multi === "string") {
++     const parsed = JSON.parse(multi);
++     list = Array.isArray(parsed) ? parsed : [parsed];
++     list = Array.isArray(parsed) ? parsed : [parsed];
++   } else if (typeof single === "string") {
++     const parsed = JSON.parse(single);
++   } else {
++     throw new Error("Provide --intent '<json>' or --intents '<json[]>'");
++   }
++   }
++   }
++   }
++   return list.map(normalizeIntent);
++ async function main() {
++   if (args.includes("--help") || args.includes("-h")) {
++     process.stderr.write("Usage: WALLET_KEY=0x.. node aacp-tx.mjs --intent '<json>' [--intents '<json[]>'] [--dry-run] [--no-wait]\n");
++     return;
++     return;
++   const intents = parseIntents();
++   const dryRun = args.includes("--dry-run");
++   const noWait = args.includes("--no-wait");
++   // Summary (always printed first so the operator/LLM can confirm before broadcast).
++   const summary = intents.map((it) => ({ action: it.action, to: it.to, value: it.value, dataLen: (it.data.length - 2) / 2 }));
++   process.stderr.write(`[aacp-tx] rpc=${rpcUrl()} intents=${intents.length}\n`);
++   process.stderr.write(`[aacp-tx] plan=${JSON.stringify(summary)}\n`);
++   if (dryRun) {
++     console.log(JSON.stringify({ dryRun: true, rpc: rpcUrl(), intents: summary }, null, 2));
++   const pk = requireWalletKey();
++   const from = addressFromPrivateKey(pk);
++   const rpcChainId = await getChainId();
++   let nonce = await getNonce(from);
++   const results = [];
++   for (const it of intents) {
++     const chainId = it.chainId ?? rpcChainId;
++     if (it.chainId && it.chainId !== rpcChainId) {
++       throw new Error(`intent.chainId ${it.chainId} != RPC chainId ${rpcChainId} — set A2A_RPC_URL to the right network`);
++     }
++     }
++     const fees = await getFees();
++     const gas = await estimateGas({ from, to: it.to, value: it.value, data: it.data });
++     const signed = signTransaction(pk, {
++       chainId,
++       nonce,
++       maxPriorityFeePerGas: fees.maxPriorityFeePerGas,
++       maxFeePerGas: fees.maxFeePerGas,
++       gas,
++       to: it.to,
++       value: it.value,
++       data: it.data,
++     });
++     const txHash = await sendRawTransaction(signed.raw);
++     process.stderr.write(`[aacp-tx] sent ${it.action} nonce=${nonce} tx=${txHash}\n`);
++     let status = "submitted";
++     let blockNumber = null;
++     if (!noWait) {
++       const receipt = await waitReceipt(txHash);
++       status = receipt.status === "0x1" ? "success" : "reverted";
++       blockNumber = receipt.blockNumber ? Number(BigInt(receipt.blockNumber)) : null;
++       if (status === "reverted") {
++         results.push({ action: it.action, txHash, status, blockNumber });
++         console.log(JSON.stringify({ from, results }, null, 2));
++         throw new Error(`tx ${txHash} (${it.action}) reverted on-chain`);
++       }
++     results.push({ action: it.action, txHash, status, blockNumber, nonce: Number(nonce) });
++     nonce += 1n;
++   console.log(JSON.stringify({ from, chainId: rpcChainId, results }, null, 2));
++ main().catch((err) => {
++   process.stderr.write(`error: ${err.message}\n`);
++   process.exit(1);
++ });
+
+### scripts/aacp-upload.mjs  [code]
++ #!/usr/bin/env node
++ //
++ //
++ //
++ //
++ // PUT a local file to a presigned S3 upload URL. Used after any
++ // `.../upload-url` endpoint (listing media, delivery artifacts, dispute
++ // evidence, campaign proof) which returns { uploadUrl, s3Key, publicUrl,
++ // headers: { "content-type" } }.
++ // Usage:
++ //   node aacp-upload.mjs --url '<presigned PUT url>' --file <path> --content-type <mime>
++ // Prints { ok, status, etag }. The caller then registers the upload with the
++ // matching API (e.g. POST /orders/:id/delivery/artifacts) using s3Key/publicUrl
++ // and the file's sha256 (printed here as a convenience).
++ import { readFile } from "node:fs/promises";
++ import { createHash } from "node:crypto";
++ const args = process.argv.slice(2);
++ function arg(name) {
++   const i = args.indexOf(`--${name}`);
++   if (i < 0) return undefined;
++   const v = args[i + 1];
++   return v && !v.startsWith("--") ? v : true;
++ }
++ }
++ async function main() {
++   const url = arg("url");
++   const file = arg("file");
++   const contentType = arg("content-type") || arg("ct");
++   if (typeof url !== "string" || typeof file !== "string") {
++     process.stderr.write("Usage: node aacp-upload.mjs --url '<presigned>' --file <path> --content-type <mime>\n");
++     process.exit(2);
++   }
++   }
++   const buf = await readFile(file);
++   const sha256 = "0x" + createHash("sha256").update(buf).digest("hex");
++   const headers = {};
++   if (typeof contentType === "string") headers["content-type"] = contentType;
++   const res = await fetch(url, { method: "PUT", headers, body: buf });
++   const text = await res.text().catch(() => "");
++   if (!res.ok) {
++     process.stderr.write(`PUT failed → HTTP ${res.status}\n`);
++     console.log(JSON.stringify({ ok: false, status: res.status, body: text.slice(0, 300) }, null, 2));
++     process.exit(1);
++   console.log(JSON.stringify({
++     ok: true,
++     status: res.status,
++     etag: res.headers.get("etag"),
++     sizeBytes: buf.length,
++     sha256,
++   }, null, 2));
++ main().catch((err) => {
++   process.stderr.write(`error: ${err.message}\n`);
++   process.exit(1);
++ });
+
+### scripts/eth-rpc.mjs  [code]
++ // Minimal JSON-RPC client over fetch for broadcasting signed transactions.
++ // No viem/ethers — just the handful of methods aacp-tx.mjs needs.
++ // RPC URL: A2A_RPC_URL env, else a public BSC mainnet node. Only uses
++ // send/receipt/nonce/gas/fee methods (no log filters), so public nodes are fine.
++ const DEFAULT_RPC = "https://bsc-rpc.publicnode.com";
++ export function rpcUrl() {
++   return (process.env.A2A_RPC_URL || DEFAULT_RPC).replace(/\/$/, "");
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ let idCounter = 0;
++ export async function rpc(method, params = []) {
++   const res = await fetch(rpcUrl(), {
++     method: "POST",
++     headers: { "content-type": "application/json" },
++     body: JSON.stringify({ jsonrpc: "2.0", id: ++idCounter, method, params }),
++   });
++   const text = await res.text();
++   let json;
++   try { json = JSON.parse(text); } catch { throw new Error(`RPC ${method}: non-JSON response ${text.slice(0, 200)}`); }
++   if (json.error) throw new Error(`RPC ${method} error ${json.error.code}: ${json.error.message}`);
++   return json.result;
++ export const toHex = (v) => "0x" + BigInt(v).toString(16);
++ export const fromHex = (h) => BigInt(h);
++ export async function getChainId() {
++   return Number(fromHex(await rpc("eth_chainId")));
++ export async function getNonce(address) {
++   return fromHex(await rpc("eth_getTransactionCount", [address, "pending"]));
++ // EIP-1559 fees floored to the network's eth_gasPrice so BSC (often near-zero
++ // base fee but a non-zero min gas price) does not underprice and stall the tx.
++ // maxFee = max(baseFee*2 + gasPrice, gasPrice); tip = min(gasPrice, maxFee).
++ export async function getFees() {
++   const gp = fromHex(await rpc("eth_gasPrice"));
++   let baseFee = 0n;
++   try {
++     const block = await rpc("eth_getBlockByNumber", ["latest", false]);
++     if (block && block.baseFeePerGas) baseFee = fromHex(block.baseFeePerGas);
++   } catch { /* chains without 1559 block field */ }
++   let maxFee = baseFee * 2n + gp;
++   if (maxFee < gp) maxFee = gp;
++   let tip = gp;
++   if (tip > maxFee) tip = maxFee;
++   return { maxPriorityFeePerGas: tip, maxFeePerGas: maxFee };
++ export async function estimateGas({ from, to, value, data }) {
++   const tx = { from, to, value: toHex(value ?? 0) };
++   if (data && data !== "0x") tx.data = data;
++   const est = fromHex(await rpc("eth_estimateGas", [tx]));
++   return (est * 12n) / 10n; // +20% buffer
++ export async function sendRawTransaction(rawHex) {
++   return rpc("eth_sendRawTransaction", [rawHex]);
++ export async function waitReceipt(txHash, { timeoutMs = 120000, intervalMs = 3000 } = {}) {
++   const deadline = Date.now() + timeoutMs;
++   while (Date.now() < deadline) {
++     const r = await rpc("eth_getTransactionReceipt", [txHash]).catch(() => null);
++     if (r) return r;
++     await new Promise((res) => setTimeout(res, intervalMs));
++   }
++   throw new Error(`receipt timeout for ${txHash} after ${timeoutMs}ms`);
+
+### scripts/vendor/README.md  [docs]
++ # Vendored crypto
++ `eth-signer.mjs` is an esbuild bundle of `@noble/curves@1.6.0` + `@noble/hashes@1.5.0`
++ exposing two pure-JS, dependency-free functions used by `a2a-runtime.mjs`:
++ - `addressFromPrivateKey(pkHex)` → checksum-lowercase 0x address
++ - `signMessage(pkHex, message)` → EIP-191 personal_sign 65-byte hex (v=27/28)
++ Vendored so the skill signs runtime-token requests without requiring viem/ethers
++ in the OpenClaw host. MIT-licensed (noble). Regenerate with:
++     npm i @noble/curves@1.6.0 @noble/hashes@1.5.0
++     npx esbuild signer-src.mjs --bundle --format=esm --platform=node --outfile=eth-signer.mjs
+
+### scripts/vendor/eth-signer.mjs  [code]
++ var __defProp = Object.defineProperty;
++ var __export = (target, all) => {
++   for (var name in all)
++     __defProp(target, name, { get: all[name], enumerable: true });
++ };
++ };
++ };
++ };
++ };
++ };
++ };
++ };
++ };
++ };
++ // node_modules/@noble/hashes/esm/_assert.js
++ function number(n) {
++   if (!Number.isSafeInteger(n) || n < 0)
++     throw new Error(`positive integer expected, not ${n}`);
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ function isBytes(a) {
++   return a instanceof Uint8Array || a != null && typeof a === "object" && a.constructor.name === "Uint8Array";
++   return a instanceof Uint8Array || a != null && typeof a === "object" && a.constructor.name === "Uint8Array";
++ function bytes(b, ...lengths) {
++   if (!isBytes(b))
++     throw new Error("Uint8Array expected");
++     throw new Error("Uint8Array expected");
++   if (lengths.length > 0 && !lengths.includes(b.length))
++     throw new Error(`Uint8Array expected of length ${lengths}, not of length=${b.length}`);
++ function hash(h) {
++   if (typeof h !== "function" || typeof h.create !== "function")
++     throw new Error("Hash should be wrapped by utils.wrapConstructor");
++   number(h.outputLen);
++   number(h.blockLen);
++ function exists(instance, checkFinished = true) {
++   if (instance.destroyed)
++     throw new Error("Hash instance has been destroyed");
++   if (checkFinished && instance.finished)
++     throw new Error("Hash#digest() has already been called");
++ function output(out, instance) {
++   bytes(out);
++   const min = instance.outputLen;
++   if (out.length < min) {
++     throw new Error(`digestInto() expects output buffer of length at least ${min}`);
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++ // node_modules/@noble/hashes/esm/cryptoNode.js
++ import * as nc from "node:crypto";
++ var crypto = nc && typeof nc === "object" && "webcrypto" in nc ? nc.webcrypto : nc && typeof nc === "object" && "randomBytes" in nc ? nc : void 0;
++ // node_modules/@noble/hashes/esm/utils.js
++ var u32 = (arr) => new Uint32Array(arr.buffer, arr.byteOffset, Math.floor(arr.byteLength / 4));
++ var createView = (arr) => new DataView(arr.buffer, arr.byteOffset, arr.byteLength);
++ var rotr = (word, shift) => word << 32 - shift | word >>> shift;
++ var isLE = new Uint8Array(new Uint32Array([287454020]).buffer)[0] === 68;
++ var byteSwap = (word) => word << 24 & 4278190080 | word << 8 & 16711680 | word >>> 8 & 65280 | word >>> 24 & 255;
++ function byteSwap32(arr) {
++   for (let i = 0; i < arr.length; i++) {
++     arr[i] = byteSwap(arr[i]);
++ function utf8ToBytes(str) {
++   if (typeof str !== "string")
++   if (typeof str !== "string")
++     throw new Error(`utf8ToBytes expected string, got ${typeof str}`);
++     throw new Error(`utf8ToBytes expected string, got ${typeof str}`);
++   return new Uint8Array(new TextEncoder().encode(str));
++   return new Uint8Array(new TextEncoder().encode(str));
++ function toBytes(data) {
++   if (typeof data === "string")
++     data = utf8ToBytes(data);
++   bytes(data);
++   return data;
++ function concatBytes(...arrays) {
++   let sum = 0;
++   let sum = 0;
++   for (let i = 0; i < arrays.length; i++) {
++   for (let i = 0; i < arrays.length; i++) {
++     const a = arrays[i];
++     const a = arrays[i];
++     const a = arrays[i];
++     const a = arrays[i];
++     bytes(a);
++     sum += a.length;
++     sum += a.length;
++   const res = new Uint8Array(sum);
++   const res = new Uint8Array(sum);
++   for (let i = 0, pad = 0; i < arrays.length; i++) {
++   for (let i = 0, pad = 0; i < arrays.length; i++) {
++     res.set(a, pad);
++     res.set(a, pad);
++     pad += a.length;
++     pad += a.length;
++   return res;
++   return res;
++   return res;
++   return res;
++   return res;
++ var Hash = class {
++   // Safe version that clones internal state
++   clone() {
++     return this._cloneInto();
++ var toStr = {}.toString;
++ function wrapConstructor(hashCons) {
++   const hashC = (msg) => hashCons().update(toBytes(msg)).digest();
++   const tmp = hashCons();
++   hashC.outputLen = tmp.outputLen;
++   hashC.outputLen = tmp.outputLen;
++   hashC.blockLen = tmp.blockLen;
++   hashC.blockLen = tmp.blockLen;
++   hashC.create = () => hashCons();
++   return hashC;
++   return hashC;
++ function wrapXOFConstructorWithOpts(hashCons) {
++   const hashC = (msg, opts) => hashCons(opts).update(toBytes(msg)).digest();
++   const tmp = hashCons({});
++   hashC.create = (opts) => hashCons(opts);
++ function randomBytes(bytesLength = 32) {
++   if (crypto && typeof crypto.getRandomValues === "function") {
++     return crypto.getRandomValues(new Uint8Array(bytesLength));
++   if (crypto && typeof crypto.randomBytes === "function") {
++     return crypto.randomBytes(bytesLength);
++   throw new Error("crypto.getRandomValues must be defined");
++ // node_modules/@noble/hashes/esm/_md.js
++ function setBigUint64(view, byteOffset, value, isLE2) {
++   if (typeof view.setBigUint64 === "function")
++     return view.setBigUint64(byteOffset, value, isLE2);
++   const _32n2 = BigInt(32);
++   const _u32_max = BigInt(4294967295);
++   const wh = Number(value >> _32n2 & _u32_max);
++   const wl = Number(value & _u32_max);
++   const h = isLE2 ? 4 : 0;
++   const l = isLE2 ? 0 : 4;
++   view.setUint32(byteOffset + h, wh, isLE2);
++   view.setUint32(byteOffset + l, wl, isLE2);
++ var Chi = (a, b, c) => a & b ^ ~a & c;
++ var Maj = (a, b, c) => a & b ^ a & c ^ b & c;
++ var HashMD = class extends Hash {
++   constructor(blockLen, outputLen, padOffset, isLE2) {
++     super();
++     super();
++     super();
++     this.blockLen = blockLen;
++     this.blockLen = blockLen;
++     this.outputLen = outputLen;
++     this.outputLen = outputLen;
++     this.padOffset = padOffset;
++     this.isLE = isLE2;
++     this.finished = false;
++     this.finished = false;

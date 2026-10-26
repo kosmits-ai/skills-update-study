@@ -1,0 +1,113 @@
+cnnrobrn/claw-cleaning  1.0.0 -> 1.0.1
+change_type: instructions+docs   changelog: claw-cleaning v1.0.1 adds pay-on-completion booking and switches to the new CLI.  - Switched CLI from clawt to claw-cleaning; metadata and commands updated accordingly - No configuration needed for end users; CLI points to production automatically - Added support for two payment options: pay now (Stripe), or pay at appointment (cash/card) - Booking workflow and confirmation flow updated to handle both payment types - Explicit safety rules for payment choice, confirmation, and link sharing
+
+### SKILL.md  [instructions]
+- description: "Book a professional apartment cleaning in San Francisco via the clawt CLI. Use when someone wants to book, schedule, or inquire about apartment cleaning services, cleaning availability, cleaning prices, or cleaning appointments. Rate is $40/hour, Saturdays and Sundays only, SF addresses only. Handles the full flow: check availability, collect details, initiate payment, confirm booking."
+- metadata: {"openclaw":{"emoji":"🧹","requires":{"bins":["clawt"]},"install":[{"id":"npm","kind":"npm","package":"clawt","bins":["clawt"],"label":"Install clawt (npm)"}]}}
+- **Required env var:** `CLAWT_SERVER_URL` must be set (provided by the service operator).
+- ## Zero-install alternative: MCP
+- Clients that speak the Model Context Protocol can skip this skill and the CLI entirely by connecting to the remote MCP server at `https://claw.cleaning/mcp` (Streamable HTTP, no auth). It exposes the same booking actions as tool calls. See `https://claw.cleaning/agents.txt` for binding rules and rate limits.
+- - Never run `clawt book` without showing the full preview to the customer and getting explicit confirmation ("yes", "confirm", "book it", etc.).
+- - Always run `clawt availability` before `clawt book` to confirm the slot is listed as available.
+- - Do not invent available times — only offer times from `clawt availability` output.
+- clawt availability
+- clawt availability --date 2026-04-19
+- Show the customer a summary and ask for explicit confirmation before running `clawt book`.
+- clawt book \
+- This returns a Stripe payment URL. Share it with the customer.
+- ### Step 5 — Payment
+- Tell the customer to open the payment link and complete checkout. After payment, they'll receive a calendar invite.
+- clawt status --email jane@example.com
+- Use this if the customer asks whether their booking went through. Returns all recent bookings for that email, most recent first. Stripe search indexing can lag a few seconds behind a brand-new booking.
+- - The slot is only confirmed after payment completes
+- - If a race condition occurs (slot taken between check and payment), a full refund is issued automatically
+- - "That time slot is no longer available" → run `clawt availability` and offer alternatives
+- See `references/booking-flow.md` for a full example conversation flow.
++ description: "Book a professional apartment cleaning in San Francisco via the claw-cleaning CLI. Use when someone wants to book, schedule, or inquire about apartment cleaning services, cleaning availability, cleaning prices, or cleaning appointments. Rate is $40/hour, Saturdays and Sundays only, SF addresses only. Two payment options: pay now with a card, or pay the cleaner in person at the appointment. Handles the full flow: check availability, collect details, choose payment, confirm booking."
++ metadata: {"openclaw":{"emoji":"🧹","requires":{"bins":["claw-cleaning"]},"install":[{"id":"npm","kind":"npm","package":"claw-cleaning","bins":["claw-cleaning"],"label":"Install claw-cleaning (npm)"}]}}
++ The `claw-cleaning` CLI is declared in this skill's OpenClaw `install` metadata and is installed automatically by the harness. It talks to the production service at `https://claw.cleaning` by default — no configuration needed. Operators running a staging instance can optionally point the CLI elsewhere by setting `CLAW_CLEANING_SERVER_URL`; end users do not need to set this.
++ - Never run `claw-cleaning book` without showing the full preview to the customer and getting explicit confirmation ("yes", "confirm", "book it", etc.).
++ - Always run `claw-cleaning availability` before `claw-cleaning book` to confirm the slot is listed as available.
++ - Do not invent available times — only offer times from `claw-cleaning availability` output.
++ - Ask the customer which payment option they want (pay now, or pay in person) before building the preview.
++ - If the customer chooses "pay now", the preview must include the Stripe checkout URL only after they confirm. Verify the URL returned is on `checkout.stripe.com` before sharing.
++ ```bash
++ claw-cleaning availability
++ claw-cleaning availability --date 2026-04-19
++ ```
++ - **Payment preference:**
++   - **Pay now** — a Stripe checkout link; card is saved so future bookings with the same email charge automatically.
++   - **Pay on completion** — no upfront payment. The cleaner collects cash or card at the appointment.
++ Show the customer a summary including the chosen payment method, then ask for explicit confirmation before running `claw-cleaning book`.
++ **Pay now (default):**
++ claw-cleaning book \
++ claw-cleaning book \
++   --date 2026-04-19 \
++   --start 10:00 \
++   --hours 2 \
++   --address "123 Market St, San Francisco, CA 94102" \
++   --name "Jane Smith" \
++ Returns a Stripe payment URL for first-time customers, or auto-charges the saved card for returning customers. Share the URL when one is returned.
++ **Pay on completion:**
++   --email "jane@example.com" \
++   --pay-on-completion
++ No Stripe link. The slot is reserved immediately and the calendar invite is sent. The customer pays the cleaner directly at the appointment.
++ ### Step 5 — Deliver the outcome
++ - **Pay now:** share the checkout URL (if returned) and tell the customer they'll get a calendar invite after payment clears.
++ - **Pay on completion:** tell the customer the slot is booked, the calendar invite is on its way, and they owe the cleaner $40/hour at the end of the session.
++ claw-cleaning status --email jane@example.com
++ Use this if the customer asks whether their booking went through. Returns recent bookings for that email, most recent first. Stripe search indexing can lag a few seconds behind a brand-new booking.
++ - Pay-now slots are only confirmed after payment completes
++ - Pay-on-completion slots are confirmed immediately (the calendar event blocks the slot)
++ - If a race condition occurs on a pay-now booking (slot taken between check and payment), a full refund is issued automatically
++ - "That time slot is no longer available" → run `claw-cleaning availability` and offer alternatives
++ See `references/booking-flow.md` for a full example conversation flow, including both payment options.
+
+### references/booking-flow.md  [docs]
+- clawt availability
+- - Your email for the calendar invite?"
+- **Customer:** "456 Castro St, San Francisco, CA 94114. Jane Smith, jane@example.com"
+- ## Agent initiates booking
+- clawt book \
+- Check status: clawt status --email jane@example.com
+- After payment, you will receive a calendar invite at jane@example.com.
+- ## Customer confirms payment
+- clawt status --email jane@example.com
+- clawt availability --date 2026-04-19
+- ### Refund (race condition)
++ ```bash
++ claw-cleaning availability
++ ```
++ ```
++ ```
++ Output:
++ ---
++ - Your email for the calendar invite?
++ - How would you like to pay: now with a card, or pay the cleaner in person at the appointment?"
++ **Customer:** "456 Castro St, San Francisco, CA 94114. Jane Smith, jane@example.com. I'll pay in person."
++ - **Payment:** In person at the appointment (cash or card)
++ ## Agent initiates booking (pay-on-completion path)
++ claw-cleaning book \
++ claw-cleaning book \
++   --date 2026-04-19 \
++   --start 10:00 \
++   --hours 3 \
++   --address "456 Castro St, San Francisco, CA 94114" \
++   --name "Jane Smith" \
++   --email "jane@example.com" \
++   --pay-on-completion
++ ✓ Booked! No payment required upfront.
++   Total:   $120 (pay cash or card to the cleaner at the appointment)
++ Calendar invite sent to jane@example.com.
++ **Agent:** "You're booked! The calendar invite is on its way to jane@example.com. Please have $120 ready for the cleaner at the end of the session — they take cash or card."
++ ## Alternative — Pay now via Stripe
++ If the customer had said "I'll pay now":
++ Your card will be saved — future bookings with the same email charge automatically.
++ Check status: claw-cleaning status --email jane@example.com
++ After payment, a calendar invite goes to jane@example.com.
++ ## Customer confirms payment (pay-now path)
++ claw-cleaning status --email jane@example.com
++ claw-cleaning availability --date 2026-04-19
++ ### Refund (race condition, pay-now only)
++ ### Pay-on-completion no-show
++ Pay-on-completion relies on the customer being there. If they ask to cancel, they can email **connor@getcolby.com** at least 24 hours before the slot. Persistent no-shows may be required to pre-pay on future bookings.

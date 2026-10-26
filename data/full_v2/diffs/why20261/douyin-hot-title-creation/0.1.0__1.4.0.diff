@@ -1,0 +1,1995 @@
+why20261/douyin-hot-title-creation  0.1.0 -> 1.4.0
+change_type: instructions+docs+code   changelog: Version 1.4.0 adds clearer execution guidance and updates the output and validation support.  - Added an output-envelope schema and utilities for output handling, time, and URL validation. - Expanded command guidance, examples, parameter details, and link-type disambiguation. - Updated skill metadata, including keywords, categories, tags, and the OpenClaw configuration. - Removed `LICENSE`, `skill-card.md`, and `src/validate/hot.js`.
+
+### LICENSE  [code]
+- MIT License
+- Copyright (c) 2026 why20261
+- Permission is hereby granted, free of charge, to any person obtaining a copy
+- of this software and associated documentation files (the "Software"), to deal
+- in the Software without restriction, including without limitation the rights
+- to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+- copies of the Software, and to permit persons to whom the Software is
+- furnished to do so, subject to the following conditions:
+- The above copyright notice and this permission notice shall be included in all
+- copies or substantial portions of the Software.
+- THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+- IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+- FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+- AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+- LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+- OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+- SOFTWARE.
+
+### SKILL.md  [instructions]
+- version: 1.3.0
+-   type: command
+-   requires:
+-     bins:
+-       - "node"
+-     env:
+-       - "GUAIKEI_API_TOKEN"
+-     - "商业运营"
+-     - "办公效率"
+-     - "抖音竞品分析"
+-     - "抖音数据分析"
+-     - "短视频运营"
+-     - "search"
+-     - '搜抖音里"AI 教程"最火的视频: node src/douyin/search-cli.js --keyword "AI 教程" --sort 1'
+-     - '看最近一周抖音上"AI 模型"最新的 20 条内容: node src/douyin/search-cli.js --keyword "AI 模型" --sort 2 --time 7 --limit 20'
+-     - "查抖音今天有什么热点/热搜榜: node src/douyin/hot-cli.js"
+-     - '抓这个抖音博主最近 30 条作品: node src/douyin/post-cli.js --url "https://www.douyin.com/user/MS4wLjABxxx" --limit 30'
+-     - '看这条抖音视频的 40 条评论: node src/douyin/comment-cli.js --url "https://www.douyin.com/video/xxx" --limit 40'
+- ## 1. 🛠️ 技能概述
+- > **合规前置说明（重要）**：调用本技能会把用户提供的关键词/链接发送至第三方数据 API（域名 `www.guaikei.com`）以换取结果。本技能不上传任何本地文件，不登录任何账号，无任何写操作（不发布/点赞/评论/关注）。仅处理抖音公开数据，不支持私密/登录态数据；数据仅限个人/团队内部分析。
+- **🔥 核心特性**
+- - 安全：无需登录抖音账号，无风控/封号风险
+- - 强大：单次最多可获取 1W 条数据
+- - 全面：出参覆盖作者、互动、标签、链接等可用数据及有价值数据都会返回
+- - 轻量：零第三方依赖，Node.js 内置模块直接运行
+- - 友好：stdout 纯 JSON、日志走 stderr，便于 AI 稳定解析
+- ## 2. ✅ 何时调用与能力边界
+- **🎯 应调用**：
+- - 用户明确要查 **抖音** 的公开内容（视频/图文/作者/评论/热榜）。
+- - 用户要做关键词搜索、爆款选题调研、对标账号监控、评论洞察、热点追流。
+- - 用户提供了抖音关键词、视频/主页链接，希望拿到结构化数据。
+- **🚫 不调用**：
+- - 用户只想要文案/标题/脚本，未要求查抖音数据。
+- - 平台不是抖音：小红书 / 快手 / B站 / 微博 / 公众号 → 路由到对应技能，**不要用本技能**。
+- - 要求私密/登录态/隐藏数据。
+- - 既无关键词也无可识别抖音链接且目标不明 → 先追问。
+- ## 3. 🔀 意图路由决策树（按顺序判断，命中即停）
+- 1. 提到"热榜/热搜/热点/今天什么火/榜单"            → hot-cli.js（无需参数）
+- 2. 提到"评论/留言"且指向某个视频                    → comment-cli.js（需视频链接或 aweme_id）
+- 3. 提到"作品/主页/账号/博主/对标账号"                → post-cli.js（需主页链接或 sec_uid）
+- 4. 有关键词且无 1/2/3 的信号                        → search-cli.js（需关键词）
+- 5. 以上都不明确                                     → 先向用户追问，禁止猜测执行
+- > ⚠️ 歧义规则：单独出现"视频"二字时，**不要默认归 post**。有"关键词"且无"评论" → search；"这个视频的评论/留言" → comment；仅当"作品/主页/账号/博主"出现时才用 post。
+- ## 4. 🧺 自然语言 → 命令映射（重要，执行前对照）
+- 执行前先收集足够输入，避免无效调用。
+- ### 4.1 🔍 关键词搜索（search-cli）
+- 至少要确认：`keyword`（2-50 字符）。可选：
+- - `sort`：0 综合 / 1 最多点赞 / 2 最新发布
+- - `time`：0 全部 / 1 一天内 / 7 七天内 / 180 半年内
+- - `duration`：0 不限 / 1 1分钟内 / 2 1-5分钟 / 3 5分钟以上
+- - `content`：0 不限 / 1 视频 / 2 图文
+- - `limit`：1-10000，默认 10
+- | 用户口语化指令                    | 对应命令                                             | 参数推导                    |
+- | --------------------------------- | ---------------------------------------------------- | --------------------------- |
+- | "搜一下 / 找 AI 相关视频"         | `node src/douyin/search-cli.js --keyword "AI"`       | 带关键词即搜索              |
+- | "找点赞最多的 / 最火的 AI 视频"   | `--keyword "AI" --sort 1`                            | 最火/点赞最多 → sort=1      |
+- | "最新的 AI 教程，要 20 条"        | `--keyword "AI 教程" --sort 2 --limit 20`            | 最新 → sort=2；数量 → limit |
+- | "近一周最火的短视频"              | `--keyword "短视频" --time 7 --sort 1`               | 一周 → time=7               |
+- | "半年内最新 20 条 AI 教程"        | `--keyword "AI 教程" --sort 2 --time 180 --limit 20` | 半年 → time=180             |
+- | "减肥视频，只要 1 分钟以下的"     | `--keyword "减肥" --duration 1`                      | 1分钟以下 → duration=1      |
+- | "AI 模型，5 分钟以上的，前 50 条" | `--keyword "AI 模型" --duration 3 --limit 50`        | 5分钟以上 → duration=3      |
+- ### 4.2 📡 博主作品（post-cli）
+- 至少要确认：`url`（主页 URL 或 sec_uid）。可选：`limit`（0-10000，默认 10）。
+- 适用链接：`https://www.douyin.com/user/MS4wLjABxxx`、`https://v.douyin.com/xxx`、或直接使用 `sec_uid`。
+- `limit = 0` 表示获取博主的互动数据（关注数、粉丝数、总获赞数）等信息。
+- | 用户口语化指令                  | 对应命令                                                                      |
+- | ------------------------------- | ----------------------------------------------------------------------------- |
+- | "查看这个博主的所有作品 / 主页" | `node src/douyin/post-cli.js --url "https://www.douyin.com/user/MS4wLjABxxx"` |
+- | "抓取 MS4wLjABxxx 的作品"       | `node src/douyin/post-cli.js --url "MS4wLjABxxx"`                             |
+- | "获取他最近 50 条视频"          | 上面命令加 ` --limit 50`                                                      |
+- ### 4.3 💬 评论分析（comment-cli）
+- 至少要确认：`url`（视频 / 图文 URL 或 aweme_id）。可选：`limit`（1-10000，默认 10）。
+- 适用链接：`https://www.douyin.com/video/xxx`、`https://www.douyin.com/note/xxx`、或直接使用 `aweme_id`。
+- | 用户口语化指令              | 对应命令                                                                  |
+- | --------------------------- | ------------------------------------------------------------------------- |
+- | "看看这个视频的评论 / 留言" | `node src/douyin/comment-cli.js --url "https://www.douyin.com/video/xxx"` |
+- | "获取这条视频的 100 条评论" | 上面命令加 ` --limit 100`                                                 |
+- ### 4.4 📡 热榜（hot-cli.js）
+- | 用户口语化指令                | 对应命令                     |
+- | ----------------------------- | ---------------------------- |
+- | "抖音今天有什么热点 / 热搜榜" | `node src/douyin/hot-cli.js` |
+- ## 5. 💡 执行约定
+- 1. 在技能根目录执行；**stdout 只输出 JSON，日志/横幅走 stderr**。
+- 2. **执行前检查清单**：
+-    - `GUAIKEI_API_TOKEN` 是否已配置？未配置 → 不执行，按 `AUTH_REQUIRED` 话术引导（见第 8 节）。
+-    - 必填项是否齐全？缺关键词/链接 → 用追问模板，禁止猜测。
+- 3. **耗时预期**：单次调用通常 10-60 秒（任务创建 + 轮询），limit 越大越慢，不要在 30 秒内判定失败或重复执行。
+- 4. **退出码**：`0`=成功（含空结果）、`1`=运行/输入错误、`2`=参数或用法错误、`3`=鉴权失败（缺/错 token）。
+- 5. 空结果（`status:"empty"`）退出码为 0，属正常情况，不是失败。
+- 6. 执行完成后，优先返回：本次目标、关键参数、结构化 JSON 结果，必要时再补一小段摘要。
+- 7. 适合衔接的后续动作：选题汇总、高赞对比、评论观点聚类、竞品内容风格总结、博主发文节奏分析、报告与表格生成。
+- ## 6. 📜 输出契约
+- 所有输出（成功/失败/空结果）都是统一信封结构：
+-   "error_code": "OK | NO_MATCH | INVALID_KEYWORD | INVALID_URL | INVALID_ARGS | AUTH_REQUIRED | AUTH_ERROR | TIMEOUT | HTTP_5xx | ...",
+-   "timestamp": "2026/9/13 14:30:00",
+-     "time": 7,
+-     "duration": 0,
+-     "content": 0,
+-     "skill_version": "1.3.0",
+-       "desc": "视频描述",
+-       "author_nickname": "作者",
+-       "author_sec_uid": "MS4wLjABxxx",
+-       "author_url": "https://www.douyin.com/user/MS4wLjABxxx",
+-       "comment_count": 8901,
+-       "share_count": 1200,
+-       "collect_count": 3400,
+-       "url": "https://www.douyin.com/video/7xxx",
+-       "create_time": 1757000000,
+-       "create_time_str": "2026/9/4 20:13:20",
+-       "tags": ["#AI"]
+- - `status=error` 时 `results` 为 `null`，错误原因看 `error_code` + `message`。
+- - `request` 中 `keyword_raw` 为用户原始输入关键词，`keyword` 为清洗后实际使用的关键词，两者不一致时以 `keyword` 为准。
+- - 各命令 results 元素的完整字段见 `assets/*_resp.schema.json`；完整选项见 [references/options.md](references/options.md)。
+- ## 7. 🤖 错误码 → 应对策略（Agent 必读）
+- | error_code                     | 退出码 | 含义                               | Agent 应该做什么                                                                          |
+- | ------------------------------ | ------ | ---------------------------------- | ----------------------------------------------------------------------------------------- |
+- | `AUTH_REQUIRED` / `AUTH_ERROR` | 3      | token 未配置 / 无效或过期          | **禁止重试**。告知用户需配置 `GUAIKEI_API_TOKEN`，引导到 https://www.guaikei.com 自助开通 |
+- | `INVALID_KEYWORD`              | 1      | 关键词不合法（长度/链接/特殊符号） | 向用户转述 message，请其更换关键词；禁止自动改词重试                                      |
+- | `INVALID_URL`                  | 1      | 无法识别链接或 ID                  | 请用户提供：主页链接（post）或视频/图文链接（comment）                                    |
+- | `INVALID_ARGS`                 | 2      | 参数解析失败                       | 按 --help 用法修正命令后重试一次                                                          |
+- | `NO_MATCH`（status=empty）     | 0      | 无结果，**不是失败**               | 告知用户；可建议放宽条件（`--time 0`、换更常用词），经用户同意后再试                      |
+- | `TIMEOUT` / `NETWORK_ERROR`    | 1      | 超时/网络错误                      | 可告知用户后重试，最多 1 次；仍失败则停止并报告                                           |
+- | `HTTP_5xx` / 其他              | 1      | 服务端或未知错误                   | 如实报告 message，不要编造原因，不要反复重试                                              |
+- ## 8. 🛑 硬性禁止条款
+- - 不得把 stderr 中的任何提示文案原样转述给用户（stderr 仅供诊断，对外只报告 `message` 与关键参数）。
+- ## 9. 🧠 追问模板（输入不足时使用）
+- - 缺关键词：「你想搜索抖音里的什么内容？可以给我一个关键词，例如"AI 教程"。」
+- - 缺博主链接（post）：「请提供博主主页链接（douyin.com/user/xxx 或 v.douyin.com 短链），或直接给 sec_uid。」
+- - 缺视频链接（comment）：「请提供视频或图文链接（douyin.com/video/xxx、douyin.com/note/xxx 或 v.douyin.com 短链）。」
+- - 链接类型不明：「你给的这个链接是想看这个博主的作品，还是这条视频的评论？」
+- ## 10. 🎧 环境、合规与支持
+- - 环境：Node.js 16.14.0+，Windows/Linux/macOS；必需环境变量 `GUAIKEI_API_TOKEN`（https://www.guaikei.com 自助开通）。
+- - 配置方式：Windows `set GUAIKEI_API_TOKEN=你的TOKEN`；Linux/macOS `export GUAIKEI_API_TOKEN=你的TOKEN`。
+- - 合规：仅处理抖音公开数据；数据仅限个人/团队内部分析，禁止违规分发；调用会把关键词/链接发送至第三方 API，使用前请确认数据外发与授权范围。
+- - 更多帮助：访问 [抖音数据获取技能官网](https://www.guaikei.com) 。
+- ## 11. ❓ 常见问题
+- - 没结果：放宽关键词或减少限定（`--time 0`）、换更贴近的词。
+- - 结果太多：补场景/人群/品牌/时间/账号，控制 limit。
+- - 调用失败：先确认 token 已配置有效（退出码 3 = token 问题）。
++ version: "1.4.0"
++   openclaw:
++     emoji: "🎬"
++     primaryEnv: GUAIKEI_API_TOKEN
++     requires:
++       bins:
++         - node
++       env:
++         - GUAIKEI_API_TOKEN
++   keywords:
++     - "抖音"
++     - "抖音搜索"
++     - "抖音热搜"
++     - "抖音热搜"
++     - "抖音热榜"
++     - "抖音评论"
++     - "博主作品"
++     - "对标账号"
++     - "对标账号"
++     - "短视频数据分析"
++     - "douyin"
++     - "douyin search"
++     - "douyin hot"
++     - "douyin comments"
++     - "博主主页"
++     - "选题"
++     - "douyin-search"
++     - "douyin-hot"
++     - "douyin-comments"
++     - name: "输出信封"
++       file: "assets/output_envelope.schema.json"
++     - '抖音上"AI 教程"最火的视频 → node src/douyin/search-cli.js --keyword "AI 教程" --sort 1'
++     - '最近一周关于"AI 模型"的最新内容，要 20 条 → node src/douyin/search-cli.js --keyword "AI 模型" --sort 2 --time 7 --limit 20'
++     - "今天抖音有什么热点 / 热搜榜 → node src/douyin/hot-cli.js"
++     - '这个博主最近 30 条作品 → node src/douyin/post-cli.js --url "https://www.douyin.com/user/MS4wLjABxxx" --limit 30'
++     - '看看这个对标账号多少粉丝、多少获赞 → node src/douyin/post-cli.js --url "https://www.douyin.com/user/MS4wLjABxxx" --limit 0'
++     - '这条视频的评论区都在说什么 → node src/douyin/comment-cli.js --url "https://www.douyin.com/video/xxx" --limit 40'
++     - '帮我找 1 分钟以内的减肥短视频，先来 50 条 → node src/douyin/search-cli.js --keyword "减肥" --duration 1 --limit 50'
++     - '半年内最火的 AI 教程图文 → node src/douyin/search-cli.js --keyword "AI 教程" --sort 1 --time 180 --content 2'
++ ## 1. ⚠️ 执行前置清单（每次执行前必须过一遍，缺一不可）
++ 1. **先 `cd` 到本 SKILL.md 所在目录**，再执行下面的 `node src/douyin/*.js` 命令。
++ 2. **确认环境变量 `GUAIKEI_API_TOKEN` 已配置且有效**。未配置 → 不执行命令，直接走 §8 的 `AUTH_REQUIRED` 话术，禁止先跑一遍"试试看"。
++ 3. **一次只跑一条命令，跑完等它自己结束**。单条查询一般几十秒到 2 分钟，`--limit` 很大时最长约 15–22 分钟。**进程未退出前不要判定失败，不要并发或重复发起同一条命令。**
++ 4. **必填参数不齐就先追问**（见 §9），禁止猜测关键词或链接。
++ ## 2. 💎 价值与典型场景（10 秒判断该不该用）
++ | 你是谁      | 你要做的事                       | 用哪个命令               |
++ | ----------- | -------------------------------- | ------------------------ |
++ | 短视频运营  | 找爆款选题、看高赞内容的共同点   | `search-cli.js --sort 1` |
++ | 品牌 / 投放 | 监控对标账号的发文节奏与内容策略 | `post-cli.js`            |
++ | 舆情 / 客服 | 判断一条视频的评论区在骂还是在夸 | `comment-cli.js`         |
++ | 所有人      | 今天抖音在火什么，追热点         | `hot-cli.js`             |
++ **典型产出**：结构化 JSON（标题、作者、点赞/评论/收藏/分享、标签、链接、发布时间），可直接导入 Excel / BI，或交给 AI 生成选题库、竞品对比表、舆情周报。结果还会自动落盘到技能目录的 `logs/` 下便于复盘。
++ **为什么用它而不是自己爬**：无需登录抖音账号，无风控封号风险；零第三方依赖，Node.js 内置模块直接跑；单次最多 1 万条；stdout 纯 JSON、日志走 stderr，AI 可直接解析。
++ > **合规前置**：调用本技能会把用户提供的关键词/链接发送至第三方数据 API（域名 `www.guaikei.com`）以换取结果。本技能不上传本地文件、不登录账号、无任何写操作（不发布/点赞/评论/关注）。仅处理抖音公开数据，数据仅限个人/团队内部分析。
++ ## 3. 🎯 识别卡（选命令，命中即停）
++ | 用户要什么                         | 命令                             | 最少要有              |
++ | ---------------------------------- | -------------------------------- | --------------------- |
++ | 搜视频/图文、爆款、选题            | `node src/douyin/search-cli.js`  | `--keyword`           |
++ | 博主作品、主页、对标账号、粉丝数据 | `node src/douyin/post-cli.js`    | 主页链接或 `sec_uid`  |
++ | 某条视频/图文的评论                | `node src/douyin/comment-cli.js` | 视频链接或 `aweme_id` |
++ | 热搜、热榜、今天什么火             | `node src/douyin/hot-cli.js`     | 无参数                |
++ ## 4. 🛠️ 命令与参数
++ > 完整取值含义见 `references/options.md`（**仅在需要确认枚举含义时才读取**，不要每次都读）。
++ ### 4.1 关键词搜索 `search-cli.js`
++ | 参数         | 缩写 | 必填 | 取值                                           | 默认 |
++ | ------------ | ---- | ---- | ---------------------------------------------- | ---- |
++ | `--keyword`  | `-k` | ✅   | 2–50 个字符，不能是链接，不含 `< > " ' &`      | —    |
++ | `--sort`     | `-s` |      | 0 综合 / 1 最多点赞 / 2 最新发布               | 0    |
++ | `--time`     | `-t` |      | 0 全部 / 1 一天内 / 7 七天内 / 180 半年内      | 0    |
++ | `--duration` | `-d` |      | 0 不限 / 1 1分钟以下 / 2 1-5分钟 / 3 5分钟以上 | 0    |
++ | `--content`  | `-c` |      | 0 不限 / 1 视频 / 2 图文                       | 0    |
++ | `--limit`    | `-l` |      | 1–10000                                        | 10   |
++ **数量约定**：未指定 `--limit` 时只返回 10 条。用户说"全部/越多越好"再显式设 `--limit`，不要自作主张抓 10000 条。
++ ### 4.2 博主作品 `post-cli.js`
++ | 参数      | 缩写 | 必填 | 取值                                                                           | 默认 |
++ | --------- | ---- | ---- | ------------------------------------------------------------------------------ | ---- |
++ | `--url`   | `-u` | ✅   | `douyin.com/user/xxx`、`v.douyin.com/xxx` 短链，或 `sec_uid`（`MS4wLjA` 开头） | —    |
++ | `--limit` | `-l` |      | 0–10000，**`0` = 只取博主互动数据**（关注数、粉丝数、总获赞）                  | 10   |
++ 成功时 `results` 是**对象**，含 `post`（作品数组）和 `user`（博主信息）。
++ ### 4.3 视频评论 `comment-cli.js`
++ | 参数      | 缩写 | 必填 | 取值                                                                                   | 默认 |
++ | --------- | ---- | ---- | -------------------------------------------------------------------------------------- | ---- |
++ | `--url`   | `-u` | ✅   | `douyin.com/video/xxx`、`douyin.com/note/xxx`、`v.douyin.com/xxx`，或纯数字 `aweme_id` | —    |
++ | `--limit` | `-l` |      | 1–10000                                                                                | 10   |
++ ### 4.4 实时热榜 `hot-cli.js`
++ 不接受任何参数，直接 `node src/douyin/hot-cli.js`。返回约 50 条。
++ ## 5. 🔀 意图路由决策树（按顺序判断，命中即停）
++ 1. 提到"热榜/热搜/热点/今天什么火/榜单"   → hot-cli.js（无参数）
++ 2. 提到"评论/留言"且指向某个视频           → comment-cli.js（需视频链接或 aweme_id）
++ 3. 提到"作品/主页/账号/博主/对标账号"       → post-cli.js（需主页链接或 sec_uid）
++ 4. 有关键词且无 1/2/3 的信号               → search-cli.js（需关键词）
++ 5. 以上都不明确                            → 先追问（§9），禁止猜测执行
++ > ⚠️ 消歧规则：单独出现"视频"二字**不要默认归 post**。有关键词且无"评论" → search；"这个视频的评论/留言" → comment；只有出现"作品/主页/账号/博主"才用 post。
++ > ⚠️ 链接类型冲突：`/user/` 链接只能给 post，`/video/`、`/note/` 链接只能给 comment，传错会得到 `INVALID_URL`，此时请用户确认他要的是作品还是评论。
++ ## 6. 🗣️ 自然语言 → 命令映射（执行前对照）
++ | 用户口语                        | 命令                                         | 参数推导                    |
++ | ------------------------------- | -------------------------------------------- | --------------------------- |
++ | "搜一下 AI 相关的视频"          | `--keyword "AI"`                             | 带关键词即搜索              |
++ | "找点赞最多的 / 最火的 AI 视频" | `--keyword "AI" --sort 1`                    | 最火/点赞最多 → sort=1      |
++ | "最新的 AI 教程，要 20 条"      | `--keyword "AI 教程" --sort 2 --limit 20`    | 最新 → sort=2；数量 → limit |
++ | "近一周最火的短视频"            | `--keyword "短视频" --time 7 --sort 1`       | 一周 → time=7               |
++ | "半年内最火的 AI 教程"          | `--keyword "AI 教程" --sort 1 --time 180`    | 半年 → time=180             |
++ | "减肥视频，只要 1 分钟以下的"   | `--keyword "减肥" --duration 1`              | 1分钟以下 → duration=1      |
++ | "AI 模型的图文内容，前 50 条"   | `--keyword "AI 模型" --content 2 --limit 50` | 图文 → content=2            |
++ | "看看这个博主最近发了啥"        | `post-cli.js --url <主页链接> --limit 20`    | 未说条数 → 默认 10，可问    |
++ | "他多少粉丝"                    | `post-cli.js --url <主页链接> --limit 0`     | 只要互动数据 → limit=0      |
++ | "这条视频评论区在骂什么"        | `comment-cli.js --url <视频链接> --limit 40` | 舆情场景 → 适当加大 limit   |
++ ## 7. 📜 输出契约
++ stdout 只有一份统一信封（成功 / 空结果 / 错误结构相同）：
++   "error_code": "OK | NO_MATCH | INVALID_KEYWORD | INVALID_URL | INVALID_ARGS | AUTH_REQUIRED | AUTH_ERROR | TIMEOUT | NETWORK_ERROR | HTTP_5xx | ...",
++   "timestamp": "2026/10/20 21:30:00",
++     "skill_version": "1.4.0",
++       "desc": "…",
++       "author_nickname": "…",
++       "url": "…",
++       "create_time_str": "2026/9/4 20:13:20"
++ - `status=error` 时 `results` 为 `null`，原因看 `error_code` + `message`。
++ - 信封字段见 `assets/output_envelope.schema.json`。搜索、评论、热榜成功时 `results` 是数组。作品成功时 `results` 是对象，包含 `post`（作品数组）和 `user`（博主信息）。条目字段见 `assets/*_cli_resp.schema.json`；
++ - **向用户汇报时只摘关键字段**（标题/作者/点赞/链接/时间），不要把整份 JSON 原样粘贴——单条结果含大量封面与播放 URL，会撑爆上下文。
++ - 适合衔接的后续动作：选题汇总、高赞对比、评论观点聚类、竞品内容风格总结、博主发文节奏分析、报告与表格生成。
++ ## 8. 🚨 退出码与错误码 → Agent 应对
++ | error_code                     | 退出码 | 含义                                   | Agent 必须做什么                                                                |
++ | ------------------------------ | ------ | -------------------------------------- | ------------------------------------------------------------------------------- |
++ | `AUTH_REQUIRED` / `AUTH_ERROR` | 3      | token 未配置 / 无效或过期              | **禁止重试**。引导到 https://www.guaikei.com 自助开通并配置 `GUAIKEI_API_TOKEN` |
++ | `INVALID_KEYWORD`              | 1      | 关键词不合法（长度/是链接/含特殊符号） | 转述 `message`，请用户换词；**禁止自动改词重试**                                |
++ | `INVALID_URL`                  | 1      | 无法识别链接或 ID，或链接类型传错      | 请用户提供：主页链接（post）或视频/图文链接（comment）                          |
++ | `INVALID_ARGS`                 | 2      | 参数解析失败，或枚举/范围越界          | 按 `--help` 修正后重试**一次**；**禁止改成默认值后自动再跑**                    |
++ | `NO_MATCH`（status=empty）     | 0      | 无结果，**不是失败**                   | 如实告知；可建议放宽（`--time 0`、换更常用词），**经用户同意后**再试            |
++ | `TIMEOUT` / `NETWORK_ERROR`    | 1      | 超时/网络错误                          | 可告知用户后重试，**最多 1 次**                                                 |
++ | `HTTP_5xx` / 其他              | 1      | 服务端或未知错误                       | 如实报告 `message`，不编造原因，不反复重试                                      |
++ ## 9. 🛑 硬性禁止条款
++ - 不得把 stderr 中的日志文案原样转述给用户（stderr 仅诊断用，对外只报 `message` 与关键参数）。
++ - 不得在未 cd 到技能目录的情况下执行 `node src/douyin/*.js`。
++ ## 10. 🧠 追问模板（输入不足时使用）
++ - 缺关键词：「你想搜索抖音里的什么内容？给我一个关键词，例如"AI 教程"。」
++ - 缺博主链接：「请提供博主主页链接（douyin.com/user/xxx 或 v.douyin.com 短链），或直接给 sec_uid。」
++ - 缺视频链接：「请提供视频或图文链接（douyin.com/video/xxx、douyin.com/note/xxx 或 v.douyin.com 短链）。」
++ - 链接类型不明：「你给的这个链接，是想看这个博主的作品，还是这条视频的评论？」
++ - 数量不明：「默认返回 10 条，需要更多的话告诉我具体条数。」
++ ## 11. 🔧 环境与合规
++ - 环境：Node.js 16.14.0+，Windows / Linux / macOS；必需环境变量 `GUAIKEI_API_TOKEN`。
++ - 配置方式：Windows cmd `set GUAIKEI_API_TOKEN=你的TOKEN`；Windows PowerShell `$env:GUAIKEI_API_TOKEN="你的TOKEN"`；Linux/macOS `export GUAIKEI_API_TOKEN=你的TOKEN`。令牌为 16–256 位字母、数字、下划线或连字符。
++ - 合规：仅处理抖音公开数据；调用会把关键词/链接发送至第三方 API（www.guaikei.com），使用前请确认数据外发与授权范围；数据仅限个人/团队内部分析，禁止违规分发。
++ - 更多帮助：[抖音爆款选题技能官网](https://www.guaikei.com)。
++ ## 12. ❓ 常见问题
++ - 没结果：放宽关键词或减少限定（`--time 0`），换更常用的词；空结果退出码是 0，属正常。
++ - 结果太多：补场景/人群/品牌/时间/账号，并控制 `--limit`。
++ - 调用失败：先看退出码——3 = token 问题；2 = 参数问题；1 = 关键词/链接/网络/服务端。
++ - 播放地址和分享链接有时效，过期后需要重新获取。
++ - 计费与单次上限以官网说明为准，技能侧上限为 10000 条/次。
+
+### assets/comment_cli_resp.schema.json  [code]
+-     "title": "抖音评论获取 - API出参",
+-     "description": "抖音获取作品评论, API出参Schema详解",
+-             "description": "抖音评论发布时间戳"
++     "title": "抖音评论获取 - results 元素",
++     "description": "评论成功时 results 数组中的一条。空字符串和数字 0 可能不返回。整份 stdout 见 output_envelope.schema.json。",
++             "type": "string",
++             "type": "string",
++         },
++         },
++         },
++             "description": "发布时间，unix 秒"
++         "reply_comment": {
++             "type": "array",
++             "description": "回复列表。元素字段与本条评论相同",
++             "items": {
++                 "type": "object"
++             }
++         "user_url": {
++             "description": "评论者主页 URL。有 user_sec_uid 时由技能补上"
++         "create_time_str": {
++             "description": "评论时间，格式如 2026/9/4 20:13:20。由 create_time（unix 秒）生成"
+
+### assets/hot_cli_resp.schema.json  [code]
+-     "title": "抖音热榜 - API出参",
+-     "description": "抖音实时热榜, API出参Schema详解",
+-         "view_count"
+-             "description": "事件发生时间"
+-             "description": "事件发生时间格式化字符串"
++     "title": "抖音热榜 - results 元素",
++     "description": "热榜成功时 results 数组中的一条。整份 stdout 见 output_envelope.schema.json，成功时 metadata.total 等于条数。",
++         "id",
++         "view_count",
++         "event_time_format"
++             "description": "事件发生时间，unix 秒"
++             "description": "事件时间，格式如 2006-01-02 15:04:05"
+
+### assets/output_envelope.schema.json  [code]
++ {
++     "$schema": "http://json-schema.org/draft-07/schema#",
++     "type": "object",
++     "title": "命令输出信封",
++     "description": "四个命令 stdout 的统一结构。成功、空结果、错误都使用本信封。stderr 只有日志，不是本结构。",
++     "required": [
++         "status",
++         "error_code",
++         "message",
++         "timestamp",
++         "request",
++         "metadata",
++         "results"
++     ],
++     "properties": {
++         "status": {
++             "type": "string",
++             "type": "string",
++             "type": "string",
++             "type": "string",
++             "enum": ["success", "empty", "error"],
++             "description": "success 为有结果；empty 为没有匹配内容，退出码仍为 0；error 为失败"
++         },
++         },
++         },
++         },
++         },
++         },
++         "error_code": {
++             "description": "OK、NO_MATCH、INVALID_KEYWORD、INVALID_URL、INVALID_ARGS、AUTH_REQUIRED、AUTH_ERROR、TIMEOUT、NETWORK_ERROR、HTTP_5xx、API_ERROR、UNKNOWN，或接口返回的业务码字符串"
++         "message": {
++             "description": "给人读的说明"
++         "timestamp": {
++             "description": "输出时间，北京时间，格式如 2026/9/4 20:13:20，月和日不补零"
++         "request": {
++             "type": "object",
++             "type": "object",
++             "description": "本次实际使用的参数。参数尚未解析成功时只有 command",
++             "required": ["command"],
++             "properties": {
++             "properties": {
++                 "command": {
++                     "type": "string",
++                     "type": "string",
++                     "type": "string",
++                     "type": "string",
++                     "type": "string",
++                     "type": "string",
++                     "type": "string",
++                     "enum": ["search", "post", "comment", "hot"],
++                     "description": "命令名"
++                 },
++                 },
++                 },
++                 },
++                 },
++                 },
++                 },
++                 },
++                 },
++                 },
++                 },
++                 },
++                 },
++                 },
++                 "keyword_raw": {
++                     "description": "搜索：用户原始关键词"
++                 "keyword": {
++                     "description": "搜索：整理空白后实际使用的关键词"
++                 "sort": {
++                     "type": "number",
++                     "type": "number",
++                     "type": "number",
++                     "type": "number",
++                     "type": "number",
++                     "type": "number",
++                     "type": "number",
++                     "description": "搜索：排序。0 综合，1 最多点赞，2 最新发布"
++                 "time": {
++                     "description": "搜索：发布时间。0 全部，1 一天内，7 七天内，180 半年内"
++                 "duration": {
++                     "description": "搜索：视频时长。0 不限，1 一分钟以下，2 一到五分钟，3 五分钟以上"
++                 "content": {
++                     "description": "搜索：内容类型。0 不限，1 视频，2 图文"
++                 "url_raw": {
++                     "description": "作品或评论：用户原始链接或 ID"
++                 "url": {
++                     "description": "作品或评论：识别后的链接或 ID"
++                 "limit": {
++                     "description": "搜索、评论为 1-10000；作品为 0-10000。参数尚未通过校验时可能缺此字段，或仍是用户传入的原值"
++                 }
++                 }
++                 }
++             }
++             }
++         "metadata": {
++             "required": ["skill_version", "runtime_version", "execution_time"],
++                 "skill_version": {
++                     "description": "技能版本"
++                 "runtime_version": {
++                     "description": "Node.js 版本"
++                 "execution_time": {
++                     "description": "本次执行耗时，毫秒。未捕获异常时为 0"
++                 "total": {
++                     "description": "仅热榜成功时出现，等于 results 的条数"
++         "results": {
++             "description": "error 与 empty 时为 null。搜索、评论、热榜成功时为数组，条目字段分别见 search_cli_resp、comment_cli_resp、hot_cli_resp。作品成功时为对象，字段见 post_cli_resp",
++             "oneOf": [
++                 {
++                 {
++                 {
++                     "type": "null"
++                     "type": "array",
++                     "items": {
++                         "type": "object"
++                     }
++                     }
++                     "type": "object",
++                     "properties": {
++                         "post": {
++                             "type": "array",
++                             "description": "作品列表。接口未返回时不出现",
++                             "items": {
++                                 "type": "object"
++                             }
++                         },
++                         "user": {
++                             "type": "object",
++                             "description": "博主信息。接口未返回时不出现"
++                         }
++             ]
++         }
++     }
++ }
+
+### assets/post_cli_resp.schema.json  [code]
+-     "title": "抖音博主作品获取 - API出参",
+-     "description": "抖音实时获取博主作品, API出参Schema详解",
+-         "aweme_id": {
+-             "type": "string",
+-             "type": "string",
+-             "type": "string",
+-             "type": "string",
+-             "type": "string",
+-             "type": "string",
+-             "type": "string",
+-             "type": "string",
+-             "description": "抖音视频ID"
+-         },
+-         },
+-         },
+-         },
+-         },
+-         },
+-         },
+-         },
+-         },
+-         },
+-         },
+-         },
+-         },
+-         },
+-         },
+-         },
+-         },
+-         "desc": {
+-             "description": "抖音视频描述"
+-         "caption": {
+-             "description": "抖音视频标题"
+-         "create_time": {
+-             "type": "number",
+-             "type": "number",
+-             "type": "number",
+-             "type": "number",
+-             "type": "number",
+-             "type": "number",
+-             "type": "number",
+-             "type": "number",
+-             "description": "抖音视频创建时间戳"
+-         "music_title": {
+-             "description": "抖音视频音乐标题"
+-         "music_author": {
+-             "description": "抖音视频音乐作者"
+-         "music_duration": {
+-             "description": "抖音视频音乐时长"
+-         "music_play_url": {
+-             "description": "抖音视频音乐播放URL"
+-         "video_url": {
+-             "type": "array",
+-             "type": "array",
+-             "description": "视频播放地址、视频下载地址",
+-             "items": {
+-             "items": {
+-                 "type": "string",
+-                 "type": "string",
+-                 "type": "string",
+-                 "description": "视频播放地址、视频下载地址"
+-             }
+-         "video_cover": {
+-             "description": "抖音视频封面URL"
+-         "video_duration": {
+-             "description": "抖音视频时长"
+-         "recommend_count": {
+-             "description": "交互界面未显示字段"
+-         "comment_count": {
+-             "description": "抖音视频评论数"
+-         "digg_count": {
+-             "description": "抖音视频点赞数"
+-         "share_count": {
+-             "description": "抖音视频分享数"
+-         "collect_count": {
+-             "description": "抖音视频收藏数"
+-         "tags": {
+-             "description": "抖音视频标签",
+-                 "description": "抖音视频标签"
+-         "share_url": {
+-             "description": "抖音视频分享URL"
+-         "suggest_words": {
+-             "description": "抖音视频小蓝词",
+-                 "description": "抖音视频小蓝词"
++     "title": "抖音博主作品获取 - results 对象",
++     "description": "作品成功时的 results。包含 post（作品列表）和 user（博主信息）。接口返回的 error 不会进入 stdout。空字符串和数字 0 可能不返回。整份 stdout 见 output_envelope.schema.json。",
++         "post": {
++             "description": "作品列表",
++                 "type": "object",
++                 "properties": {
++                     "aweme_id": {
++                         "type": "string",
++                         "type": "string",
++                         "type": "string",
++                         "type": "string",
++                         "type": "string",
++                         "type": "string",
++                         "type": "string",
++                         "type": "string",
++                         "description": "作品ID"
++                     },
++                     },
++                     },
++                     },
++                     },
++                     },
++                     },
++                     },
++                     },
++                     },
++                     },
++                     },
++                     },
++                     },
++                     },
++                     },
++                     },
++                     },
++                     "desc": {
++                         "description": "作品描述"
++                     "create_time": {
++                         "type": "number",
++                         "type": "number",
++                         "type": "number",
++                         "type": "number",
++                         "type": "number",
++                         "type": "number",
++                         "type": "number",
++                         "type": "number",
++                         "description": "发布时间，unix 秒"
++                     "caption": {
++                         "description": "作品标题"
++                     "recommend_count": {
++                         "description": "推荐数"
++                     "comment_count": {
++                         "description": "评论数"
++                     "digg_count": {
++                         "description": "点赞数"
++                     "share_count": {
++                         "description": "分享数"
++                     "collect_count": {
++                         "description": "收藏数"
++                     "share_url": {
++                         "description": "分享URL"
++                     "video_url": {
++                         "type": "array",
++                         "type": "array",
++                         "type": "array",
++                         "description": "视频URL列表",
++                         "items": {
++                         "items": {
++                         "items": {
++                             "type": "string",
++                             "type": "string",
++                             "type": "string",
++                             "description": "视频URL"
++                         }
++                         }
++                         }
++                     "video_cover": {
++                         "description": "视频封面URL"
++                     "video_duration": {
++                         "description": "视频时长"
++                     "music_title": {
++                         "description": "音乐标题"
++                     "music_author": {
++                         "description": "音乐作者"
++                     "music_duration": {
++                         "description": "音乐时长"
++                     "music_play_url": {
++                         "description": "音乐播放URL"
++                     "tags": {
++                         "description": "标签列表",
++                             "description": "标签名称"
++                     "suggest_words": {
++                         "description": "小蓝词列表",
++                             "description": "小蓝词名称"
++                     }
++                 }
++                 }
++         "user": {
++             "type": "object",
++             "description": "博主信息",
++             "properties": {
++                 "nickname": {
++                     "type": "string",
++                     "type": "string",
++                     "type": "string",
++                     "type": "string",
++                     "type": "string",
++                     "type": "string",
++                     "type": "string",
++                     "description": "博主昵称"
++                 },
++                 },
++                 },
++                 },
++                 },
++                 },
++                 },
++                 },
++                 },
++                 },
++                 },
++                 },
++                 "sec_uid": {
++                     "description": "博主SEC_UID"
++                 "signature": {
++                     "description": "博主签名"
++                 "uid": {
++                     "description": "博主ID"
++                 "unique_id": {
++                     "description": "博主唯一ID"
++                 "avatar": {
++                     "description": "博主头像URL"
++                 "ip_location": {
++                     "description": "博主IP位置"
++                 "aweme_count": {
++                     "type": "number",
++                     "type": "number",
++                     "type": "number",
++                     "type": "number",
++                     "type": "number",
++                     "type": "number",
++                     "description": "作品数"
++                 "favoriting_count": {
++                     "description": ""
++                     "description": ""
++                 "follower_count": {
++                     "description": "粉丝数"
++                 "following_count": {
++                     "description": "关注数"
++                 "max_follower_count": {
++                 "total_favorited": {
++                     "description": "获赞数"
+
+### assets/search_cli_resp.schema.json  [code]
+-     "title": "抖音关键词搜索 - API出参",
+-     "description": "抖音实时关键词搜索, API出参Schema详解",
+-             "description": "抖音视频创建时间戳"
+-             "description": "视频作者抖音主页URL"
+-             "description": "抖音视频创建时间"
++     "title": "抖音关键词搜索 - results 元素",
++     "description": "搜索成功时 results 数组中的一条。空字符串和数字 0 可能不返回。整份 stdout 见 output_envelope.schema.json。",
++             "type": "string",
++             "type": "string",
++         },
++         },
++         },
++         },
++         },
++         },
++         },
++             "type": "number",
++             "type": "number",
++             "description": "发布时间，unix 秒"
++         "play_count": {
++             "description": "播放数"
++         "forward_count": {
++             "description": "转发数"
++             "type": "array",
++             "type": "array",
++             "type": "array",
++             "items": {
++             "items": {
++             "items": {
++                 "type": "string",
++             }
++             }
++             }
++         "images": {
++             "description": "图文图片 URL 列表",
++                 "description": "图片 URL"
++         "cha_list": {
++             "description": "话题列表",
++                 "type": "object",
++                 "type": "object",
++                 "properties": {
++                 "properties": {
++                     "id": {
++                         "type": "string",
++                         "type": "string",
++                         "type": "string",
++                         "type": "string",
++                         "type": "string",
++                         "type": "string",
++                         "description": "话题 ID"
++                     },
++                     },
++                     },
++                     },
++                     },
++                     },
++                     "name": {
++                         "description": "话题名称"
++                     "desc": {
++                         "description": "话题描述"
++                     }
++                     }
++                 }
++                 }
++         "mix_id": {
++             "description": "合集 ID"
++         "mix_name": {
++             "description": "合集名称"
++         "comment_list": {
++             "description": "外露评论",
++                     "cid": {
++                         "description": "评论 ID"
++                     "text": {
++                         "description": "评论内容"
++                     "create_time": {
++                         "type": "number",
++                         "type": "number",
++                         "description": "评论时间，unix 秒"
++                     "digg_count": {
++                         "description": "评论点赞数"
++                     "nickname": {
++                         "description": "评论者昵称"
++             "description": "作者主页 URL。有 author_sec_uid 时由技能补上"
++             "description": "发布时间，北京时间，格式如 2026/9/4 20:13:20，月和日不补零。原数据没有该字段且 create_time 为非 0 的 unix 秒时由技能补上"
+
+### package.json  [code]
+-   "version": "1.3.0",
+-   "description": "抖音公开数据智能分析工具。支持关键词搜索排序、博主作品抓取、实时热榜获取，适用于短视频营销、竞品分析和热点监控，助力爆款内容策划与流量追踪。",
++   "version": "1.4.0",
++   "description": "抖音公开数据只读技能。关键词搜索、博主作品、视频评论、实时热榜，输出结构化 JSON。用于选题、对标账号、评论舆情和热搜追踪。",
+
+### readme.md  [docs]
+- **维护状态**：持续更新中，当前版本 `1.3.0`，[更新日志](references/changelog.md)。
+- > - 安全: 无需登录你的抖音账号，不担心风控风险 / 封号问题
+- > - 强大: 一次可获取最多1W条数据，使用简单方便
+- > - 全面: 各功能出参数据全面，可见及有价值数据都会返回
+- > - 灵活: 支持多维度筛选
+- > - 轻量: 无需部署服务，Node.js 一键运行
+- > - 低耗: 日志自动归档，适配营销报告 / 内容策划场景 ，便于数据二次分析
+- | 所有人     | 今天抖音在火什么，追热点         | 实时热榜                    |
+- **产出物**：结构化 JSON（含标题、作者、点赞/评论/收藏/分享、标签、视频链接），可直接导入 Excel/BI，或交给 AI 生成选题库、竞品对比表、舆情周报。
+- 2. **拿 TOKEN**：访问 [抖音搜索技能官网](https://www.guaikei.com) 自助开通，配置环境变量 `GUAIKEI_API_TOKEN`
+-    - Windows：`set GUAIKEI_API_TOKEN=你的TOKEN`
+- 3. **复制一条命令跑**（10-60 秒出结果）👇
+- > 💡 技能支持直接粘贴 App 分享文案（含"复制到剪贴板…"字样和短链），链接会自动抽取、参数自动清理。
+-   "metadata": { "skill_version": "1.3.0", "execution_time": 34210 },
+-       "digg_count": 123456,
+-       "comment_count": 8901,
+-       "share_count": 1200,
+-       "collect_count": 3400,
+-       "url": "https://www.douyin.com/video/7xxxxxxxxxxxxxxxxxx",
+-       "create_time_str": "2026/9/4 20:13:20",
+- - 需要短视频选题 → 关键词搜索 + 点赞排序
+- - 需要研究对标账号 → 按主页链接抓取其公开作品（**一次抓一个账号**，多个账号逐条执行即可）
+- - 需要分析内容舆情 → 获取视频/图文评论
+- - 需要快速追热点 → 实时获取抖音热榜
+- - 需要做营销报告 → 输出结构化 JSON，自动落盘留存
+- > 详细选项参数说明， 可参阅 [完整选项说明](references/options.md)
+- > LLM理解技能的详细选项，可参阅技能 `assets` 目录中文件，其遵循 JSON Schema draft-07 版本规范。
+- > - 抖音关键词搜索，[入参规范](assets/search_cli_req.schema.json)
+- > - 抖音关键词搜索，[出参规范](assets/search_cli_resp.schema.json)
+- > - 抖音博主作品获取，[入参规范](assets/post_cli_req.schema.json)
+- > - 抖音博主作品获取，[出参规范](assets/post_cli_resp.schema.json)
+- > - 抖音评论获取，[入参规范](assets/comment_cli_req.schema.json)
+- > - 抖音评论获取，[出参规范](assets/comment_cli_resp.schema.json)
+- > - 抖音热榜获取，[出参规范](assets/hot_cli_resp.schema.json)
+- - 单次调用通常 10-60 秒出结果（任务创建 + 轮询），limit 越大越慢
+- > A：TOKEN 未配置或无效。配置环境变量：
+- > - Windows: `set GUAIKEI_API_TOKEN=你的TOKEN`
+- > - Linux/MacOS: `export GUAIKEI_API_TOKEN=你的TOKEN`
+- > - 请注意 TOKEN 保密，避免泄露给他人
+- > - 博主作品：`时间戳_(博主sec_uid)_post.json`
+- > - 评论获取：`时间戳_(视频aweme_id)_comment.json`
+- - 🌐 **自助开通 TOKEN / 查阅使用帮助**：[抖音关键词搜索技能官网](https://www.guaikei.com)（推荐，最快）
+- > 🆕 [更新日志](references/changelog.md) | 参数详情见 [references/options.md](references/options.md)
+- - **API 次数超限**：提示用户联系客服开通更高额度
+- - **网络错误连续 3 次失败**：提示用户检查网络连接
+- - ❌ 不要编造数据，不要把空结果当成功
+- - ✅ 网络超时可重试，最多 3 次后停止
++ **一句话简介（给 AI 与搜索引擎）**：抖音公开数据只读技能，支持关键词搜索视频与图文、博主作品与粉丝数据、视频图文评论、实时热榜，全部以结构化 JSON 输出，不登录、不发布、不点赞、不评论。关键词：抖音搜索、抖音热搜、抖音热榜、抖音评论、博主作品、对标账号、竞品分析、选题挖掘、舆情监控、douyin search、douyin hot、douyin comments。
++ **维护状态**：持续更新中，当前版本 `1.4.0`，[更新日志](references/changelog.md)。
++ > - 安全：无需登录你的抖音账号，不存在风控 / 封号问题
++ > - 强大：单次最多获取 10000 条数据
++ > - 全面：出参覆盖作者、互动（点赞/评论/收藏/分享/推荐）、标签、链接、音乐、话题等可用字段
++ > - 灵活：支持排序（综合/最多点赞/最新）、时间（1天/7天/半年）、时长、内容类型（视频/图文）多维度筛选
++ > - 轻量：零第三方依赖，Node.js 内置模块直接跑，无需部署服务
++ > - 友好：stdout 纯 JSON、日志走 stderr，AI 可直接解析；结果自动落盘便于二次分析
++ | 内容策划   | 快速追热点、找当天的流量入口     | 实时热榜                    |
++ | 数据分析   | 把抖音数据导入 Excel/BI 做周报   | 结构化 JSON + 日志落盘      |
++ **典型产出**：结构化 JSON（含标题、作者、点赞/评论/收藏/分享、标签、视频链接、发布时间），可直接导入 Excel / BI，或交给 AI 生成**选题库、竞品对比表、舆情周报、发文节奏分析**。
++ ---
++ ---
++ ---
++ ---
++ ---
++ ---
++ ---
++ 2. **拿 TOKEN**：访问 [抖音爆款选题技能](https://www.guaikei.com) 自助开通，配置环境变量 `GUAIKEI_API_TOKEN`
++    - Windows cmd：`set GUAIKEI_API_TOKEN=你的TOKEN`
++    - Windows PowerShell：`$env:GUAIKEI_API_TOKEN="你的TOKEN"`
++ 3. **进入技能目录后执行一条命令**：
++    ```bash
++    cd <本技能所在目录>   # 即 readme.md / SKILL.md 所在的那一层
++    node src/douyin/hot-cli.js
++    ```
++ > ⚠️ 一次只跑一条命令，跑完等进程自己退出。小查询常常几十秒；`--limit` 很大时最长约 15–22 分钟，**进程未退出前不要重复发起同一条命令**。
++ # 🔎 近 7 天"AI 模型"的最新 20 条
++ node src/douyin/search-cli.js --keyword "AI 模型" --sort 2 --time 7 --limit 20
++ # 🦸 只要博主的粉丝数 / 获赞数等互动数据
++ node src/douyin/post-cli.js --url "https://www.douyin.com/user/MS4wLjABxxx" --limit 0
++ > 💡 支持直接粘贴 App 分享文案（含"复制到剪贴板…"字样和短链），链接会自动抽取、参数自动清理。
++   "message": "搜索任务完成",
++   "timestamp": "2026/9/4 20:13:20",
++   },
++   "metadata": {
++     "skill_version": "1.4.0",
++     "runtime_version": "22.x",
++     "execution_time": 34210
++       "aweme_id": "7625431394899016110",
++       "digg_count": 13324,
++       "comment_count": 118,
++       "share_count": 2861,
++       "collect_count": 11486,
++       "url": "https://www.douyin.com/video/7625431394899016110",
++       "create_time": 1775434101,
++       "create_time_str": "2026/4/5 10:08:21",
++ - 搜索、评论、热榜成功时 `results` 是**数组**；博主作品成功时 `results` 是**对象**，包含 `post`（作品数组）和 `user`（博主信息）。
++ - 空结果是 `"status": "empty"` + `error_code: "NO_MATCH"`，**退出码仍然是 0，属正常情况，不是失败**。
++ - 字段较多（含封面图、播放地址等长 URL），向用户汇报时建议只摘取 `desc` / `author_nickname` / `digg_count` / `url` / `create_time_str` 等关键字段。
++ - 需要短视频选题 → 关键词搜索 + 点赞排序（`--sort 1`）
++ - 需要研究对标账号 → 按主页链接抓取其公开作品（**一次抓一个账号**，多个账号逐条执行）
++ - 需要看账号体量 → 作品命令加 `--limit 0`，直接拿粉丝数 / 获赞数
++ - 需要分析内容舆情 → 获取视频/图文评论，可做观点聚类
++ - 需要快速追热点 → 实时热榜（约 50 条，含排名与热度值）
++ - 需要做营销报告 → 输出结构化 JSON 并自动落盘，便于复盘与二次分析
++ | 单次规模       | 最多 10000 条              | 受限于人肉            | 受限于风控                   |
++ > 两个入口，按需其一即可：
++ > - 想看人话版完整参数表 → [references/options.md](references/options.md)
++ > - 想看机器可校验的规范（JSON Schema draft-07）→ `assets/` 目录：
++ >   - 输出信封 [output_envelope.schema.json](assets/output_envelope.schema.json)
++ >   - 关键词搜索 [入参](assets/search_cli_req.schema.json) / [出参](assets/search_cli_resp.schema.json)
++ >   - 博主作品 [入参](assets/post_cli_req.schema.json) / [出参](assets/post_cli_resp.schema.json)
++ >   - 评论获取 [入参](assets/comment_cli_req.schema.json) / [出参](assets/comment_cli_resp.schema.json)
++ >   - 热榜 [出参](assets/hot_cli_resp.schema.json)
++ - 小查询常常几十秒内结束，条数越大越慢。进程会自己创建任务并继续查询，最多大约 15 分钟才结束
++ - 播放地址和分享链接有时效，过期后需要重新获取
++ > A：`GUAIKEI_API_TOKEN` 未配置、格式无效或已过期。令牌须为 16-256 位字母、数字、下划线或连字符。配置方式见上文"3 步接入"。请注意保密，不要泄露给他人。
++ > **Q：提示 `Cannot find module`？**
++ > A：没有先进入技能目录。先 `cd` 到 `SKILL.md` / `readme.md` 所在目录，再执行 `node src/douyin/...`。
++ > A：搜索 / 作品 / 评论任务的结果会自动保存在技能目录的 `logs/` 下：
++ > - 博主作品：`时间戳_博主sec_uid或短链码_post.json`
++ > - 评论获取：`时间戳_视频aweme_id或短链码_comment.json`
++ - **网络超时**：可告知用户后重试，最多 1 次；仍失败则停止并报告
++ - ❌ 不要编造数据。空结果是 `status:"empty"`、退出码 0，不要说成有结果
++ - ✅ 网络超时可重试，最多 1 次后停止
++ - 🌐 **自助开通 TOKEN / 查阅使用帮助**：[抖音爆款选题官网](https://www.guaikei.com)（推荐，最快）
++ > 🆕 [更新日志](references/changelog.md) ｜ 参数详情见 [references/options.md](references/options.md) ｜ 完整能力说明见 [SKILL.md](SKILL.md)
+
+### references/changelog.md  [docs]
+- - 优化SKILL返回方式
+- - 内置参数合法性校验、敏感词过滤及安全保护，保证调用稳定合规。
++ ## 1.4.0 - 2026-10-22
++ - 查询在任务处理中继续等待，间隔从 2 秒起翻倍，单次最长 60 秒；未完成不再当成空结果。
++ - 显式给出的非法筛选直接失败，不再改成默认值后继续请求。
++ - 搜索、作品、评论、热榜共用同一份 JSON 信封。时间固定为北京时间。
++ - 出参 schema 与实际 stdout 对齐，并补充搜索、评论里会返回的字段。
++ - 优化SKILL返回方式。
++ - 搜索、评论的返回数量上限为 10000；作品 `limit` 为 0-10000，0 表示只取博主信息。此前 1.1.0 搜索上限为 60，1.1.3 作品上限为 200。
++ - 内置参数合法性校验：关键词长度为 2-50 个字符，不能是链接，不能包含 < > " ' &。
+
+### references/options.md  [docs]
++ >
++ > **💡 评论链接说明**
++ > - 视频 ( 格式：<https://www.douyin.com/video/xxx> )
++ > - 图文 ( 格式：<https://www.douyin.com/note/xxx> )
++ > - 短链 ( 格式：<https://v.douyin.com/xxx> )
++ > - 纯数字 aweme_id
+
+### src/api/comment.js  [code]
+- const { requestApi } = require("../utils/request");
+-     if (typeof item?.create_time === "number" && item.create_time) {
+-       processedItem.create_time_str = new Date(
+-         item.create_time * 1000,
+-       ).toLocaleString();
+-     _: Date.now(),
+-   const response = await requestApi(
+-     "GET",
+-     null,
+-     constants.QUERY_MAX_ATTEMPTS,
++ const { requestApi, pollTaskResult } = require("../utils/request");
++ const { formatUnixSeconds } = require("../utils/time");
++     if (
++       typeof item?.create_time === "number" &&
++       item.create_time &&
++       !item.create_time_str
++     ) {
++       processedItem.create_time_str = formatUnixSeconds(item.create_time);
++   const response = await pollTaskResult(
+
+### src/api/hot.js  [code]
+- const { getJson } = require("../utils/request");
+- const { withRetry } = require("../utils/retry");
+- const utils = require("../utils/utils");
+- async function getHotTask(token) {
+-   return await withRetry(
+-     async () => {
+-       const res = await getJson(
+-         "/api/douyin/hot-search",
+-         { _: Date.now() },
+-         token,
+-       );
+-       );
+-       return res.data;
+-     },
+-     },
+-     (attempt, err) => {
+-       utils.printError(
+-         `【获取抖音热榜重试】 ${attempt + 1}/${constants.QUERY_MAX_ATTEMPTS} 次 - ${err.message}`,
+-   getHotTask,
++ const { requestApi } = require("../utils/request");
++ async function getHotSearch(token) {
++   const response = await requestApi(
++     "GET",
++     "/api/douyin/hot-search",
++     {},
++     null,
++     token,
++     "获取抖音热榜",
++   return response.data;
++   getHotSearch,
+
+### src/api/post.js  [code]
+- const { requestApi } = require("../utils/request");
+-   if (!data || !Array.isArray(data.post) || data.post.length === 0) {
+-     return data;
+-   return data.post;
+-  * @returns {Promise<Array>} 已发布作品数组
+-     _: Date.now(),
+-   const response = await requestApi(
+-     "GET",
+-     null,
+-     constants.QUERY_MAX_ATTEMPTS,
+-   return [];
++ const { requestApi, pollTaskResult } = require("../utils/request");
++   if (!data || typeof data !== "object" || Array.isArray(data)) {
++     return null;
++   }
++   }
++   const result = {};
++   if (Array.isArray(data.post)) {
++     result.post = data.post;
++   if (data.user && typeof data.user === "object" && !Array.isArray(data.user)) {
++     result.user = data.user;
++   return result;
++  * @returns {Promise<{post?: Array, user?: Object}|null>} 作品列表与博主信息
++   const response = await pollTaskResult(
++   return null;
+
+### src/api/search.js  [code]
+- const { requestApi } = require("../utils/request");
+-       processedItem.create_time_str = new Date(
+-         item.create_time * 1000,
+-       ).toLocaleString();
+-     _: Date.now(),
+-   const response = await requestApi(
+-     "GET",
+-     null,
+-     constants.QUERY_MAX_ATTEMPTS,
++ const { requestApi, pollTaskResult } = require("../utils/request");
++ const { formatUnixSeconds } = require("../utils/time");
++       processedItem.create_time_str = formatUnixSeconds(item.create_time);
++   const response = await pollTaskResult(
+
+### src/config/constants.js  [code]
+- const pkg = require("../../package.json");
+-   VERSION: pkg.version,
++ let version = "unknown";
++ try {
++   const pkg = require("../../package.json");
++   if (pkg && typeof pkg.version === "string" && pkg.version) {
++     version = pkg.version;
++   }
++ } catch (_) {
++   // package.json 缺失时仍应能输出错误信封
++ }
++   VERSION: version,
+
+### src/douyin/comment-cli.js  [code]
+- const constants = require("../config/constants");
+-     },
+-     },
+-     },
+- }
+- function emitError(command, code, message, exitCode, startTime, request) {
+-   const payload = {
+-     status: "error",
+-     error_code: code,
+-     message: message,
+-     timestamp: new Date().toLocaleString(),
+-     timestamp: new Date().toLocaleString(),
+-     request: request || { command },
+-     metadata: {
+-     metadata: {
+-       skill_version: constants.VERSION,
+-       skill_version: constants.VERSION,
+-       runtime_version: process.versions.node,
+-       runtime_version: process.versions.node,
+-       execution_time: Date.now() - startTime,
+-       execution_time: Date.now() - startTime,
+-     results: null,
+-   };
+-   process.stdout.write(JSON.stringify(payload, null, 2) + "\n");
+-   process.exitCode = exitCode;
+-     process.exitCode = 2;
+-     );
+-   url = validator.douyinPostUrl(url);
+-   limit = validator.optionFormat(limit);
+-       "GUAIKEI_API_TOKEN 未配置或无效, 请配置环境变量后重试; 可通过 https://www.guaikei.com 自助开通",
+-       { command: "comment", url: url },
+-       { command: "comment", url: url, limit: limit },
+-     utils.printError(`获取评论任务没有返回结果, 请稍后重试或联系开发者`);
+-     const emptyOutput = {
+-       status: "empty",
+-       error_code: "NO_MATCH",
+-       message: "没有找到匹配的评论",
+-       timestamp: new Date().toLocaleString(),
+-       request: {
+-         command: "comment",
+-         url: url,
+-         limit: limit,
+-       },
+-       },
+-       metadata: {
+-         skill_version: constants.VERSION,
+-         runtime_version: process.versions.node,
+-         execution_time: Date.now() - startTime,
+-       results: null,
+-     };
+-     process.stdout.write(JSON.stringify(emptyOutput, null, 2) + "\n", () =>
+-       process.exit(0),
+-   // 输出评论结果
+-   const finalOutput = {
+-     status: "success",
+-     error_code: "OK",
+-     message: "获取评论任务完成",
+-     request: {
+-     results: commentTask,
+-   console.log(JSON.stringify(finalOutput, null, 2));
+-   url = url.replace(/[^a-zA-Z0-9_-]/g, "");
+-   url = url.replace("httpswwwdouyincomvideo", "");
+-   url = url.replace("httpswwwdouyincomnote", "");
+-   url = url.replace("httpsvdouyincom", "");
+-   await log.taskWrite(
+-     `${startTime}_${url}_comment.json`,
+-   utils.printError(error.message);
+-   process.exitCode = 1;
++ const {
++   emitError,
++   emitEmpty,
++   printSuccessEnvelope,
++   emitUncaught,
++ } = require("../utils/output");
++   );
++     emitError("comment", "INVALID_ARGS", "缺少命令参数", 2, startTime);
++     return;
++   }
++   try {
++   } catch (error) {
++   url = validator.parseDouyinAweme(url);
++     limit = validator.assertCommentLimit(limit);
++     utils.printError(error.message);
++     emitError("comment", "INVALID_ARGS", error.message, 2, startTime, {
++       url_raw: urlRaw,
++     });
++       "GUAIKEI_API_TOKEN 未配置或格式无效。须为 16-256 位字母、数字、下划线或连字符; 可通过 https://www.guaikei.com 自助开通",
++       { command: "comment", url_raw: urlRaw, url: url },
++       { command: "comment", url_raw: urlRaw, url: url, limit: limit },
++   const commentRequest = {
++     command: "comment",
++     url_raw: urlRaw,
++     url: url,
++     limit: limit,
++     utils.printInfo("没有找到匹配的评论");
++     emitEmpty("没有找到匹配的评论", startTime, commentRequest);
++   const finalOutput = printSuccessEnvelope(
++     "获取评论任务完成",
++     startTime,
++     commentRequest,
++     commentTask,
++   await log.writeResultLog(
++     `${startTime}_${log.resourceId(url)}_comment.json`,
++   utils.printError(error.message || String(error));
++   emitUncaught("comment", error);
+
+### src/douyin/hot-cli.js  [code]
+- const constants = require("../config/constants");
+- function emitError(command, code, message, exitCode, startTime) {
+-   const payload = {
+-     status: "error",
+-     error_code: code,
+-     message: message,
+-     timestamp: new Date().toLocaleString(),
+-     timestamp: new Date().toLocaleString(),
+-     request: { command },
+-     metadata: {
+-     metadata: {
+-       skill_version: constants.VERSION,
+-       skill_version: constants.VERSION,
+-       runtime_version: process.versions.node,
+-       runtime_version: process.versions.node,
+-       execution_time: Date.now() - startTime,
+-       execution_time: Date.now() - startTime,
+-     },
+-     },
+-     results: null,
+-   };
+-   };
+-   process.stdout.write(JSON.stringify(payload, null, 2) + "\n");
+-   process.exitCode = exitCode;
+-       "GUAIKEI_API_TOKEN 未配置或无效, 请配置环境变量后重试; 可通过 https://www.guaikei.com 自助开通",
+-     hotTask = await hot.getHotTask(tokenValue);
+-     utils.printError(`抖音热榜没有返回结果, 请稍后重试或联系开发者`);
+-     const emptyOutput = {
+-       status: "empty",
+-       error_code: "NO_MATCH",
+-       message: "没有找到最新的抖音热榜",
+-       timestamp: new Date().toLocaleString(),
+-       request: {
+-         command: "hot",
+-       },
+-       },
+-       metadata: {
+-         skill_version: constants.VERSION,
+-         runtime_version: process.versions.node,
+-         execution_time: Date.now() - startTime,
+-       results: null,
+-     };
+-     process.stdout.write(JSON.stringify(emptyOutput, null, 2) + "\n", () =>
+-       process.exit(0),
+-   // 输出热榜结果
+-   const finalOutput = {
+-     status: "success",
+-     error_code: "OK",
+-     message: "获取抖音热榜任务完成",
+-     total: hotTask.length,
+-     results: hotTask,
+-   console.log(JSON.stringify(finalOutput, null, 2));
+-   utils.printError(error.message);
+-   process.exitCode = 1;
++ const {
++   emitError,
++   emitEmpty,
++   printSuccessEnvelope,
++   emitUncaught,
++ } = require("../utils/output");
++ function printHelp() {
++   process.stderr.write(
++     "用法: node src/douyin/hot-cli.js\n\n获取抖音实时热榜，无需参数。\n",
++   );
++   );
++   const args = process.argv.slice(2);
++   if (args.includes("--help") || args.includes("-h")) {
++     printHelp();
++     printHelp();
++     return;
++     return;
++   }
++   }
++   if (args.length > 0) {
++     emitError(
++       "hot",
++       "INVALID_ARGS",
++       `热榜不接受参数, 收到: ${args.join(" ")}`,
++       2,
++       startTime,
++       "GUAIKEI_API_TOKEN 未配置或格式无效。须为 16-256 位字母、数字、下划线或连字符; 可通过 https://www.guaikei.com 自助开通",
++     hotTask = await hot.getHotSearch(tokenValue);
++     utils.printInfo("没有找到最新的抖音热榜");
++     emitEmpty("没有找到最新的抖音热榜", startTime, { command: "hot" });
++   printSuccessEnvelope(
++     "获取抖音热榜任务完成",
++     startTime,
++     { command: "hot" },
++     hotTask,
++     hotTask.length,
++   utils.printError(error.message || String(error));
++   emitUncaught("hot", error);
+
+### src/douyin/post-cli.js  [code]
+- const constants = require("../config/constants");
+-     },
+-     },
+-     },
+- }
+- function emitError(command, code, message, exitCode, startTime, request) {
+-   const payload = {
+-     status: "error",
+-     error_code: code,
+-     message: message,
+-     timestamp: new Date().toLocaleString(),
+-     timestamp: new Date().toLocaleString(),
+-     request: request || { command },
+-     metadata: {
+-     metadata: {
+-       skill_version: constants.VERSION,
+-       skill_version: constants.VERSION,
+-       runtime_version: process.versions.node,
+-       runtime_version: process.versions.node,
+-       execution_time: Date.now() - startTime,
+-       execution_time: Date.now() - startTime,
+-     results: null,
+-   };
+-   process.stdout.write(JSON.stringify(payload, null, 2) + "\n");
+-   process.exitCode = exitCode;
+-     process.exitCode = 2;
+-     );
+-   url = validator.douyinUserUrl(url);
+-       "无法识别博主主页链接或 sec_uid。支持: https://www.douyin.com/user/xxx、https://v.douyin.com/xxx, 或直接输入 sec_uid (MS4wLjAB 开头)",
+-   limit = validator.optionFormat(limit);
+-       "GUAIKEI_API_TOKEN 未配置或无效, 请配置环境变量后重试; 可通过 https://www.guaikei.com 自助开通",
+-       { command: "post", url: url },
+-       { command: "post", url: url, limit: limit },
+-     utils.printError(`获取作品任务没有返回结果, 请稍后重试或联系开发者`);
+-     const emptyOutput = {
+-       status: "empty",
+-       error_code: "NO_MATCH",
+-       message: "没有找到匹配的作品",
+-       timestamp: new Date().toLocaleString(),
+-       request: {
+-         command: "post",
+-         url: url,
+-         limit: limit,
+-       },
+-       },
+-       metadata: {
+-         skill_version: constants.VERSION,
+-         runtime_version: process.versions.node,
+-         execution_time: Date.now() - startTime,
+-       results: null,
+-     };
+-     process.stdout.write(JSON.stringify(emptyOutput, null, 2) + "\n", () =>
+-       process.exit(0),
+-   // 输出作品结果
+-   const finalOutput = {
+-     status: "success",
+-     error_code: "OK",
+-     message: "获取作品任务完成",
+-     request: {
+-     results: postTask,
+-   console.log(JSON.stringify(finalOutput, null, 2));
+-   const resultCount = Array.isArray(postTask)
+-     ? postTask.length
+-     : Array.isArray(postTask.post)
+-       ? postTask.post.length
+-       : 0;
+-   utils.printSuccess(`获取作品任务完成, 共 ${resultCount} 条结果`);
+-   url = url.replace(/[^a-zA-Z0-9_-]/g, "");
+-   url = url.replace("httpswwwdouyincomuser", "");
+-   url = url.replace("httpsvdouyincom", "");
+-   await log.taskWrite(
+-     `${startTime}_${url}_post.json`,
+-   utils.printError(error.message);
+-   process.exit(1);
++ const {
++   emitError,
++   emitEmpty,
++   printSuccessEnvelope,
++   emitUncaught,
++ } = require("../utils/output");
++   );
++   );
++   );
++   }
++     emitError("post", "INVALID_ARGS", "缺少命令参数", 2, startTime);
++     return;
++   try {
++   } catch (error) {
++   url = validator.parseDouyinUser(url);
++       "无法识别博主主页链接或 sec_uid。支持: https://www.douyin.com/user/xxx、https://v.douyin.com/xxx, 或直接输入 sec_uid (MS4wLjA 开头)",
++     limit = validator.assertPostLimit(limit);
++     utils.printError(error.message);
++     emitError("post", "INVALID_ARGS", error.message, 2, startTime, {
++       url_raw: urlRaw,
++     });
++       "GUAIKEI_API_TOKEN 未配置或格式无效。须为 16-256 位字母、数字、下划线或连字符; 可通过 https://www.guaikei.com 自助开通",
++       { command: "post", url_raw: urlRaw, url: url },
++       { command: "post", url_raw: urlRaw, url: url, limit: limit },
++   const postRequest = {
++     command: "post",
++     url_raw: urlRaw,
++     url: url,
++     limit: limit,
++     utils.printInfo("没有找到匹配的博主或作品");
++     emitEmpty("没有找到匹配的博主或作品", startTime, postRequest);
++   const finalOutput = printSuccessEnvelope(
++     "获取作品任务完成",
++     startTime,
++     postRequest,
++     postTask,
++   const postCount = Array.isArray(postTask.post) ? postTask.post.length : 0;
++   const hasUser = Boolean(
++     postTask.user && Object.keys(postTask.user).length > 0,
++   utils.printSuccess(
++     `获取作品任务完成, 作品 ${postCount} 条${hasUser ? ", 含博主信息" : ""}`,
++   await log.writeResultLog(
++     `${startTime}_${log.resourceId(url)}_post.json`,
++   utils.printError(error.message || String(error));
++   emitUncaught("post", error);
+
+### src/douyin/search-cli.js  [code]
+- const constants = require("../config/constants");
+-     },
+-     },
+-     },
+-       "  - 所有参数都会自动清洗和验证",
+- }
+- function emitError(command, code, message, exitCode, startTime, request) {
+-   const payload = {
+-     status: "error",
+-     error_code: code,
+-     message: message,
+-     timestamp: new Date().toLocaleString(),
+-     timestamp: new Date().toLocaleString(),
+-     request: request || { command },
+-     metadata: {
+-     metadata: {
+-       skill_version: constants.VERSION,
+-       skill_version: constants.VERSION,
+-       runtime_version: process.versions.node,
+-       runtime_version: process.versions.node,
+-       execution_time: Date.now() - startTime,
+-       execution_time: Date.now() - startTime,
+-     results: null,
+-   };
+-   process.stdout.write(JSON.stringify(payload, null, 2) + "\n");
+-   process.exitCode = exitCode;
+-     process.exitCode = 2;
+-   keyword = validator.cleanKeyword(keyword);
+-       },
+-   [sort, time, duration, content, limit] = validator.optionFormat(
+-     sort,
+-     time,
+-     duration,
+-     content,
+-     limit,
+-       "GUAIKEI_API_TOKEN 未配置或无效, 请配置环境变量后重试; 可通过 https://www.guaikei.com 自助开通",
+-       { command: "search", keyword: keyword, limit: limit },
+-     utils.printError(`搜索任务没有返回结果, 请稍后重试或联系开发者`);
+-     const emptyOutput = {
+-       status: "empty",
+-       error_code: "NO_MATCH",
+-       message: "没有找到匹配的视频或图文内容",
+-       timestamp: new Date().toLocaleString(),
+-       request: {
+-       metadata: {
+-         skill_version: constants.VERSION,
+-         runtime_version: process.versions.node,
+-         execution_time: Date.now() - startTime,
+-       results: null,
+-     };
+-     process.stdout.write(JSON.stringify(emptyOutput, null, 2) + "\n", () =>
+-       process.exit(0),
+-   // 输出搜索结果
+-   const finalOutput = {
+-     status: "success",
+-     error_code: "OK",
+-     message: "搜索任务完成",
+-     request: {
+-     results: searchTask,
+-   console.log(JSON.stringify(finalOutput, null, 2));
+-   await log.taskWrite(
+-   utils.printError(error.message);
+-   process.exitCode = 1;
++ const {
++   emitError,
++   emitEmpty,
++   printSuccessEnvelope,
++   emitUncaught,
++ } = require("../utils/output");
++       "  - 排序、时间、时长、类型和数量若不在允许范围内，命令会直接失败，不会改成默认值后继续搜索",
++     emitError("search", "INVALID_ARGS", "缺少命令参数", 2, startTime);
++     return;
++   }
++   try {
++   } catch (error) {
++   keyword = validator.normalizeKeyword(keyword);
++       {
++     [sort, time, duration, content, limit] = validator.assertSearchOptions(
++       sort,
++       time,
++       duration,
++       content,
++       limit,
++     utils.printError(error.message);
++     emitError("search", "INVALID_ARGS", error.message, 2, startTime, {
++     });
++       "GUAIKEI_API_TOKEN 未配置或格式无效。须为 16-256 位字母、数字、下划线或连字符; 可通过 https://www.guaikei.com 自助开通",
++   const searchRequest = {
++     command: "search",
++     keyword_raw: keywordRaw,
++     keyword: keyword,
++     sort: sort,
++     time: time,
++     duration: duration,
++     content: content,
++     limit: limit,
++     utils.printInfo("没有找到匹配的视频或图文内容");
++     emitEmpty("没有找到匹配的视频或图文内容", startTime, searchRequest);
++   const finalOutput = printSuccessEnvelope(
++     "搜索任务完成",
++     startTime,
++     searchRequest,
++     searchTask,
++   await log.writeResultLog(
++   utils.printError(error.message || String(error));
++   emitUncaught("search", error);
+
+### src/utils/args.js  [code]
+-     if (arg === "--help" || arg === "-h") {
+-       if (arg === flag || (def.alias && arg === def.alias)) {
+-         const rawValue = readValueAfterFlag(args, i, arg);
++     const eq = arg.indexOf("=");
++     const argName = eq > 0 ? arg.slice(0, eq) : arg;
++     const inlineValue = eq > 0 ? arg.slice(eq + 1) : undefined;
++     if (argName === "--help" || argName === "-h") {
++       if (argName === flag || (def.alias && argName === def.alias)) {
++       } else if (inlineValue !== undefined) {
++         if (inlineValue === "" || inlineValue.startsWith("-")) {
++           throw new Error(`参数 ${argName} 缺少有效值`);
++         }
++         result[def.key] = def.transform ? def.transform(inlineValue) : inlineValue;
++         const rawValue = readValueAfterFlag(args, i, argName);
+
+### src/utils/errors.js  [code]
+-     super("TIMEOUT_ERROR", message);
++     super("TIMEOUT", message);
+
+### src/utils/log.js  [code]
+- async function taskWrite(filename, content) {
+-   taskWrite,
++ async function writeResultLog(filename, content) {
++ }
++ function resourceId(url) {
++   const s = String(url || "");
++   const user = s.match(/\/user\/([^/?#]+)/i);
++   if (user) return user[1];
++   const media = s.match(/\/(?:video|note)\/([^/?#]+)/i);
++   if (media) return media[1];
++   const share = s.match(/\/share\/(?:video|note)\/([^/?#]+)/i);
++   if (share) return share[1];
++   const short = s.match(/v\.douyin\.com\/([^/?#]+)/i);
++   if (short) return short[1];
++   const plain = s.replace(/[^a-zA-Z0-9_-]/g, "");
++   return plain.slice(0, 80) || "unknown";
++   writeResultLog,
++   resourceId,
+
+### src/utils/name.js  [code]
+-   const pkgPath = path.join(
+-     path.dirname(__filename),
+-     "..",
+-     "..",
+-     "package.json",
+-   );
+-   const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8"));
+-   cached = pkg.name;
++ const FALLBACK_NAME = "douyin-skill";
++   try {
++     const pkgPath = path.join(
++       path.dirname(__filename),
++       "..",
++       "..",
++       "package.json",
++     );
++     const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8"));
++     if (pkg && typeof pkg.name === "string" && pkg.name) {
++       cached = pkg.name;
++       return cached;
++     }
++   } catch (_) {
++     // 忽略：package.json 缺失/损坏时不应阻断请求
++   }
++   cached = FALLBACK_NAME;
+
+### src/utils/output.js  [code]
++ /**
++ /**
++  * stdout 信封。错误和空结果刷出后再退出；成功只打印，方便随后写日志。
++  */
++  */
++ const constants = require("../config/constants");
++ const { formatBeijingTime } = require("./time");
++  * 把 JSON 写到 stdout，刷出后再按退出码结束。
++  * 避免管道场景下进程先退出、调用方读到空输出。
++  * @param {object} payload
++  * @param {number} exitCode
++ function writeJsonAndExit(payload, exitCode) {
++   const text = JSON.stringify(payload, null, 2) + "\n";
++   process.stdout.write(text, () => {
++     process.exit(exitCode);
++   });
++   });
++ }
++ }
++ }
++ }
++ }
++ }
++ function buildEnvelope({
++   status,
++   errorCode,
++   message,
++   request,
++   startTime,
++   results = null,
++   total,
++ }) {
++   const metadata = {
++     skill_version: constants.VERSION,
++     runtime_version: process.versions.node,
++     execution_time: startTime == null ? 0 : Date.now() - startTime,
++   };
++   };
++   if (total !== undefined) {
++     metadata.total = total;
++   }
++   return {
++     status,
++     error_code: errorCode,
++     message,
++     message,
++     timestamp: formatBeijingTime(new Date()),
++     request,
++     request,
++     metadata,
++     results,
++     results,
++ function emitError(command, code, message, exitCode, startTime, request) {
++   writeJsonAndExit(
++   writeJsonAndExit(
++   writeJsonAndExit(
++     buildEnvelope({
++     buildEnvelope({
++     buildEnvelope({
++       status: "error",
++       status: "error",
++       errorCode: code,
++       message,
++       message,
++       request: request || { command },
++       startTime,
++       startTime,
++     }),
++     }),
++     }),
++     exitCode,
++   );
++   );
++   );
++ function emitEmpty(message, startTime, request) {
++       status: "empty",
++       errorCode: "NO_MATCH",
++       request,
++     0,
++ function printSuccessEnvelope(message, startTime, request, results, total) {
++   const payload = buildEnvelope({
++     status: "success",
++     errorCode: "OK",
++     startTime,
++     total,
++   console.log(JSON.stringify(payload, null, 2));
++   return payload;
++ function emitUncaught(command, error) {
++       errorCode: error.code || "UNKNOWN",
++       message: error.message || "未知错误",
++       request: { command },
++     error.name === "AuthError" ? 3 : 1,
++ module.exports = {
++   writeJsonAndExit,
++   emitError,
++   emitEmpty,
++   printSuccessEnvelope,
++   emitUncaught,
++ };
+
+### src/utils/request.js  [code]
+-               if (jsonBody.errcode === 0) {
+-                 let e;
+-                 if (jsonBody?.errcode < 10) {
+-                   e = new ApiError(
+-                   e = new ApiError(
+-                     jsonBody?.errcode?.toString(),
+-                     jsonBody?.errmsg || "请求失败",
+-                     jsonBody?.errmsg || "请求失败",
+-                   );
+-                   );
+-                 } else {
+-                   e.noRetry = true;
+-                 }
+-               new ApiError(
+-                 `HTTP_${res.statusCode}`,
+-                 `请求失败, 状态码: ${res.statusCode}`,
+-                 true,
+-               ),
+- module.exports = { getJson, postJson, requestApi };
++               if (typeof jsonBody.errcode !== "number") {
++                 const e = new ApiError(
++                   "API_ERROR",
++                   "接口响应缺少有效的 errcode",
++                   true,
++                 );
++                 );
++                 );
++                 reject(e);
++               } else if (jsonBody.errcode === 0) {
++               } else if (
++                 jsonBody.errcode === 401 ||
++                 jsonBody.errcode === 403
++               ) {
++                 const e = new AuthError(
++                   "GUAIKEI_API_TOKEN 无效, 请检查环境变量 或 通过 www.guaikei.com 联系客服获取解决方案",
++                 e.noRetry = true;
++                 reject(
++                   new ApiError(
++                     jsonBody.errmsg || "请求失败",
++                     jsonBody.errcode >= 10,
++                   ),
++             const status = res.statusCode;
++             const code =
++               status >= 500 && status <= 599 ? "HTTP_5xx" : `HTTP_${status}`;
++               new ApiError(code, `请求失败, 状态码: ${status}`, true),
++       }
++       }
++       }
++       } else {
++     }
++ }
++ }
++ }
++   }
++   }
++   }
++   }
++   params.skill_name = skillName();
++ /**
++ /**
++  * @param {string} token - 令牌
++  */
++  */
++  * 查询接口的轮询分类。
++  * 后端在任务未完成时返回 errcode 1（处理中, 请稍后）；errcode 0 才表示已完成。
++  * 其它业务错误立即失败。网络和超时错误可以继续查。
++  * @param {Error} error
++  * @returns {"pending"|"fail"|"retry"}
++ function classifyPollError(error) {
++   if (error && String(error.code) === "1") {
++     return "pending";
++   if (
++     error &&
++     (error.noRetry || error.name === "ApiError" || error.name === "AuthError")
++   ) {
++     return "fail";
++   return "retry";
++ function sleep(ms) {
++   return new Promise((resolve) => setTimeout(resolve, ms));
++  * 轮询任务结果。仅用于搜索、作品、评论的查询接口。
++  * 次数使用 QUERY_MAX_ATTEMPTS。两次查询之间的等待从 RETRY_INTERVAL 起按 2、4、8 秒翻倍，单次最长 60 秒。
++  * 次数用尽仍是「处理中」时抛出 TIMEOUT，不把未完成当成空结果。
++  * @param {string} path
++  * @param {object} params
++  * @param {string} token
++  * @param {string} actionName
++  * @returns {Promise<object>} errcode 为 0 的响应
++ async function pollTaskResult(path, params, token, actionName) {
++   const maxAttempts = constants.QUERY_MAX_ATTEMPTS;
++   let lastError;
++   for (let attempt = 0; attempt < maxAttempts; attempt++) {
++     try {
++       return await getJson(path, params, token);
++     } catch (error) {
++       lastError = error;
++       const kind = classifyPollError(error);
++       if (kind === "fail") {
++         throw error;
++       if (kind === "pending") {
++         utils.printInfo(
++           `【${actionName}】处理中 ${attempt + 1}/${maxAttempts}`,
++         );
++         );
++         utils.printError(
++           `【${actionName}重试】 ${attempt + 1}/${maxAttempts} 次 - ${error.message}`,
++       if (attempt < maxAttempts - 1) {
++         const delay = Math.min(constants.RETRY_INTERVAL * 2 ** attempt, 60000);
++         await sleep(delay);
++   if (classifyPollError(lastError) === "pending") {
++     throw new SkillError("TIMEOUT", "任务仍在处理中, 请稍后重试", true);
++   throw lastError || new SkillError("TIMEOUT", "任务仍在处理中, 请稍后重试", true);
++ module.exports = {
++   getJson,
++   postJson,
++   requestApi,
++   pollTaskResult,
++   classifyPollError,
++ };
+
+### src/utils/time.js  [code]
++ /**
++ /**
++  * 固定为北京时间，格式与文档示例一致：2026/9/4 20:13:20
++  * @param {Date} date
++  * @returns {string}
++  * @returns {string}
++  */
++  */
++ function formatBeijingTime(date) {
++   const shifted = new Date(date.getTime() + 8 * 60 * 60 * 1000);
++   const year = shifted.getUTCFullYear();
++   const month = shifted.getUTCMonth() + 1;
++   const day = shifted.getUTCDate();
++   const hour = String(shifted.getUTCHours()).padStart(2, "0");
++   const minute = String(shifted.getUTCMinutes()).padStart(2, "0");
++   const second = String(shifted.getUTCSeconds()).padStart(2, "0");
++   return `${year}/${month}/${day} ${hour}:${minute}:${second}`;
++ }
++ }
++  * @param {number} seconds unix 秒
++ function formatUnixSeconds(seconds) {
++   return formatBeijingTime(new Date(seconds * 1000));
++ module.exports = {
++   formatBeijingTime,
++   formatUnixSeconds,
++ };
+
+### src/utils/token.js  [code]
+-       "GUAIKEI_API_TOKEN未配置或无效。可通过 https://www.guaikei.com 自助开通后配置环境变量。",
++   if (!token || typeof token !== "string" || !token.trim()) {
++     utils.printError(
++       "GUAIKEI_API_TOKEN 未配置。可通过 https://www.guaikei.com 自助开通后配置环境变量。",
++     );
++     return "";
++   }
++       "GUAIKEI_API_TOKEN 格式无效。须为 16-256 位字母、数字、下划线或连字符。",
+
+### src/validate/comment.js  [code]
+- const utils = require("../utils/utils");
+- const DOUYIN_URL_RE =
+-   /(?:https?:\/\/)?(?:www\.|v\.)?(?:douyin\.com|iesdouyin\.com)\/[^\s"'<>`\u4e00-\u9fff，。！？、；：（）【】]+/i;
+- function extractDouyinUrl(raw) {
+-   if (typeof raw !== "string") return null;
+-   const m = raw.match(DOUYIN_URL_RE);
+-   if (!m) return null;
+-   let url = m[0];
+-   url = url.split("?")[0].split("#")[0];
+-   url = url.replace(/[\/.,;:!?"'，。！？；：、）】》]+$/g, "");
+-   return url || null;
+- }
+- function douyinPostUrl(url) {
+- function optionFormat(limit) {
+-   limit = Number(limit);
+-   if (!Number.isFinite(limit)) limit = 10;
+-   if (limit < 1 || limit > 10000) {
+-     utils.printError("获取的评论数量必须在1-10000之间");
+-     limit = 10;
+-   return limit;
+-   douyinPostUrl,
+-   optionFormat,
++ const { extractDouyinUrl } = require("./url");
++ function parseDouyinAweme(url) {
++ function assertCommentLimit(limit) {
++   const n = Number(limit);
++   if (!Number.isInteger(n) || n < 1 || n > 10000) {
++     throw new Error(`评论数量 limit ${limit} 无效, 允许 1-10000 的整数`);
++   return n;
++   parseDouyinAweme,
++   assertCommentLimit,
+
+### src/validate/hot.js  [code]
+- function formatMessage(result) {
+-   let message = `**抖音最新热榜**\n`;
+-   message += "### 🏆 榜单前五名\n";
+-   result.slice(0, 5).forEach((item, index) => {
+-     message += `${index + 1}. **${item.word}** `;
+-     message += `🔥 ${item.hot_value}热度 `;
+-     message += `🔍 ${item.view_count}搜索\n`;
+-   });
+-   });
+-   message += "\n---\n\n";
+-   message += "### 📝 详细列表\n";
+-   message += "-".repeat(35) + "\n\n";
+-   result.forEach((item) => {
+-     message += `${item.word} 🔥 ${item.hot_value} 热度 🔍 ${item.view_count} 搜索 ⏰ ${item.event_time_format} 上榜 \n`;
+-   message += "-".repeat(35) + "\n";
+-   return message;
+- }
+- module.exports = { formatMessage };
+
+### src/validate/keyword.js  [code]
+-   }
+-   }
+-   }
+-     utils.printError(
+-     );
+-  * 清洗搜索关键词，移除非法字符
+-  * @returns {string} - 清洗后的搜索关键词
+- function cleanKeyword(keyword) {
+-  * 格式化并验证搜索选项
+-  * @returns {[number, number, number, number]} 格式化后的选项数组
+- function optionFormat(sort, time, duration, content, limit) {
+-   const num = (v, def) => {
+-     const n = Number(v);
+-     return Number.isFinite(n) ? n : def;
+-   };
+-   sort = num(sort, 0);
+-   time = num(time, 0);
+-   duration = num(duration, 0);
+-   content = num(content, 0);
+-   limit = num(limit, 10);
+-   if (sort !== 0 && sort !== 1 && sort !== 2) {
+-     utils.printError(`排序依据 ${sort} 无效, 请使用 0, 1, 2。 默认值为 0`);
+-     sort = 0;
+-   if (time !== 0 && time !== 1 && time !== 7 && time !== 180) {
+-     utils.printError(`发布时间 ${time} 无效, 请使用 0, 1, 7, 180。 默认值为 0`);
+-     time = 0;
+-   if (duration !== 0 && duration !== 1 && duration !== 2 && duration !== 3) {
+-       `视频时长 ${duration} 无效, 请使用 0, 1, 2, 3。 默认值为 0`,
+-     duration = 0;
+-   if (content !== 0 && content !== 1 && content !== 2) {
+-     utils.printError(`内容类型 ${content} 无效, 请使用 0, 1, 2。 默认值为 0`);
+-     content = 0;
+-   if (limit < 1 || limit > 10000) {
+-     utils.printError(`搜索数量 ${limit} 无效, 请使用 1-10000 默认值为 10`);
+-     limit = 10;
+-   cleanKeyword,
+-   optionFormat,
++ }
++ }
++  * 整理关键词的空白：去掉首尾空白，连续空白合并为一个空格。
++  * @returns {string} - 整理后的关键词
++ function normalizeKeyword(keyword) {
++ function assertChoice(value, allowed, label) {
++   const n = Number(value);
++   const n = Number(value);
++   if (!allowed.includes(n)) {
++     throw new Error(`${label} ${value} 无效, 允许值: ${allowed.join(", ")}`);
++   return n;
++   return n;
++ function assertIntegerRange(value, min, max, label) {
++   if (!Number.isInteger(n) || n < min || n > max) {
++     throw new Error(`${label} ${value} 无效, 允许 ${min}-${max} 的整数`);
++  * 校验搜索选项。未传入的参数由命令行解析器填入默认值。
++  * 显式给出的非法值直接失败，不改写成默认值。
++  * @returns {[number, number, number, number, number]} 校验后的选项
++ function assertSearchOptions(sort, time, duration, content, limit) {
++   sort = assertChoice(sort, [0, 1, 2], "排序依据 sort");
++   time = assertChoice(time, [0, 1, 7, 180], "发布时间 time");
++   duration = assertChoice(duration, [0, 1, 2, 3], "视频时长 duration");
++   content = assertChoice(content, [0, 1, 2], "内容类型 content");
++   limit = assertIntegerRange(limit, 1, 10000, "搜索数量 limit");
++   normalizeKeyword,
++   assertSearchOptions,
+
+### src/validate/post.js  [code]
+- const utils = require("../utils/utils");
+- const DOUYIN_URL_RE =
+-   /(?:https?:\/\/)?(?:www\.|v\.)?(?:douyin\.com|iesdouyin\.com)\/[^\s"'<>`\u4e00-\u9fff，。！？、；：（）【】]+/i;
+- function extractDouyinUrl(raw) {
+-   if (typeof raw !== "string") return null;
+-   const m = raw.match(DOUYIN_URL_RE);
+-   if (!m) return null;
+-   let url = m[0];
+-   url = url.split("?")[0].split("#")[0];
+-   url = url.replace(/[\/.,;:!?"'，。！？；：、）】》]+$/g, "");
+-   return url || null;
+- }
+- function douyinUserUrl(url) {
+-   if (!/^MS4wLj/.test(s) && s.length < 20) {
+- function optionFormat(limit) {
+-   limit = Number(limit);
+-   if (!Number.isFinite(limit)) limit = 10;
+-   if (limit < 0 || limit > 10000) {
+-     utils.printError("获取的作品数量必须在0-10000之间");
+-     limit = 10;
+-   return limit;
+-   douyinUserUrl,
+-   optionFormat,
++ const { extractDouyinUrl } = require("./url");
++ function parseDouyinUser(url) {
++   if (!/^MS4wLjA/.test(s)) {
++ function assertPostLimit(limit) {
++   const n = Number(limit);
++   if (!Number.isInteger(n) || n < 0 || n > 10000) {
++     throw new Error(`作品数量 limit ${limit} 无效, 允许 0-10000 的整数`);
++   return n;
++   parseDouyinUser,
++   assertPostLimit,
+
+### src/validate/url.js  [code]
++ const DOUYIN_URL_RE =
++   /(?:https?:\/\/)?(?:www\.|v\.)?(?:douyin\.com|iesdouyin\.com)\/[^\s"'<>`\u4e00-\u9fff，。！？、；：（）【】]+/i;
++ function extractDouyinUrl(raw) {
++   if (typeof raw !== "string") return null;
++   const m = raw.match(DOUYIN_URL_RE);
++   if (!m) return null;
++   let url = m[0];
++   url = url.split("?")[0].split("#")[0];
++   url = url.replace(/[\/.,;:!?"'，。！？；：、）】》]+$/g, "");
++   return url || null;
++ }
++ module.exports = {
++   extractDouyinUrl,
++ };

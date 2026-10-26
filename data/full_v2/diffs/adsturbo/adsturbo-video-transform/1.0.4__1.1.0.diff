@@ -1,0 +1,183 @@
+adsturbo/adsturbo-video-transform  1.0.4 -> 1.1.0
+change_type: instructions+docs   changelog: Bilingual (English + Chinese) skill body and description.
+
+### SKILL.md  [instructions]
++ ---
++ # AdsTurbo Video Transform
++ Replace an element in a video: the person, the motion, or the language.
++ ## When to use this skill
++ Use it when the user says "swap the character", "swap the person", "face swap", "translate the video", "translate to English", "motion control", or "make this photo move".
++ For pure quality, watermark, or subtitle issues, use `adsturbo-video-enhance` instead — that's cleanup, this is content transformation.
++ ## Prerequisites
++ - Python 3.8+, `pip install -r scripts/requirements.txt`
++ - Environment variable `ADSTURBO_API_KEY` (obtain at https://www.adsturbo.ai)
++ - Optional `ADSTURBO_BASE_URL`, defaults to `https://adsturbo.ai/klian/novartapi`
++ ## Choosing a command
++ ```
++ ```
++ ```
++ ```
++ What does the user want to replace?
++ ├─ The on-screen person (keep the motion/scene) → character-swap
++ ├─ Make a still portrait perform a reference motion → motion-control
++ └─ The language (re-dub with lip sync)            → translate
++ ```bash
++ ```bash
++ python3 scripts/video_transform.py character-swap \
++   --video-url https://.../original.mp4 --image-url https://.../new-person.jpg
++ python3 scripts/video_transform.py motion-control \
++   --video-url https://.../dance.mp4 --image-url https://.../portrait.jpg
++ python3 scripts/video_transform.py translate \
++   --video-url https://.../clip.mp4 --target-lang en
++ `character-swap` and `motion-control` take similar-looking parameters with opposite meanings — don't mix them up:
++ | | Video provides | Image provides |
++ |---|---|---|
++ | `character-swap` | Scene and footage | The new person |
++ | `motion-control` | The motion | The portrait to be driven |
++ Full parameter reference: [references/video_transform.md](references/video_transform.md).
++ ## Hard constraint: assets must be public URLs
++ `--video-url` and `--image-url` **do not accept local file paths**:
++ python3 scripts/upload.py file ./clip.mp4
++ python3 scripts/upload.py image ./person.jpg
++ You can also chain a previous task's output via `--workspace-id`. See [references/upload.md](references/upload.md) for details.
++ ## Handling async tasks
++ Everything is async; by default the script submits and then auto-polls until the result is ready.
++ - On timeout: run `query --workspace-id <id>` to keep waiting — **do not resubmit**. The task is still running, and resubmitting will double-charge credits.
++ - To submit without waiting: use `--no-wait`.
++ See [references/work.md](references/work.md) for details.
++ ## When replying to the user
++ - Give the video link directly — don't mention script names, command lines, JSON, or exit codes
++ - After submitting, state an estimated duration: character swap and motion control take 3-5 minutes, translation takes 5-10 minutes
++ - For character swap, if the source has multiple shots or the same person changing outfits, later shots may not swap cleanly — in that case, suggest the user split the video into single shots and process them separately; this works better than rerunning the whole clip
++ - When the user says "translate the video", confirm whether they want re-dubbing (this skill) or just adding foreign-language subtitles (`subtitle` in `adsturbo-video-enhance`)
++ ## Capability boundaries
++ | What the user wants | Use |
++ |---|---|
++ | Remove watermark / 4K / add subtitles | `adsturbo-video-enhance` |
++ | Generate a new video | `adsturbo-video-generation` |
++ | Replicate a reference video | `adsturbo-ad-clone` |
++ | Digital human voiceover / lip sync | `adsturbo-digital-human` |
++ | Swap a character in an image | `adsturbo-image` |
+
+### references/upload.md  [docs]
++ # Upload
++ Script: `scripts/upload.py`
++ ## Why you must upload first, every time
++ All of AdsTurbo's generation endpoints accept asset parameters only as **publicly accessible URLs** — they do not accept local file paths or base64. If the user provides a local file, it must go through this step to become a URL first.
++ This is the most common pitfall: passing `./photo.jpg` directly into `--image-url` will always fail.
++ ## Three commands
++ ```bash
++ ```bash
++ python3 scripts/upload.py image ./portrait.jpg     # image
++ python3 scripts/upload.py audio ./voice.mp3        # audio, no transcoding
++ python3 scripts/upload.py file  ./clip.mp4         # video and any other file
++ ```
++ ```
++ The response body contains the uploaded URL — use it directly as the asset parameter for the next command.
++ | Command | Purpose | Typical downstream use |
++ |---|---|---|
++ | `image` | Portraits, product photos, reference images, first/last frames, masks | `--photo-url` `--image-url` `--start-frame` `--reference-images` `--mask-url` |
++ | `audio` | Voiceovers, voice-cloning samples | `--audio-url` `--voice-audio-url` `--said-url` |
++ | `file` | Video assets | `--video-url` `--reference-videos` |
++ Use `audio` rather than `file` for audio — `audio` stores the file as-is without transcoding, preserving the audio quality needed for voice cloning.
++ ## If it's already a URL, don't upload it
++ If the asset the user provides is already a public URL (e.g., a product page image or a CDN-hosted video), use it directly — don't download it and upload it again.
++ ## Typical chaining
++ # Local photo + local recording -> a custom digital human voiceover
++ PHOTO=$(python3 scripts/upload.py image ./me.jpg)
++ VOICE=$(python3 scripts/upload.py audio ./sample.mp3)
++ # Extract the url field from the returned JSON and pass it into the next step
++ python3 scripts/digital_human.py persona-create --photo-url <url> --voice-audio-url <url>
++ ## Limitations
++ - Uses `multipart/form-data`; authentication is the same as other endpoints (`Authorization: Bearer <API Key>`)
++ - Large file uploads are slow; set the client timeout to 300 seconds
++ - A missing file errors out immediately, without sending an invalid request
++ ---
+
+### references/video_transform.md  [docs]
++ # Video Transform
++ Script: `scripts/video_transform.py`
++ Changes some element in a video. If you just want better quality or watermark removal, that's a different domain — see `adsturbo-video-enhance`.
++ ## character-swap — replace the on-screen person
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ python3 scripts/video_transform.py character-swap \
++   --video-url https://.../original.mp4 \
++   --image-url https://.../new-person.jpg
++ ```
++ ```
++ ```
++ ```
++ ```
++ Replaces the person in the video with the person in `--image-url`, while keeping the original actions, camera work, and scene. Good for reusing one piece of footage with different spokespeople across campaigns.
++ For multi-shot videos, the service splits the video into shots, processes each, and stitches them back together. Recognition gets harder when the same person appears in different outfits across shots — if you find later shots aren't swapped cleanly, splitting the video into single-shot clips and processing them separately tends to be more reliable.
++ ## motion-control — drive a portrait with a reference motion
++ python3 scripts/video_transform.py motion-control \
++   --video-url https://.../dance.mp4 \
++   --image-url https://.../portrait.jpg \
++   --keep-original-sound
++ The difference from `character-swap` is in what each input provides:
++ | | Role of the reference video | Role of the image |
++ |---|---|---|
++ | `character-swap` | Provides the **footage and scene** | Provides the **new person** |
++ | `motion-control` | Provides the **motion** | Provides the **portrait being driven** |
++ Optional flags: `--prompt` to add a scene description, `--negative-prompt` to exclude unwanted elements, `--mode` to control the mode, `--character-orientation` for the character's orientation, `--keep-original-sound` to keep the original audio.
++ ## translate — video translation
++ python3 scripts/video_transform.py translate \
++   --video-url https://.../clip.mp4 --target-lang en
++ Re-dubs the audio into the target language and aligns lip movement — this is not subtitling. If you just need subtitles, use `subtitle` from `adsturbo-video-enhance`.
++ `--target-lang` takes a language code, e.g. `en` / `ja` / `es` / `ko`.
++ ## Chaining with workspace_id
++ All three commands support `--workspace-id` in place of `--video-url`, letting you consume the output of a previous task directly:
++ # Clone an ad -> swap in your own presenter -> translate to English
++ python3 scripts/video_transform.py character-swap --workspace-id ws_abc --image-url https://.../ceo.jpg --no-wait
++ python3 scripts/video_transform.py translate --workspace-id ws_def --target-lang en
++ ## Assets must be public URLs
++ python3 scripts/upload.py file ./clip.mp4
++ python3 scripts/upload.py image ./person.jpg
++ ## Time estimates
++ | Operation | Estimated time |
++ |---|---|
++ | `character-swap` | 3–5 minutes |
++ | `motion-control` | 3–5 minutes |
++ | `translate` | 5–10 minutes |
++ Duration scales with video length. Polling happens automatically by default; if it times out, use `query --workspace-id <id>` to keep waiting — the task itself won't be lost.
++ ---
+
+### references/work.md  [docs]
++ # Work Status
++ Script: `scripts/work.py`
++ ## Lifecycle of an async task
++ Except for a few synchronous endpoints (image `create`, digital human `say`, ad clone `analyze`), all other capabilities are asynchronous:
++ ```
++ ```
++ ```
++ ```
++ submit → get workspace_id → poll status → fetch result_url
++ `status` has four possible values: `pending` (queued), `processing` (generating), `completed` (done), `failed` (failed).
++ ## Three commands
++ ```bash
++ ```bash
++ # Check once
++ python3 scripts/work.py status --workspace-id ws_abc123
++ # Check in batch
++ python3 scripts/work.py batch --workspace-ids ws_a ws_b ws_c
++ # Block until the result is ready
++ python3 scripts/work.py wait --workspace-id ws_abc123 --timeout 1200
++ ## When you need it
++ Each capability script **automatically polls until a result is available** after submission by default, so under normal circumstances you won't need `work.py`. It's only needed in these three cases:
++ 1. You used `--no-wait` to submit without waiting, and now want to come back and fetch the result
++ 2. You submitted many tasks in batch and want to check all of their progress at once (`batch`)
++ 3. Polling timed out — use the corresponding script's `query --workspace-id <id>`, or `wait` here
++ ## A timeout does not mean failure
++ A polling timeout just means the client stopped waiting — **the task is still running on the server**. Do not resubmit it (this would incur duplicate charges); keep waiting on it using the `workspace_id`:
++ python3 scripts/work.py wait --workspace-id ws_abc123 --timeout 1800
++ Only when `status` is explicitly `failed` is it a genuine failure — only then should you consider resubmitting.
++ ## Idempotency key
++ Most submission endpoints support `--idempotency-key`. When retrying after network jitter, pass the same key — the server will only create one task and won't charge twice. When submitting in batch, it's good practice to give each task a stable key.
++ ## callback_id
++ `--callback-id` is **the caller's own tracking ID** — it is echoed back as-is, making it easy to match the result against your own business order number. It is not a webhook address — the callback URL is configured in the AdsTurbo console, not passed in the request.
++ ---

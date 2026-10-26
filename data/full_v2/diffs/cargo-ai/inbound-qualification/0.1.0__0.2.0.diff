@@ -1,0 +1,443 @@
+cargo-ai/inbound-qualification  0.1.0 -> 0.2.0
+change_type: instructions+docs+code   changelog: Inbound qualification 0.2.0 adds automated research and tiering for inbound leads.  - Added an optional play to tier and summarise each qualified inbound contact using agent research. - Play runs asynchronously after the initial form response, never blocking the visitor’s experience. - Updated compatibility to require @cargo-ai/form-sdk 1.0.3 or later. - Improved documentation to reflect the research and tiering flow. - New agents, connectors, and settings files added; obsolete skill-card.md rem
+
+### README.md  [docs]
+- 3. **Slack channel**: `slackChannelId`.
++ later, for each contact marked qualified (play research_qualified_leads, ships disabled)
++   -> agent: ICP + tiering rubric from context, web research -> tier, brief
++   -> inbound_tier / inbound_brief / inbound_rationale / inbound_researched_at on the contact
++   -> one note to the same Slack channel
++ **Research after the answer.** The deep research is a separate play on the contact row, never
++ part of the form's workflow, so the visitor never waits on a model call. It ships disabled and
++ runs once per qualified contact.
++ 3. **Slack channel**: `slackChannelId` in `infra/settings.ts`, shared by the form and the research
++    note.
++ | `infra/plays/research-qualified-leads.ts` | The deep-research play, shipped disabled         |
++ | `infra/agents/lead-researcher.ts`  | The research agent: tier and brief, as JSON             |
++ | `infra/settings.ts`                | The Slack channel both post to                          |
++ | `infra/connectors/anthropic.ts`    | The model the research agent runs on                    |
+
+### SKILL.md  [instructions]
+- description: 'Turn the website''s demo form into qualified inbound: each submission runs a Cargo tool that identifies the company from the work email, qualifies it against the ICP, lands the account and contact in the shared GTM models, posts it to Slack, and answers on the page with a booking link or a thank-you. Triggers: "add a demo form to our website", "handle inbound leads", "route website form submissions", "qualify inbound demo requests", "contact form that books meetings", "inbound lead flow", "Cargo public form". Cargo CDK, defineTool, publicForm, @cargo-ai/form-sdk, gtm_accounts, gtm_contacts. Skip when: you want to know which companies visit without them filling anything in, which is visitor-identification; the site itself does not exist yet, which is website-building first; or the leads come from a list rather than the website, which is find-b2b-leads.'
+- version: "0.1.0"
+- compatibility: "Requires @cargo-ai/cli with @cargo-ai/cdk 1.0.98 or later (token-valued app env), @cargo-ai/form-sdk 1.0.2 or later in the website app, a website on Cargo Hosting (website-building), Node.js 22.18 or later, and a Cargo workspace."
+- Four pieces make it:
+- | Slack channel (`slackChannelId`)          | asked   | the channel's id, resolved through the Slack connector's autocomplete                           | Every submission is posted there and only there.                                                          |
+- the Slack post add nothing.
+- the site without filling the form in), `score-leads` (inbound contacts scored against the ICP before
+- a rep calls), and `agentic-engagement` (a follow-up to a contact who ticked the consent box).
++ description: 'Turn the website''s demo form into qualified inbound: each submission runs a Cargo tool that identifies the company by work email, qualifies it against the ICP, lands account and contact in the shared GTM models, posts it to Slack, and answers on the page with a booking link or a thank-you; an optional play then tiers and summarises each qualified contact. Triggers: "add a demo form to our website", "handle inbound leads", "route website form submissions", "qualify inbound demo requests", "contact form that books meetings", "inbound lead flow", "Cargo public form", "tier each demo request and summarise it". Cargo CDK, defineTool, publicForm, @cargo-ai/form-sdk, definePlay, gtm_accounts, gtm_contacts. Skip when: you want visiting companies that fill nothing in, which is visitor-identification; no site yet, which is website-building first; or leads from a list, which is find-b2b-leads.'
++ version: "0.2.0"
++ compatibility: "Requires @cargo-ai/cli with @cargo-ai/cdk 1.0.98 or later (token-valued app env), @cargo-ai/form-sdk 1.0.3 or later in the website app, a website on Cargo Hosting (website-building), Node.js 22.18 or later, and a Cargo workspace."
++ Five pieces make it:
++ 5. **Deep research, after the page has answered.** A play on `gtm_contacts`, shipped disabled,
++    runs once for each contact the form marked `qualified`: an agent reads the ICP and the tiering
++    rubric from the workspace context, researches the company and the person's role with web
++    search, and returns a tier and a three-sentence brief. The play writes `inbound_tier`,
++    `inbound_brief`, `inbound_rationale` and `inbound_researched_at` onto the contact and posts a
++    short note to the same channel. It never runs on the submission path, so the visitor never
++    waits on it.
++ play research_qualified_leads (minutes later, once enabled)
++   gtm_contacts           ada@northwind.example    inbound_tier A, inbound_brief written
++   #inbound               ":mag: Ada Lovelace: tier A. Head of RevOps at Northwind, ..."
++ | Slack channel (`infra/settings.ts`)      | asked   | the channel's id, resolved through the Slack connector's autocomplete                           | Every submission and every research note is posted there and only there.                                  |
++ | tiering rubric (deep research)            | derived | the ICP and the account tiering rubric in `context/` (account-scoring's, when installed)        | What the research agent tiers against. With no rubric it tiers on the ICP alone and says so.              |
++ | enable the research play                  | asked   | after a pilot: run `research_qualified_leads` by hand on one qualified contact, read the note   | Each run pays for an agent call. It ships disabled, and `added` does not backfill while it was off.       |
++ | `no-deep-research`      | The form's rules and the Slack post are enough            | Delete `infra/plays/research-qualified-leads.ts`, `infra/agents/lead-researcher.ts` and the Anthropic connector                              | No tier or brief on the contact; the team researches by hand.                              |
++ | `research-every-submitter` | Not-qualified leads are worth a look too               | Drop the `inbound_status` condition from the research play's filter                                                                         | An agent call per submission, including the ones the rules already turned away.            |
++ - **Research never runs on the submission path.** (`infra/plays/research-qualified-leads.ts`) The
++   form's workflow calls no agent; the research is a separate play on the contact row. Inside the
++   form's workflow it would hold the page answer for as long as the research takes, and a slow
++   search would show the visitor a spinner instead of a booking link.
++ - **Workflow bodies stay plain.** Calls, writes and template strings. A body is parsed from source,
++   and optional chaining (`?.`) passed check and plan, then failed a live run with
++   `OptionalMemberExpression … got "MemberExpression"`. The contract rejects `?.` and `??` in the
++   research play's compiled expressions.
++ - the research play, run by hand on one qualified contact, wrote `inbound_tier`, `inbound_brief`,
++   `inbound_rationale` and `inbound_researched_at` onto it and posted one note; a second manual run
++   on the same contact did nothing
++ - every fact in the brief traces to the record or a listed source
++ the Slack post add nothing. The deep research, once enabled, adds one agent run per qualified
++ contact (LLM tokens on the Anthropic connector plus up to four web searches); a not-qualified or
++ personal-email submission never reaches it.
++ the site without filling the form in), `account-scoring` (its tiering rubric is the one the research
++ tiers against, so an inbound lead and a sourced account are tiered alike), `score-leads` (inbound
++ contacts scored against the ICP before a rep calls), and `agentic-engagement` (a follow-up to a contact who ticked the consent box).
+
+### evals/acceptance.md  [docs]
++ ## Deep research
++ - `research_qualified_leads` is deployed disabled. Run by hand on one contact with
++   `inbound_status` `qualified`, it writes `inbound_tier`, `inbound_brief`, `inbound_rationale` and
++   `inbound_researched_at` onto that contact and posts one note to the channel; the run ends in
++   success.
++ - A second manual run on the same contact creates no run: `inbound_researched_at` is set.
++ - A `not_qualified` contact is never picked up.
++ - Every fact in the brief traces to the contact, the company row or a listed source.
+
+### evals/contract.mjs  [code]
++ );
++ );
++ );
++ );
++ );
++ );
++ );
++ );
++ );
++ );
++ );
++ );
++   assert.doesNotMatch(
++   );
++   );
++ assert.equal(
++ assert.equal(
++ assert.equal(
++ assert.equal(
++ assert.equal(
++ assert.match(
++ assert.match(
++ assert.deepEqual(
++ assert.deepEqual(
++ assert.deepEqual(
++ ].map((match) => JSON.parse(`"${match[1]}"`));
++   const code = expression.replace(/nodes\.[A-Za-z0-9_]+/g, "nodes");
++   assert.doesNotThrow(
++     () => new Function("nodes", `return (${code});`),
++     `compiled expression is not valid JavaScript: ${expression.slice(0, 120)}`,
++ }
++ // The deep research: after the page has answered, never on the submission
++ // path. The form's workflow calls no agent, so the page answer pays for no
++ // model call and waits on no research.
++   tool.spec.nodes.filter((node) => node.kind === "agent").length,
++   0,
++   0,
++   "the form's workflow must not call an agent: deep research runs in the play, after the page answers",
++ const research = byId("play:research_qualified_leads");
++ assert.ok(research, "definePlay(research_qualified_leads) must exist");
++   research.spec.isEnabled,
++   false,
++   "the research play ships disabled: enabling it is the last yes after a pilot",
++   research.spec.changeKinds,
++   ["added"],
++   "the research play runs on rows entering the filter, not the whole table",
++   research.spec.modelUuid?.resourceId,
++   contacts.id,
++   contacts.id,
++   "the research play runs on gtm_contacts",
++ const researchFilter = JSON.stringify(research.spec.filter);
++   researchFilter,
++   researchFilter,
++   /"columnSlug":"custom__inbound_status","operator":"is","values":\["qualified"\]/,
++   "only contacts the form qualified are researched",
++   /"columnSlug":"custom__inbound_researched_at","operator":"isNull"/,
++   "a contact already researched is never researched twice",
++ const researchActions = research.spec.nodes.filter(
++   (node) => node.actionSlug !== undefined && !flow.has(node.actionSlug),
++   researchActions.map((node) => node.actionSlug).sort(),
++   ["modelCustomColumn", "postMessage"],
++   "the research play writes the contact's columns and posts one note, nothing else",
++ const researchWrite = researchActions.find(
++   (node) => node.actionSlug === "modelCustomColumn",
++   researchWrite.config.modelUuid?.resourceId,
++   "the research lands on gtm_contacts",
++   researchWrite.config.mappings.map((m) => m.columnSlug).sort(),
++   [
++     "inbound_brief",
++     "inbound_rationale",
++     "inbound_researched_at",
++     "inbound_tier",
++   ],
++   "the research writes exactly its four columns, by bare slug",
++ const researcher = byId("agent:inbound_lead_researcher");
++ assert.ok(researcher, "defineAgent(inbound_lead_researcher) must exist");
++   (researcher.spec.models ?? []).length +
++     (researcher.spec.connectorActions ?? []).length,
++   "the researcher is a judge: no model and no connector action in reach, the play persists",
++ // The play's body is parsed like the tool's, and it failed a live run on a
++ // construct check and plan accept (optional chaining). Every compiled
++ // expression is valid JavaScript and uses none of `?.`, `??`.
++ const researchExpressions = [
++   ...JSON.stringify(research.spec.nodes).matchAll(/\{\{(.*?)\}\}/g),
++ for (const expression of researchExpressions) {
++     expression,
++     /\?\.|\?\?/,
++     `no optional chaining or nullish fallback in a workflow body: ${expression.slice(0, 120)}`,
+
+### infra/agents/lead-researcher.ts  [code]
++ import { defineAgent } from "@cargo-ai/cdk";
++ import { anthropic } from "../connectors/anthropic";
++ import { agentsFolder } from "../folders";
++ // The deep research on a qualified lead: one brief and one tier, after the
++ // page has answered. The form's workflow stays rules-only and fast; this agent
++ // runs later, from the research play, and never on the submission path.
++ //
++ // A judge, not a writer. No Slack, no writable model: it hands back JSON and
++ // the play decides what lands where. `context` (read-only) is the ICP and the
++ // tiering rubric; `webSearch` is the research, capped by `maxSteps` and the
++ // prompt's budget. The person is researched only in their professional role
++ // at the company they named: no personal email, phone or address lookup.
++ export const leadResearcher = defineAgent("inbound_lead_researcher", {
++   name: "Inbound lead researcher",
++   description:
++     "Researches a qualified inbound lead and their company, and tiers the company against the ICP and the tiering rubric.",
++   color: "yellow",
++   connector: anthropic,
++   languageModel: "claude-sonnet-5", // PLACEHOLDER: your model of choice
++   maxSteps: 10,
++   systemPrompt: [
++     "You brief the team on a qualified inbound lead who just asked for a demo. You are handed the contact record and the company the form identified; you research both and tier the company.",
++     "Read the ICP and the account tiering rubric from the workspace context first. They are the rubric; nothing in this prompt overrides them. If the context has no tiering rubric, tier against the ICP alone and say so in the rationale.",
++     "Research with at most four web searches: what the company does and for whom, one thing it publicly says is hard or is changing (a launch, a hire, a funding round, a stated priority), and the person's role there. Prefer the company's own site; record every page you rely on.",
++     "Never invent a fact, a title or a URL. An absent fact is absent: say so and tier on what is known.",
++     "A disqualifier in the ICP ends the evaluation at 'disqualified'. A competitor, a student, a job seeker or a vendor pitching us is 'disqualified', and the rationale says which.",
++     "Return the judgment only, in the exact JSON shape requested. The brief is at most three sentences the team can read in ten seconds. The sources field lists every page you relied on, separated by ' · '.",
++   ].join(" "),
++   output: {
++     type: "jsonSchema",
++     jsonSchema: {
++       type: "object",
++       properties: {
++         tier: {
++           type: "string",
++           type: "string",
++           type: "string",
++           type: "string",
++           enum: ["A", "B", "C", "disqualified"],
++           description: "The tier from the tiering rubric.",
++         },
++         },
++         },
++         },
++         rationale: {
++           description:
++           description:
++           description:
++             "Two sentences naming the rubric lines that decided the tier and the evidence behind them.",
++         brief: {
++             "At most three sentences: who they are, what the company does, why they might be talking to us now.",
++         // One string, not an array: the play puts it in a message as is.
++         sources: {
++             "Every page the brief or the tier relied on, separated by ' · '.",
++       },
++       required: ["tier", "rationale", "brief", "sources"],
++       additionalProperties: false,
++     },
++   },
++   },
++   capabilities: [
++     "webSearch",
++     { slug: "context", config: { isReadOnly: true } },
++   ],
++   // The QA gate. A tier with no grounded rationale, or a brief carrying a fact
++   // no source supports, fails.
++   evaluator: {
++     rubric:
++       "Did it tier against the rubric in the workspace context, with a tier the rubric defines and a rationale naming the deciding lines? Is every fact in the brief supported by the record or a listed source?",
++     threshold: 0.8,
++   folder: agentsFolder,
++ });
+
+### infra/connectors/anthropic.ts  [code]
++ import { defineConnector } from "@cargo-ai/cdk";
++ // The model the deep-research agent runs on. `default: true` binds the
++ // workspace's authorized Anthropic connector rather than creating one, so the
++ // pipeline deploys with no key of its own. The form's tool does not use it:
++ // the page answer pays for no model call.
++ export const anthropic = defineConnector("anthropic", {
++   integration: "anthropic",
++   default: true,
++ });
+
+### infra/folders/index.ts  [code]
+- // Folders are per-kind: one tool, and the two shared models when this is the
+- // first pipeline in the project to declare them.
++ // Folders are per-kind: one tool, the deep-research agent and play, and the
++ // two shared models when this is the first pipeline in the project to declare
++ // them.
++   name: "Inbound qualification",
++   name: "Inbound qualification",
++ });
++ });
++ export const agentsFolder = defineFolder("inbound_qualification_agents", {
++   kind: "agent",
++ export const playsFolder = defineFolder("inbound_qualification_plays", {
++   kind: "play",
+
+### infra/models/gtm-contacts.ts  [code]
++     {
++     {
++     {
++     {
++       kind: "custom",
++       kind: "custom",
++       kind: "custom",
++       kind: "custom",
++       type: "string",
++       type: "string",
++       type: "string",
++       description:
++       description:
++       description:
++       description:
++     },
++     },
++     },
++     },
++     // Written by the deep-research play, after the page has answered.
++       slug: "inbound_tier",
++       label: "Inbound tier",
++         "A, B, C or disqualified, from the tiering rubric in the workspace context.",
++       slug: "inbound_brief",
++       label: "Inbound brief",
++         "At most three sentences: who they are, what the company does, why they might be talking to us now.",
++       slug: "inbound_rationale",
++       label: "Inbound rationale",
++         "The rubric lines that decided the tier, the evidence behind them, and the pages relied on.",
++       slug: "inbound_researched_at",
++       type: "date",
++       label: "Inbound researched at",
++         "When the deep research was written. Blank until then: the play's once-only key.",
+
+### infra/plays/research-qualified-leads.ts  [code]
++ import { definePlay, defineWorkflow } from "@cargo-ai/cdk";
++ import { z } from "zod";
++ import { leadResearcher } from "../agents/lead-researcher";
++ import { slack } from "../connectors/slack";
++ import { playsFolder } from "../folders";
++ import { gtmContacts } from "../models/gtm-contacts";
++ import { slackChannelId } from "../settings";
++ // One qualified inbound contact in, one brief and tier on the record and one
++ // Slack note out. It runs after the form's tool has answered the page, so the
++ // research never slows the visitor down.
++ //
++ //
++ //
++ // Keep this body to straight calls, writes and template strings. It is parsed
++ // from source, and constructs that typecheck and plan cleanly can still fail
++ // at runtime: optional chaining failed a live run with `OptionalMemberExpression
++ // … got "MemberExpression"`. No `?.`, no `??`, no `||` fallbacks, no indexing
++ // into an agent's answer; the contract checks the compiled expressions.
++ const researchLead = defineWorkflow(
++   "research_qualified_lead",
++   {
++     // `defineContact` columns plus the inbound ones the form wrote.
++     input: z.object({
++       id: z.string(),
++       account_id: z.string().optional(),
++       first_name: z.string().optional(),
++       last_name: z.string().optional(),
++       email: z.string().optional(),
++       title: z.string().optional(),
++       linkedin_url: z.string().optional(),
++     }),
++     output: z.object({ tier: z.string() }),
++     uses: { slack, leadResearcher },
++     // The body is parsed from source, not executed: the model handle and the
++     // channel constant it names are handed to the parser here.
++     imports: { gtmContacts, slackChannelId },
++   },
++   },
++   },
++   ({ input, uses, model }) => {
++     const verdict = uses.leadResearcher({
++       prompt: `Research and tier this qualified inbound lead. Contact: ${JSON.stringify(input)}. The company is the gtm_accounts row with id ${input.account_id}.`,
++     });
++     });
++     });
++     // The research and its stamp land on one node, so a contact is never
++     // marked researched without carrying the research. Bare slugs: the write
++     // path nests them under `custom` itself.
++     model.customColumn({
++       modelUuid: gtmContacts.uuid,
++       id: input.id,
++       mappings: [
++         { columnSlug: "inbound_tier", value: verdict.answer.tier },
++         { columnSlug: "inbound_brief", value: verdict.answer.brief },
++         {
++           columnSlug: "inbound_rationale",
++           value: `${verdict.answer.rationale} Sources: ${verdict.answer.sources}`,
++         },
++         { columnSlug: "inbound_researched_at", value: new Date() },
++       ],
++     uses.slack.postMessage({
++       channelId: slackChannelId,
++       format: "markdown",
++       disableUnfurling: true,
++       body: `:mag: *${input.first_name} ${input.last_name}* (${input.email}): tier *${verdict.answer.tier}*\n${verdict.answer.brief}\n_${verdict.answer.rationale}_\nSources: ${verdict.answer.sources}`,
++     return { tier: verdict.answer.tier };
++ );
++ // Researches each contact the form qualified, once.
++ // Who: `inbound_status` "qualified", the value the form's tool writes, so a
++ // not-qualified submitter or a contact loaded from elsewhere never pays for
++ // research. Once: `changeKinds: ["added"]` creates runs for rows entering the
++ // filter, and the blank `inbound_researched_at` is the second key, so a
++ // re-enable or a manual run never pays twice.
++ // Ships disabled. Enabling is the last yes after a pilot, and `added` does not
++ // backfill contacts that qualified while it was off: run it once by hand for
++ // those.
++ export const researchQualifiedLeads = definePlay("research_qualified_leads", {
++   description:
++     "Researches each contact the form qualified, writes a tier and a brief onto the record, and posts a note to Slack.",
++   folder: playsFolder,
++   model: gtmContacts,
++   workflow: researchLead,
++   filter: {
++     conjonction: "and",
++     groups: [
++       {
++         conjonction: "and",
++         conditions: [
++           {
++           {
++             kind: "string",
++             columnSlug: gtmContacts.columns.custom__inbound_status,
++             operator: "is",
++             values: ["qualified"],
++           },
++           },
++             kind: "date",
++             columnSlug: gtmContacts.columns.custom__inbound_researched_at,
++             operator: "isNull",
++         ],
++       },
++     ],
++   isEnabled: false,
++   runCreationRule: "noConcurrency",
++   changeKinds: ["added"],
++   schedule: { type: "cron", cron: "*/15 * * * *" },
++ });
+
+### infra/settings.ts  [code]
++ // PLACEHOLDER: the Slack channel every submission and every research note is
++ // posted to. A channel id (C…), not a name: names collide, and the
++ // connector's autocomplete resolves the id. One constant for the form's tool
++ // and the research play, so neither can post anywhere else.
++ export const slackChannelId = "PLACEHOLDER_SLACK_CHANNEL_ID";
+
+### infra/tools/inbound-form.ts  [code]
+- // PLACEHOLDER: the Slack channel every submission is posted to. A channel id
+- // (C…), not a name: names collide, and the connector's autocomplete resolves
+- // the id. Locked here so no submission can post anywhere else.
+- const slackChannelId = "PLACEHOLDER_SLACK_CHANNEL_ID";
++ import { slackChannelId } from "../settings";
+
+### references/form.md  [docs]
++ ## How long the page waits
++ The form submits in async mode: the API accepts the submission at once and the SDK polls the run.
++ A run usually takes well under 30 seconds, most of it the company lookup, but a slow lookup or a
++ busy queue can take minutes. `pollTimeoutMs: 30_000` in `components/inbound-form.tsx` is how long
++ the visitor waits for the booking link; after that they get the thank-you. The run still finishes,
++ so the account, the contact and the Slack post land late, never lost. Raise it only if a qualified
++ visitor missing the link on the page costs more than a longer wait.
+
+### site/components/inbound-form.tsx  [code]
+- // finishes. If polling gives up first, the visitor gets the thank-you.
+-         loadForm(toolUuid, { render: "headless", mode: "async" }),
++ // finishes. After 30 seconds the SDK stops waiting and the visitor gets the
++ // thank-you; the run still finishes, so the record and the Slack post land.
++         loadForm(toolUuid, {
++           render: "headless",
++           mode: "async",
++           pollTimeoutMs: 30_000,
++         }),

@@ -1,0 +1,1700 @@
+efremidze/swift-architecture-skill  0.3.0 -> 0.3.1
+change_type: instructions+docs   changelog: Version 0.3.1  - Added dedicated reference guides for Clean Architecture, MVI, MVVM, Reactive, TCA, VIPER, and an architecture selection guide. - Improved handling for explicit architecture requests: perform a fit check, explain mismatches if any, and suggest the best-fit alternative. - For mismatch cases, proceed with a risk-mitigated plan if the user insists, highlighting risks up front. - Added output requirements to include fit results and rationale when an architecture is specified. - Clari
+
+### SKILL.md  [instructions]
+- If the user explicitly names an architecture, use it. Otherwise, load `references/selection-guide.md` and infer the best fit from stated constraints (state complexity, team familiarity, testing goals, effect orchestration needs, and framework preferences). Explain the recommendation briefly.
++ If the user explicitly names an architecture, treat it as the initial candidate and run a fit check before committing:
++ - validate against UI stack fit (SwiftUI/UIKit/mixed), state complexity, effect orchestration needs, team familiarity, and existing codebase conventions
++ - if it fits, proceed with the requested architecture
++ - if it mismatches key constraints, explicitly explain the mismatch and recommend the closest-fit alternative from `references/selection-guide.md`
++ - if the user still insists on a mismatched architecture, proceed with a risk-mitigated plan and state the risks up front
++ When no architecture is named, load `references/selection-guide.md` and infer the best fit from stated constraints (state complexity, team familiarity, testing goals, effect orchestration needs, and framework preferences). Explain the recommendation briefly.
++ - For explicit architecture requests, include a short fit result (`fit` or `mismatch`) with 1-2 reasons.
++ - For mismatch cases, include one closest-fit alternative and why it better matches the stated constraints.
+
+### references/clean-architecture.md  [docs]
++ # Clean Architecture Playbook (Swift + SwiftUI/UIKit)
++ Use this reference when a Swift codebase needs strict layer boundaries and use-case-driven business logic.
++ ## Core Dependency Rule
++ Dependencies point inward:
++ ```text
++ ```text
++ Frameworks / UI
++     ->
++     ->
++     ->
++ Interface Adapters
++ Use Cases
++ Entities (Domain)
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ Rules:
++ Rules:
++ Rules:
++ Rules:
++ Rules:
++ Rules:
++ Rules:
++ - inner layers must not import or depend on outer layers
++ - domain remains pure Swift
++ - frameworks are implementation details and replaceable
++ ## Canonical Layer Layout
++ Domain/
++   Entities/
++   UseCases/
++ Data/
++   Repositories/
++   API/
++   Persistence/
++ Presentation/
++   Features/
++ App/
++ Guidance:
++ - keep entities and use-case protocols in `Domain`
++ - keep repository implementations and external adapters in `Data`
++ - keep views/view models/controllers in `Presentation`
++ - keep DI composition root and app bootstrap in `App`
++ ## Entities
++ Entities model core business concepts and rules.
++ ```swift
++ ```swift
++ ```swift
++ ```swift
++ ```swift
++ ```swift
++ ```swift
++ struct User: Equatable {
++     let id: UUID
++     let name: String
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ - no SwiftUI/UIKit imports
++ - no persistence or network behavior
++ - avoid framework-specific types unless unavoidable
++ ## Use Cases
++ Use cases orchestrate business actions through abstractions.
++ protocol LoadUserUseCase {
++     func execute(id: UUID) async throws -> User
++ final class LoadUser: LoadUserUseCase {
++     private let repository: UserRepository
++     init(repository: UserRepository) {
++         self.repository = repository
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     func execute(id: UUID) async throws -> User {
++         try await repository.fetch(id: id)
++ - one business responsibility per use case
++ - no UI details
++ - no direct framework usage unless abstracted
++ ## Repository Boundary
++ Define repository protocols in `Domain`; implement them in `Data`.
++ protocol UserRepository {
++     func fetch(id: UUID) async throws -> User
++ Data-layer implementations can coordinate:
++ - API clients
++ - local persistence
++ - mapping DTOs to domain entities
++ ## Dependency Injection Pattern
++ Compose live dependencies in the app or feature assembly layer.
++ enum UserFeatureAssembly {
++     static func makeLoadUserUseCase() -> LoadUserUseCase {
++         let repository = LiveUserRepository(api: .live)
++         return LoadUser(repository: repository)
++ - inject protocols into use cases and presentation
++ - avoid global singletons as hidden dependencies
++ ## DTO to Domain Mapping
++ Map external models to domain entities at the data-layer boundary, in mappers or repository implementations.
++ struct UserDTO: Decodable {
++     let id: String
++     let full_name: String
++     let created_at: String
++ enum UserMapper {
++     static func toDomain(_ dto: UserDTO) throws -> User {
++         guard let id = UUID(uuidString: dto.id) else {
++             throw MappingError.invalidID(dto.id)
++         }
++         }
++         return User(id: id, name: dto.full_name)
++ enum MappingError: Error {
++     case invalidID(String)
++ final class LiveUserRepository: UserRepository {
++     private let api: APIClient
++     init(api: APIClient) {
++         self.api = api
++     func fetch(id: UUID) async throws -> User {
++     func fetch(id: UUID) async throws -> User {
++         let dto = try await api.fetchUser(id: id)
++         return try UserMapper.toDomain(dto)
++ - never expose DTOs beyond the data layer
++ - test mappers independently for edge cases and invalid input
++ - keep mapping pure and side-effect-free
++ ## Concurrency and Cancellation
++ Use structured concurrency in use cases and let cancellation propagate through async calls.
++ final class LoadUserProfile: LoadUserProfileUseCase {
++     private let userRepo: UserRepository
++     private let postsRepo: PostsRepository
++     init(userRepo: UserRepository, postsRepo: PostsRepository) {
++         self.userRepo = userRepo
++         self.postsRepo = postsRepo
++     func execute(id: UUID) async throws -> UserProfile {
++         async let user = userRepo.fetch(id: id)
++         async let posts = postsRepo.fetchRecent(userID: id)
++         return try await UserProfile(user: user, posts: posts)
++ - prefer `async let` for concurrent independent fetches
++ - cancellation propagates automatically through `try await`
++ - use `Task.checkCancellation()` before expensive work if needed
++ - in presentation, cancel tasks on view disappearance or new request
++ ## Presentation Boundary
++ Presentation depends on use-case abstractions, not data implementations.
++ Expected flow:
++ - View triggers intent/event
++ - Presentation layer calls `UseCase`
++ - UseCase returns domain entities
++ - Presentation maps entities to view state
++ SwiftUI adaptation:
++ - use `@Observable`/`ObservableObject` ViewModels that expose view state
++ - trigger use cases from intent methods on the ViewModel
++ - keep SwiftUI views declarative and free of use-case/repository calls
++ UIKit adaptation:
++ - use Presenter/ViewModel objects owned by view controllers
++ - convert delegate/target-action events into presenter intents
++ - keep controllers responsible for rendering only; business coordination stays in presenter/use case layers
++ ## Anti-Patterns and Fixes
++ 1. God use case:
++ - Smell: single 500+ line use case handling many responsibilities.
++ - Fix: split by business capability and compose use cases.
++ 2. Presentation imports data layer:
++ - Smell: feature view model directly uses `LiveRepository` or API client.
++ - Fix: depend on use-case protocol only.
++ 3. Domain depends on frameworks:
++ - Smell: domain entities use UI/network/persistence frameworks.
++ - Fix: keep domain pure and move adapters outward.
++ 4. Repository leaks transport types:
++ - Smell: presentation receives DTO/network models.
++ - Fix: map external models to domain entities in data layer.
++ 5. Testing through real infrastructure:
++ - Smell: unit tests require network/db.
++ - Fix: test use cases with mocked/stub repositories.
++ ## Testing Strategy
++ Prioritize:
++ - use-case unit tests with repository stubs
++ - mapper tests (DTO <-> domain) in data layer
++ - presentation tests with mocked use cases
++ - avoid network in unit tests
++ - assert business behavior at use-case boundary
++ - keep async tests deterministic using controlled stubs
++ struct StubUserRepository: UserRepository {
++     var result: Result<User, Error>
++         try result.get()
++ @MainActor
++ final class LoadUserTests: XCTestCase {
++     func test_execute_returnsUser() async throws {
++         let expected = User(id: UUID(), name: "Alice")
++         let sut = LoadUser(repository: StubUserRepository(result: .success(expected)))
++         let user = try await sut.execute(id: expected.id)
++         XCTAssertEqual(user, expected)
++     func test_execute_propagatesFailure() async {
++         let sut = LoadUser(repository: StubUserRepository(result: .failure(TestError.notFound)))
++         do {
++             _ = try await sut.execute(id: UUID())
++             XCTFail("Expected error")
++         } catch {
++             XCTAssertTrue(error is TestError)
++ private enum TestError: Error { case notFound }
++ ## When to Prefer Clean Architecture
++ Prefer when:
++ - app/domain complexity is medium to large
++ - multiple teams need stable boundaries
++ - long-term maintainability and replaceable infrastructure matter
++ Prefer lighter layering when:
++ - app is small and short-lived
++ - strict layering overhead is higher than expected benefit
++ ## PR Review Checklist
++ - Dependency direction points inward only.
++ - Domain layer is framework-independent.
++ - Use cases encapsulate business rules and stay focused.
++ - Presentation does not import data implementations.
++ - Repository abstractions live at domain boundary.
++ - Tests isolate use cases from infrastructure.
+
+### references/mvi.md  [docs]
++ # MVI Playbook (Swift + SwiftUI/UIKit)
++ Use this reference for strict unidirectional flow and deterministic state transitions.
++ ## Mental Model
++ ```text
++ Intent -> Reducer -> New State -> View
++                  -> Effect -> Action -> Reducer
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ Core rules:
++ - Keep one source of truth: `State`.
++ - Keep reducer logic deterministic.
++ - Isolate side effects in `Effect`.
++ - Feed effect output back as `Action`.
++ ## Core Types
++ ### State
++ - Use value types (`struct`) only.
++ - Keep state equatable/serializable where practical.
++ - Store canonical state, not redundant derived values.
++ ```swift
++ ```swift
++ ```swift
++ ```swift
++ ```swift
++ ```swift
++ ```swift
++ ```swift
++ ```swift
++ ```swift
++ ```swift
++ ```swift
++ struct CounterState: Equatable {
++     var count = 0
++     var isLoading = false
++     var error: String?
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ ### Intent
++ - Represent user-driven input only.
++ - Do not use intents for network responses.
++ enum CounterIntent {
++     case incrementTapped
++     case decrementTapped
++     case resetTapped
++ ### Action
++ - Represent internal events and effect results.
++ - Reducer handles actions to complete async loops.
++ enum CounterAction {
++     case incrementResponse(Result<Int, Error>)
++     case decrementResponse(Result<Int, Error>)
++     case resetResponse(Result<Int, Error>)
++ Action reducer for completing async transitions:
++ func reduce(state: inout CounterState, action: CounterAction) {
++     switch action {
++     case .incrementResponse(.success(let value)):
++         state.count = value
++         state.count = value
++         state.count = value
++         state.isLoading = false
++         state.isLoading = false
++         state.isLoading = false
++         state.isLoading = false
++         state.isLoading = false
++         state.isLoading = false
++         state.error = nil
++         state.error = nil
++         state.error = nil
++     case .incrementResponse(.failure(let error)):
++         state.error = error.localizedDescription
++         state.error = error.localizedDescription
++         state.error = error.localizedDescription
++     case .decrementResponse(.success(let value)):
++     case .decrementResponse(.failure(let error)):
++     case .resetResponse(.success(let value)):
++     case .resetResponse(.failure(let error)):
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++ ### Effect
++ - Encapsulate async side effects.
++ - Keep effect execution in the store.
++ enum Effect<Action> {
++     case none
++     case run(() async throws -> Action)
++     case cancellable(id: AnyHashable, () async throws -> Action)
++ ## Reducer Pattern
++ - Reducer over `Intent`: mutate state for immediate transitions and optionally return effect.
++ - Reducer over `Action`: finish transition from effect output.
++ - Avoid direct side effects inside reducer branches.
++ protocol CounterServicing {
++     func increment() async throws -> Int
++     func decrement() async throws -> Int
++     func reset() async throws -> Int
++ func reduce(
++     state: inout CounterState,
++     intent: CounterIntent,
++     service: CounterServicing
++ ) -> Effect<CounterAction>? {
++     switch intent {
++     switch intent {
++     case .incrementTapped:
++         state.isLoading = true
++         state.isLoading = true
++         state.isLoading = true
++         return .run {
++         return .run {
++         return .run {
++             do {
++             do {
++             do {
++                 let value = try await service.increment()
++                 return .incrementResponse(.success(value))
++             } catch {
++             } catch {
++             } catch {
++                 return .incrementResponse(.failure(error))
++             }
++             }
++             }
++             }
++             }
++             }
++             }
++         }
++         }
++         }
++         }
++         }
++         }
++         }
++     case .decrementTapped:
++                 let value = try await service.decrement()
++                 return .decrementResponse(.success(value))
++                 return .decrementResponse(.failure(error))
++     case .resetTapped:
++                 let value = try await service.reset()
++                 return .resetResponse(.success(value))
++                 return .resetResponse(.failure(error))
++ ## Store Pattern
++ - Keep store on main actor for UI mutation safety.
++ - Receive `Intent`, run reducer, execute `Effect`, dispatch `Action`.
++ - Add cancellation and request versioning for concurrent requests.
++ @MainActor
++ final class Store<State, Intent, Action>: ObservableObject {
++     @Published private(set) var state: State
++     private let reduceIntent: (inout State, Intent) -> Effect<Action>?
++     private let reduceAction: (inout State, Action) -> Void
++     private let onUnexpectedError: @MainActor (Error) -> Void
++     private var activeTasks: [AnyHashable: Task<Void, Never>] = [:]
++     init(
++         initial: State,
++         reduceIntent: @escaping (inout State, Intent) -> Effect<Action>?,
++         reduceAction: @escaping (inout State, Action) -> Void,
++         onUnexpectedError: @escaping @MainActor (Error) -> Void = { error in
++             assertionFailure("Unhandled effect error: \(error)")
++     ) {
++         self.state = initial
++         self.reduceIntent = reduceIntent
++         self.reduceAction = reduceAction
++         self.onUnexpectedError = onUnexpectedError
++     func send(_ intent: Intent) {
++         guard let effect = reduceIntent(&state, intent) else { return }
++         handle(effect)
++     private func handle(_ effect: Effect<Action>) {
++         switch effect {
++         case .none:
++         case .none:
++             break
++         case .run(let operation):
++         case .run(let operation):
++             Task {
++                 do {
++                 do {
++                     let action = try await operation()
++                     let action = try await operation()
++                     reduceAction(&state, action)
++                     reduceAction(&state, action)
++                 } catch is CancellationError {
++                 } catch is CancellationError {
++                     // Task was cancelled; no state update.
++                 } catch {
++                 } catch {
++                     onUnexpectedError(error)
++                     onUnexpectedError(error)
++                 }
++                 }
++         case .cancellable(let id, let operation):
++         case .cancellable(let id, let operation):
++             activeTasks[id]?.cancel()
++             activeTasks[id] = Task {
++                     // Cancelled by a newer request for the same id.
++                 activeTasks[id] = nil
++     deinit {
++         for task in activeTasks.values { task.cancel() }
++ Map expected service failures to explicit failure actions; reserve `onUnexpectedError` for true fallthrough faults.
++ ## Composed Reducers
++ Split reducers by feature and compose them.
++ enum AppAction {
++     case counter(CounterAction)
++     case settings(SettingsAction)
++ func appReduce(
++     state: inout AppState,
++     intent: AppIntent,
++     services: AppServices
++ ) -> Effect<AppAction>? {
++     case .counter(let counterIntent):
++         return counterReduce(
++             state: &state.counter,
++             intent: counterIntent,
++             service: services.counter
++         )?.map(AppAction.counter)
++     case .settings(let settingsIntent):
++         return settingsReduce(
++             state: &state.settings,
++             intent: settingsIntent,
++             service: services.settings
++         )?.map(AppAction.settings)
++ Add a `map` helper on `Effect` to lift child actions into parent actions:
++ extension Effect {
++     func map<B>(_ transform: @escaping (Action) -> B) -> Effect<B> {
++         switch self {
++             return .none
++             return .run {
++                 let action = try await operation()
++                 let action = try await operation()
++                 return transform(action)
++                 return transform(action)
++             return .cancellable(id: id) {
++ ## View Guidance
++ - Render `store.state` only.
++ - Send user events through `store.send(intent)`.
++ - Never mutate domain state directly in views.
++ ### SwiftUI Integration
++ struct CounterView: View {
++     @StateObject var store: Store<CounterState, CounterIntent, CounterAction>
++     var body: some View {
++         VStack {
++             Text("Count: \(store.state.count)")
++             if store.state.isLoading { ProgressView() }
++             Button("+") { store.send(.incrementTapped) }
++             Button("-") { store.send(.decrementTapped) }
++             Button("Reset") { store.send(.resetTapped) }
++ ### UIKit Integration
++ In UIKit, subscribe once, render from state, and map control events to intents.
++ import Combine
++ import UIKit
++ final class CounterViewController: UIViewController {
++     private let store: Store<CounterState, CounterIntent, CounterAction>
++     private var cancellables = Set<AnyCancellable>()
++     init(store: Store<CounterState, CounterIntent, CounterAction>) {
++         self.store = store
++         super.init(nibName: nil, bundle: nil)
++     required init?(coder: NSCoder) { return nil }
++     override func viewDidLoad() {
++         super.viewDidLoad()
++         store.$state
++             .receive(on: RunLoop.main)
++             .sink { [weak self] in self?.render($0) }
++             .store(in: &cancellables)
++     @objc private func incrementTapped() {
++         store.send(.incrementTapped)
++     private func render(_ state: CounterState) {
++         title = "Count: \(state.count)"
++         // Update labels/buttons/loading from state only.
++ UIKit rules:
++ - keep all UI writes in `render(_:)`
++ - convert delegate/target-action callbacks into `Intent`
+
+### references/mvvm.md  [docs]
++ # MVVM Playbook (Swift + SwiftUI/UIKit)
++ Use this reference for MVVM requests or screen-level state with async effects.
++ ## Core Boundaries
++ - Model: Domain entities and business rules. Keep UI-framework independent.
++ - View: Render state and forward user intents. Do not call services directly.
++ - ViewModel: Own presentation state, map domain to view data, coordinate effects.
++ - Services/Repositories: Side-effect boundaries (network, persistence, analytics).
++ Dependency direction:
++ - View -> ViewModel
++ - ViewModel -> UseCases/Repositories/Services (via protocols)
++ - Model -> no dependency on View/ViewModel
++ ## Feature Structure
++ Prefer vertical feature slices with clear boundaries:
++ ```text
++ App/
++   Features/
++     Feed/
++       FeedView.swift
++       FeedViewModel.swift
++       FeedState.swift
++       FeedViewData.swift
++       FeedDestination.swift
++       FeedAssembly.swift
++   Navigation/
++     AppRouter.swift
++     DeepLink.swift
++ Domain/
++   Entities/
++   UseCases/
++ Data/
++   Repositories/
++   API/
++   Persistence/
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ## State Modeling
++ Use explicit state types over boolean combinations.
++ ```swift
++ ```swift
++ ```swift
++ ```swift
++ ```swift
++ ```swift
++ ```swift
++ ```swift
++ ```swift
++ ```swift
++ ```swift
++ ```swift
++ ```swift
++ ```swift
++ ```swift
++ ```swift
++ enum Loadable<Value: Equatable>: Equatable {
++     case idle
++     case loading
++     case loaded(Value)
++     case failed(String)
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ struct FeedItemViewData: Identifiable, Hashable {
++     let id: UUID
++     let title: String
++ struct ToastState: Equatable {
++     let message: String
++ struct FeedState: Equatable {
++     var load: Loadable<Void> = .idle
++     var items: [FeedItemViewData] = []
++     var isRefreshing = false
++     var toast: ToastState?
++ ## ViewModel Pattern
++ Keep mutation on main actor, own task handles, and cancel stale work.
++ ### Modern Pattern (iOS 17+ / `@Observable`)
++ @MainActor
++ @MainActor
++ @MainActor
++ @MainActor
++ @MainActor
++ @MainActor
++ @MainActor
++ @MainActor
++ @Observable
++ @Observable
++ @Observable
++ @Observable
++ @Observable
++ final class FeedViewModel {
++ final class FeedViewModel {
++ final class FeedViewModel {
++ final class FeedViewModel {
++     private(set) var state = FeedState()
++     private(set) var state = FeedState()
++     private(set) var state = FeedState()
++     private(set) var state = FeedState()
++     private let repository: FeedRepository
++     private let repository: FeedRepository
++     private let repository: FeedRepository
++     private var loadTask: Task<Void, Never>?
++     private var loadTask: Task<Void, Never>?
++     private var loadTask: Task<Void, Never>?
++     init(repository: FeedRepository) {
++     init(repository: FeedRepository) {
++         self.repository = repository
++         self.repository = repository
++         self.repository = repository
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     func onAppear() {
++     func onAppear() {
++         guard case .idle = state.load else { return }
++         guard case .idle = state.load else { return }
++         load()
++         load()
++     func load() {
++     func load() {
++         loadTask?.cancel()
++         loadTask?.cancel()
++         loadTask?.cancel()
++         loadTask?.cancel()
++         state.load = .loading
++         state.load = .loading
++         loadTask = Task {
++         loadTask = Task {
++             do {
++             do {
++                 let page = try await repository.fetchPage(cursor: nil)
++                 let page = try await repository.fetchPage(cursor: nil)
++                 try Task.checkCancellation()
++                 try Task.checkCancellation()
++                 state.items = page.items.map(FeedItemViewData.init)
++                 state.items = page.items.map(FeedItemViewData.init)
++                 state.load = .loaded(())
++                 state.load = .loaded(())
++             } catch is CancellationError {
++             } catch is CancellationError {
++                 // Ignore cancellation.
++                 // Ignore cancellation.
++             } catch {
++             } catch {
++                 state.load = .failed(error.localizedDescription)
++                 state.load = .failed(error.localizedDescription)
++             }
++             }
++             }
++             }
++             }
++             }
++         }
++         }
++         }
++         }
++         }
++         }
++         }
++         }
++         }
++         }
++         }
++     deinit {
++     deinit {
++ ### Legacy Pattern (iOS 16 and earlier / `ObservableObject`)
++ final class FeedViewModel: ObservableObject {
++     @Published private(set) var state = FeedState()
++ ## Dependency Injection
++ Inject abstractions into ViewModel constructors. Build live dependencies in feature assembly.
++ protocol FeedRepository {
++     func fetchPage(cursor: String?) async throws -> FeedPage
++ enum FeedAssembly {
++     static func makeViewModel() -> FeedViewModel {
++         FeedViewModel(repository: LiveFeedRepository(api: .live))
++ ## View Guidance
++ - Bind to ViewModel state only.
++ - Keep business transforms out of `body`/`cellForRowAt`.
++ - Expose dedicated `ViewData` structs for formatting and display concerns.
++ - Keep View-local state only for transient UI details (focus, scroll position).
++ SwiftUI view with `@Observable` ViewModel (iOS 17+):
++ struct FeedView: View {
++ struct FeedView: View {
++ struct FeedView: View {
++ struct FeedView: View {
++     @State private var viewModel: FeedViewModel
++     @State private var viewModel: FeedViewModel
++     @State private var viewModel: FeedViewModel
++     var body: some View {
++     var body: some View {
++     var body: some View {
++     var body: some View {
++         List(viewModel.state.items, id: \.id) { item in
++         List(viewModel.state.items, id: \.id) { item in
++             Text(item.title)
++             Text(item.title)
++             Text(item.title)
++         .task { viewModel.onAppear() }
++         .task { viewModel.onAppear() }
++ SwiftUI view with `ObservableObject` ViewModel (iOS 16 and earlier):
++     @StateObject private var viewModel: FeedViewModel
++ ## Navigation Patterns
++ Keep routing decisions testable and decoupled from presentation APIs: ViewModel decides *where*, routing layer decides *how*.
++ ### SwiftUI Navigation (iOS 16+ / `NavigationStack`)
++ Model destinations as an enum and drive `NavigationStack` from ViewModel path state. Prefer stable IDs over list-specific `ViewData`.
++ enum FeedDestination: Hashable {
++     case detail(id: UUID)
++     case profile(userId: UUID)
++     case profile(userId: UUID)
++     case settings
++     case settings
++ ViewModel exposes a navigation path:
++     var navigationPath: [FeedDestination] = []
++     // ...existing properties...
++     func didTapItem(_ item: FeedItemViewData) {
++     func didTapItem(_ item: FeedItemViewData) {
++         navigationPath.append(.detail(id: item.id))
++     func didTapProfile(userId: UUID) {
++         navigationPath.append(.profile(userId: userId))
++ View binds the path to `NavigationStack`:
++         @Bindable var viewModel = viewModel
++         @Bindable var viewModel = viewModel
++         NavigationStack(path: $viewModel.navigationPath) {
++             List(viewModel.state.items) { item in
++                 Button(item.title) {
++                     viewModel.didTapItem(item)
++                 }
++                 }
++             .navigationDestination(for: FeedDestination.self) { destination in
++                 switch destination {
++                 case .detail(let itemID):
++                     FeedDetailView(viewModel: FeedDetailViewModel(itemID: itemID))
++                 case .profile(let userId):
++                     ProfileView(viewModel: ProfileViewModel(userId: userId))
++                 case .settings:
++                     SettingsView(viewModel: SettingsViewModel())
++             .task { viewModel.onAppear() }
++ ### Modal / Sheet Presentation
++ Model sheet presentation as optional state on the ViewModel.
++     var activeSheet: FeedSheet?
++     struct FeedFilter: Equatable {
++         var showUnreadOnly = false
++     enum FeedSheet: Identifiable {
++         case compose
++         case filter(current: FeedFilter)
++         var id: String {
++             switch self {
+
+### references/reactive.md  [docs]
++ # Reactive Architecture Playbook (Swift + Combine/RxSwift)
++ Use this reference for stream-driven features (search, live updates, real-time feeds).
++ ## Core Philosophy
++ Model inputs, transforms, and outputs as streams.
++ ```text
++ Input -> Publisher/Observable chain -> State -> UI
++ ```
++ ```
++ ```
++ ```
++ ```
++ Keep stream composition in presentation or a dedicated reactive layer, not in views.
++ ## Canonical Combine Pattern
++ ```swift
++ ```swift
++ ```swift
++ ```swift
++ final class SearchViewModel<S: Scheduler>: ObservableObject
++ where S.SchedulerTimeType == DispatchQueue.SchedulerTimeType {
++     @Published var query = ""
++     @Published private(set) var results: [String] = []
++     private var cancellables = Set<AnyCancellable>()
++     private var cancellables = Set<AnyCancellable>()
++     private var cancellables = Set<AnyCancellable>()
++     init(service: SearchService, scheduler: S) {
++         $query
++             .debounce(for: .milliseconds(300), scheduler: scheduler)
++             .removeDuplicates()
++             .removeDuplicates()
++             .map { query in
++                 service.search(query)
++                     .replaceError(with: [])
++             }
++             }
++             }
++             .switchToLatest()
++             .switchToLatest()
++             .receive(on: scheduler)
++             .sink { [weak self] values in
++                 self?.results = values
++             .store(in: &cancellables)
++             .store(in: &cancellables)
++             .store(in: &cancellables)
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ In production, pass `DispatchQueue.main` as the scheduler.
++ Rules:
++ Rules:
++ - debounce user text input
++ - remove duplicates where meaningful
++ - hop to main thread before UI-bound state writes
++ - keep cancellables tied to lifecycle
++ ## UI Integration by Stack
++ ### SwiftUI Pattern
++ - Keep operator chains in `ObservableObject`/`@Observable` types, not in `View`.
++ - Bind UI input (`TextField`, toggle, selection) to published inputs on the model.
++ ### UIKit Pattern (Combine)
++ - Keep pipelines in Presenter/ViewModel.
++ - Map delegate/target-action callbacks into input subjects.
++ - Render from a single state subscription.
++ import Combine
++ import Combine
++ import UIKit
++ @MainActor
++ final class SearchPresenter {
++     let state = CurrentValueSubject<SearchResultState, Never>(.loaded([]))
++     private let query = PassthroughSubject<String, Never>()
++     init(service: SearchService) {
++         query
++             .debounce(for: .milliseconds(300), scheduler: DispatchQueue.main)
++             .map { value in
++                 service.search(value)
++                     .map(SearchResultState.loaded)
++                     .catch { Just(.failed($0.localizedDescription)) }
++             .sink { [weak self] in self?.state.send($0) }
++     func queryChanged(_ text: String) { query.send(text) }
++ final class SearchViewController: UIViewController, UISearchBarDelegate {
++     private let presenter: SearchPresenter
++     init(presenter: SearchPresenter) {
++         self.presenter = presenter
++         super.init(nibName: nil, bundle: nil)
++     required init?(coder: NSCoder) { return nil }
++     override func viewDidLoad() {
++         super.viewDidLoad()
++         presenter.state
++             .sink { [weak self] in self?.render($0) }
++     func searchBar(_ searchBar: UISearchBar, textDidChange searchText: String) {
++         presenter.queryChanged(searchText)
++     private func render(_ state: SearchResultState) {
++         // Render labels/list/error from stream state.
++ ## Operator Guidance
++ - `debounce`: stabilize noisy user input (search fields)
++ - `throttle`: limit high-frequency events (scroll, sensor)
++ - `flatMap`: merge concurrent async work when all responses matter
++ - `switchToLatest`: keep only newest request (typeahead/search)
++ - `share`: avoid duplicate side effects for multiple subscribers
++ - `catch`: recover from recoverable errors with fallback streams
++ Prefer `switchToLatest` over nested subscriptions for request replacement flows.
++ ## RxSwift Mapping Notes
++ Combine and RxSwift mapping:
++ - `AnyPublisher` <-> `Observable`
++ - `AnyCancellable` <-> `DisposeBag`
++ - `receive(on:)` <-> `observe(on:)`
++ - `subscribe(on:)` semantics should be applied intentionally to offload heavy work
++ ## Error Handling Pattern
++ Recover in stream boundaries and expose user-safe state:
++ protocol SearchService {
++     func search(_ query: String) -> AnyPublisher<[String], Error>
++ enum SearchResultState: Equatable {
++     case loaded([String])
++     case failed(String)
++ func searchState(
++     query: String,
++     service: SearchService
++ ) -> AnyPublisher<SearchResultState, Never> {
++     service.search(query)
++         .map(SearchResultState.loaded)
++         .catch { Just(.failed($0.localizedDescription)) }
++         .eraseToAnyPublisher()
++ For transient failures, prefer fallback state over terminating the stream.
++ ## Anti-Patterns and Fixes
++ 1. Nested subscriptions:
++ - Smell: subscribe inside subscribe, difficult cancellation and reasoning.
++ - Fix: compose with `flatMap`/`switchToLatest`.
++ 2. Missing cancellation/disposal:
++ - Smell: stream continues after screen deallocation or rebind.
++ - Fix: store `AnyCancellable` or use `DisposeBag` lifecycle correctly.
++ 3. Business logic in view:
++ - Smell: view constructs pipelines and calls services directly.
++ - Fix: move stream orchestration to Presenter/ViewModel layer.
++ 4. UI thread violations:
++ - Smell: publishing UI-bound state off main thread.
++ - Fix: apply `receive(on:)` / `observe(on:)` before UI mutations.
++ 5. Unbounded fan-out:
++ - Smell: many subscribers trigger duplicate network calls.
++ - Fix: use `share`/multicasting where side effects should be single-execution.
++ ## Testing Strategy
++ Test stream behavior deterministically:
++ - input -> expected output transitions
++ - debounce/throttle behavior with controlled schedulers
++ - cancellation behavior for replaced requests
++ - error fallback behavior
++ - inject schedulers/time providers for tests
++ - avoid real-time sleeps when possible
++ - assert emitted state sequence, not internal operator details
++ import CombineSchedulers
++ import XCTest
++ final class SearchViewModelTests: XCTestCase {
++     func test_queryEmitsResults() {
++         let subject = PassthroughSubject<[String], Error>()
++         let stubService = StubSearchService(subject: subject)
++         // Requires Point-Free's CombineSchedulers package.
++         let scheduler = DispatchQueue.test
++         let vm = SearchViewModel(service: stubService, scheduler: scheduler.eraseToAnyScheduler())
++         var collected: [[String]] = []
++         let cancellable = vm.$results
++             .dropFirst()
++             .sink { collected.append($0) }
++         vm.query = "swift"
++         // Advance past debounce interval.
++         scheduler.advance(by: .milliseconds(300))
++         // Simulate service response.
++         subject.send(["SwiftUI", "Swift"])
++         subject.send(completion: .finished)
++         // Advance to process receive(on:).
++         scheduler.advance()
++         XCTAssertEqual(collected, [["SwiftUI", "Swift"]])
++         cancellable.cancel()
++ struct StubSearchService: SearchService {
++     let subject: PassthroughSubject<[String], Error>
++     func search(_ query: String) -> AnyPublisher<[String], Error> {
++         subject.eraseToAnyPublisher()
++ The canonical `SearchViewModel` already supports scheduler injection for tests.
++ ## When to Prefer Reactive Architecture
++ Prefer when:
++ - feature is event-heavy and stream-oriented
++ - real-time updates and transformations are core behavior
++ - composable async pipelines provide clarity over imperative callbacks
++ Prefer MVI/TCA when:
++ - explicit state-machine and strict reducer flow are primary requirements
++ ## PR Review Checklist
++ - Streams are composed without nested subscriptions.
++ - Cancellation/disposal is lifecycle-safe.
++ - UI-bound updates are marshaled to main thread.
++ - Operators match intent (`debounce`, `throttle`, `switchToLatest`, `share`).
++ - Views/controllers do not hold business pipeline logic.
++ - Error handling keeps UX resilient for transient failures.
+
+### references/selection-guide.md  [docs]
++ # Architecture Selection Guide
++ Use this reference when the user asks for an architecture recommendation.
++ ## Decision Matrix
++ | Factor | MVVM | MVI | TCA | Clean | VIPER | Reactive |
++ |--------|------|-----|-----|-------|-------|----------|
++ | State complexity | Low–Med | High | High | Med–High | Med | Med |
++ | Unidirectional flow | Optional | Strict | Strict | N/A | N/A | Stream-based |
++ | Composition / modularity | Feature-level | Feature-level | Strong (Scope/forEach) | Layer-level | Module-level | Operator-level |
++ | Testing determinism | Good | Very high | Very high (TestStore) | Good | Good | Good (with schedulers) |
++ | Boilerplate | Low | Medium | Medium–High | Medium–High | High | Low–Medium |
++ | SwiftUI fit | Excellent | Good | Excellent | Good | Fair (UIKit-native) | Good |
++ | UIKit fit | Good | Good | Good | Good | Excellent | Good |
++ | Team learning curve | Low | Medium | High | Medium | Medium–High | Medium |
++ | Async/effect orchestration | Manual | Structured | Built-in | Manual | Manual | Operator-driven |
++ | Framework dependency | None | None | swift-composable-architecture | None | None | Combine or RxSwift |
++ ## UI Stack Nuance by Architecture
++ - **MVVM**: SwiftUI favors direct state binding; UIKit/mixed favors coordinator-driven navigation.
++ - **MVI**: SwiftUI uses store-bound views; UIKit maps events to intents and renders from store state.
++ - **TCA**: SwiftUI uses `StoreOf` in views; UIKit uses a controller render loop from `ViewStore`.
++ - **Clean Architecture**: Domain/data stay the same; only presentation adapters differ.
++ - **VIPER**: UIKit-native fit; SwiftUI usually uses an adapter plus `UIHostingController`.
++ - **Reactive**: SwiftUI keeps pipelines in observable models; UIKit keeps them in Presenter/ViewModel.
++ ## Quick Decision Flow
++ ```text
++ 1. Is the feature stream-heavy (search, live feeds, real-time updates)?
++    YES -> Consider Reactive (references/reactive.md). If strict reducer/state-machine flow is also required, continue to step 2 and likely combine patterns.
++    NO  -> Continue
++    NO  -> Continue
++    NO  -> Continue
++    NO  -> Continue
++ 2. Is strict unidirectional data flow and state-machine modeling required?
++    YES -> Is the app already TCA-based, or is adding TCA dependency acceptable?
++           YES -> TCA (references/tca.md)
++           NO  -> MVI (references/mvi.md)
++ 3. Does the codebase need strict layer isolation with replaceable infrastructure?
++    YES -> Clean Architecture (references/clean-architecture.md)
++ 4. Is this a large UIKit codebase needing strict per-feature separation?
++    YES -> VIPER (references/viper.md)
++ 5. Default recommendation:
++    -> MVVM (references/mvvm.md)
++ ```
++ ## Inference from User Constraints
++ Use these request signals:
++ ### Signals pointing to MVVM
++ - "simple feature", "screen-level state", "standard iOS pattern"
++ - small/medium feature without strict state-machine needs
++ ### Signals pointing to MVI
++ - "state machine", "deterministic transitions", "unidirectional"
++ - need to replay/serialize state transitions
++ ### Signals pointing to TCA
++ - "composable", "TestStore", "pointfree", mentions of TCA
++ - existing TCA codebase or strong child-feature composition needs
++ ### Signals pointing to Clean Architecture
++ - "layers", "use cases", "dependency rule", "hexagonal"
++ - stable module boundaries and replaceable infrastructure are priorities
++ ### Signals pointing to VIPER
++ - "module", "router", "presenter", legacy UIKit codebase
++ - strict role separation in large UIKit modules
++ ### Signals pointing to Reactive
++ - "streams", "Combine", "RxSwift", "real-time", "search"
++ - feature behavior is event-pipeline driven (typeahead, WebSocket, live feeds)
++ ## Validating User-Requested Architectures
++ When the user pre-selects an architecture, validate it before finalizing:
++ 1. Check fit across:
++    - UI stack (SwiftUI/UIKit/mixed)
++    - feature complexity and state model needs
++    - effect orchestration requirements
++    - team familiarity and dependency tolerance
++    - alignment with existing codebase conventions
++ 2. Decide whether the request is a `fit` or a `mismatch`.
++ 3. Respond based on the result:
++    - `fit`: proceed with requested architecture
++    - `mismatch`: recommend closest-fit alternative and explain why
++ If the user insists on a mismatched choice, proceed with the requested architecture but include a risk-mitigation plan.
++ ## Combining Architectures
++ Some projects use multiple patterns. Common valid combinations:
++ - **MVVM + Reactive**: MVVM structure with Combine/Rx pipelines inside ViewModels
++ - **Clean Architecture + MVVM**: Clean layers for domain/data, MVVM for presentation
++ - **Clean Architecture + TCA**: Clean layers for domain/data, TCA for feature presentation
++ - **VIPER + Reactive**: VIPER module structure with reactive Interactors
++ When combining, clarify which pattern governs which layer and keep boundaries consistent.
++ ## Recommendation Format
++ When recommending:
++ 1. Name one pattern and provide a fit result (`fit` or `mismatch`).
++ 2. Give 1-2 concise reasons grounded in user constraints.
++ 3. Cite the reference file.
++ 4. If `mismatch`, include the closest-fit alternative and one trade-off.
++ 5. Apply the selected playbook to the user’s feature.
+
+### references/tca.md  [docs]
++ # TCA Playbook (Swift + SwiftUI/UIKit)
++ Use this reference for strict unidirectional flow, strong composition, and `TestStore`-driven testing.
++ ## Mental Model
++ ```text
++ View -> store.send(Action)
++ Reducer(State, Action) -> state mutation + Effect<Action>
++ Effect emits Action -> reducer
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ Core expectations:
++ - value-based state
++ - reducer-driven decisions
++ - isolated side effects via effects
++ - dependency injection through TCA dependencies
++ - feature composition with scoped reducers
++ ## Canonical Feature Shape
++ Prefer modern TCA with `@Reducer` and `@ObservableState`.
++ ```swift
++ ```swift
++ ```swift
++ ```swift
++ ```swift
++ ```swift
++ ```swift
++ ```swift
++ ```swift
++ import ComposableArchitecture
++ import ComposableArchitecture
++ import ComposableArchitecture
++ @Reducer
++ @Reducer
++ struct CounterFeature {
++   @ObservableState
++   @ObservableState
++   struct State: Equatable {
++   struct State: Equatable {
++     var count = 0
++     var isLoading = false
++     @Presents var alert: AlertState<Action.Alert>?
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   enum Action: Equatable {
++   enum Action: Equatable {
++     case incrementTapped
++     case decrementTapped
++     case factButtonTapped
++     case factResponse(String)
++     case alert(PresentationAction<Alert>)
++     enum Alert: Equatable {}
++   @Dependency(\.numberFact) var numberFact
++   var body: some ReducerOf<Self> {
++   var body: some ReducerOf<Self> {
++     Reduce { state, action in
++       switch action {
++       case .incrementTapped:
++         state.count += 1
++         return .none
++         return .none
++         return .none
++         return .none
++       case .decrementTapped:
++         state.count -= 1
++       case .factButtonTapped:
++         state.isLoading = true
++         let n = state.count
++         return .run { send in
++           let fact = await numberFact.fetch(n)
++           await send(.factResponse(fact))
++         }
++       case .factResponse(let fact):
++         state.isLoading = false
++         state.alert = AlertState { TextState(fact) }
++       case .alert:
++       }
++       }
++       }
++     }
++     }
++     }
++     }
++     }
++     }
++     .ifLet(\.$alert, action: \.alert)
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ ## View Integration
++ Rules:
++ - send actions from the view
++ - never mutate business state directly in the view
++ - observe the smallest practical state slice
++ ### Modern Pattern (TCA 1.7+ with `@ObservableState`)
++ With `@ObservableState`, views access store properties directly — no `WithViewStore` needed.
++ struct CounterView: View {
++ struct CounterView: View {
++   @Bindable var store: StoreOf<CounterFeature>
++   var body: some View {
++   var body: some View {
++     VStack {
++       Text("Count: \(store.count)")
++       Button("+") { store.send(.incrementTapped) }
++       Button("-") { store.send(.decrementTapped) }
++       Button("Fact") { store.send(.factButtonTapped) }
++       if store.isLoading { ProgressView() }
++     .alert($store.scope(state: \.alert, action: \.alert))
++ ### Legacy Pattern (TCA < 1.7 with `WithViewStore`)
++   let store: StoreOf<CounterFeature>
++     WithViewStore(store, observe: { $0 }) { viewStore in
++       VStack {
++         Text("Count: \(viewStore.count)")
++         Button("+") { viewStore.send(.incrementTapped) }
++         Button("-") { viewStore.send(.decrementTapped) }
++         Button("Fact") { viewStore.send(.factButtonTapped) }
++         if viewStore.isLoading { ProgressView() }
++       .alert(store: store.scope(state: \.alert, action: \.alert))
++ UIKit guidance:
++ - keep a store in the view controller
++ - subscribe to state changes from the store
++ - centralize rendering in one method
++ Concrete UIKit pattern:
++ import Combine
++ import UIKit
++ @MainActor
++ @MainActor
++ final class CounterViewController: UIViewController {
++   private let viewStore: ViewStoreOf<CounterFeature>
++   private var cancellables = Set<AnyCancellable>()
++   init(store: StoreOf<CounterFeature>) {
++     self.viewStore = ViewStore(store, observe: { $0 })
++     super.init(nibName: nil, bundle: nil)
++   required init?(coder: NSCoder) { return nil }
++   override func viewDidLoad() {
++     super.viewDidLoad()
++     viewStore.publisher
++       .sink { [weak self] state in
++         self?.render(state)
++       .store(in: &cancellables)
++   @objc private func incrementTapped() {
++     viewStore.send(.incrementTapped)
++   private func render(_ state: CounterFeature.State) {
++     title = "Count: \(state.count)"
++     // Render labels/buttons/loading from state only.
++ ## Composition Patterns
++ Use `Scope` for parent-child composition.
++ struct AppFeature {
++     var counter = CounterFeature.State()
++     case counter(CounterFeature.Action)
++     Scope(state: \.counter, action: \.counter) {
++       CounterFeature()
++       CounterFeature()
++ Use `IdentifiedArrayOf` and `forEach` for collections with stable identity.
++ ## Dependency Rules
++ - keep dependency surfaces small and capability-focused
++ - inject via `@Dependency`
++ - never place dependencies in state
++ - avoid singleton calls in reducers
++ struct NumberFactClient {
++   var fetch: @Sendable (Int) async -> String
++ extension NumberFactClient: DependencyKey {
++   static let liveValue = Self(fetch: { number in
++     "\(number) is a good number."
++   })
++   })
++   static let testValue = Self(fetch: { _ in
++     "Test fact"
++ extension DependencyValues {
++   var numberFact: NumberFactClient {
++     get { self[NumberFactClient.self] }
++     set { self[NumberFactClient.self] = newValue }
++ ## Effects and Concurrency
++ Use `.run` for async work and route results back as actions.
++ Add cancellation for re-entrant effects:
++ enum CancelID { case fact }
++ case .factButtonTapped:
++   state.isLoading = true
++   let n = state.count
++   return .run { send in
++     let fact = await numberFact.fetch(n)
++     await send(.factResponse(fact))
++   .cancellable(id: CancelID.fact, cancelInFlight: true)
++ If cancellation is not enough, add request versioning.
++ ## Navigation Pattern
++ Model navigation in state and drive it through actions.
++ Common shapes:
++ - `@Presents var alert: AlertState<Action.Alert>?`
++ - `destination: Destination.State?`
++ - Attach a matching `.ifLet` reducer for each presentation action (`alert`, `destination`, etc.).
++ Keep navigation decisions in reducers and keep views declarative.
++ ## Testing with `TestStore`
++ Use `TestStore` for deterministic action/state assertions.
++ import XCTest
++ final class CounterFeatureTests: XCTestCase {
++   func testIncrement() async {
++     let store = TestStore(initialState: CounterFeature.State()) {
++     await store.send(.incrementTapped) {
++       $0.count = 1
++ Override dependencies for effect tests and assert follow-up actions.
++ await store.withDependencies {
++   $0.numberFact.fetch = { _ in "42 is great" }
++ } assert: { $0 }
++ await store.send(.factButtonTapped) {
++   $0.isLoading = true
++ await store.receive(.factResponse("42 is great")) {
++   $0.isLoading = false
++   $0.alert = AlertState { TextState("42 is great") }
++ ## Anti-Patterns and Fixes
++ 1. Massive feature with no composition:
++ - Smell: giant reducer handling unrelated domains.
++ - Fix: split into child reducers and compose via `Scope`.
++ 2. Reference types in state:
++ - Smell: class instances or shared mutable collections in state.
++ - Fix: keep state value-based and equatable.
++ 3. Business work in views:
++ - Smell: view calls services or transforms domain data.
++ - Fix: move logic to reducer/effects and expose render-ready state.
++ 4. Side effects directly in reducer:
++ - Smell: analytics/network calls inline without effect boundary.
++ - Fix: route through dependencies and effects.
++ 5. Duplicate state outside store:
++ - Smell: local `@State` mirrors store state.
++ - Fix: keep single source of truth in store.
++ 6. Over-observing large state:
++ - Smell: broad observation triggers unnecessary re-renders.
++ - Fix: observe scoped state and split view/store boundaries.
++ 7. Missing cancellation:
++ - Smell: overlapping effects overwrite current intent.
++ - Fix: use `.cancellable(id:cancelInFlight:)` and request IDs when needed.
++ ## When to Prefer TCA
++ Prefer TCA when:
++ - app has many stateful workflows
++ - test determinism is critical
++ - composition and modular scaling are required
++ - effect cancellation correctness matters
++ Prefer MVVM or lighter MVI variants when:
++ - app is small and unlikely to grow
++ - team is not ready for UDF discipline
++ - feature speed and low ceremony are prioritized
++ ## PR Review Checklist
++ - State is value-based and equatable.
++ - Reducer avoids direct side effects.
++ - Dependencies are injected and overrideable in tests.
++ - Effects have cancellation strategy where needed.
++ - Features compose with `Scope`/`forEach`.
++ - Navigation is modeled in state.
++ - Tests cover success, failure, and cancellation flows.
++ - Views render and send actions only.
+
+### references/viper.md  [docs]
++ # VIPER Playbook (Swift + SwiftUI/UIKit)
++ Use this reference when strict feature-level separation is needed, especially in large or legacy UIKit codebases.
++ ## Core Components
++ - View: render UI and forward user actions
++ - Interactor: execute business logic and coordinate data access
++ - Presenter: transform entities into display-ready output and control view state
++ - Entity: domain models used by the feature
++ - Router: navigation and module assembly
++ Expected interaction:
++ ```text
++ ```text
++ View -> Presenter -> Interactor -> Repository/Service -> Interactor -> Presenter -> View
++ Presenter -> Router (navigation)
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ## Canonical Feature Layout
++ Feature/
++   View/
++   Presenter/
++   Interactor/
++   Entity/
++   Router/
++ Keep one VIPER module per feature to prevent cross-feature leakage.
++ ## Responsibilities
++ ### View
++ - Render data provided by Presenter.
++ - Forward user inputs (`didTap...`, `didAppear`, text changes).
++ - Avoid direct service/repository access.
++ - In SwiftUI, use an adapter (`ObservableObject`) that forwards to Presenter.
++ ### Presenter
++ - Own presentation flow for the feature.
++ - Ask Interactor for business results.
++ - Map entities to view models/display strings.
++ - Call Router for navigation.
++ ### Interactor
++ - Execute business rules and use cases.
++ - Call repositories/services through protocols.
++ - Return domain results to Presenter.
++ - Avoid direct view or navigation concerns.
++ ### Router
++ - Perform navigation transitions.
++ - Build and wire module dependencies.
++ ### Entity
++ - Represent domain data and business invariants.
++ - Avoid UI and framework coupling where possible.
++ ## Wiring Pattern
++ Use boundary protocols and directional references.
++ ```swift
++ ```swift
++ ```swift
++ ```swift
++ ```swift
++ @MainActor
++ @MainActor
++ @MainActor
++ @MainActor
++ @MainActor
++ @MainActor
++ protocol ProfileView: AnyObject {
++     func show(name: String)
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ protocol ProfileInteracting {
++     func loadUser() async throws -> User
++ protocol ProfileRouting {
++     func showSettings()
++ final class ProfilePresenter {
++ final class ProfilePresenter {
++     weak var view: ProfileView?
++     weak var view: ProfileView?
++     private let interactor: ProfileInteracting
++     private let interactor: ProfileInteracting
++     private let router: ProfileRouting
++     private let router: ProfileRouting
++     init(interactor: ProfileInteracting, router: ProfileRouting) {
++     init(interactor: ProfileInteracting, router: ProfileRouting) {
++         self.interactor = interactor
++         self.interactor = interactor
++         self.router = router
++         self.router = router
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     func load() async {
++     func load() async {
++         do {
++             let user = try await interactor.loadUser()
++             view?.show(name: user.name)
++         } catch {
++             view?.show(name: "")
++         }
++         }
++         }
++     func didTapSettings() {
++     func didTapSettings() {
++         router.showSettings()
++         router.showSettings()
++ Keep `view` weak to avoid retain cycles.
++ Keep presenter/view updates on the main actor so UI calls are thread-safe.
++ ## Assembly Guidance
++ Create modules via Router/Assembly factory:
++ - instantiate View, Presenter, Interactor, Router
++ - inject protocols, not concrete global singletons
++ - set references once during build
++ This centralizes wiring and reduces circular dependency mistakes.
++ enum ProfileModule {
++     static func build(
++     static func build(
++         userRepository: UserRepository,
++         userRepository: UserRepository,
++         navigationController: UINavigationController
++         navigationController: UINavigationController
++     ) -> UIViewController {
++     ) -> UIViewController {
++         let interactor = ProfileInteractor(repository: userRepository)
++         let interactor = ProfileInteractor(repository: userRepository)
++         let router = ProfileRouter(navigationController: navigationController)
++         let router = ProfileRouter(navigationController: navigationController)
++         let presenter = ProfilePresenter(interactor: interactor, router: router)
++         let presenter = ProfilePresenter(interactor: interactor, router: router)
++         let viewController = ProfileViewController(presenter: presenter)
++         presenter.view = viewController
++         return viewController
++ Rules:
++ Rules:
++ - keep the factory method as the single entry point for module creation
++ - inject external dependencies (repositories, services) from the caller
++ - set weak back-references (e.g., `presenter.view`) after construction
++ SwiftUI integration option:
++ - keep Presenter/Interactor/Router unchanged
++ - wrap SwiftUI feature view in `UIHostingController`
++ - bridge Presenter output through a small adapter object
++ import SwiftUI
++ import UIKit
++ final class ProfileViewAdapter: ObservableObject, ProfileView {
++     @Published private(set) var name = ""
++     private let presenter: ProfilePresenter
++     init(presenter: ProfilePresenter) {
++         self.presenter = presenter
++     func show(name: String) {
++         self.name = name
++     func load() async { await presenter.load() }
++     func didTapSettings() { presenter.didTapSettings() }
++ struct ProfileScreen: View {
++     @ObservedObject var adapter: ProfileViewAdapter
++     var body: some View {
++         VStack {
++             Text(adapter.name)
++             Button("Settings") { adapter.didTapSettings() }
++         .task { await adapter.load() }
++ enum ProfileModuleSwiftUI {
++         let adapter = ProfileViewAdapter(presenter: presenter)
++         presenter.view = adapter
++         return UIHostingController(rootView: ProfileScreen(adapter: adapter))
++ ## Concurrency and Cancellation
++ When Presenter coordinates async work, track active tasks and cancel stale requests.
++     private var loadTask: Task<Void, Never>?
++         loadTask?.cancel()
++         loadTask?.cancel()
++         loadTask = Task {
++             do {
++                 let user = try await interactor.loadUser()
++                 view?.show(name: user.name)
++             } catch is CancellationError {
++                 // Cancelled by a newer load request.
++             } catch {
++                 view?.show(name: "")
++             }
++         await loadTask?.value
++     deinit {
++ - cancel in-flight tasks before issuing new requests
++ - handle `CancellationError` explicitly to avoid stale UI updates
++ - cancel all tasks on module teardown
++ ## Anti-Patterns and Fixes
++ 1. Massive Presenter:
++ - Smell: presenter contains business logic, formatting, networking, and navigation details.
++ - Fix: move business logic to Interactor and formatting helpers; keep Presenter orchestration-focused.
++ 2. Interactor performing navigation:
++ - Smell: interactor directly pushes/presents screens.
++ - Fix: route navigation through Router called by Presenter.
++ 3. Circular dependencies and strong cycles:
++ - Smell: View <-> Presenter <-> Router retain each other strongly.
++ - Fix: use boundary protocols and weak references where required.
++ 4. View doing business work:
++ - Smell: View transforms data or calls services directly.
++ - Fix: move logic into Presenter/Interactor.
++ 5. Router containing business logic:
++ - Smell: Router decides domain outcomes.
++ - Fix: keep Router limited to navigation and assembly.
++ ## Testing Strategy
++ Prioritize isolated tests per component:
++ - Presenter tests with mocked View/Interactor/Router
++ - Interactor tests with mocked repositories/services
++ - Router tests for navigation triggers where feasible
++ Testing rules:
++ - assert interactions and outputs, not concrete implementations
++ - avoid network in unit tests
++ - verify presenter handles success and failure states
++ final class MockProfileView: ProfileView {
++     var shownName: String?
++     func show(name: String) { shownName = name }
++ struct StubProfileInteractor: ProfileInteracting {
++     var result: Result<User, Error>
++     func loadUser() async throws -> User { try result.get() }
++ final class SpyProfileRouter: ProfileRouting {
++     var didShowSettings = false
++     func showSettings() { didShowSettings = true }
++ final class ProfilePresenterTests: XCTestCase {
++     func test_load_success_showsUserName() async {
++         let user = User(id: UUID(), name: "Alice")
++         let view = MockProfileView()
++         let view = MockProfileView()
++         let presenter = ProfilePresenter(
++         let presenter = ProfilePresenter(
++         let presenter = ProfilePresenter(
++             interactor: StubProfileInteractor(result: .success(user)),
++             router: SpyProfileRouter()
++             router: SpyProfileRouter()
++         )
++         )
++         )
++         presenter.view = view
++         presenter.view = view
++         await presenter.load()
++         await presenter.load()
++         XCTAssertEqual(view.shownName, "Alice")
++     func test_load_failure_showsEmptyName() async {
++             interactor: StubProfileInteractor(result: .failure(TestError.notFound)),
++         XCTAssertEqual(view.shownName, "")
++     func test_didTapSettings_routesToSettings() {
++         let router = SpyProfileRouter()
++             interactor: StubProfileInteractor(result: .success(User(id: UUID(), name: ""))),
++             router: router
++         presenter.didTapSettings()
++         XCTAssertTrue(router.didShowSettings)
++ private enum TestError: Error { case notFound }
++ ## When to Prefer VIPER
++ Prefer VIPER when:
++ - feature boundaries must be very explicit
++ - team needs strict role separation
++ - UIKit-heavy codebase benefits from modularized presentation flow
++ Prefer lighter patterns when:
++ - app is small or prototyping quickly
++ - ceremony cost outweighs architecture benefit
++ ## PR Review Checklist
++ - Component responsibilities are respected (View/Interactor/Presenter/Router separated).
++ - Presenter does not own business logic implementation details.
++ - Interactor does not navigate.
++ - Router handles only navigation and module assembly.
++ - Boundary protocols avoid concrete coupling.
++ - Retain cycles are prevented with weak references where needed.
++ - Tests cover presenter orchestration and interactor business rules.

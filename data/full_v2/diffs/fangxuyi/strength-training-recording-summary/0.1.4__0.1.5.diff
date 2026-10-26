@@ -1,0 +1,172 @@
+fangxuyi/strength-training-recording-summary  0.1.4 -> 0.1.5
+change_type: instructions+docs   changelog: Add Trainwell-style local Whisper transcription guidance, timestamp-preserving artifact handling, and clearer privacy-first backend selection.
+
+### SKILL.md  [instructions]
+- name: strength-training-recording-summary
+- description: "Create WorkoutSummary notes from strength-training recordings or transcripts. Accepts audio (.m4a, .mp3, .wav, .caf) and transcript files (.md, .txt, .srt, .vtt, .json); outputs total time, exercises completed, sets/reps, durations, and concise coach notes."
+- Load `references/summary-workflow.md` only when you need implementation details, transcription backend guidance, audio cleanup commands, dataset matching rules, or helper-script behavior.
+- Prefer an input transcript when one already exists. For audio, use the best available transcription backend:
+- - local Whisper CLI when installed
+- - Groq Whisper when `GROQ_API_KEY` is configured
+- - OpenAI or another compatible API when the user has credentials ready
++ name: "strength-training-recording-summary"
++ description: "Summarize strength-training recordings/transcripts into WorkoutSummary notes with durations, sets/reps, and coach cues."
++ Load `references/summary-workflow.md` when you need transcription backend details, Trainwell-style local artifact handling, audio cleanup commands, dataset matching rules, or helper-script behavior.
++ ```
++ Prefer an input transcript when one already exists. For audio, choose the first ready backend that fits the user's privacy and language needs:
++ - local Whisper CLI when installed; this is the default for local or Chinese/English trainer recordings
++ - Groq Whisper when `GROQ_API_KEY` is configured and the user accepts cloud transcription
++ - OpenAI or another compatible API when the user has credentials ready or explicitly chooses it
++ For Trainwell-style Chinese-dominant sessions, prefer:
++ ```bash
++ whisper "$SOURCE_AUDIO" --model turbo --language Chinese --task transcribe --output_format all --output_dir "$OUTDIR"
++ Use `--output_format all` or another segment-preserving format so timestamps survive into the summary. If English exercise names are badly mangled, retry auto-detect or compare transcript snippets before summarizing.
++ Keep raw transcript artifacts only when useful or requested. For recurring Trainwell-style local workflows, save transcript Markdown under a source-adjacent `sources-markdown` folder and summaries under `summary-markdown`. For generic one-off use, print the result or save only to an explicit output path.
++ ## Validation
++ Before finalizing, check that:
++ - the transcript source and any generated artifacts are in the expected local location
++ - timestamps or duration calculations support each exercise duration
++ - the exercise order matches the trainer's sequence
++ - sets/reps/duration are marked approximate when uncertain
++ - cloud transcription was used only when configured or explicitly accepted
++ - the final note contains coach-specific cues rather than generic exercise instructions
+
+### references/summary-workflow.md  [docs]
+- This skill turns strength-training recordings or transcripts into clean `WorkoutSummary <date>` notes for future reference. It does not require a specific app, hosted storage, or retrieval feature. Groq is one supported transcription backend, not a requirement. The useful behavior is:
+- 3. standardize exercise names and calculate completed work
+- 4. write a concise summary note
+- 5. print or save the result as requested
+- - Save the generated transcript or summary only when asked, or when the user supplied an explicit output path.
+- - Do not create web portals, review screens, retrieval indexes, or database records unless the task changes from "summarize this session" to "build an app pipeline."
+- - `.caf` when the local tooling can convert it safely
+-    - Best when the user wants no cloud dependency or has no API key ready.
+-    - Fast cloud option when `GROQ_API_KEY` is configured.
+- For Chinese/English mixed sessions, add `--language Chinese` only when Chinese is dominant. If the trainer regularly says English exercise names inside Chinese coaching, auto-detect may preserve mixed-language names better.
+- Use Groq's OpenAI-compatible audio transcription endpoint:
+- - Do not embed a real Groq API key in a publishable skill. It can leak through git history, exported `.skill` archives, logs, screenshots, or copied prompts.
+- - If a deployment needs convenience, document `GROQ_API_KEY` setup or use a local secret manager/runtime secret injection.
+- ## API Key Handling
+- Do not embed real API keys in this skill or any publishable package. Read service keys from environment variables such as `GROQ_API_KEY` or provider-specific equivalents, a local secret manager, or an OpenClaw secret mechanism supplied at runtime.
+- If a user has no cloud key ready, prefer an existing transcript or local Whisper when available. If a cloud backend is required but no credentials exist, explain the options and ask which provider they want to configure.
+- - Prefer lossless stream copy splitting first; re-encode only when the chunks are still too large or the container fails.
+- When splitting, preserve part order and add each part's start offset to segment timestamps before summarizing.
+- - Put the highest-value note on the next line as one bullet, without labels like `dataset match` or `trainer-specific cue`.
+- - Use `about`, `roughly`, or `~` when uncertain.
+- Use `hasaneyldrm/exercises-dataset` to standardize exercise names and avoid repeating generic instruction text:
+- - Repository: `https://github.com/hasaneyldrm/exercises-dataset`
+- - Primary dataset file: `data/exercises.json`
+- - The README describes 1,324 exercise records and the main schema fields:
+-   - `id`
+-   - `name`
+-   - `category`
+-   - `body_part`
+-   - `equipment`
+-   - `instructions.<lang>`
+-   - `instruction_steps.<lang>`
+-   - `muscle_group`
+-   - `secondary_muscles`
+-   - `target`
+-   - `image`
+-   - `gif_url`
+- The dataset includes multilingual instruction fields. Use the language that best matches the transcript when comparing trainer cues:
+- - `en` English
+- - `es` Spanish
+- - `it` Italian
+- - `tr` Turkish
+- - `ru` Russian
+- - `zh` Chinese
+- - `hi` Hindi
+- - `pl` Polish
+- - `ko` Korean
+- Fallback order:
+- 1. Transcript language, for example `zh` for Chinese trainer speech.
+- 2. English `en`.
+- 3. Dataset name and metadata only, if instructions are missing.
+- Dataset usage rule:
+- - Build a small lookup/index over normalized `name`, equipment, target, body part, muscle group, and translated instruction text when useful.
+- - Match transcript candidates against that index.
+- - Bring only the top candidate records or compact snippets into the final LLM summary step.
+- - If using a subagent, hand it this workflow and the dataset path/URL, not the entire JSON blob.
+- ## Fuzzy Matching Helper
+- This skill includes `scripts/match_exercises.py`, a stdlib-only helper that:
+- - accepts candidate exercise names or a candidates file
+- - loads a local `data/exercises.json` or downloads/caches the raw GitHub JSON
+- - matches against normalized exercise name, equipment, body part, target, muscle group, secondary muscles, and compact instruction snippets
+- - supports dataset instruction language selection with `--lang`
+- - returns compact JSON top matches for the final summarization step
+- Examples:
+- python scripts/match_exercises.py --lang zh --top-k 3 "哑铃侧平举"
+- python scripts/match_exercises.py --dataset ./data/exercises.json --candidates-file candidates.txt --pretty
+- Use this helper before the final LLM summary. Do not pass the full helper output if `top-k` is large; keep only the winning record or a short candidate list per exercise.
+- For generic spoken names, expect several plausible variants; use nearby transcript context such as equipment, position, machine, side, incline, seated/standing, or single-arm/single-leg wording to choose.
+- Include equipment or variant words in candidates when the transcript provides them, for example `哑铃侧平举` instead of only `侧平举`.
+- This skill includes `scripts/calc_duration.py` for calculating duration from one or more transcript ranges:
+- Suggested matching workflow:
+- 1. Load or fetch `data/exercises.json` if available.
+- 2. Detect transcript language and whether the session is monolingual or mixed language.
+- 3. Build a normalized index from `name`, plus optional aliases inferred from equipment, target, category, translated exercise wording, and common spoken variants.
+- 4. Extract candidate spoken exercise names from the transcript.
+- 5. Fuzzy-match each candidate against the dataset and use transcript context to break ties:
+-    - equipment mentioned by trainer
+-    - target/body part
+-    - movement pattern
+-    - whether the trainer says a variant such as single-leg, side plank, incline, cable, band, dumbbell, or bodyweight
+-    - Chinese terms that describe the same movement, body part, or equipment
+- 6. Use the dataset `name` as the summary name only when confidence is high. If the user wants Chinese output, include the Chinese-friendly spoken label beside the canonical name. Do not say `dataset match` in the summary.
+- 7. If confidence is low, keep the spoken/trainer name and optionally add `approx.` rather than forcing a bad match.
+- 8. Compare trainer cues to `instructions.<transcript_lang>` or `instruction_steps.<transcript_lang>`, falling back to English.
+- 9. Include only cue highlights that are:
+-    - corrective for this user
+-    - repeated or emphasized
+-    - a safety/pain modification
+-    - a progression/regression
+-    - materially different from the dataset's generic instructions
+- Do not copy long dataset instructions into the summary. Use the dataset as a reference for standardization and cue filtering, not as summary content.
+- - Compare Chinese trainer cues against `instructions.zh` / `instruction_steps.zh` first. Only fall back to English when Chinese fields are missing or unhelpful.
+- Only add those pieces back if the user explicitly asks for a full application pipeline.
++ This skill turns strength-training recordings or transcripts into clean `WorkoutSummary <date>` notes for future reference. It does not require a specific app, hosted storage, or retrieval feature. Groq and OpenAI-compatible APIs are optional transcription backends, not requirements.
++ The useful behavior is:
++ 3. preserve enough timestamps to calculate exercise durations
++ 4. standardize exercise names and count completed work
++ 5. write a concise summary note
++ 6. print or save the result as requested
++ - Save generated transcripts or summaries only when asked, when the user supplied an explicit output path, or when operating a known recurring app workflow that has local artifact folders.
++ - Do not create web portals, review screens, retrieval indexes, or database records unless the task changes from `summarize this session` to `build an app pipeline`.
++ - Do not embed real API keys in the skill, output, logs, examples, or publishable package.
++ - `.caf` when local tooling can convert it safely
++ ```bash
++ ```
++    - Default for privacy-sensitive local work and Chinese/English trainer recordings when installed.
++    - Fast cloud option when `GROQ_API_KEY` is configured and the user accepts cloud transcription.
++ ## Trainwell-Style Local Transcription
++ Use this path for app-exported trainer recordings where the user expects repeatable local artifacts, especially Chinese/English Trainwell-style sessions.
++ 1. Locate the source recording or transcript. Common folder names are:
++    - `recordings/`
++    - `sources/`
++    - `sources-markdown/`
++    - `summary-markdown/`
++ 2. If a transcript already exists in Markdown, SRT, VTT, TXT, or JSON, summarize that directly.
++ 3. For Chinese-dominant audio, prefer local Whisper:
++ whisper "$SOURCE_AUDIO" \
++   --model turbo \
++   --language Chinese \
++   --task transcribe \
++   --output_format all \
++   --output_dir "$OUTDIR"
++ 4. Preserve segment timestamps from Whisper outputs. Convert or copy the transcript into Markdown only after retaining enough timing information for exercise durations.
++ 5. Save raw/converted transcript Markdown under `sources-markdown` when the workflow is recurring or the user asked for files.
++ 6. Save final summaries under `summary-markdown` when the workflow is recurring or the user asked for files.
++ 7. If exact sets, reps, or durations are ambiguous, use `~`, `about`, or `roughly`; do not invent precision.
++ Prefer local Whisper over browser, phone, or Google recognizer transcription unless the user explicitly accepts sending audio to that service or the audio is already known to work better there.
++ For privacy-sensitive or Chinese/English trainer recordings, use local Whisper first when available. Use `--language Chinese` when Chinese is dominant, especially for Trainwell-style recordings. If the trainer frequently says English exercise names and language forcing harms names, retry without `--language` and compare snippets before final summary. Keep `--output_format all` when practical because `.srt`, `.vtt`, `.json`, and `.txt` give useful cross-checks.
++ Use Groq's OpenAI-compatible audio transcription endpoint only when `GROQ_API_KEY` is configured and cloud transcription is acceptable:
++ - Prefer lossless stream copy splitting first; re-encode only when chunks are still too large or the container fails.
++ - Put the highest-value note on the next line as one bullet, without labels.
++ Use `hasaneyldrm/exercises-dataset` to standardize exercise names and avoid repeating generic instruction text when practical.
++ Dataset usage rules:
++ - Bring only top candidate records or compact snippets into the final summary step.
++ - If confidence is low, keep the spoken/trainer name and optionally add `approx.` rather than forcing a bad match.
++ Use the bundled helper before final summarization when useful:
++ Use `scripts/calc_duration.py` for calculating duration from one or more transcript ranges:
++ - Compare Chinese trainer cues against `instructions.zh` / `instruction_steps.zh` first. Fall back to English when Chinese fields are missing or unhelpful.
++ Only add those pieces if the user explicitly asks for a full application pipeline.

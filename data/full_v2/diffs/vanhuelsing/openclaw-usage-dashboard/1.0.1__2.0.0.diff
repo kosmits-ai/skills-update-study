@@ -1,0 +1,1169 @@
+vanhuelsing/openclaw-usage-dashboard  1.0.1 -> 2.0.0
+change_type: instructions+docs+code   changelog: v2.0 — Complete rewrite. Multi-model timeline with Models/Agents/Both toggle, model cards sorted by usage, agent activity heatmap, token efficiency metrics, system health (RAM VM-aware on macOS), period selector Hour/Day/Week/Month/Year. Cross-platform macOS/Linux/Windows. Zero dependencies, Node.js 18+. Security audit by Opus: XSS fix, CSP tightened, Intel Mac page size fix, Windows PowerShell fallback.
+
+### AUDIT.md  [docs]
++ # OpenClaw Usage Dashboard v2.0 — Pre-Release Audit
++ **Auditor:** Quality Agent (Senior Developer)
++ **Date:** 2026-03-27
++ **Files audited:** `server.js`, `dashboard.html`
++ **Verdict:** ✅ Ready to publish (after fixes applied below)
++ ---
++ ---
++ ---
++ ---
++ ---
++ ## Summary
++ Overall, this is well-built code with solid security fundamentals — no raw secrets exposed, proper HTML escaping, localhost-only binding, and good defensive limits. The audit found **9 issues** (2 critical, 3 moderate, 4 minor), all of which have been fixed in-place.
++ ## Issues Found & Fixed
++ ### 🔴 Critical
++ #### C1. `modelIds` ReferenceError in chart tooltip handler
++ **File:** `dashboard.html` (inside `drawChart`)
++ **Problem:** The `canvas.onmousemove` tooltip handler referenced `modelIds`, but `drawChart` is a standalone function — `modelIds` is only a parameter of `renderTimeline`, not in `drawChart`'s scope. Hovering over the chart would throw a `ReferenceError` every time.
++ **Fix:** Added `const chartModelIds = series.filter(s => !s.dashed && !s.id.startsWith('agent:')).map(s => s.id)` at the top of `drawChart`, and replaced `modelIds` with `chartModelIds` in the tooltip handler.
++ #### C2. `getAgentColor()` returns `undefined` for unknown agents
++ **File:** `dashboard.html`
++ **File:** `dashboard.html`
++ **File:** `dashboard.html`
++ **Problem:** When `dashData` is null or an agent ID isn't in `agentStats`, `keys.indexOf(id)` returns `-1`. `AGENT_PALETTE[-1 % 8]` evaluates to `AGENT_PALETTE[-1]` which is `undefined`. This would render `style="color:undefined"` in CSS — invalid/broken.
++ **Fix:** Added `if (idx < 0) return AGENT_PALETTE[0]` fallback.
++ ### 🟡 Moderate
++ #### M1. XSS via single quotes in `esc()` function
++ **Problem:** `esc()` escaped `<`, `>`, `&`, `"` but NOT single quotes. Since legend items use `onclick="toggleSeries('...')"` with single-quoted IDs, a model ID containing `'` could break out of the handler — an XSS vector.
++ **Fix:** Added `.replace(/'/g,'&#39;')` to `esc()`.
++ #### M2. CSP allows `unsafe-eval` unnecessarily
++ **File:** `server.js`
++ **File:** `server.js`
++ **File:** `server.js`
++ **File:** `server.js`
++ **Problem:** Content-Security-Policy included `'unsafe-eval'`, but no code uses `eval()`, `Function()`, or `setTimeout(string)`. This unnecessarily weakens CSP.
++ **Fix:** Removed `'unsafe-eval'` from the CSP directive. `'unsafe-inline'` is still needed for the inline `<script>` and `<style>`.
++ #### M3. Windows `wmic` deprecated/removed
++ **Problem:** Disk free space on Windows used `wmic logicaldisk`, which is deprecated in Windows 10 and removed in Windows 11. Would silently fail.
++ **Fix:** Added PowerShell `(Get-PSDrive C).Free` as the primary method, with `wmic` as fallback for older systems.
++ ### 🟢 Minor
++ #### m1. `vm_stat` page size hardcoded to 16384
++ **Problem:** Page size was hardcoded to 16384 (Apple Silicon). Intel Macs use 4096-byte pages. Memory calculation would be 4x too high on Intel.
++ **Fix:** Parse page size from `vm_stat` output header (`page size of N bytes`), fall back to 16384.
++ #### m2. Double-escaped HTML in tooltip model breakdown
++ **Problem:** `modelBreakdown` was already built with `esc()` on each model name, then wrapped again with `esc(modelBreakdown)`. Characters like `&` would render as `&amp;amp;`.
++ **Fix:** Removed the outer `esc()` since the inner values are already escaped.
++ #### m3. `openclaw version` shell command not Windows-compatible
++ **Problem:** Used `||` and `2>/dev/null` (bash syntax) with `shell: true`, which on Windows invokes `cmd.exe` where these don't work.
++ **Fix:** Split into two separate `try/catch` blocks, each calling one variant without shell redirection.
++ #### m4. Dead code cleanup
++ **Files:** `server.js`, `dashboard.html`
++ - **`CHUNK_SIZE = 200`** (server.js) — defined but never used. Removed.
++ - **`const alpha`** (dashboard.html, `renderHeatmap`) — computed but never used. Removed.
++ - **`const labels = ''`** (dashboard.html, `renderHeatmap`) — assigned but never used. Removed.
++ - **Heatmap color ternary dead branch** — `pct > 0.4 ? '56,189,248' : '56,189,248'` — both branches identical. Simplified to just `'56,189,248'`.
++ ## Issues Noted (Not Fixed — Acceptable for v2.0)
++ ### N1. Synchronous file I/O on every API request
++ `getAllSessionFiles` and `parseSessionFile` use `fs.readFileSync`/`fs.readdirSync`. For a local single-user dashboard this is fine — the `MAX_SESSIONS` (2000) and `MEMORY_BUDGET_MB` (100) limits prevent catastrophic blocking. Consider async I/O for v3 if scaling to multi-user.
++ ### N2. `parseInt()` without radix parameter
++ Multiple `parseInt()` calls omit the radix argument. All inputs are known decimal strings from regex captures of `\d+`, so this is functionally safe. Purely a lint-level concern.
++ ### N3. `sanitizeEntry()` / `sanitizeText()` defined but unused
++ These functions exist as defensive code for future config sanitization. The current code only exposes numeric aggregates (never raw log content), so they're not needed today. Kept as defense-in-depth.
++ ### N4. `configInfo` variable assigned but never read
++ Populated in `loadConfig()` but never referenced elsewhere. Presumably reserved for future features. Harmless.
++ ### N5. Auto-refresh interval not configurable
++ The 5-minute auto-refresh is hardcoded in dashboard.html. Not a problem, but could be a `--refresh-interval` flag for power users.
++ ## Checklist Results
++ | Category | Status |
++ |---|---|
++ | **macOS** | ✅ Works (with vm_stat page size fix) |
++ | **Linux** | ✅ Works (os.freemem fallback is fine) |
++ | **Windows** | ✅ Works (PowerShell + wmic fallback, separate version commands) |
++ | **Node 18/20** | ✅ All features compatible (optional chaining since v14, catch binding since v10) |
++ | **Port configurable** | ✅ `--port` CLI flag with clear error on EADDRINUSE |
++ | **No secrets leaked** | ✅ `getConfig()` extracts only model metadata, never keys/tokens |
++ | **XSS protection** | ✅ `esc()` covers all 5 HTML special chars; `textContent` used for error messages |
++ | **Path traversal** | ✅ No user-controlled file paths in serving logic |
++ | **CORS** | ✅ Restricted to `http://localhost:PORT` |
++ | **CSP** | ✅ Tightened (removed `unsafe-eval`) |
++ | **Error handling** | ✅ All file ops wrapped in try/catch, graceful fallbacks |
++ | **Edge cases** | ✅ 0 data, 1 bucket, null dashData all handled |
++ ## Files Modified
++ - `server.js` — 5 surgical edits
++ - `dashboard.html` — 6 surgical edits
++ - `AUDIT.md` — this file (new)
+
+### README.md  [docs]
++ # OpenClaw Usage Dashboard
++ A zero-dependency Node.js dashboard that reads your OpenClaw session logs and visualises token usage, model activity, and system health in real time. Runs entirely on your machine — no data ever leaves localhost.
++ ![Dashboard](references/screenshot.png)
++ ## Features
++ - **Timeline chart** — token usage over time with Models / Agents / Both filter toggle
++ - **Model cards** — token counts and request counts per model, sorted by most used
++ - **Agent activity** — breakdown of which agent made how many requests
++ - **Session heatmap** — activity distribution by hour of day
++ - **Token efficiency** — cache hit ratio and average prompt size
++ - **System health strip** — RAM (VM-aware on macOS), disk, uptime, and OpenClaw version
++ - **Time period selector** — Hour / Day / Week / Month / Year (keyboard shortcuts `1`–`5`)
++ - **Dark theme** — `#0a0e1a` background with 🦞 favicon
++ - **Localhost-only** — reads `~/.openclaw/agents/*/sessions/*.jsonl`; no network calls
++ ## Quick Start
++ ```bash
++ ```bash
++ ```bash
++ node server.js
++ ```
++ ```
++ ```
++ Open **http://localhost:7842** in your browser.
++ ### Custom port
++ node server.js --port 8080
++ ## Install via ClawHub
++ openclaw skills install openclaw-usage-dashboard
++ ## Requirements
++ - Node.js 18+
++ - No `npm install` needed — zero external dependencies
++ ## Platform Support
++ | Platform | Supported |
++ |----------|-----------|
++ | macOS    | ✅        |
++ | Linux    | ✅        |
++ | Windows  | ✅        |
++ ## Roadmap
++ - Rate limits tracking — [GitHub issue #55934](https://github.com/openclaw/openclaw/issues/55934)
++ ## License
++ MIT
+
+### SKILL.md  [instructions]
+- description: Generate an interactive local HTML dashboard showing OpenClaw API usage, costs, and rate-limit quotas across multiple LLM providers (Anthropic, OpenAI, Google, Moonshot, Mistral, Cohere, Groq). Reads session transcripts directly — no external service needed. Use when a user asks about API costs, token usage, model spend, quota/rate limits, usage by model or time period, or wants a cost overview dashboard. Triggers on "usage dashboard", "API kosten", "wie viel kostet", "kontingent", "rate limit", "token verbrauch", "cost dashboard", "openclaw costs", "spending overview".
+- Generate a self-contained HTML dashboard from OpenClaw session transcripts. Zero dependencies — Python 3.8+ stdlib only.
+- # Real data (reads ~/.openclaw/agents/main/sessions/)
+- python3 scripts/usage-dashboard-generic.py [output.html]
+- # Demo mode (generates 30 days of realistic mock data)
+- python3 scripts/usage-dashboard-generic.py [output.html] --demo
+- Default output: `~/openclaw-usage-dashboard.html`
+- Override sessions path: set `OPENCLAW_ROOT` env var.
+- - **Cost KPIs**: Total spend, today's cost, API calls, active model, cache hit rate, monthly projection
+- - **Model config**: Active / default / fallback models from `openclaw.json`
+- - **Anthropic quota gauges**: 5h and 7d rate limit utilization (requires `ANTHROPIC_API_KEY`)
+- - **Donut chart**: Cost distribution by model
+- - **Hourly sparkline**: Today's call volume by hour
+- - **Stacked bars**: Cost by period (daily / weekly / monthly / yearly)
+- - **Model table**: Per-model breakdown with token counts and cost
+- - **Detail table + chart**: Toggle between table and bar chart view per period
+- - **Budget tracker**: Set monthly limit, progress bar, localStorage persistence
+- - **CSV export**: Download any period view as CSV
+- - **Provider dropdown**: Filter by provider
+- ## Supported Providers
+- Anthropic, OpenAI, Google, Moonshot/Kimi, Mistral, Cohere, Groq — 30+ models with built-in pricing.
+- ## Customization
+- ### Add models
+- Edit `PRICES` dict in the script (price per 1M tokens):
+- ```python
+- "provider/model-name": {"input": 2.50, "output": 10.00, "cache_read": 1.25, "cache_write": 2.50}
+- Add to `MODEL_COLORS` and `ALIAS_MAP` as needed.
+- ### Pricing reference
+- See `references/prices.md` for current prices across all providers.
+- - Python 3.8+ (stdlib only)
+- - `ANTHROPIC_API_KEY` in env (optional, for live quota gauges)
++ description: Interactive local dashboard for OpenClaw API usage. Shows token consumption, request counts, and system health across all configured LLM models — broken down by model, agent, and time period (hour/day/week/month/year). Reads session logs directly; no external service needed, data stays local. Use when a user asks about token usage, model activity, how many requests were made, usage by agent, system health, or wants a usage overview. Triggers on "usage dashboard", "token usage", "how many requests", "model usage", "usage by agent", "usage stats", "system health", "ram usage".
++ A zero-dependency Node.js dashboard that reads your OpenClaw session logs and shows token usage, model activity, and system health in real time. Runs entirely on localhost — no data ever leaves your machine.
++ ```bash
++ node server.js
++ Open **http://localhost:7842** in your browser.
++ ### Custom port
++ node server.js --port 8080
++ - **Timeline chart** — requests over time with Models / Agents / Both filter toggle
++ - **Model cards** — token counts and request counts per model, sorted by most used
++ - **Agent activity** — breakdown of requests per agent
++ - **Session heatmap** — activity distribution by hour of day
++ - **Token efficiency** — cache hit ratio and average prompt size
++ - **System health** — RAM (VM-aware on macOS), disk, uptime, OpenClaw version
++ - **Period selector** — Hour / Day / Week / Month / Year (keyboard shortcuts `1`–`5`)
++ - Node.js 18+ (no `npm install` needed — zero external dependencies)
++ - OpenClaw session logs at `~/.openclaw/agents/*/sessions/*.jsonl`
++ ## Platform Support
++ | Platform | Supported |
++ |----------|-----------|
++ | macOS    | ✅        |
++ | Linux    | ✅        |
++ | Windows  | ✅        |
+
+### dashboard.html  [code]
++ <!DOCTYPE html>
++ <html lang="en">
++ <head>
++   <meta charset="UTF-8">
++   <meta name="viewport" content="width=device-width, initial-scale=1.0">
++   <title>OpenClaw Usage Dashboard</title>
++   <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🦞</text></svg>">
++   <style>
++     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
++     :root {
++       --bg: #0a0e1a; --bg2: #0f1525; --bg3: #141930; --bg4: #1a2040;
++       --border: #1e2a45; --border-light: #243058;
++       --text: #e2e8f0; --text-dim: #8fa3c4; --text-muted: #4a6080;
++       --accent: #38bdf8; --teal: #14b8a6; --amber: #f59e0b; --red: #ef4444; --green: #22c55e;
++       --period-hour: #3b82f6; --period-day: #ef4444; --period-week: #f97316;
++       --period-month: #a855f7; --period-year: #22c55e;
++       --radius: 12px; --radius-sm: 8px; --gap: 16px;
++       --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
++       --font-mono: 'SF Mono', 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     html { font-size: 16px; scroll-behavior: smooth; }
++     body { background: var(--bg); color: var(--text); font-family: var(--font); line-height: 1.5; min-height: 100vh; -webkit-font-smoothing: antialiased; }
++     ::-webkit-scrollbar { width: 6px; height: 6px; }
++     ::-webkit-scrollbar-track { background: var(--bg); }
++     ::-webkit-scrollbar-thumb { background: var(--border-light); border-radius: 3px; }
++     .app { max-width: 1600px; margin: 0 auto; padding: 0 var(--gap); }
++     .header { position: sticky; top: 0; z-index: 100; background: rgba(10,14,26,0.95); backdrop-filter: blur(12px); border-bottom: 1px solid var(--border); padding: 10px 0; }
++     .header-inner { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; max-width: 1600px; margin: 0 auto; padding: 0 var(--gap); }
++     .header-title { display: flex; align-items: center; gap: 8px; font-size: 1rem; font-weight: 700; color: var(--text); white-space: nowrap; }
++     .header-title .lobster { font-size: 1.4rem; }
++     .header-subtitle { font-size: 0.7rem; color: var(--text-muted); font-weight: 400; }
++     .header-spacer { flex: 1; }
++     .period-selector { display: flex; gap: 4px; background: var(--bg3); border-radius: var(--radius-sm); padding: 3px; border: 1px solid var(--border); }
++     .period-btn { padding: 5px 10px; border: none; background: transparent; color: var(--text-dim); border-radius: 6px; font-size: 0.75rem; font-weight: 600; cursor: pointer; transition: all 0.15s ease; min-width: 44px; min-height: 32px; display: flex; align-items: center; justify-content: center; gap: 4px; }
++     .pill-btn { padding: 3px 9px; border: 1px solid var(--border); background: transparent; color: var(--text-muted); border-radius: 999px; font-size: 0.7rem; font-weight: 600; cursor: pointer; transition: all 0.15s ease; }
++     .pill-btn:hover { border-color: var(--border-light); color: var(--text-dim); }
++     .pill-btn.active { background: var(--bg4); border-color: var(--accent); color: var(--accent); }
++     .period-btn:hover { background: var(--bg4); color: var(--text); }
++     .period-btn.active { color: white; }
++     .period-btn[data-period="hour"].active { background: var(--period-hour); }
++     .period-btn[data-period="day"].active { background: var(--period-day); }
++     .period-btn[data-period="week"].active { background: var(--period-week); }
++     .period-btn[data-period="month"].active { background: var(--period-month); }
++     .period-btn[data-period="year"].active { background: var(--period-year); }
++     .period-btn:disabled { opacity: 0.35; cursor: not-allowed; }
++     .period-btn .shortcut { font-size: 0.6rem; opacity: 0.6; background: rgba(255,255,255,0.1); border-radius: 3px; padding: 0 3px; }
++     .btn-refresh { display: flex; align-items: center; gap: 6px; padding: 6px 14px; background: var(--bg3); border: 1px solid var(--border); color: var(--text-dim); border-radius: var(--radius-sm); font-size: 0.78rem; font-weight: 600; cursor: pointer; transition: all 0.15s ease; min-height: 36px; }
++     .btn-refresh:hover { background: var(--bg4); border-color: var(--border-light); color: var(--text); }
++     .btn-refresh.loading .refresh-icon { animation: spin 1s linear infinite; }
++     @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
++     .main { padding: var(--gap) 0; display: flex; flex-direction: column; gap: var(--gap); }
++     .card { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
++     .card-header { display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-bottom: 1px solid var(--border); }
++     .card-title { font-size: 0.8rem; font-weight: 700; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.06em; }
++     .card-body { padding: 16px; }
++     .status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--teal); box-shadow: 0 0 6px var(--teal); animation: pulse 2s infinite; flex-shrink: 0; }
++     .status-dot.warn { background: var(--amber); box-shadow: 0 0 6px var(--amber); }
++     .status-dot.error { background: var(--red); box-shadow: 0 0 6px var(--red); animation: none; }
++     @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
++     .skeleton { background: linear-gradient(90deg, var(--bg3) 25%, var(--bg4) 50%, var(--bg3) 75%); background-size: 200% 100%; animation: shimmer 1.5s infinite; border-radius: 4px; }
++     @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
++     .skeleton-text { height: 14px; border-radius: 4px; margin: 4px 0; }
++     .spinner { width: 24px; height: 24px; border: 2px solid var(--border-light); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; }
++     .chart-container { position: relative; width: 100%; overflow: hidden; }
++     .chart-canvas { width: 100%; display: block; cursor: crosshair; }
++     .chart-legend { display: flex; flex-wrap: wrap; gap: 8px; padding: 10px 16px; border-top: 1px solid var(--border); }
++     .legend-item { display: flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: var(--radius-sm); cursor: pointer; transition: opacity 0.15s, background 0.15s; font-size: 0.75rem; color: var(--text-dim); border: 1px solid transparent; min-height: 28px; }
++     .legend-item:hover { background: var(--bg3); border-color: var(--border); }
++     .legend-item.hidden-series { opacity: 0.35; }
++     .legend-color { width: 20px; height: 3px; border-radius: 2px; flex-shrink: 0; }
++     .legend-dashed { width: 20px; height: 2px; background: repeating-linear-gradient(to right, white 0, white 4px, transparent 4px, transparent 8px); flex-shrink: 0; }
++     .chart-tooltip { position: absolute; background: var(--bg3); border: 1px solid var(--border-light); border-radius: var(--radius-sm); padding: 8px 12px; font-size: 0.75rem; color: var(--text); pointer-events: none; opacity: 0; transition: opacity 0.1s; z-index: 10; max-width: 240px; min-width: 140px; backdrop-filter: blur(8px); box-shadow: 0 4px 20px rgba(0,0,0,0.4); }
++     .chart-tooltip.visible { opacity: 1; }
++     .tooltip-time { color: var(--text-muted); font-size: 0.7rem; margin-bottom: 6px; }
++     .tooltip-row { display: flex; align-items: center; gap: 6px; padding: 2px 0; }
++     .tooltip-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
++     .tooltip-label { color: var(--text-dim); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
++     .tooltip-value { font-weight: 700; color: var(--text); }
++     .no-data { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 48px 16px; gap: 12px; text-align: center; }
++     .no-data-icon { font-size: 3rem; opacity: 0.5; }
++     .no-data-title { font-size: 1rem; font-weight: 600; color: var(--text-dim); }
++     .no-data-desc { font-size: 0.8rem; color: var(--text-muted); max-width: 360px; line-height: 1.6; }
++     .model-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr)); gap: var(--gap); }
++     .model-card { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; transition: border-color 0.15s, box-shadow 0.15s; position: relative; overflow: hidden; }
++     .model-card::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px; background: var(--model-color, var(--accent)); }
++     .model-card:hover { border-color: var(--border-light); box-shadow: 0 4px 20px rgba(0,0,0,0.3); }
++     .model-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px; }
++     .model-name { font-size: 0.85rem; font-weight: 700; color: var(--text); line-height: 1.3; }
++     .model-provider { font-size: 0.7rem; color: var(--text-muted); margin-top: 2px; }
++     .model-badge { font-size: 0.65rem; padding: 2px 6px; border-radius: 4px; font-weight: 700; background: var(--bg4); color: var(--text-dim); }
++     .model-requests { font-size: 1.4rem; font-weight: 800; color: var(--text); letter-spacing: -0.02em; }
++     .model-requests-label { font-size: 0.72rem; color: var(--text-muted); margin-left: 4px; }
++     .token-row { display: flex; gap: 6px; flex-wrap: wrap; margin: 10px 0; }
++     .token-chip { display: flex; align-items: center; gap: 4px; padding: 3px 7px; background: var(--bg3); border-radius: 6px; font-size: 0.72rem; border: 1px solid var(--border); }
++     .token-chip .label { color: var(--text-muted); font-weight: 700; font-size: 0.62rem; }
++     .token-chip .value { color: var(--text); font-weight: 700; font-family: var(--font-mono); }
++     .rate-gauge { margin-top: 12px; }
++     .rate-gauge-label { display: flex; justify-content: space-between; font-size: 0.68rem; color: var(--text-muted); margin-bottom: 4px; }
++     .rate-bar { height: 6px; background: var(--bg3); border-radius: 3px; overflow: hidden; border: 1px solid var(--border); }
++     .rate-fill { height: 100%; border-radius: 3px; transition: width 0.6s ease, background 0.3s; background: var(--teal); }
++     .rate-fill.warn { background: var(--amber); }
++     .rate-fill.critical { background: var(--red); }
++     .stats-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr)); gap: var(--gap); }
++     .stat-item { display: flex; align-items: flex-start; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--border); }
++     .stat-item:last-child { border-bottom: none; padding-bottom: 0; }
++     .stat-icon { width: 36px; height: 36px; border-radius: var(--radius-sm); background: var(--bg3); display: flex; align-items: center; justify-content: center; font-size: 1rem; flex-shrink: 0; }
++     .stat-label { font-size: 0.7rem; color: var(--text-muted); margin-bottom: 2px; }
++     .stat-value { font-size: 1rem; font-weight: 700; color: var(--text); font-family: var(--font-mono); }
++     .stat-sub { font-size: 0.68rem; color: var(--text-muted); margin-top: 1px; }
++     .heatmap { width: 100%; overflow-x: auto; padding-bottom: 4px; }
++     .heatmap-grid { display: grid; grid-template-columns: 28px repeat(24, minmax(12px, 1fr)); gap: 2px; min-width: 320px; }
++     .heatmap-label { font-size: 0.6rem; color: var(--text-muted); display: flex; align-items: center; justify-content: flex-end; padding-right: 4px; }
++     .heatmap-hour-label { font-size: 0.55rem; color: var(--text-muted); text-align: center; }
++     .heatmap-cell { aspect-ratio: 1; border-radius: 2px; background: var(--bg3); transition: transform 0.1s; }
++     .heatmap-cell:hover { transform: scale(1.2); z-index: 1; }
++     .health-strip { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 16px; display: flex; flex-wrap: wrap; gap: 16px; align-items: center; }
++     .health-item { display: flex; align-items: center; gap: 8px; font-size: 0.78rem; }
++     .health-label { color: var(--text-muted); }
++     .health-value { color: var(--text); font-weight: 600; font-family: var(--font-mono); }
++     .health-bar { width: 60px; height: 4px; background: var(--bg3); border-radius: 2px; overflow: hidden; }
++     .health-bar-fill { height: 100%; border-radius: 2px; background: var(--teal); transition: width 0.5s ease; }
++     .health-bar-fill.warn { background: var(--amber); }
++     .health-bar-fill.crit { background: var(--red); }
++     .footer { text-align: center; padding: 20px 16px; font-size: 0.72rem; color: var(--text-muted); border-top: 1px solid var(--border); line-height: 1.8; }
++     .footer a { color: var(--text-dim); text-decoration: none; }
++     .footer a:hover { color: var(--accent); text-decoration: underline; }
++     .data-banner { background: var(--bg3); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 8px 14px; font-size: 0.72rem; color: var(--text-muted); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
++     .data-banner strong { color: var(--text-dim); }
++     .data-banner-spacer { flex: 1; }
++     .error-card { background: rgba(239,68,68,0.08); border: 1px solid rgba(239,68,68,0.3); border-radius: var(--radius); padding: 16px; display: flex; gap: 12px; align-items: flex-start; }
++     .error-icon { font-size: 1.2rem; flex-shrink: 0; }
++     .error-title { font-weight: 600; color: #fca5a5; font-size: 0.85rem; margin-bottom: 4px; }
++     .error-msg { font-size: 0.75rem; color: var(--text-muted); font-family: var(--font-mono); }
++     .chart-loading { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: var(--bg2); z-index: 5; border-radius: var(--radius-sm); }
++     .section-title { font-size: 0.8rem; font-weight: 700; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 12px; display: flex; align-items: center; gap: 8px; }
++     .badge { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 999px; font-size: 0.68rem; font-weight: 700; background: var(--bg4); color: var(--text-dim); border: 1px solid var(--border); }
++     .agent-dots { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
++     .agent-dot { display: flex; align-items: center; gap: 5px; padding: 3px 8px; background: var(--bg3); border-radius: 6px; border: 1px solid var(--border); font-size: 0.7rem; }
++     .agent-dot span { color: var(--text-dim); }
++     .agent-dot em { color: var(--text-muted); font-style: normal; }
++     .hidden { display: none !important; }
++     @media (max-width: 600px) {
++       .period-btn .shortcut { display: none; }
++       .period-btn { padding: 5px 8px; min-width: 36px; }
++       .header-subtitle { display: none; }
++       .model-grid { grid-template-columns: 1fr; }
++       .stats-grid { grid-template-columns: 1fr; }
++   </style>
++ </head>
++ <body>
++ <header class="header">
++   <div class="header-inner">
++     <div class="header-title">
++       <span class="lobster" role="img" aria-label="lobster">🦞</span>
++       <div>
++       <div>
++         OpenClaw Usage Dashboard
++         <div class="header-subtitle">v2.0 &middot; Data stays local</div>
++       </div>
++       </div>
++       </div>
++       </div>
++       </div>
++       </div>
++       </div>
++       </div>
++     </div>
++     </div>
++     </div>
++     </div>
++     </div>
++     </div>
++     </div>
++     </div>
++     <div id="modelInfoBadge" style="display:none;align-items:center;gap:6px;font-size:0.72rem;padding:4px 10px;background:var(--bg3);border:1px solid var(--border);border-radius:999px;color:var(--text-muted);white-space:nowrap;"></div>
++     <div class="header-spacer"></div>
++     <div class="period-selector" role="group" aria-label="Time period">
++       <button class="period-btn" data-period="hour" onclick="setPeriod('hour')" title="Last hour (1)">Hour <span class="shortcut">1</span></button>
++       <button class="period-btn" data-period="day" onclick="setPeriod('day')" title="Last 24h (2)">Day <span class="shortcut">2</span></button>
++       <button class="period-btn" data-period="week" onclick="setPeriod('week')" title="Last 7 days (3)">Week <span class="shortcut">3</span></button>
++       <button class="period-btn" data-period="month" onclick="setPeriod('month')" title="Last 30 days (4)">Month <span class="shortcut">4</span></button>
++       <button class="period-btn" data-period="year" onclick="setPeriod('year')" title="Last year (5)">Year <span class="shortcut">5</span></button>
++     <button class="btn-refresh" id="refreshBtn" onclick="loadData()" aria-label="Refresh">
++       <svg class="refresh-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
++       Refresh
++     </button>
++   </div>
++ </header>
++ <div class="app">
++   <main class="main" id="mainContent">
++     <div class="data-banner" id="dataBanner" style="display:none">
++       <div class="status-dot" id="statusDot"></div>
++       <span id="bannerText">Loading...</span>
++       <div class="data-banner-spacer"></div>
++       <span id="bannerTime" style="color:var(--text-muted)"></span>
++     <div id="errorCard" class="error-card hidden">
++       <span class="error-icon">⚠️</span>
++         <div class="error-title">Failed to load dashboard data</div>
++         <div class="error-msg" id="errorMsg"></div>
++     <!-- Timeline Hero -->
++     <div class="card" id="timelineCard">
++       <div class="card-header">
++         <span>📈</span>
++         <span class="card-title">Request Timeline</span>
++         <div style="flex:1"></div>
++         <div style="display:flex;gap:4px;margin-right:8px">
++           <button class="pill-btn active" id="filterModels" onclick="setTimelineFilter('models')" title="Show by model">Models</button>
++           <button class="pill-btn" id="filterAgents" onclick="setTimelineFilter('agents')" title="Show by agent">Agents</button>
++           <button class="pill-btn" id="filterBoth" onclick="setTimelineFilter('both')" title="Show both">Both</button>
++         </div>
++         </div>
++         </div>
++         </div>
++         <span class="badge" id="timelineTotal" style="display:none"></span>
++       <div class="card-body" style="padding:12px 8px 0">
++         <div class="chart-container" id="chartContainer" style="height:220px">
++           <canvas class="chart-canvas" id="timelineChart" style="height:220px"></canvas>
++           <div class="chart-tooltip" id="chartTooltip"></div>
++           <div class="chart-loading" id="chartLoading">
++             <div class="spinner"></div>
++           </div>
++           </div>
++           <div id="chartNoData" style="display:none;position:absolute;inset:0;align-items:center;justify-content:center;flex-direction:column;gap:12px;text-align:center;padding:48px 16px;">
++             <div class="no-data-icon">📊</div>
++             <div class="no-data-title">No timeline data</div>
++             <div class="no-data-desc">No requests in this period. Try a longer time range.</div>
++       <div class="chart-legend" id="chartLegend"></div>
++     <!-- Model Cards -->
++     <div>
++       <div class="section-title">
++         🤖 Models
++         <span class="badge" id="modelCount"></span>
++       <div class="model-grid" id="modelGrid">
++         <div class="model-card"><div class="skeleton skeleton-text" style="width:60%;height:16px;margin-bottom:8px"></div><div class="skeleton skeleton-text" style="width:40%"></div><div class="skeleton skeleton-text" style="width:80%;height:28px;margin:12px 0 8px"></div><div class="skeleton skeleton-text"></div></div>
++         <div class="model-card"><div class="skeleton skeleton-text" style="width:70%;height:16px;margin-bottom:8px"></div><div class="skeleton skeleton-text" style="width:35%"></div><div class="skeleton skeleton-text" style="width:60%;height:28px;margin:12px 0 8px"></div><div class="skeleton skeleton-text"></div></div>
++     <!-- Stats Grid -->
++     <div class="stats-grid">
++       <!-- Token Efficiency -->
++       <div class="card" id="efficiencyCard">
++         <div class="card-header"><span>⚡</span><span class="card-title">Token Efficiency</span></div>
++         <div class="card-body" id="efficiencyBody">
++           <div class="skeleton skeleton-text" style="width:80%"></div>
++           <div class="skeleton skeleton-text" style="width:80%"></div>
++           <div class="skeleton skeleton-text" style="width:60%;margin-top:8px"></div>
++           <div class="skeleton skeleton-text" style="width:60%;margin-top:8px"></div>
++           <div class="skeleton skeleton-text" style="width:70%;margin-top:8px"></div>
++       <!-- Session Activity -->
++       <div class="card" id="activityCard">
++         <div class="card-header"><span>💬</span><span class="card-title">Session Activity</span></div>
++         <div class="card-body" id="activityBody">
++           <div class="skeleton skeleton-text" style="height:80px;margin-top:12px"></div>
++     <!-- System Health -->
++     <div class="health-strip" id="healthStrip">
++       <span style="font-size:0.72rem;color:var(--text-muted)">Loading system info...</span>
++     <footer class="footer">
++       <div>🦞 <strong>OpenClaw Usage Dashboard v2.0</strong> &middot; Built by <a href="https://github.com/vanhuelsing" target="_blank" rel="noopener">@vanhuelsing</a> &middot; Data stays local</div>
++       <div style="margin-top:4px"><a href="https://github.com/vanhuelsing" target="_blank" rel="noopener">GitHub</a> &middot; <a href="https://clawhub.com" target="_blank" rel="noopener">ClawHub</a></div>
++     </footer>
++   </main>
++ </div>
++ <script>
++ // ── State ──────────────────────────────────────────────────────────────────
++ let currentPeriod = 'day';
++ let dashData = null;
++ let hiddenSeries = new Set();
++ let timelineFilter = 'models'; // 'models' | 'agents' | 'both'
++ const AGENT_PALETTE = ['#a78bfa','#fb923c','#34d399','#f472b6','#60a5fa','#fbbf24','#e879f9','#4ade80'];
++ function getAgentColor(id) {
++   const keys = Object.keys(dashData?.agentStats || {}).sort();
++   const idx = keys.indexOf(id);
++   if (idx < 0) return AGENT_PALETTE[0];
++   return AGENT_PALETTE[idx % AGENT_PALETTE.length];
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
+
+### references/prices.md  [docs]
+- # Multi-Provider Pricing Reference
+- > **Stand: März 2026** — Preise in USD pro 1M Tokens.
+- > Diese Datei dokumentiert die im Skill unterstützten Provider und Preise.
+- ## Preis-Updates
+- Wenn sich Preise ändern oder neue Modelle hinzukommen:
+- 1. **Direkt im Script** (`scripts/usage-dashboard-generic.py` oder `usage-dashboard.py`):
+-    - `PRICES` Dictionary erweitern
+-    - `MODEL_COLORS` erweitern (für Visualisierung)
+-    - Optional: `ALIAS_MAP` erweitern (für kurze Modellnamen)
+- 2. **Diese Datei aktualisieren** mit neuen Preisen und Quellen
+- ---
+- ---
+- ---
+- ---
+- ---
+- ---
+- ---
+- ---
+- ## Anthropic
+- | Modell | Input | Output | Cache Read | Cache Write |
+- | Modell | Input | Output | Cache Read | Cache Write |
+- | Modell | Input | Output | Cache Read | Cache Write |
+- | Modell | Input | Output | Cache Read | Cache Write |
+- | Modell | Input | Output | Cache Read | Cache Write |
+- | Modell | Input | Output | Cache Read | Cache Write |
+- | Modell | Input | Output | Cache Read | Cache Write |
+- |---|---|---|---|---|
+- |---|---|---|---|---|
+- |---|---|---|---|---|
+- |---|---|---|---|---|
+- |---|---|---|---|---|
+- |---|---|---|---|---|
+- |---|---|---|---|---|
+- | claude-opus-4-6 | $15.00 | $75.00 | $1.50 | $18.75 |
+- | claude-sonnet-4-6 | $3.00 | $15.00 | $0.30 | $3.75 |
+- | claude-sonnet-4-5 | $3.00 | $15.00 | $0.30 | $3.75 |
+- | claude-haiku-4-5 | $0.80 | $4.00 | $0.08 | $1.00 |
+- 🔗 https://www.anthropic.com/pricing
+- ## OpenAI
+- | gpt-4o | $2.50 | $10.00 | $1.25 | $2.50 |
+- | gpt-4o-mini | $0.15 | $0.60 | $0.075 | $0.15 |
+- | o3-mini | $1.10 | $4.40 | $0.55 | $1.10 |
+- | o1 | $15.00 | $60.00 | $7.50 | $15.00 |
+- | o1-mini | $1.10 | $4.40 | $0.55 | $1.10 |
+- 🔗 https://platform.openai.com/docs/pricing
+- ## Google (Gemini)
+- | gemini-2.0-flash | $0.10 | $0.40 | $0.025 | $0.10 |
+- | gemini-2.0-pro | $3.50 | $10.50 | $0.875 | $3.50 |
+- | gemini-1.5-pro | $1.25 | $5.00 | $0.312 | $1.25 |
+- | gemini-1.5-flash | $0.075 | $0.30 | $0.019 | $0.075 |
+- 🔗 https://ai.google.dev/pricing
+- ## Moonshot / Kimi
+- | kimi-k2.5 | $0.00* | $0.00* | $0.00* | $0.00* |
+- | moonshot-v1-8k | $0.00* | $0.00* | $0.00* | $0.00* |
+- > *Preise werden nicht per API geloggt — $0.00 als Platzhalter.
+- > Tatsächliche Preise: https://platform.moonshot.cn/pricing
+- ## Mistral AI
+- | mistral-large-latest | $2.00 | $6.00 | $0.50 | $2.00 |
+- | mistral-medium | $0.60 | $1.80 | $0.15 | $0.60 |
+- | mistral-small | $0.10 | $0.30 | $0.025 | $0.10 |
+- | codestral | $0.20 | $0.60 | $0.05 | $0.20 |
+- 🔗 https://mistral.ai/technology/#pricing
+- ## Cohere
+- | command-r-plus | $2.50 | $10.00 | $0.625 | $2.50 |
+- | command-r | $0.50 | $1.50 | $0.125 | $0.50 |
+- 🔗 https://cohere.com/pricing
+- ## Groq
+- | llama-3.3-70b-versatile | $0.59 | $0.79 | — | — |
+- | llama-3.1-8b-instant | $0.05 | $0.08 | — | — |
+- | gemma2-9b-it | $0.20 | $0.40 | — | — |
+- > Ultra-schnelle Inference, kein Caching
+- > 🔗 https://groq.com/pricing/
+- ## Hinweise
+- - **Cache-Preise** gelten nur wenn Prompt Caching vom Modell unterstützt und aktiv ist
+- - **Groq**: Kein Caching verfügbar, Preise pro 1M Input/Output Tokens
+- - **Moonshot**: Preise werden nicht in OpenClaw Session-Logs gespeichert — Dashboard zeigt $0.00
+- - Preise können sich ändern — immer offizielle Provider-Seiten prüfen
+
+### scripts/usage-dashboard-generic.py  [code]
+- #!/usr/bin/env python3
+- """
+- """
+- OpenClaw Usage Dashboard — Generic Multi-Provider Edition v2
+- =============================================================
+- Reads session transcripts and generates an interactive HTML dashboard.
+- Supports: Anthropic, OpenAI, Google (Gemini), Moonshot, Mistral, Cohere, Groq
+- Usage: python3 usage-dashboard-generic.py [output.html]
+- import json, glob, os, sys, math
+- from collections import defaultdict
+- from datetime import datetime, timedelta
+- _OPENCLAW_ROOT = os.environ.get("OPENCLAW_ROOT", os.path.expanduser("~/.openclaw"))
+- SESSIONS_DIR = os.path.join(_OPENCLAW_ROOT, "agents", "main", "sessions")
+- # Parse arguments
+- OUTPUT_PATH = os.path.join(os.path.expanduser("~"), "openclaw-usage-dashboard.html")
+- demo_mode = False
+- for i, arg in enumerate(sys.argv[1:], 1):
+-     if arg == "--demo":
+-         demo_mode = True
+-     elif not arg.startswith("-"):
+-         # Sanitize output path: resolve to absolute, reject path traversal
+-         candidate = os.path.realpath(os.path.expanduser(arg))
+-         if ".." in os.path.relpath(candidate, os.getcwd()):
+-             pass  # allow absolute paths but resolve them
+-         OUTPUT_PATH = candidate
+- # ═══════════════════════════════════════════════════════════════════════════════
+- # ═══════════════════════════════════════════════════════════════════════════════
+- # ═══════════════════════════════════════════════════════════════════════════════
+- # ═══════════════════════════════════════════════════════════════════════════════
+- # ═══════════════════════════════════════════════════════════════════════════════
+- # ═══════════════════════════════════════════════════════════════════════════════
+- # ═══════════════════════════════════════════════════════════════════════════════
+- # ═══════════════════════════════════════════════════════════════════════════════
+- # PRICING DATABASE — Extend this for new models
+- # Format: provider/model-name -> price per 1M tokens in USD
+- # Cache prices apply only when prompt caching is active
+- PRICES = {
+-     # ── Anthropic ─────────────────────────────────────────────────────────────
+-     "anthropic/claude-opus-4-6":       {"input": 15.00, "output": 75.00, "cache_read": 1.50, "cache_write": 18.75},
+-     "anthropic/claude-sonnet-4-6":     {"input": 3.00,  "output": 15.00, "cache_read": 0.30, "cache_write": 3.75},
+-     "anthropic/claude-sonnet-4-5":     {"input": 3.00,  "output": 15.00, "cache_read": 0.30, "cache_write": 3.75},
+-     "anthropic/claude-haiku-4-5":      {"input": 0.80,  "output": 4.00,  "cache_read": 0.08, "cache_write": 1.00},
+-     # ── OpenAI ────────────────────────────────────────────────────────────────
+-     "openai/gpt-4o":                   {"input": 2.50,  "output": 10.00, "cache_read": 1.25, "cache_write": 2.50},
+-     "openai/gpt-4o-mini":              {"input": 0.15,  "output": 0.60,  "cache_read": 0.075,"cache_write": 0.15},
+-     "openai/o3-mini":                  {"input": 1.10,  "output": 4.40,  "cache_read": 0.55, "cache_write": 1.10},
+-     "openai/o1":                       {"input": 15.00, "output": 60.00, "cache_read": 7.50, "cache_write": 15.00},
+-     "openai/o1-mini":                  {"input": 1.10,  "output": 4.40,  "cache_read": 0.55, "cache_write": 1.10},
+-     # ── Google (Gemini) ───────────────────────────────────────────────────────
+-     "google/gemini-2.0-flash":         {"input": 0.10,  "output": 0.40,  "cache_read": 0.025,"cache_write": 0.10},
+-     "google/gemini-2.0-pro":           {"input": 3.50,  "output": 10.50, "cache_read": 0.875,"cache_write": 3.50},
+-     "google/gemini-1.5-pro":           {"input": 1.25,  "output": 5.00,  "cache_read": 0.312,"cache_write": 1.25},
+-     "google/gemini-1.5-flash":         {"input": 0.075, "output": 0.30,  "cache_read": 0.019,"cache_write": 0.075},
+-     # ── Moonshot / Kimi ───────────────────────────────────────────────────────
+-     "moonshot/kimi-k2.5":              {"input": 0.0,   "output": 0.0,   "cache_read": 0.0,  "cache_write": 0.0},
+-     "moonshot/moonshot-v1-8k":         {"input": 0.0,   "output": 0.0,   "cache_read": 0.0,  "cache_write": 0.0},
+-     # ── Mistral AI ────────────────────────────────────────────────────────────
+-     "mistral/mistral-large-latest":    {"input": 2.00,  "output": 6.00,  "cache_read": 0.50, "cache_write": 2.00},
+-     "mistral/mistral-medium":          {"input": 0.60,  "output": 1.80,  "cache_read": 0.15, "cache_write": 0.60},
+-     "mistral/mistral-small":           {"input": 0.10,  "output": 0.30,  "cache_read": 0.025,"cache_write": 0.10},
+-     "mistral/codestral":               {"input": 0.20,  "output": 0.60,  "cache_read": 0.05, "cache_write": 0.20},
+-     # ── Cohere ────────────────────────────────────────────────────────────────
+-     "cohere/command-r-plus":           {"input": 2.50,  "output": 10.00, "cache_read": 0.625,"cache_write": 2.50},
+-     "cohere/command-r":                {"input": 0.50,  "output": 1.50,  "cache_read": 0.125,"cache_write": 0.50},
+-     # ── Groq (Ultra-fast inference) ───────────────────────────────────────────
+-     "groq/llama-3.3-70b-versatile":    {"input": 0.59,  "output": 0.79,  "cache_read": 0.0,  "cache_write": 0.0},
+-     "groq/llama-3.1-8b-instant":       {"input": 0.05,  "output": 0.08,  "cache_read": 0.0,  "cache_write": 0.0},
+-     "groq/gemma2-9b-it":               {"input": 0.20,  "output": 0.40,  "cache_read": 0.0,  "cache_write": 0.0},
+- }
+- }
+- }
+- # ── Legacy aliases (model names without provider prefix) ───────────────────────
+- ALIAS_MAP = {
+-     "claude-opus-4-6": "anthropic/claude-opus-4-6",
+-     "claude-sonnet-4-6": "anthropic/claude-sonnet-4-6",
+-     "claude-sonnet-4-5": "anthropic/claude-sonnet-4-5",
+-     "claude-haiku-4-5": "anthropic/claude-haiku-4-5",
+-     "gpt-4o": "openai/gpt-4o",
+-     "gpt-4o-mini": "openai/gpt-4o-mini",
+-     "o3-mini": "openai/o3-mini",
+-     "kimi-k2.5": "moonshot/kimi-k2.5",
+-     "gemini-2.0-flash": "google/gemini-2.0-flash",
+- # Colors for visualization (can be extended)
+- MODEL_COLORS = {
+-     "anthropic/claude-opus-4-6": "#f97316",   # orange
+-     "anthropic/claude-sonnet-4-6": "#06b6d4", # cyan
+-     "anthropic/claude-sonnet-4-5": "#0891b2", # darker cyan
+-     "anthropic/claude-haiku-4-5": "#8b5cf6",  # violet
+-     "openai/gpt-4o": "#22c55e",               # green
+-     "openai/gpt-4o-mini": "#10b981",          # emerald
+-     "openai/o3-mini": "#14b8a6",              # teal
+-     "openai/o1": "#0ea5e9",                   # sky
+-     "moonshot/kimi-k2.5": "#3b82f6",          # blue
+-     "google/gemini-2.0-flash": "#eab308",     # yellow
+-     "google/gemini-2.0-pro": "#f59e0b",       # amber
+-     "mistral/mistral-large-latest": "#ec4899", # pink
+-     "cohere/command-r-plus": "#a855f7",       # purple
+- def normalize_model(model: str) -> str:
+-     """Normalize model name to full provider/model format."""
+-     if model in ALIAS_MAP:
+-         return ALIAS_MAP[model]
+-     if "/" not in model and model in PRICES:
+-         # Try to find by suffix
+-         for full_name in PRICES:
+-             if full_name.endswith(f"/{model}"):
+-                 return full_name
+-     return model
+- def get_price(model: str) -> dict:
+-     """Get pricing info for a model, trying various fallbacks."""
+-     normalized = normalize_model(model)
+-     normalized = normalize_model(model)
+-     if normalized in PRICES:
+-         return PRICES[normalized]
+-     # Try without provider prefix
+-     for key in PRICES:
+-         if key.endswith(f"/{model}") or key == model:
+-             return PRICES[key]
+-     # Default: free (unknown model)
+-     return {"input": 0.0, "output": 0.0, "cache_read": 0.0, "cache_write": 0.0}
+- def get_color(model: str) -> str:
+-     """Get color for a model, with fallback."""
+-     if normalized in MODEL_COLORS:
+-         return MODEL_COLORS[normalized]
+-     # Try without provider
+-     for key in MODEL_COLORS:
+-         if key.endswith(f"/{model}"):
+-             return MODEL_COLORS[key]
+-     # Generate deterministic color from model name
+-     hash_val = sum(ord(c) for c in model) % 360
+-     return f"hsl({hash_val}, 70%, 50%)"
+- def calc_cost(model: str, usage: dict) -> float:
+-     """Calculate cost in USD for a usage entry."""
+-     price = get_price(model)
+-     inp = usage.get("input", 0)
+-     out = usage.get("output", 0)
+-     cr = usage.get("cache_read", 0) or usage.get("cacheRead", 0)
+-     cw = usage.get("cache_write", 0) or usage.get("cacheWrite", 0)
+-     cost = (inp * price["input"] + out * price["output"]) / 1e6
+-     if cr or cw:
+-         cost += (cr * price.get("cache_read", price["input"]*0.1) +
+-                  cw * price.get("cache_write", price["input"]*0.125)) / 1e6
+-     return cost
+- # DATA LOADING
+- def load_sessions():
+-     """Load all session transcripts."""
+-     sessions = []
+-     if not os.path.isdir(SESSIONS_DIR):
+-         print(f"⚠️ Sessions directory not found: {SESSIONS_DIR}")
+-         return sessions
+-     for fn in sorted(glob.glob(os.path.join(SESSIONS_DIR, "*.jsonl")) + glob.glob(os.path.join(SESSIONS_DIR, "*.jsonl.reset.*"))):
+-         try:
+-         try:
+-         try:
+-             with open(fn) as f:
+-                 lines = [json.loads(l) for l in f if l.strip()]
+-                 sessions.append({"file": fn, "lines": lines})
+-         except Exception as e:
+-             print(f"⚠️ Error reading {fn}: {e}")
+-     return sessions
+- def parse_transcripts(sessions):
+-     """Extract usage data from all sessions."""
+-     model_usage = defaultdict(lambda: {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "cost": 0.0, "turns": 0})
+-     model_usage = defaultdict(lambda: {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "cost": 0.0, "turns": 0})
+-     daily = defaultdict(lambda: {"total": 0.0, "models": defaultdict(float), "turns": 0})
+-     daily = defaultdict(lambda: {"total": 0.0, "models": defaultdict(float), "turns": 0})
+-     hourly_today = defaultdict(lambda: defaultdict(lambda: {"cost": 0.0, "turns": 0}))
+-     hourly_today = defaultdict(lambda: defaultdict(lambda: {"cost": 0.0, "turns": 0}))
+-     weekly = defaultdict(lambda: {"total": 0.0, "models": defaultdict(float), "turns": 0})
+-     weekly = defaultdict(lambda: {"total": 0.0, "models": defaultdict(float), "turns": 0})
+-     monthly = defaultdict(lambda: {"total": 0.0, "models": defaultdict(float), "turns": 0})
+-     monthly = defaultdict(lambda: {"total": 0.0, "models": defaultdict(float), "turns": 0})
+-     yearly = defaultdict(lambda: {"total": 0.0, "models": defaultdict(float), "turns": 0})
+-     yearly = defaultdict(lambda: {"total": 0.0, "models": defaultdict(float), "turns": 0})
+-     today_str = datetime.now().strftime("%Y-%m-%d")
+-     for sess in sessions:
+-         for obj in sess["lines"]:
+-             msg = obj.get("message", {})
+-             usage = msg.get("usage")
+-             model = msg.get("model", "")
+-             ts = msg.get("timestamp") or obj.get("timestamp")
+-             if not usage or not model or model in ("delivery-mirror", "gateway-injected"):
+-                 continue
+-             # Normalize model name
+-             model = normalize_model(model)
+-             # Extract usage numbers (support both camelCase and snake_case)
+-             inp = usage.get("input", 0)
+-             out = usage.get("output", 0)
+-             cr = usage.get("cache_read", 0) or usage.get("cacheRead", 0)
+-             cw = usage.get("cache_write", 0) or usage.get("cacheWrite", 0)
+-             cost = calc_cost(model, usage)
+-             # Aggregate by model
+-             u = model_usage[model]
+-             u["input"] += inp
+-             u["output"] += out
+-             u["cache_read"] += cr
+-             u["cache_write"] += cw
+-             u["cost"] += cost
+-             u["turns"] += 1
+-             # Time-based aggregation
+-             if ts:
+-                 try:
+-                     # Support both Unix ms (13 digits) and ISO string formats
+-                     if isinstance(ts, (int, float)) or (isinstance(ts, str) and ts.isdigit() and len(ts) >= 10):
+-                         ts_int = int(ts)
+-                         # Convert ms to seconds if needed
+-                         if ts_int > 1e12:
+-                             ts_int = ts_int / 1000
+-                         dt = datetime.fromtimestamp(ts_int)
+-                     else:
+-                     else:
+-                     else:
+-                         dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+-                     day = dt.strftime("%Y-%m-%d")
+-                     week = f"{dt.year}-W{dt.isocalendar()[1]:02d}"
+-                     month = dt.strftime("%Y-%m")
+-                     year = str(dt.year)
+-                     hour = dt.hour
+-                     # Daily
+-                     daily[day]["total"] += cost
+-                     daily[day]["models"][model] += cost
+-                     daily[day]["turns"] += 1
+-                     # Hourly (today only)
+-                     if day == today_str:
+-                         hour_str = f"{hour:02d}:00"
+-                         hourly_today[hour_str][model]["cost"] += cost
+-                         hourly_today[hour_str][model]["turns"] += 1
+-                     # Weekly
+-                     weekly[week]["total"] += cost
+-                     weekly[week]["models"][model] += cost
+-                     weekly[week]["turns"] += 1
+-                     # Monthly
+-                     monthly[month]["total"] += cost
+-                     monthly[month]["models"][model] += cost
+-                     monthly[month]["turns"] += 1
+-                     # Yearly
+-                     yearly[year]["total"] += cost
+-                     yearly[year]["models"][model] += cost
+-                     yearly[year]["turns"] += 1
+-                 except Exception:
+-                     pass
+-     return model_usage, daily, hourly_today, weekly, monthly, yearly
+-     return model_usage, daily, hourly_today, weekly, monthly, yearly
+- # RATE LIMIT CHECKING (Anthropic-specific, optional)
+- def get_anthropic_limits():
+-     """Query Anthropic rate limits if API key available."""
+-     key = os.environ.get("ANTHROPIC_API_KEY")
+-     if not key:
+-         return {"error": "No ANTHROPIC_API_KEY"}
+-     try:
+-     try:
+-         import urllib.request, urllib.error
+-         req = urllib.request.Request(
+-             "https://api.anthropic.com/v1/messages",
+-             data=b'{"model": "claude-sonnet-4-6", "max_tokens": 1, "messages": [{"role": "user", "content": "hi"}]}',
+-             headers={
+-                 "x-api-key": key,
+-                 "anthropic-version": "2023-06-01",
+-                 "content-type": "application/json"
+-             }
+-             }
+-         )
+-             urllib.request.urlopen(req, timeout=10)
+-         except urllib.error.HTTPError as e:
+-             headers = dict(e.headers)
+-             limits = {}
+-             for window in ["5h", "7d"]:
+-                 pct = headers.get(f"anthropic-ratelimit-unified-{window}-utilization")
+-                 status = headers.get(f"anthropic-ratelimit-unified-{window}-status")
+-                 reset = headers.get(f"anthropic-ratelimit-unified-{window}-reset")
+-                 if pct:
+-                     limits[window] = {
+-                         "pct": float(pct),
+-                         "status": status,
+-                         "reset": int(reset) if reset else None
+-                     }
+-                     }
+-             # Overage info
+-             ov_status = headers.get("anthropic-ratelimit-unified-overage-status")
+-             if ov_status:
+-                 limits["overage"] = {
+-                     "status": ov_status,
+-                     "in_use": headers.get("anthropic-ratelimit-unified-overage-in-use", "").lower() == "true",
+-                     "reset": headers.get("anthropic-ratelimit-unified-overage-reset"),
+-                 }
+-             return limits
+-     except Exception as e:
+-         return {"error": str(e)}
+-     return {"error": "Unknown"}
+- def ts_to_local(ts):
+-     if not ts:
+-         return "—"
+-         return "—"
+-         return datetime.fromtimestamp(int(ts)).strftime("%d.%m. %H:%M")
+-     except:
+- # HTML GENERATION
+- def build_html(data):
+-     """Generate interactive HTML dashboard."""
+-     # Prepare data structures
+-     model_costs = [(m, u["cost"], u["turns"], get_color(m)) for m, u in data["model_usage"].items()]
+-     model_costs.sort(key=lambda x: -x[1])
+
+### server.js  [code]
++ #!/usr/bin/env node
++ /**
++  * OpenClaw Usage Dashboard v2.0 — Local Server
++  * Serves dashboard.html and provides secure API endpoints for log parsing.
++  *
++  *
++  * Usage: node server.js [--port 7842] [--host 127.0.0.1]
++  * Security: All data stays local. No external network calls.
++  */
++ 'use strict';
++ const http = require('http');
++ const fs = require('fs');
++ const path = require('path');
++ const os = require('os');
++ const { execSync } = require('child_process');
++ // ─── CONFIG ────────────────────────────────────────────────────────────────
++ const DEFAULT_PORT = 7842;
++ const DEFAULT_HOST = '127.0.0.1';
++ const MAX_SESSIONS = 2000;
++ const MAX_DAYS = 365;
++ const MEMORY_BUDGET_MB = 100;
++ // Parse CLI args
++ const args = process.argv.slice(2);
++ const portArg = args.indexOf('--port');
++ const hostArg = args.indexOf('--host');
++ const PORT = portArg !== -1 ? parseInt(args[portArg + 1]) : DEFAULT_PORT;
++ const HOST = hostArg !== -1 ? args[hostArg + 1] : DEFAULT_HOST;
++ // OpenClaw home directory (cross-platform)
++ function getOpenClawHome() {
++   if (process.platform === 'win32') {
++     return path.join(process.env.USERPROFILE || os.homedir(), '.openclaw');
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   return path.join(os.homedir(), '.openclaw');
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ const OPENCLAW_HOME = getOpenClawHome();
++ const AGENTS_DIR = path.join(OPENCLAW_HOME, 'agents');
++ // ─── SECRETS SANITIZATION ─────────────────────────────────────────────────
++ const SECRET_PATTERNS = [
++   /\bsk-ant-[a-zA-Z0-9_-]{20,}\b/g,
++   /\bsk-proj-[a-zA-Z0-9_-]{20,}\b/g,
++   /\bsk-kimi-[a-zA-Z0-9_-]{20,}\b/g,
++   /\bsk-[a-zA-Z0-9_-]{32,}\b/g,
++   /Bearer\s+[a-zA-Z0-9_\-\.]{32,}/gi,
++   /([A-Z_]{2,}(?:_API)?_KEY|TOKEN|PASSWORD|SECRET)\s*[:=]\s*["']?[^\s"',\n]{8,}["']?/gi,
++   /\bsbp_[a-zA-Z0-9]{20,}\b/g,
++   /\bntn_[a-zA-Z0-9_-]{20,}\b/g,
++   /eyJ[A-Za-z0-9_-]{20,}/g,
++   /AIzaSy[A-Za-z0-9_-]{20,}/g,
++ ];
++ const RISKY_FIELDS = new Set(['solutionCode', 'systemPrompt', 'errorOutput', 'rawResponse', 'envVars', 'credentials', 'headers']);
++ function sanitizeText(text) {
++   if (typeof text !== 'string') return text;
++   let s = text;
++   for (const pat of SECRET_PATTERNS) {
++     s = s.replace(pat, '[REDACTED]');
++   // Truncate very long strings
++   if (s.length > 2000) s = s.substring(0, 2000) + ' [truncated]';
++   return s;
++ function sanitizeEntry(entry) {
++   // We only expose safe aggregated metrics — never raw message content
++   // This function is used to clean config data if needed
++   if (typeof entry !== 'object' || entry === null) return entry;
++   const out = {};
++   for (const [k, v] of Object.entries(entry)) {
++     if (RISKY_FIELDS.has(k)) continue;
++     if (typeof v === 'string') {
++       out[k] = sanitizeText(v);
++     } else if (typeof v === 'object' && v !== null) {
++       out[k] = sanitizeEntry(v);
++     } else {
++     } else {
++       out[k] = v;
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++   return out;
++ // ─── LOG PARSING ──────────────────────────────────────────────────────────
++ function parseSessionFile(filePath) {
++   const result = {
++     sessionId: null,
++     agentId: null,
++     timestamp: null,
++     endTime: null,
++     models: {},        // modelId -> { requests, inputTokens, outputTokens, cacheRead, cacheWrite }
++     messageCount: 0,
++     durationMs: 0,
++     rateLimits: {},    // modelId -> { limitRequests, usedRequests, limitTokens, usedTokens }
++   };
++   };
++   };
++   let content;
++   try {
++   try {
++   try {
++   try {
++   try {
++     const stat = fs.statSync(filePath);
++     // Memory budget: skip files > 10MB individually
++     if (stat.size > 10 * 1024 * 1024) return null;
++     content = fs.readFileSync(filePath, 'utf8');
++   } catch (e) {
++   } catch (e) {
++     return null;
++   const lines = content.split('\n');
++   let firstTimestamp = null;
++   let lastTimestamp = null;
++   // Extract agent from path
++   const pathParts = filePath.split(path.sep);
++   const agentsIdx = pathParts.indexOf('agents');
++   if (agentsIdx !== -1 && agentsIdx + 1 < pathParts.length) {
++     result.agentId = pathParts[agentsIdx + 1];
++   for (const line of lines) {
++     if (!line.trim()) continue;
++     let entry;
++     try {
++     try {
++     try {
++     try {
++     try {
++     try {
++     try {
++     try {
++     try {
++       entry = JSON.parse(line);
++     } catch (e) {
++     } catch (e) {
++     } catch (e) {
++     } catch (e) {
++     } catch (e) {
++       continue; // Skip malformed lines gracefully
++     const type = entry.type;
++     const ts = entry.timestamp ? new Date(entry.timestamp).getTime() : null;
++     if (ts) {
++       if (!firstTimestamp || ts < firstTimestamp) firstTimestamp = ts;
++       if (!lastTimestamp || ts > lastTimestamp) lastTimestamp = ts;
++     if (type === 'session') {
++       result.sessionId = entry.id;
++       result.timestamp = entry.timestamp;
++     if (type === 'message') {
++       const msg = entry.message || {};
++       const role = msg.role;
++       const usage = msg.usage;
++       const model = msg.model;
++       if (role === 'assistant' && usage && model) {
++         result.messageCount++;
++         if (!result.models[model]) {
++           result.models[model] = { requests: 0, inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheWrite: 0 };
++         }
++         }
++         result.models[model].requests++;
++         result.models[model].inputTokens += (usage.input || 0);
++         result.models[model].outputTokens += (usage.output || 0);
++         result.models[model].cacheRead += (usage.cacheRead || 0);
++         result.models[model].cacheWrite += (usage.cacheWrite || 0);
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       // Extract rate limit data from tool results if present
++       if (role === 'toolResult') {
++         const content = msg.content || [];
++         for (const item of (Array.isArray(content) ? content : [])) {
++           if (item && item.type === 'text' && typeof item.text === 'string') {
++             // Look for rate-limit headers in curl output
++             const rlReq = item.text.match(/anthropic-ratelimit-requests-remaining:\s*(\d+)/i);
++             const rlTok = item.text.match(/anthropic-ratelimit-tokens-remaining:\s*(\d+)/i);
++             const rlReqLimit = item.text.match(/anthropic-ratelimit-requests-limit:\s*(\d+)/i);
++             const rlTokLimit = item.text.match(/anthropic-ratelimit-tokens-limit:\s*(\d+)/i);
++             if (rlReq || rlTok) {
++               // Associate with the most recent model
++               const lastModel = Object.keys(result.models).pop();
++               if (lastModel) {
++                 if (!result.rateLimits[lastModel]) {
++                   result.rateLimits[lastModel] = {};
++                 }
++                 if (rlReqLimit) result.rateLimits[lastModel].limitRequests = parseInt(rlReqLimit[1]);
++                 if (rlReq) result.rateLimits[lastModel].usedRequests = parseInt(rlReq[1]);
++                 if (rlTokLimit) result.rateLimits[lastModel].limitTokens = parseInt(rlTokLimit[1]);
++                 if (rlTok) result.rateLimits[lastModel].usedTokens = parseInt(rlTok[1]);
++               }
++             }
++           }
++   if (firstTimestamp) result.timestamp = result.timestamp || new Date(firstTimestamp).toISOString();
++   if (firstTimestamp && lastTimestamp) result.durationMs = lastTimestamp - firstTimestamp;
++   return result;
++ // ─── DATA AGGREGATION ─────────────────────────────────────────────────────
++ function getAllSessionFiles() {
++   const files = [];
++     const agentDirs = fs.readdirSync(AGENTS_DIR).filter(d => {
++       try {
++       try {
++       try {
++         return fs.statSync(path.join(AGENTS_DIR, d)).isDirectory();
++       } catch { return false; }
++     });
++     });
++     for (const agentId of agentDirs) {
++       const sessionsDir = path.join(AGENTS_DIR, agentId, 'sessions');
++         const sessionFiles = fs.readdirSync(sessionsDir)
++           .filter(f => f.endsWith('.jsonl'))
++           .map(f => ({
++             filePath: path.join(sessionsDir, f),
++             agentId,
++             mtime: fs.statSync(path.join(sessionsDir, f)).mtimeMs,
++           }));
++         files.push(...sessionFiles);
++       } catch { /* No sessions dir */ }
++   } catch { /* No agents dir */ }
++   return files.sort((a, b) => b.mtime - a.mtime); // Newest first
++ function computeDashboardData(periodMs) {
++   const now = Date.now();
++   const cutoff = now - periodMs;
++   const daysCutoff = now - MAX_DAYS * 24 * 60 * 60 * 1000;
++   const effectiveCutoff = Math.max(cutoff, daysCutoff);
++   const allFiles = getAllSessionFiles();
++   // Estimate memory usage and limit
++   let estimatedBytesProcessed = 0;
++   const maxBytes = MEMORY_BUDGET_MB * 1024 * 1024;
++   // Aggregate data
++   const models = {};          // modelId -> { requests, inputTokens, outputTokens, cacheRead, cacheWrite }
++   const sessions = [];        // { sessionId, agentId, timestamp, durationMs, models }
++   const timeline = {};        // timestamp (bucketed) -> { total, per model }
++   const rateLimits = {};      // modelId -> latest rate limit data
++   let oldestSession = null;
++   let newestSession = null;
++   let processedCount = 0;
++   const agentStats = {};      // agentId -> session count
++   const hourlyActivity = new Array(24).fill(0); // Hour 0-23 activity counts
++   const dailyActivity = {};   // YYYY-MM-DD -> count
++   let totalDurationMs = 0;
++   let sessionCount = 0;
++   for (const { filePath, agentId, mtime } of allFiles) {
++     if (processedCount >= MAX_SESSIONS) break;
++     if (mtime < effectiveCutoff) continue;
++     if (estimatedBytesProcessed > maxBytes) break;
++       const stat = fs.statSync(filePath);
++       estimatedBytesProcessed += stat.size;
++     } catch { continue; }
++     const parsed = parseSessionFile(filePath);
++     if (!parsed) continue;
++     const sessionTs = parsed.timestamp ? new Date(parsed.timestamp).getTime() : mtime;
++     if (sessionTs < effectiveCutoff) continue;
++     processedCount++;
++     sessionCount++;
++     if (!oldestSession || sessionTs < oldestSession) oldestSession = sessionTs;
++     if (!newestSession || sessionTs > newestSession) newestSession = sessionTs;
++     // Agent stats
++     agentStats[agentId] = (agentStats[agentId] || 0) + 1;
++     // Session duration
++     totalDurationMs += parsed.durationMs || 0;
++     // Hourly activity
++     const hour = new Date(sessionTs).getHours();
++     hourlyActivity[hour]++;
++     // Daily activity
++     const day = new Date(sessionTs).toISOString().substring(0, 10);
++     dailyActivity[day] = (dailyActivity[day] || 0) + 1;
++     // Per-model aggregation
++     for (const [modelId, usage] of Object.entries(parsed.models)) {
++       if (!models[modelId]) {
++         models[modelId] = { requests: 0, inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheWrite: 0 };

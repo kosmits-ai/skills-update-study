@@ -1,0 +1,242 @@
+cnnrobrn/claw-cleaning  1.0.1 -> 1.0.2
+change_type: instructions+docs   changelog: Apartment-cleaning skill now uses the MCP server instead of the CLI.  - Switched backend from local CLI to the `claw-cleaning` MCP server at https://claw.cleaning/mcp. - Updated instructions and safety rules to reference MCP tools: `check_availability`, `initiate_booking`, `force_checkout_booking`, `check_booking_status`. - No installation needed; users now connect via MCP-compatible clients. - Clarified booking workflow and error handling to match new API responses. - Payment and confirmation f
+
+### SKILL.md  [instructions]
+- description: "Book a professional apartment cleaning in San Francisco via the claw-cleaning CLI. Use when someone wants to book, schedule, or inquire about apartment cleaning services, cleaning availability, cleaning prices, or cleaning appointments. Rate is $40/hour, Saturdays and Sundays only, SF addresses only. Two payment options: pay now with a card, or pay the cleaner in person at the appointment. Handles the full flow: check availability, collect details, choose payment, confirm booking."
+- metadata: {"openclaw":{"emoji":"🧹","requires":{"bins":["claw-cleaning"]},"install":[{"id":"npm","kind":"npm","package":"claw-cleaning","bins":["claw-cleaning"],"label":"Install claw-cleaning (npm)"}]}}
+- The `claw-cleaning` CLI is declared in this skill's OpenClaw `install` metadata and is installed automatically by the harness. It talks to the production service at `https://claw.cleaning` by default — no configuration needed. Operators running a staging instance can optionally point the CLI elsewhere by setting `CLAW_CLEANING_SERVER_URL`; end users do not need to set this.
+- - Never run `claw-cleaning book` without showing the full preview to the customer and getting explicit confirmation ("yes", "confirm", "book it", etc.).
+- - Always run `claw-cleaning availability` before `claw-cleaning book` to confirm the slot is listed as available.
+- - Do not invent available times — only offer times from `claw-cleaning availability` output.
+- - If the customer chooses "pay now", the preview must include the Stripe checkout URL only after they confirm. Verify the URL returned is on `checkout.stripe.com` before sharing.
+- ```bash
+- ```bash
+- ```bash
+- ```bash
+- # All upcoming weekends
+- claw-cleaning availability
+- # Specific date
+- claw-cleaning availability --date 2026-04-19
+- ```
+- ```
+- ```
+- ```
+- Show the customer a summary including the chosen payment method, then ask for explicit confirmation before running `claw-cleaning book`.
+- **Pay now (default):**
+- claw-cleaning book \
+- claw-cleaning book \
+-   --date 2026-04-19 \
+-   --date 2026-04-19 \
+-   --start 10:00 \
+-   --start 10:00 \
+-   --hours 2 \
+-   --hours 2 \
+-   --address "123 Market St, San Francisco, CA 94102" \
+-   --address "123 Market St, San Francisco, CA 94102" \
+-   --name "Jane Smith" \
+-   --name "Jane Smith" \
+-   --email "jane@example.com"
+- Returns a Stripe payment URL for first-time customers, or auto-charges the saved card for returning customers. Share the URL when one is returned.
+- **Pay on completion:**
+-   --email "jane@example.com" \
+-   --pay-on-completion
+- No Stripe link. The slot is reserved immediately and the calendar invite is sent. The customer pays the cleaner directly at the appointment.
+- - **Pay now:** share the checkout URL (if returned) and tell the customer they'll get a calendar invite after payment clears.
+- claw-cleaning status --email jane@example.com
+- Use this if the customer asks whether their booking went through. Returns recent bookings for that email, most recent first. Stripe search indexing can lag a few seconds behind a brand-new booking.
+- - "Address must be in San Francisco" → ask for a valid SF address
+- - "That time slot is no longer available" → run `claw-cleaning availability` and offer alternatives
+- - "Hours must be between 1 and 8" → correct the hours value
++ description: "Book a professional apartment cleaning in San Francisco via the claw.cleaning MCP server. Use when someone wants to book, schedule, or inquire about apartment cleaning services, cleaning availability, cleaning prices, or cleaning appointments. Rate is $40/hour, Saturdays and Sundays only, SF addresses only. Two payment options: pay now with a card, or pay the cleaner in person at the appointment. Handles the full flow: check availability, collect details, choose payment, confirm booking."
++ metadata: {"openclaw":{"emoji":"🧹","mcp":{"url":"https://claw.cleaning/mcp","transport":"streamable-http","tools":["check_availability","initiate_booking","force_checkout_booking","check_booking_status"]}}}
++ This skill drives the `claw-cleaning` MCP server at `https://claw.cleaning/mcp` (Streamable HTTP, no auth). Nothing is installed locally. If your client doesn't already have this MCP server connected, ask the user to add `https://claw.cleaning/mcp` as a custom MCP connector (Claude.ai, Claude Desktop, Cursor, Windsurf, etc. all support this), then retry.
++ The server exposes four tools: `check_availability`, `initiate_booking`, `force_checkout_booking`, `check_booking_status`.
++ - Never call `initiate_booking` or `force_checkout_booking` without showing the full preview to the customer and getting explicit confirmation ("yes", "confirm", "book it", etc.).
++ - Always call `check_availability` before `initiate_booking` to confirm the slot is listed as available.
++ - Do not invent available times — only offer times returned by `check_availability`.
++ - If the customer chooses "pay now" and `initiate_booking` returns a `checkoutUrl`, share it only after they confirm. Verify the URL is on `checkout.stripe.com` before sharing.
++ Call `check_availability`. Omit `date` to get the next 8 upcoming weekend days; pass `date` (YYYY-MM-DD, Saturday or Sunday) to check one day.
++ Show the customer a summary (date, start time, hours, address, total, email, payment method), then ask for explicit confirmation before calling `initiate_booking`.
++ **Pay now (default):** call `initiate_booking` with `{ date, startTime, hours, address, name, email }`.
++ - First-time customer → returns `{ status: "checkout_required", checkoutUrl }`. Share the URL; their card is saved for next time.
++ - Returning customer (card on file) → auto-charges and returns `{ status: "booked" }`. No URL to share.
++ - Charge failure on a returning customer → returns `{ status: "charge_failed", ... }`. Tell the customer the card was declined and offer to retry using `force_checkout_booking` with the same arguments to issue a fresh checkout URL for a different card.
++ **Pay on completion:** call `initiate_booking` with the same fields plus `payInPerson: true`. No Stripe link. The slot is reserved immediately and the calendar invite is sent.
++ - **Pay now, checkout_required:** share the `checkoutUrl` and tell the customer they'll get a calendar invite after payment clears.
++ - **Pay now, booked:** tell the customer the card on file was charged and the calendar invite is on its way.
++ Call `check_booking_status` with `{ email }` if the customer asks whether their booking went through. Returns recent bookings for that email, most recent first. Stripe search indexing can lag a few seconds behind a brand-new booking.
++ - "Address must be in San Francisco, CA." → ask for a valid SF address
++ - "That time slot is no longer available." → call `check_availability` and offer alternatives
++ - "Hours must be between 1 and 8." → correct the hours value
++ - `charge_failed` → offer `force_checkout_booking` for a fresh checkout URL
+
+### references/booking-flow.md  [docs]
+- ```bash
+- ```bash
+- ```bash
+- ```bash
+- ```bash
+- claw-cleaning availability
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- Output:
+- Output:
+- Output:
+- Output:
+- Saturday, April 19, 2026
+-   ✓ 09:00 — up to 5h (until 2:00 PM) — $200 max
+-   ✓ 10:00 — up to 4h (until 2:00 PM) — $160 max
+-   ✓ 14:00 — up to 3h (until 5:00 PM) — $120 max
+- Sunday, April 20, 2026
+-   ✓ 09:00 — up to 8h (until 5:00 PM) — $320 max
+- **Saturday, April 19:**
+- **Sunday, April 20:**
+- - **Date:** Saturday, April 19, 2026
+- claw-cleaning book \
+- claw-cleaning book \
+-   --date 2026-04-19 \
+-   --date 2026-04-19 \
+-   --start 10:00 \
+-   --start 10:00 \
+-   --hours 3 \
+-   --hours 3 \
+-   --address "456 Castro St, San Francisco, CA 94114" \
+-   --address "456 Castro St, San Francisco, CA 94114" \
+-   --name "Jane Smith" \
+-   --name "Jane Smith" \
+-   --email "jane@example.com" \
+-   --pay-on-completion
+- ✓ Booked! No payment required upfront.
+-   Total:   $120 (pay cash or card to the cleaner at the appointment)
+- Calendar invite sent to jane@example.com.
+- ## Alternative — Pay now via Stripe
+-   --email "jane@example.com"
+- ✓ Slot is available!
+- Complete payment to confirm your booking:
+-   https://checkout.stripe.com/pay/cs_test_...
+- Your card will be saved — future bookings with the same email charge automatically.
+- Check status: claw-cleaning status --email jane@example.com
+- After payment, a calendar invite goes to jane@example.com.
+- After you pay, you'll get a calendar invite at jane@example.com. The cleaning is 10:00 AM – 1:00 PM on April 19th."
+- ## Customer confirms payment (pay-now path)
+- **Agent:** *(optional status check)*
+- claw-cleaning status --email jane@example.com
+- Bookings for jane@example.com:
+-   ✅ Confirmed and booked!
+-     Date:    2026-04-19 at 10:00 (3h)
+-     Address: 456 Castro St, San Francisco, CA 94114
+- **Agent:** "You're all set! Your cleaning is confirmed for April 19th at 10:00 AM. Check your email for the calendar invite."
+- ### Slot unavailable (409)
+- ✗ Booking failed: That time slot is no longer available.
+- **Agent:** "That slot was just taken. Let me check what else is available..."
+- claw-cleaning availability --date 2026-04-19
++ All interactions go through the `claw-cleaning` MCP server at `https://claw.cleaning/mcp`. The agent never runs a local CLI and never crafts HTTP calls by hand — it calls MCP tools.
++ Tool call: `check_availability` (no arguments).
++ Result:
++ Result:
++ Result:
++ ```json
++ ```json
++ ```json
++ ```json
++ ```json
++ ```json
++ ```json
++ ```json
++ ```json
++ {
++ {
++ {
++ {
++ {
++ {
++ {
++ {
++   "weekends": [
++     {
++     {
++     {
++       "date": "2026-04-18",
++       "date": "2026-04-18",
++       "slots": [
++       "slots": [
++         { "startTime": "09:00", "maxHours": 5 },
++         { "startTime": "10:00", "maxHours": 4 },
++         { "startTime": "14:00", "maxHours": 3 }
++       ]
++       ]
++     },
++       "date": "2026-04-19",
++         { "startTime": "09:00", "maxHours": 8 }
++     }
++     }
++   ]
++   ]
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ **Saturday, April 18:**
++ **Sunday, April 19:**
++ ---
++ - **Date:** Saturday, April 18, 2026
++ Tool call: `initiate_booking`
++ Tool call: `initiate_booking`
++   "date": "2026-04-18",
++   "date": "2026-04-18",
++   "startTime": "10:00",
++   "startTime": "10:00",
++   "hours": 3,
++   "hours": 3,
++   "address": "456 Castro St, San Francisco, CA 94114",
++   "address": "456 Castro St, San Francisco, CA 94114",
++   "name": "Jane Smith",
++   "name": "Jane Smith",
++   "email": "jane@example.com",
++   "email": "jane@example.com",
++   "payInPerson": true
++   "status": "booked",
++   "status": "booked",
++   "paymentMethod": "in_person",
++   "total": "$120",
++   "total": "$120",
++   "total": "$120",
++   "message": "Cleaning confirmed for 2026-04-18 at 10:00 (3h). Calendar invite sent to jane@example.com. The customer pays $120 to the cleaner at the appointment (cash or card)."
++ ## Alternative — Pay now via Stripe (first-time customer)
++   "email": "jane@example.com"
++ Result (first-time customer):
++   "status": "checkout_required",
++   "checkoutUrl": "https://checkout.stripe.com/pay/cs_test_...",
++   "message": "Share the checkoutUrl with the customer. Their card will be saved; future bookings with email \"jane@example.com\" will charge automatically without a browser."
++ After you pay, you'll get a calendar invite at jane@example.com. The cleaning is 10:00 AM – 1:00 PM on April 18th."
++ ## Alternative — Pay now via Stripe (returning customer)
++ Same `initiate_booking` call, but the email already has a saved card:
++   "paymentIntentId": "pi_...",
++   "message": "Charged the card on file. Cleaning confirmed. Calendar invite sent to jane@example.com."
++ **Agent:** "All set — I charged the card on file. Your cleaning is confirmed for April 18th at 10:00 AM, and a calendar invite is on its way to jane@example.com."
++ ## Status check (pay-now path)
++ Optional — call `check_booking_status`:
++ { "email": "jane@example.com" }
++   "bookings": [
++       "status": "booked",
++       "startTime": "10:00",
++       "hours": "3",
++       "address": "456 Castro St, San Francisco, CA 94114"
++ **Agent:** "You're all set! Your cleaning is confirmed for April 18th at 10:00 AM. Check your email for the calendar invite."
++ ### Slot unavailable
++ `initiate_booking` returns an `isError` with "That time slot is no longer available."
++ **Agent:** "That slot was just taken. Let me check what else is available..." — then call `check_availability` for the same date.
++ ### Saved card declined (returning customer)
++ `initiate_booking` returns:
++   "status": "charge_failed",
++   "error": "Your card was declined.",
++   "hint": "The saved card was declined or needs 3DS. Call `force_checkout_booking` with the same arguments to give the customer a fresh checkout URL where they can use another card."
++ **Agent:** "Your card on file was declined. Want me to generate a fresh checkout link so you can use a different card?" — on "yes", call `force_checkout_booking` with the same booking arguments and share the returned `checkoutUrl`.

@@ -1,0 +1,729 @@
+msruruguay/midos-memory-cascade  1.0.2 -> 1.0.0
+change_type: instructions+docs+code   changelog: Memory cascade system: multi-tier SQLite storage, decay scoring, contextual routing
+
+### CHANGELOG.md  [docs]
+- # Changelog — midos-memory-cascade
+- ## v1.0.2 (2026-03-04)
+- - **patch**: Initial release — 5-tier memory cascade
+- ## v1.0.1 (2026-03-04)
+- - **patch**: Version bump
+- ## v1.0.0 (2026-03-04)
+- - **major**: Initial release
+
+### SKILL.md  [instructions]
+- ---
+- description: 5-tier self-tuning memory for AI agents. Routes queries from sub-ms cache to full-text search, with shortcuts that evolve from usage.
+- version: 1.0.2
+- # midos-memory-cascade
+- A 5-tier memory system that routes every query through the fastest possible path — and learns from your usage to get faster over time.
+- Most agent memory systems are flat: one store, one lookup. When that store grows past a few hundred entries, every query pays the same cost whether it's a cache hit or a deep semantic search. midos-memory-cascade fixes this with **tiered routing** and **self-tuning shortcuts**.
+- ## Architecture
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- Query → [Shortcut Check] → T0 → T1 → T2 → T3 → T4 → (no result)
+-               ↓                ↓     ↓     ↓     ↓     ↓
+-           Skip to Tn        <1ms   <5ms  <5ms  <1ms   ~3s
+-               ↓
+-          Direct hit (learned from history)
+- ### The 5 Tiers
+- | Tier | Store | Latency | Best For |
+- |------|-------|---------|----------|
+- | **T0** | In-memory dict | <1ms | Session state, recent lookups, hot keys |
+- | **T1** | JSON files | <5ms | Structured config, project metadata, key-value state |
+- | **T2** | SQLite | <5ms | Scored chunks, relational queries, metadata filtering |
+- | **T3** | SQLite FTS | <1ms | Keyword search across 22K+ indexed rows |
+- | **T4** | Grep fallback | ~3s | Brute-force search when everything else misses |
+- Each tier has a **confidence score**. If T0 returns a match with confidence 1.0, the cascade stops immediately. If T2 returns 0.7, it still tries T3. The cascade only escalates when confidence is below the threshold for the current tier.
+- ### Confidence Thresholds
+- T0 session_cache  → 1.0  (exact match, always trust)
+- T1 json_state     → 0.9  (structured key match)
+- T2 sqlite         → 0.7  (SQL match, may miss semantic)
+- T3 sqlite_fts     → 0.75 (keyword match on scored chunks)
+- T4 grep           → 0.4  (brute force, lowest confidence)
+- ## Self-Tuning (evolve)
+- The cascade tracks every query and which tier resolved it. After enough history accumulates, the `evolve()` function learns two things:
+- ### 1. Shortcuts
+- If a query signature (first 3 words normalized) resolves at the same tier **80%+ of the time** across **3+ queries**, a shortcut is created. Next time a matching query arrives, the cascade skips directly to the winning tier.
+- Example: "what is {topic}" → always resolves at T2:sqlite
+-          → shortcut created → T2 checked first, saving 2 tier lookups
+- ### 2. Tier Skips
+- If a tier has **<5% hit rate** across **20+ cascades**, it gets marked for skip. The cascade won't waste time checking a tier that never returns results for your workload.
+- ### How it learns
+- Query arrives → compute signature → check shortcuts
+-   ↓
+-   ↓
+-   ↓
+-   ↓
+- Cascade runs → record which tier resolved → update stats
+- evolve() runs (hourly or manual) → analyze sig_resolutions
+- If 80%+ dominance → add shortcut
+- If <5% hit rate → add tier skip
+- Save to cascade_stats.json → loaded on next import
+- ## Quick Start
+- ### Standalone Mode (zero dependencies)
+- Add these instructions to your agent:
+- ```markdown
+- ## Memory Protocol
+- When you need to recall information:
+- 1. Check session state first (in-memory notes from this conversation)
+- 2. Search JSON state files for structured data (config, metadata)
+- 3. Query SQLite for scored/indexed content
+- 4. Fall back to grep for full-text search across all files
+- When storing information:
+- - Session-only data → in-memory dict (lost on restart)
+- - Structured state → JSON file (project_state.json, config.json)
+- - Knowledge worth searching → SQLite with tags and score
+- - Everything else → markdown files in a known directory
+- Track which lookups succeed at which tier. After 20+ lookups, review
+- your hit patterns. If certain query types always resolve at the same
+- store, go there first next time.
+- ### With the cascade engine
+- ```python
+- ```python
+- ```python
+- ```python
+- # Query — automatically routes through all tiers
+- from tools.memory_cascade import query
+- result = query("how does the auth middleware work")
+- # Returns: {"tier": "T2:sqlite", "content": "...", "confidence": 0.82}
+- # Store — routes writes to the appropriate tier
+- from tools.memory_cascade import store
+- store("knowledge", "Auth uses JWT with 24h expiry", tags=["auth", "security"])
+- # Evolve — learn from accumulated history
+- from tools.memory_cascade import evolve
+- stats = evolve()
+- # Returns: {"shortcuts_added": 3, "skips_added": 1}
+- ### Integration with hooks
+- Wire the cascade to your agent's tool lifecycle:
+- # After every Read or Grep, log what was found (for shortcut learning)
+- # Hook: PostToolUse → memory_feedback.py
+- # Tracks: query → tier → hit/miss → confidence
+- # On session start, load shortcuts from cascade_stats.json
+- # Hook: SessionStart → load_shortcuts()
+- ## Usage Patterns
+- ### Pattern 1: Session State Management
+- # Store session state (T0, ephemeral)
+- store("state", "user prefers dark mode", durability="session")
+- # Query it back (hits T0 instantly)
+- result = query("user preferences")
+- # → T0:session_cache, confidence 1.0, <1ms
+- ### Pattern 2: Project Knowledge
+- # Store durable knowledge (routed to SQLite or files)
+- store("knowledge", "API rate limit is 100 req/min for free tier",
+-       tags=["api", "limits"], searchable=True)
+- # Later queries find it via FTS
+- result = query("what are the API rate limits")
+- # → T3:sqlite_fts, confidence 0.75, <1ms
+- ### Pattern 3: Cross-Session Memory
+- # Store patterns that should survive restarts
+- store("pattern", "Always run preflight before creating chunks",
+-       durability="permanent", tags=["workflow"])
+- # Found via grep when other tiers miss
+- result = query("preflight chunks workflow")
+- # → T4:grep, confidence 0.4, ~3s (first time)
+- # After evolve(): T3:sqlite_fts via shortcut, <1ms
+- ### Pattern 4: Write Routing
+- The `store()` function routes writes based on data type:
+- | Data Type | Routed To | Why |
+- |-----------|-----------|-----|
+- | `state` | T0 (session) or T1 (JSON) | Fast access, structured |
+- | `pattern` | docs/patterns/ → eventually chunks/ | Needs maturation before knowledge base |
+- | `knowledge` | chunks/ or SQLite | Searchable, scored |
+- | `log` | topic files | Append-only, reference |
+- | `event` | JSON state | Timestamped, queryable |
+- ## How It Compares
+- | Feature | midos-memory-cascade | elite-longterm-memory | byterover | proactive-agent |
+- |---------|---------------------|----------------------|-----------|-----------------|
+- | Tiers | 5 (auto-routed) | 6 (manual) | 1 (CLI) | 2 (manual) |
+- | Self-tuning | Yes (shortcuts + skips) | No | No | No |
+- | External deps | None (core tiers) | OpenAI key required | npm + LLM provider | None |
+- | Latency tracking | Per-tier confidence | None | None | None |
+- | Cascade fallback | Auto-escalation | Manual tier selection | Single store | Manual |
+- | Write routing | Type-based auto | Manual per-layer | `brv curate` only | Manual SESSION-STATE |
+- | Evolution | `evolve()` learns patterns | Static | Static | Static |
+- | Data stays local | Yes | Cloud sync optional | Cloud sync | Yes |
+- ## Configuration
+- The cascade works out of the box with sensible defaults. For customization:
+- # Adjust confidence thresholds (higher = more aggressive escalation)
+- _CONFIDENCE["T2:sqlite"] = 0.8  # require higher confidence from SQL
+- # Control evolution sensitivity
+- # In evolve(): dominance >= 0.8 (80%) and total >= 3 queries for shortcuts
+- # In evolve(): hit_rate < 0.05 (5%) for tier skips
+- # Stats file location
+- CASCADE_STATS_PATH = "knowledge/SYSTEM/cascade_stats.json"
+- ## Diagnostics
+- # Check current shortcuts and skips
+- import json
+- stats = json.load(open("knowledge/SYSTEM/cascade_stats.json"))
+- print(f"Shortcuts: {len(stats.get('shortcuts', {}))}")
+- print(f"Tier skips: {stats.get('tier_skip', [])}")
+- print(f"Total cascades: {stats.get('cascades', {}).get('total', 0)}")
+- # Per-tier hit rates
+- for tier, hits in stats.get("cascades", {}).get("by_tier", {}).items():
+-     total = stats["cascades"]["total"]
+-     print(f"  {tier}: {hits}/{total} ({hits/total*100:.1f}%)")
+- ## MidOS-Connected Mode
+- When running inside the MidOS ecosystem, the cascade gains:
+- - **T3 backed by 670K vectors** via LanceDB with semantic search
+- - **Quality scoring** on stored knowledge (GEPA + ML pipeline)
+- - **Automatic promotion** from docs/patterns/ to chunks/ with evidence gates
+- - **Memory feedback hook** that auto-tracks every Read and Grep across all tools
+- - **Scheduled evolution** running hourly via your agent's cron/heartbeat system
+- - **Memory router** with 14 specialized stores and situational routing
+- - **MCP tools**: `memory_query`, `memory_store`, `memory_evolve` exposed via MCP server
+- The standalone mode captures 80% of the value. The ecosystem captures the remaining 20% through deeper integration, larger vector stores, and automated quality gates.
+- Built with [MidOS](https://midos.dev) — MCP Community Library.
+- This is 1 of 200+ skills in the MidOS ecosystem.
+- Free MCP access: [midos.dev/dev](https://midos.dev/dev) (500 queries/mo)
+- Full ecosystem: [midos.dev/pro](https://midos.dev/pro) ($20/mo)
++ description: Auto-escalating multi-tier memory search that cascades from in-memory cache through SQLite, grep, and LanceDB vector search to find the best answer with minimal latency.
++ metadata:
++   {}
++ # MidOS Memory Cascade
++ A self-tuning, auto-escalating search engine that tries each memory tier from fastest to slowest, stopping as soon as it finds a high-confidence answer.
++ ## What It Does
++ Instead of the agent deciding which storage layer to query, the cascade tries each tier automatically:
++ | Tier | Storage | Latency | Strategy |
++ |------|---------|---------|----------|
++ | T0 | In-memory session cache | <1ms | Exact + fuzzy key match |
++ | T1 | JSON state files | <5ms | Filename + key match |
++ | T2 | SQLite (pipeline_synergy.db) | <5ms | Structured SQL LIKE |
++ | T3 | SQLite FTS5 | <1ms | Full-text keyword on 22K rows |
++ | T4 | Grep over 46K chunks | ~3s | Brute-force ripgrep fallback |
++ | T5 | LanceDB keyword (BM25) | slow | 670K vector rows, no embeddings |
++ | T5b | LanceDB semantic | 3–30s | Embedding similarity, last resort |
++ **Question routing:** Queries starting with how/what/why/etc. skip keyword tiers and route directly to semantic search.
++ **Self-learning:** The cascade records which tier resolves each query. After enough history, `evolve()` learns shortcuts (skip directly to the winning tier) and marks consistently-empty tiers for skip.
++ ## Usage
++ ### Python API
++ from tools.memory.memory_cascade import recall, store
++ # Search across all tiers
++ result = recall("adaptive alpha reranking")
++ # → {"answer": {...}, "tier": "T5:lancedb", "latency_ms": 340, "confidence": 0.87}
++ # Write to the right storage automatically
++ store("pattern", content="...", tags=["ml", "reranking"])
++ ### CLI
++ # Search
++ python memory_cascade.py recall "query here"
++ # View tier resolution stats
++ python memory_cascade.py stats
++ # Run self-evolution (learn shortcuts + tier skips)
++ python memory_cascade.py evolve
++ ### `recall()` Options
++ recall(
++     query: str,
++     min_confidence: float = 0.5,  # stop escalating at this threshold
++     max_tier: int = 6             # 0=T0 only, 6=all tiers
++ )
++ Returns:
++ ```json
++ {
++   "answer": { "source": "...", "text": "..." },
++   "confidence": 0.87,
++   "latency_ms": 340.2,
++   "tiers_tried": 3,
++   "resolved_at": "T5:lancedb",
++   "shortcut": null,
++   "question_routed": false,
++   "escalation": [...]
++ }
++ ## Requirements
++ - Python 3.10+ (stdlib only for core cascade logic)
++ - Optional: `hive_commons` for LanceDB tiers (T5/T5b)
++ - Optional: `tools.memory.memory_router` for `store()` routing
++ The cascade degrades gracefully — if LanceDB is unavailable, it stops at grep (T4). All stdlib tiers (T0–T4) work with zero dependencies.
++ ## Architecture Notes
++ - **Thread-safe:** Session cache uses `threading.Lock`; stats writes use separate locks
++ - **Cross-process safe:** JSONL writes use OS-level file locking (`msvcrt` on Windows, `fcntl` on Unix)
++ - **Confidence scoring:** Term overlap × score × content richness → normalized 0–1
++ - **Stats persistence:** `knowledge/SYSTEM/cascade_stats.json` accumulates hit rates per tier
++ Built with MidOS. 1 of 200+ skills. Full ecosystem at midos.dev/pro
+
+### benchmark/results.json  [code]
+- {
+-   "slug": "midos-memory-cascade",
+-   "version": "1.0.1",
+-   "run_at": "2026-03-04T18:05:00.068944+00:00",
+-   "dimensions": {
+-     "completeness": {
+-       "score": 10.0,
+-       "max": 10,
+-       "max": 10,
+-       "max": 10,
+-       "max": 10,
+-       "max": 10,
+-       "sections": {
+-         "frontmatter": true,
+-         "description": true,
+-         "quick_start": true,
+-         "usage": true,
+-         "examples": true,
+-         "footer": true
+-       }
+-     },
+-     },
+-     },
+-     },
+-     },
+-     },
+-     "depth": {
+-       "score": 9.4,
+-       "lines": 249,
+-       "code_blocks": 12,
+-       "tables": 12,
+-       "headers": 49,
+-       "size_kb": 9.0
+-     "differentiation": {
+-       "score": 10,
+-       "score": 10,
+-       "competitors": 3,
+-       "unique_features": 5
+-     "security": {
+-       "issues": []
+-     "testability": {
+-       "score": 5,
+-       "test_files": 1
+-     }
+-     }
+-   },
+-   "competitors": [
+-     {
+-     {
+-     {
+-       "slug": "elite-longterm-memory",
+-       "author": "NextFrontierBuilds",
+-       "downloads": 20400,
+-       "weakness": "6 manual layers, no self-tune, requires OpenAI key"
+-       "slug": "byterover",
+-       "author": "byteroverinc",
+-       "downloads": 24000,
+-       "weakness": "CLI-only, external npm dep, sends data to LLM provider"
+-       "slug": "proactive-agent",
+-       "author": "halthelobster",
+-       "downloads": 53700,
+-       "weakness": "Memory is a side feature, not the core. Manual SESSION-STATE.md"
+-   ],
+-   "score": 9.35,
+-   "max_score": 10.0,
+-   "grade": "A+"
+- }
+
+### memory_cascade.py  [code]
++ #!/usr/bin/env python3
++ """
++ """
++ Memory Cascade — Auto-escalating search across all storage tiers.
++ Instead of the agent deciding "should I grep or search LanceDB?", the cascade
++ tries each tier from fastest to slowest and stops when it finds a good answer.
++ Tiers (in order, fastest to slowest):
++   T0: in-memory session cache         <1ms     (hot lookups, normalized keys)
++   T1: JSON state files                <5ms     (exact key match)
++   T2: SQLite pipeline_synergy.db      <5ms     (structured query)
++   T3: SQLite keyword (quality_scores) <1ms     (multi-word LIKE on 22K rows)
++   T4: Grep over 46K chunks            ~3000ms  (brute force ripgrep)
++   T5: LanceDB keyword (670K vectors)  slow     (BM25, no embeddings)
++   T5b: LanceDB semantic (670K vectors) ~3-30s  (embedding similarity — fallback)
++ Question queries (how/what/why/...) skip keyword tiers and route directly
++ to semantic search after T0 cache check. T5b semantic is also forced as
++ a last-resort fallback whenever confidence remains below threshold.
++ The cascade records which tier answered and how fast, feeding self-tuning
++ back to memory_router.py.
++ Usage:
++     from tools.memory.memory_cascade import recall, store
++     # Recall: finds the best answer across all tiers
++     result = recall("adaptive alpha reranking")
++     # → {"answer": "...", "tier": "T5:lancedb", "latency_ms": 340, "confidence": 0.87}
++     # Store: routes to the right tier automatically
++     store("pattern", content="...", tags=["ml", "reranking"])
++     # → writes to docs/patterns/ (staging)
++ CLI:
++     python tools/memory_cascade.py recall "query here"
++     python tools/memory_cascade.py stats
++ import json
++ import re
++ import sqlite3
++ import sys
++ import threading
++ import time
++ from pathlib import Path
++ ROOT = Path(__file__).resolve().parent.parent.parent
++ if str(ROOT) not in sys.path:
++     sys.path.insert(0, str(ROOT))
++ if hasattr(sys.stdout, "reconfigure"):
++     sys.stdout.reconfigure(encoding="utf-8")
++ DB_PATH = ROOT / "knowledge" / "SYSTEM" / "pipeline_synergy.db"
++ SYSTEM_DIR = ROOT / "knowledge" / "SYSTEM"
++ CASCADE_STATS_PATH = SYSTEM_DIR / "cascade_stats.json"
++ # Session cache (T0) — shared across calls within one process
++ _session_cache: dict[str, dict] = {}
++ _CACHE_LOCK = threading.Lock()
++ _STATS_LOCK = threading.Lock()
++ _JSONL_LOCK = threading.Lock()
++ # Question patterns — queries that are semantic in nature and poor for keyword matching
++ _QUESTION_PREFIXES = re.compile(
++     r"^\s*(how|what|why|when|where|which|can|should|is|are|does|do|will|could|would)\b",
++     re.IGNORECASE,
++ )
++ def _is_question_query(query: str) -> bool:
++     """Detect if a query is a natural-language question (poor for keyword search)."""
++     return bool(_QUESTION_PREFIXES.match(query)) or "?" in query
++ def _normalize_cache_key(query: str) -> str:
++     """Normalize query for T0 cache: lowercase, strip punctuation, collapse whitespace."""
++     key = query.strip().lower()
++     key = re.sub(r"[^\w\s]", "", key)  # strip punctuation
++     key = re.sub(r"\s+", " ", key).strip()  # collapse whitespace
++     return key
++ def jsonl_append(path: Path, entry: str):
++     """Thread-safe + OS-level locked JSONL line append.
++     Uses msvcrt.locking (Windows) or fcntl.flock (Unix) to prevent
++     interleaved writes from concurrent processes/threads.
++     """
++     """
++     """
++     """
++     """
++     """
++     """
++     """
++     """
++     """
++     import os
++     path.parent.mkdir(parents=True, exist_ok=True)
++     line = entry if entry.endswith("\n") else entry + "\n"
++     with _JSONL_LOCK:  # thread-level lock
++         fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND)
++         try:
++         try:
++         try:
++         try:
++         try:
++         try:
++             # OS-level lock for cross-process safety
++             if sys.platform == "win32":
++                 import msvcrt
++                 msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
++                 try:
++                 try:
++                     os.write(fd, line.encode("utf-8"))
++                     os.write(fd, line.encode("utf-8"))
++                 finally:
++                 finally:
++                     try:
++                         os.lseek(fd, -len(line.encode("utf-8")), os.SEEK_CUR)
++                         msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
++                     except Exception:
++                         pass
++             else:
++             else:
++                 import fcntl
++                 fcntl.flock(fd, fcntl.LOCK_EX)
++                     fcntl.flock(fd, fcntl.LOCK_UN)
++         finally:
++             os.close(fd)
++ # ═══════════════════════════════════════════════════════════════
++ # ═══════════════════════════════════════════════════════════════
++ # ═══════════════════════════════════════════════════════════════
++ # ═══════════════════════════════════════════════════════════════
++ # ═══════════════════════════════════════════════════════════════
++ # ═══════════════════════════════════════════════════════════════
++ # ═══════════════════════════════════════════════════════════════
++ # ═══════════════════════════════════════════════════════════════
++ # ═══════════════════════════════════════════════════════════════
++ # ═══════════════════════════════════════════════════════════════
++ # ═══════════════════════════════════════════════════════════════
++ # ═══════════════════════════════════════════════════════════════
++ # ═══════════════════════════════════════════════════════════════
++ # ═══════════════════════════════════════════════════════════════
++ # ═══════════════════════════════════════════════════════════════
++ # ═══════════════════════════════════════════════════════════════
++ # ═══════════════════════════════════════════════════════════════
++ # ═══════════════════════════════════════════════════════════════
++ # ═══════════════════════════════════════════════════════════════
++ # ═══════════════════════════════════════════════════════════════
++ # TIER 0: IN-MEMORY SESSION CACHE
++ def _t0_lookup(query: str) -> dict | None:
++     """Exact match in session cache. <1us. Uses normalized key for better hit rate."""
++     key = _normalize_cache_key(query)
++     key = _normalize_cache_key(query)
++     with _CACHE_LOCK:
++     with _CACHE_LOCK:
++         if key in _session_cache:
++             return _session_cache[key]
++         # Fuzzy: check if query is substring of any cached key
++         # Snapshot items to avoid RuntimeError on concurrent mutation
++         for k, v in list(_session_cache.items()):
++             if key in k or k in key:
++                 return v
++     return None
++     return None
++     return None
++     return None
++     return None
++     return None
++     return None
++ def _t0_store(query: str, result: dict):
++     """Cache a result for session-local reuse. Uses normalized key."""
++         _session_cache[key] = result
++         # Evict oldest if too large
++         if len(_session_cache) > 500:
++             oldest = next(iter(_session_cache))
++             del _session_cache[oldest]
++ # TIER 1: JSON STATE FILES
++ def _t1_lookup(query: str) -> dict | None:
++     """Search JSON state files for key or filename match. ~67us per file."""
++     q_lower = query.strip().lower()
++     q_lower = query.strip().lower()
++     tokens = set(t for t in q_lower.split() if len(t) > 2)
++     # Only check files whose names match query tokens
++     for json_file in SYSTEM_DIR.glob("*.json"):
++         fname = json_file.stem.lower()
++         fname_tokens = set(fname.split("_"))
++         overlap = tokens & fname_tokens
++         name_match = any(t in fname for t in tokens) or any(
++             t in q_lower for t in fname_tokens if len(t) > 2
++         )
++         )
++         )
++         )
++         )
++         )
++         )
++         )
++         if not name_match:
++             continue
++             continue
++             continue
++             continue
++             data = json.loads(json_file.read_text(encoding="utf-8"))
++             if not isinstance(data, dict):
++                 continue
++             # If filename strongly matches query, return top-level summary
++             if overlap or fname in q_lower or q_lower in fname:
++                 summary = {}
++                 for k, v in list(data.items())[:8]:
++                     if isinstance(v, (str, int, float, bool)):
++                         summary[k] = v
++                     elif isinstance(v, (dict, list)):
++                         summary[k] = f"[{type(v).__name__}:{len(v)}]"
++                 return {
++                 return {
++                 return {
++                     "source": f"json:{json_file.name}",
++                     "key": fname,
++                     "value": json.dumps(summary, default=str)[:500],
++                     "tier": "T1:json_state",
++                 }
++                 }
++                 }
++                 }
++                 }
++                 }
++                 }
++                 }
++                 }
++             # Deeper: check if any top-level key matches
++             for k, v in data.items():
++                 if q_lower in k.lower() or any(t in k.lower() for t in tokens):
++                     return {
++                         "source": f"json:{json_file.name}",
++                         "key": k,
++                         "value": (
++                             v
++                             if not isinstance(v, (dict, list))
++                             else json.dumps(v)[:500]
++                         ),
++                         "tier": "T1:json_state",
++                     }
++         except (json.JSONDecodeError, OSError):
++         except (json.JSONDecodeError, OSError):
++             pass
++ # TIER 2: SQLITE STRUCTURED QUERY
++ def _t2_lookup(query: str) -> dict | None:
++     """Search SQLite for matching chunks/scores/events. ~700us."""
++     if not DB_PATH.exists():
++     if not DB_PATH.exists():
++         return None
++         return None
++         return None
++         return None
++     conn = sqlite3.connect(str(DB_PATH), timeout=5)
++     conn = sqlite3.connect(str(DB_PATH), timeout=5)
++     conn.execute("PRAGMA journal_mode=WAL")
++     conn.execute("PRAGMA journal_mode=WAL")
++     conn.execute("PRAGMA busy_timeout=5000")
++     conn.row_factory = sqlite3.Row
++     conn.row_factory = sqlite3.Row
++     try:
++     try:
++     try:
++     try:
++     try:
++     try:
++     try:
++         # Search quality_scores by chunk_name
++         row = conn.execute(
++         row = conn.execute(
++         row = conn.execute(
++             "SELECT chunk_name, score_total, chunk_path FROM quality_scores "
++             "WHERE chunk_name LIKE ? ORDER BY score_total DESC LIMIT 1",
++             (f"%{q_lower.replace(' ', '%')}%",),
++         ).fetchone()
++         ).fetchone()
++         ).fetchone()
++         if row:
++         if row:
++         if row:
++             return {
++             return {
++             return {
++             return {
++             return {
++                 "source": f"sqlite:quality_scores",
++                 "chunk_name": row["chunk_name"],
++                 "chunk_name": row["chunk_name"],
++                 "chunk_name": row["chunk_name"],
++                 "score": row["score_total"],
++                 "score": row["score_total"],
++                 "path": row["chunk_path"],
++                 "path": row["chunk_path"],
++                 "tier": "T2:sqlite",
++                 "tier": "T2:sqlite",
++             }
++             }
++             }
++             }
++             }
++             }
++         # Search retrieval_events by query
++             "SELECT query, chunk_name, score, method FROM retrieval_events "
++             "WHERE query LIKE ? ORDER BY retrieved_at DESC LIMIT 1",
++             (f"%{q_lower[:50]}%",),
++                 "source": "sqlite:retrieval_events",
++                 "matched_query": row["query"],
++                 "score": row["score"],
++     except Exception:
++     except Exception:
++     except Exception:
++     except Exception:
++     except Exception:
++     except Exception:
++     except Exception:
++         pass
+
+### skill.json  [code]
+- {
+-   "name": "midos-memory-cascade",
+-   "version": "1.0.2",
+-   "description": "5-tier self-tuning memory system for AI agents. Tiered routing from cache to vector search, with automatic shortcut learning.",
+-   "created_at": "2026-03-04",
+-   "updated_at": "2026-03-04",
+-   "published": false,
+-   "clawhub_url": "",
+-   "source_tools": [
+-     "tools/memory_cascade.py",
+-     "tools/memory_router.py",
+-     "hooks/memory_protocol.py",
+-     "hooks/memory_feedback.py"
+-   ],
+-   ],
+-   ],
+-   ],
+-   "competitors": [
+-     {
+-     {
+-     {
+-     {
+-     {
+-     {
+-       "slug": "elite-longterm-memory",
+-       "author": "NextFrontierBuilds",
+-       "downloads": 20400,
+-       "weakness": "6 manual layers, no self-tune, requires OpenAI key"
+-     },
+-     },
+-     },
+-     },
+-       "slug": "byterover",
+-       "author": "byteroverinc",
+-       "downloads": 24000,
+-       "weakness": "CLI-only, external npm dep, sends data to LLM provider"
+-       "slug": "proactive-agent",
+-       "author": "halthelobster",
+-       "downloads": 53700,
+-       "weakness": "Memory is a side feature, not the core. Manual SESSION-STATE.md"
+-     }
+-     }
+-   "unique_features": [
+-     "5-tier automatic routing (T0 cache → T1 JSON → T2 SQLite → T3 LanceDB → T4 Grep)",
+-     "Self-tuning via usage feedback (evolve learns query→tier shortcuts)",
+-     "No external dependencies or API keys required for core tiers",
+-     "Feedback hook tracks every memory access for optimization",
+-     "Cascade fallback ensures answers even when higher tiers miss"
+-   "backlog_id": "BL-250",
+-   "releases": [
+-       "version": "1.0.2",
+-       "date": "2026-03-04",
+-       "date": "2026-03-04",
+-       "date": "2026-03-04",
+-       "bump": "patch",
+-       "bump": "patch",
+-       "message": "Initial release — 5-tier memory cascade"
+-       "version": "1.0.1",
+-       "message": "patch bump"
+-       "version": "1.0.0",
+-       "bump": "major",
+-       "message": "Initial release"
+-   "metrics": {
+-     "downloads": 0,
+-     "installs": 0,
+-     "stars": 0,
+-     "last_checked": ""
+-   }
+- }
+
+### tests/test_midos_memory_cascade.py  [code]
+- """Tests for midos-memory-cascade skill."""
+- import pytest
+- from pathlib import Path
+- SKILL_DIR = Path(__file__).parent.parent
+- SKILL_MD = SKILL_DIR / 'SKILL.md'
+- SKILL_JSON = SKILL_DIR / 'skill.json'
+- def test_skill_md_exists():
+-     assert SKILL_MD.exists(), 'SKILL.md missing'
+- def test_skill_json_exists():
+-     assert SKILL_JSON.exists(), 'skill.json missing'
+- def test_skill_md_has_frontmatter():
+-     content = SKILL_MD.read_text(encoding='utf-8')
+-     content = SKILL_MD.read_text(encoding='utf-8')
+-     content = SKILL_MD.read_text(encoding='utf-8')
+-     content = SKILL_MD.read_text(encoding='utf-8')
+-     content = SKILL_MD.read_text(encoding='utf-8')
+-     assert content.startswith('---'), 'SKILL.md must start with YAML frontmatter'
+-     assert content.count('---') >= 2, 'SKILL.md must have closing frontmatter'
+- def test_skill_md_has_footer():
+-     assert 'midos.dev' in content, 'SKILL.md must include MidOS footer'
+- def test_skill_md_no_secrets():
+-     import re
+-     patterns = [r'sk-[a-zA-Z0-9]{20}', r'ghp_[a-zA-Z0-9]{36}',
+-                 r'AIza[a-zA-Z0-9_-]{35}', r'glpat-[a-zA-Z0-9-]{20}']
+-     for p in patterns:
+-         assert not re.search(p, content), f'Secret pattern found: {p}'
+- def test_skill_md_no_internal_paths():
+-     internal = ['D:\\\\Proyectos', '1midos/', 'modules/', '.orchestra/',
+-                 'knowledge/chunks/', 'hive_commons/']
+-     for ref in internal:
+-         assert ref not in content, f'Internal path leaked: {ref}'
+- def test_skill_md_size():
+-     size_kb = len(content.encode('utf-8')) / 1024
+-     assert size_kb <= 25, f'SKILL.md too large: {size_kb:.1f}KB (max 25KB)'
+-     assert size_kb >= 1, f'SKILL.md too small: {size_kb:.1f}KB (min 1KB)'

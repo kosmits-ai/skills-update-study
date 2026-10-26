@@ -1,0 +1,132 @@
+zw008/vmware-log-insight  2.4.0 -> 2.4.1
+change_type: instructions+docs   changelog: Fixed against a real 8.18.7 appliance: fields/alerts/alert history, bin timestamps, aggregate field, long windows, positional fields, doctor runs a real query
+
+### SKILL.md  [instructions]
+- uv tool install vmware-log-insight==2.4.0
+- 1. `search_logs(text="error", last="1h", filters via CLI hostname=...)` — or CLI: `vmware-log-insight search -q error -l 1h`.
+- 3. **Failure branch — empty bins:** widen `last` or drop the `text` filter; confirm the appliance actually receives logs from the source.
+- | Logs | `search_logs` (time window + text + filters), `aggregate_logs` (COUNT/etc + spike detection), `list_log_fields`, `get_log_insight_version` |
+- `limit` or narrow the filter". `total` is a real count (the appliance returns each
+- collection in one GET and `limit` is applied client-side), so a page that exactly
+- fills `limit` is still reported `truncated: false` when it is genuinely complete.
+- absolute `begin_ms`/`end_ms` (epoch ms); `text` is a CONTAINS search. See
+- - **Empty results but logs exist** — check the time window (`last`) and that the appliance actually ingests from that source; widen the window.
++ uv tool install vmware-log-insight==2.4.1
++ 1. `search_logs(text="error", last="1h")` — or CLI: `vmware-log-insight search -q error -l 1h`. There is no host filter parameter: read each event's `fields.hostname` / `fields.source`, or put the host name in `text` (whole words match, and dots split words: `esx01` finds `esx01.lab.local`; `esx0` finds nothing, `esx0*` does).
++ 3. **Failure branch — empty bins:** widen `last` or drop the `text` filter; confirm the appliance actually receives logs from the source. The appliance omits bins with no events; for COUNT and UCOUNT the tool adds them back as 0 (`filled_empty_bins: true`), so a burst after a quiet stretch still shows as a spike.
++ 4. Distinct hosts per bin: `aggregate_logs(aggregation="UCOUNT", field="hostname")`. Only COUNT and SAMPLE take no `field`; the other seven need one (names from `list_log_fields`).
++ | Logs | `search_logs` (time window + text), `aggregate_logs` (COUNT/SAMPLE, or UCOUNT/AVG/MIN/MAX/SUM/STDDEV/VARIANCE of a `field`, + spike detection), `list_log_fields`, `get_log_insight_version` |
++ `limit` or narrow the filter". For fields and alerts `total` is a real count (the
++ appliance returns the whole collection in one GET and `limit` is applied here). Alert
++ history is paged by the appliance (at most 50 records), so a full history page has
++ `total: null` and `truncated: true`.
++ absolute `begin_ms`/`end_ms` (epoch ms — seconds are refused); `text` is a
++ CONTAINS search that matches whole words, not substrings (`*` is a wildcard). `search_logs`
++ returns at most 200 events (~650 chars each) and says so when it lowers `limit`. See
++ - **Empty results but logs exist** — check the time window (`last`) and that the appliance actually ingests from that source; widen the window. `text` matches whole words: `localdom` finds nothing, `localdom*` (wildcard) and `localhost.localdomain` find events. A text search that matches nothing says so in `note`.
++ - **`UCOUNT needs a field` / `COUNT takes no field`** — the appliance answers HTTP 400 otherwise; pass `field=` only with UCOUNT/AVG/MIN/MAX/SUM/STDDEV/VARIANCE.
+
+### references/agent-guardrails.md  [docs]
+- | "Use explicit limits for queries that may return large amounts of data" | **The list envelope.** `list_log_fields`, `list_log_alerts` and `get_log_alert_history` return `{items, returned, limit, total, truncated, hint}`, so the model reads truncation instead of guessing at it. `total` is a real count, so a page that exactly fills `limit` is still reported `truncated: false` when it is genuinely complete. |
+- | Hand-crafts a field constraint and gets HTTP 400 | Let the tool build constraints from `text` and the filter arguments. |
++ | "Use explicit limits for queries that may return large amounts of data" | **The list envelope.** `list_log_fields`, `list_log_alerts` and `get_log_alert_history` return `{items, returned, limit, total, truncated, hint}`, so the model reads truncation instead of guessing at it. For fields and alerts `total` is a real count, so a page that exactly fills `limit` is still reported `truncated: false` when it is genuinely complete; alert history is paged by the appliance, so a full history page says `truncated: true` with `total: null`. |
++ | Hand-crafts a field constraint and gets HTTP 400 | Let the tool build constraints from `text` and the window arguments; there is no field-filter argument. |
+
+### references/capabilities.md  [docs]
+- | `search_logs` | GET /events/{constraints} | `{count, complete, constraints, events:[{timestamp_ms, text, fields}]}` | 400–4000 (scales with limit) |
+- | `aggregate_logs` | GET /aggregated-events/{constraints} | `{aggregation, bin_width_ms, bins:[...], spikes:[...]}` | 200–1500 |
+- | `list_log_fields` | GET /fields | envelope of `[{name}]` | 100–800 |
+- | `get_log_alert_history` | GET /alerts/{id}/history | envelope of `[{timestamp_ms, info}]` | 100–1500 |
+- `total` is a **real** count, never an estimate: the appliance returns each
+- collection in one GET and this package applies `limit` client-side, so the full
+- match count is already in hand. Two consequences worth relying on —
+- - **Search over list**: `search_logs` defaults to `limit=50` and a 1-hour window;
+-   narrow with `text`/filters rather than raising the limit. `complete=False`
+-   signals server-side truncation.
+- - **Field flattening**: Log Insight's `fields: [{name, content}]` is flattened to
+-   a `{name: content}` dict; all text is `sanitize()`d (truncated + control-char stripped).
++ | `search_logs` | GET /events/{constraints} | `{count, complete, constraints, events:[{timestamp_ms, text, fields}]}` (+ `note` when `limit` was lowered) | ~160 per event: ~8000 at the default 50, ~32000 at the 200 cap |
++ | `aggregate_logs` | GET /aggregated-events/{constraints} | `{aggregation, field, bin_width_ms, bins:[{timestamp_ms, end_ms, value}], spikes:[...]}` | ~1100 for 1h of 1-minute bins |
++ | `list_log_fields` | GET /fields (+ GET /content/contentpack when a field belongs to a pack) | envelope of `[{name, internal_name, type[, display_name, content_pack]}]` | ~500 filtered; ~15000 unfiltered (~340 fields) |
++ | `get_log_alert_history` | GET /alerts/{id}/history?limit= | envelope of `[{timestamp_ms, acknowledged, message_count, messages:[{timestamp_ms, text}]}]` (≤3 messages per record) | ~150 per record |
++ For `list_log_fields` and `list_log_alerts`, `total` is a **real** count, never an
++ estimate: the appliance returns the whole collection in one GET and this package
++ applies `limit` client-side. Two consequences worth relying on —
++ `get_log_alert_history` is different: the appliance pages history itself (`limit`
++ up to 50; a larger value is lowered and `note` says so). A page shorter than
++ `limit` is the whole history and carries a real `total`; a full page has
++ `total: null` and `truncated: true`.
++ - **Search over list**: `search_logs` defaults to `limit=50` and a 1-hour window,
++   and returns at most 200 events (a larger `limit` is lowered and `note` says so;
++   the appliance would send 20000, which on 8.18.7 was 16 MB and 31 s). Narrow with
++   `text` or the window rather than raising the limit. `complete=False` signals
++   server-side truncation.
++ - **Field flattening**: Log Insight's `fields` list is flattened to a `{name: value}`
++   dict. Most entries carry `content`; on 8.18.7 the syslog header fields
++   (`hostname`, `appname`, `procid`) instead carry `startPosition` + `length` into
++   the event text, and the value is sliced from it. All text is `sanitize()`d
++   (truncated + control-char stripped).
++ ## Verified response shapes (8.18.7)
++ Captured read-only from a live 8.18.7-25423541 appliance on 2026-10-17; the
++ regression tests replay them (`tests/fixtures/li_8_18_7.json`).
++ | Endpoint | Top level | Notes |
++ |---|---|---|
++ | `GET /fields` | JSON array | items `{displayName, internalName, fieldType, isStatic, extracted[, displayNamespace]}`; some fields appear twice, identically (`source`, `facility`) — listed once |
++ | `GET /alerts` | JSON array | items carry `id` (UUID), `name`, `enabled`, `info`, `query`, `recipients`, `stats` |
++ | `GET /alerts/{id}` | object | unknown UUID → HTTP 404; a non-UUID id → HTTP 500 |
++ | `GET /alerts/{id}/history` | JSON array | records `{alertId, triggerTimestamp, acknowledged, resultUrl, messages}`, each with up to 10 messages `{text, timestamp, staticFields, extractedFields}` — captured from a temporary alert that fired twice, then deleted. No `triggerTimestampString`, though the API docs list one. `[]` for an alert that never fired. |
++ | `GET /events/{c}` | object | `{complete, duration, numResults, events}` |
++ | `GET /aggregated-events/{c}` | object | `bins: [{minTimestamp, maxTimestamp, *String, value}]`, newest first, empty bins omitted (the tool zero-fills them for COUNT/UCOUNT); `value` is an event for SAMPLE |
++ | `GET /version` | object | `{releaseName, version}` — the build is the version's suffix |
++ | `GET /content/contentpack` | object | `{contentPackMetadataList: [{name, namespace, ...}]}` — maps a field's `displayNamespace` (the pack's display name) to its namespace |
++ **Content-pack fields** are queried as `<pack namespace>:<displayName>`, e.g.
++ `com.vmware.vsphere:vmw_esxi_auth_failed_user`. Verified with one synthetic hostd
++ event: UCOUNT on the qualified name counted it; the bare display name and the
++ encoded `internalName` matched nothing. `list_log_fields` returns the qualified
++ name. Events only carry such fields when the query passes `content-pack-fields`,
++ which `search_logs` does not, so its `fields` hold static fields only.
++ Aggregation functions: COUNT and SAMPLE answer HTTP 400 with an
++ `aggregation-field`; UCOUNT, AVG, MIN, MAX, SUM, STDDEV and VARIANCE answer
++ HTTP 400 without one. An unknown field name returns an empty series, not an error.
+
+### references/cli-reference.md  [docs]
+-   -q, --text TEXT       Free-text search (CONTAINS)
+-   -n, --limit INTEGER   Max events (1..20000)          [default: 50]
+-   -q, --text TEXT       Free-text search
+-       --agg TEXT        COUNT|UCOUNT|AVG|MIN|MAX|SUM|STDDEV|VARIANCE|SAMPLE  [default: COUNT]
+- Returns JSON: `{aggregation, bin_width_ms, constraints, bins:[{timestamp_ms, value}], spikes:[{timestamp_ms, value, zscore}]}`.
+- vmware-log-insight fields [--name SUBSTR]
+- vmware-log-insight doctor [--skip-auth]   # config, .env perms, network, auth, version, MCP import
+- - Time (relative): `timestamp/LAST%20<ms>` — built from `--last`.
+- - Time (absolute): `timestamp/%3E%20<begin_ms>` and `timestamp/%3C%20<end_ms>`.
+- - Text: `text/CONTAINS%20<value>`.
++   -q, --text TEXT       Word(s) to match (CONTAINS; whole words, `*` wildcard)
++   -n, --limit INTEGER   Max events (1..200; larger is lowered, with a note)  [default: 50]
++   -q, --text TEXT       Word(s) to match
++       --agg TEXT        COUNT|SAMPLE, or UCOUNT|AVG|MIN|MAX|SUM|STDDEV|VARIANCE with --field  [default: COUNT]
++   -f, --field TEXT      Field the function applies to (a name from `fields`)
++ Returns JSON: `{aggregation, field, bin_width_ms, constraints, bins:[{timestamp_ms, end_ms, value}], spikes:[{timestamp_ms, end_ms, value, zscore}]}`,
++ bins oldest first. The appliance omits bins with no events; for COUNT and UCOUNT they are
++ added back as 0 (`filled_empty_bins: true`), for the others they stay missing. For `SAMPLE`
++ each bin's value is one example event. COUNT and SAMPLE refuse `--field`; the other
++ seven require it (the appliance answers HTTP 400 otherwise). AVG/MIN/MAX/SUM/STDDEV/
++ VARIANCE need a NUMBER field, e.g. `--agg UCOUNT --field hostname`.
++ vmware-log-insight fields [--name SUBSTR]   # name + type (STRING, NUMBER, ...)
++ vmware-log-insight doctor [--skip-auth]   # config, .env perms, network, auth, version, query API (/fields), MCP import
++ - Time (relative): `timestamp/LAST%20<ms>` — built from `--last`. The appliance
++   reads LAST as a 32-bit millisecond count, so a window longer than ~24.8 days is
++   sent as `timestamp/%3E%20<now - window>` instead (8.18.7 answers HTTP 400 to the
++   LAST form there).
++ - Time (absolute): `timestamp/%3E%20<begin_ms>` and `timestamp/%3C%20<end_ms>`,
++   epoch **milliseconds**; a value that looks like seconds, or begin after end, is
++   refused before any call.
++ - Text: `text/CONTAINS%20<value>` — matches whole words, not substrings
++   (`localhost` matches `localhost.localdomain`; `localdom` matches nothing;
++   `localdom*` matches again — `*` is a wildcard). With no match, the result's
++   `note` says this, because 0 events for part of a word is not "no such logs".
+
+### references/setup-guide.md  [docs]
+- uv tool install vmware-log-insight==2.4.0
+-   "args": ["--from", "vmware-log-insight==2.4.0", "vmware-log-insight-mcp"],
++ uv tool install vmware-log-insight==2.4.1
++   "args": ["--from", "vmware-log-insight==2.4.1", "vmware-log-insight-mcp"],

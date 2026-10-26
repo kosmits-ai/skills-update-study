@@ -1,0 +1,663 @@
+jabir-srj/moodle-connector  1.0.2 -> 1.0.3
+change_type: instructions+docs+code   changelog: Bundle source code: no git clone needed, all files included
+
+### SKILL.md  [instructions]
+- git clone https://github.com/Jabir-Srj/moodle-connector.git
+- cd moodle-connector
+-       "args": ["/path/to/moodle-connector/mcp_server.py"],
++ Once installed via `clawhub install moodle-connector`:
++ cd ./skills/moodle-connector
++ playwright install chromium
++       "args": ["./skills/moodle-connector/mcp_server.py"],
+
+### batch_downloader.py  [code]
++ #!/usr/bin/env python3
++ # -*- coding: utf-8 -*-
++ """
++ """
++ Generic batch downloader for Moodle Connector.
++ Reads file lists from downloads.json and downloads them organized by module.
++ Usage:
++     python batch_downloader.py                    # Uses downloads.json
++     python batch_downloader.py --config my.json   # Custom config file
++     python batch_downloader.py --output /path/to  # Custom output directory
++ import sys
++ import io
++ import json
++ import argparse
++ from pathlib import Path
++ # Fix Windows console encoding
++ if sys.platform == 'win32':
++     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
++     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
++ from moodle_connector import MoodleConnector
++ def load_config(config_path: Path) -> dict:
++     """Load and validate downloads.json"""
++     if not config_path.exists():
++         raise FileNotFoundError(
++             f"Config file not found: {config_path}\n"
++             f"Copy downloads.example.json to downloads.json and customize it."
++         )
++         )
++     with config_path.open(encoding='utf-8') as f:
++         return json.load(f)
++ def download_files(connector: MoodleConnector, config: dict, output_dir: Path):
++     """Download files from config"""
++     output_dir.mkdir(parents=True, exist_ok=True)
++     total = 0
++     downloaded = 0
++     failed = 0
++     for module in config.get('downloads', []):
++         module_name = module.get('module', 'Unknown')
++         module_dir = output_dir / module_name.replace(' ', '_')
++         module_dir.mkdir(parents=True, exist_ok=True)
++         print(f"\n[Module] {module_name}")
++         print("-" * 80)
++         for file_info in module.get('files', []):
++             total += 1
++             filename = file_info.get('name', 'file')
++             url = file_info.get('url')
++             if not url:
++                 print(f"  ⚠️  Skipped: {filename} (no URL)")
++                 continue
++             try:
++                 target_path = module_dir / filename
++                 print(f"  Downloading: {filename}...", end=' ')
++                 sys.stdout.flush()
++                 connector.api.download_file(url, target_path)
++                 size_mb = target_path.stat().st_size / (1024 * 1024)
++                 print(f"✅ ({size_mb:.1f} MB)")
++                 downloaded += 1
++             except Exception as e:
++                 print(f"❌ Failed: {e}")
++                 failed += 1
++     return total, downloaded, failed
++ def main():
++     parser = argparse.ArgumentParser(
++         description="Batch download files from Moodle using downloads.json"
++     )
++     )
++     )
++     )
++     parser.add_argument(
++     parser.add_argument(
++     parser.add_argument(
++         '--config',
++         type=Path,
++         type=Path,
++         default=Path('downloads.json'),
++         help='Path to downloads.json config (default: ./downloads.json)'
++         '--output',
++         default=Path('downloads'),
++         help='Output directory (default: ./downloads)'
++         '--password',
++         default='test-pass',
++         help='Encryption password for credentials (default: test-pass)'
++     args = parser.parse_args()
++     print("=" * 80)
++     print("=" * 80)
++     print("MOODLE CONNECTOR — Batch Downloader")
++     try:
++         # Load config
++         config = load_config(args.config)
++         print(f"\n✅ Loaded config: {args.config}")
++         print(f"📁 Output directory: {args.output.resolve()}")
++         # Initialize connector
++         connector = MoodleConnector(
++             config_path=Path('config.json'),
++             password=args.password
++         print("✅ Connector initialized")
++         # Download
++         total, downloaded, failed = download_files(connector, config, args.output)
++         print("\n" + "=" * 80)
++         print(f"SUMMARY: {downloaded}/{total} files downloaded")
++         if failed:
++             print(f"⚠️  {failed} files failed")
++         print(f"📁 Saved to: {args.output.resolve()}")
++         print("=" * 80)
++     except FileNotFoundError as e:
++         print(f"ERROR: {e}")
++         print(f"ERROR: {e}")
++         sys.exit(1)
++         sys.exit(1)
++     except Exception as e:
++         import traceback
++         traceback.print_exc()
++ if __name__ == '__main__':
++     main()
+
+### config.template.json  [code]
++ {
++   "_comment": "Moodle connector config for mytimes.taylors.edu.my - TEMPLATE",
++   "moodle": {
++     "base_url": "https://mytimes.taylors.edu.my",
++     "web_service_token": ""
++   },
++   },
++   },
++   },
++   "microsoft": {
++     "tenant_id": "common",
++     "client_id": "",
++     "scopes": ["openid", "profile", "email", "offline_access"]
++   "credentials": {
++     "storage_file": "credentials.enc"
++   "cache": {
++     "dir": "cache",
++     "pdf_ttl_days": 7,
++     "api_ttl_seconds": 300,
++     "max_size_mb": 500
++   "output": {
++     "format": "markdown",
++     "include_grades": true,
++     "include_assignments": true,
++     "include_announcements": true,
++     "include_materials": true
++   }
++ }
+
+### mcp_server.py  [code]
++ #!/usr/bin/env python3
++ # -*- coding: utf-8 -*-
++ """
++ """
++ MCP Server for Moodle Connector
++ Exposes Moodle connector as MCP tools for Claude Code, OpenCode, and other MCP clients.
++ Usage:
++     python mcp_server.py
++ import sys
++ import io
++ from pathlib import Path
++ from typing import Any
++ # Fix Windows console encoding
++ if sys.platform == 'win32':
++     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
++     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
++ from mcp.server.models import InitializationOptions
++ from mcp.server import Server
++ from mcp.types import Tool, TextContent
++ import mcp.server.stdio
++ from moodle_connector import MoodleConnector
++ # Initialize MCP server
++ server = Server("moodle-connector")
++ # Global connector instance
++ _connector = None
++ def get_connector() -> MoodleConnector:
++     """Get or create the connector instance"""
++     global _connector
++     if _connector is None:
++         _connector = MoodleConnector(
++             config_path=Path('config.json'),
++             password='test-pass'
++         )
++         )
++         )
++     return _connector
++ @server.list_tools()
++ async def list_tools() -> list[Tool]:
++     """List available MCP tools"""
++     return [
++         Tool(
++         Tool(
++         Tool(
++         Tool(
++         Tool(
++         Tool(
++         Tool(
++         Tool(
++             name="courses",
++             description="Get list of enrolled courses",
++             inputSchema={
++             inputSchema={
++             inputSchema={
++             inputSchema={
++             inputSchema={
++             inputSchema={
++             inputSchema={
++             inputSchema={
++                 "type": "object",
++                 "type": "object",
++                 "type": "object",
++                 "type": "object",
++                 "type": "object",
++                 "type": "object",
++                 "type": "object",
++                 "type": "object",
++                 "properties": {},
++                 "properties": {},
++                 "required": []
++                 "required": []
++                 "required": []
++                 "required": []
++                 "required": []
++                 "required": []
++                 "required": []
++             }
++             }
++             }
++             }
++             }
++             }
++             }
++             }
++         ),
++         ),
++         ),
++         ),
++         ),
++         ),
++         ),
++             name="grades",
++             description="Get grades overview or per-course grades",
++                 "properties": {
++                 "properties": {
++                 "properties": {
++                 "properties": {
++                 "properties": {
++                 "properties": {
++                     "course_id": {
++                     "course_id": {
++                     "course_id": {
++                     "course_id": {
++                     "course_id": {
++                         "type": "integer",
++                         "type": "integer",
++                         "type": "integer",
++                         "type": "integer",
++                         "type": "integer",
++                         "description": "Optional: specific course ID to get detailed grades"
++                     }
++                     }
++                     }
++                     }
++                     }
++                     }
++                 },
++                 },
++                 },
++                 },
++                 },
++                 },
++             name="assignments",
++             description="Get all assignments with deadlines",
++                         "description": "Optional: filter by course ID"
++                         "description": "Optional: filter by course ID"
++                         "description": "Optional: filter by course ID"
++             name="materials",
++             description="Get course materials and resources",
++                         "description": "Optional: specific course ID"
++             name="deadlines",
++             description="Get upcoming deadlines and calendar events",
++             name="announcements",
++             description="Get course announcements",
++             name="download",
++             description="Download a file from Moodle",
++                     "url": {
++                         "type": "string",
++                         "type": "string",
++                         "description": "File URL to download"
++                     },
++                     "output": {
++                         "description": "Optional: output file path (defaults to cache)"
++                 "required": ["url"]
++             name="summary",
++             description="Get full summary of all course data",
++     ]
++ @server.call_tool()
++ async def call_tool(name: str, arguments: dict) -> str:
++     """Handle tool calls from MCP clients"""
++     try:
++         connector = get_connector()
++         if name == "courses":
++             result = connector.courses()
++         elif name == "grades":
++             course_id = arguments.get("course_id")
++             course_id = arguments.get("course_id")
++             course_id = arguments.get("course_id")
++             course_id = arguments.get("course_id")
++             course_id = arguments.get("course_id")
++             result = connector.grades(course_id=course_id)
++         elif name == "assignments":
++             result = connector.assignments(course_id=course_id)
++         elif name == "materials":
++             result = connector.materials(course_id=course_id)
++         elif name == "deadlines":
++             result = connector.deadlines(course_id=course_id)
++         elif name == "announcements":
++             result = connector.announcements(course_id=course_id)
++         elif name == "download":
++             url = arguments.get("url")
++             output = arguments.get("output")
++             result = connector.download(url, output)
++         elif name == "summary":
++             result = connector.summary()
++         else:
++             return f"Unknown tool: {name}"
++         return result
++     except Exception as e:
++         return f"Error: {str(e)}"
++ async def main():
++     """Run the MCP server"""
++     async with mcp.server.stdio.stdio_server(server) as (read_stream, write_stream):
++         await server.run(
++             read_stream,
++             write_stream,
++             InitializationOptions(
++                 server_name="moodle-connector",
++                 server_version="1.0.0",
++             ),
++ if __name__ == "__main__":
++     import asyncio
++     asyncio.run(main())
+
+### moodle_connector.py  [code]
++ #!/usr/bin/env python3
++ # -*- coding: utf-8 -*-
++ """
++ """
++ moodle_connector.py - Robust Moodle connector for mytimes.taylors.edu.my
++ Authenticates via Microsoft OAuth2/MFA, fetches courses/grades/assignments/
++ announcements/materials, caches aggressively, and outputs structured Markdown.
++ Usage (CLI):
++     python moodle_connector.py login
++     python moodle_connector.py courses
++     python moodle_connector.py grades
++     python moodle_connector.py assignments
++     python moodle_connector.py announcements
++     python moodle_connector.py materials [--course-id ID]
++     python moodle_connector.py download <url> [--output path]
++     python moodle_connector.py summary          # Full markdown summary
++ from __future__ import annotations
++ import argparse
++ import base64
++ import hashlib
++ import json
++ import logging
++ import os
++ import sys
++ import time
++ from datetime import datetime, timezone
++ from pathlib import Path
++ from typing import Any, Optional
++ from urllib.parse import urlencode, urljoin
++ import requests
++ from cryptography.fernet import Fernet
++ from cryptography.hazmat.primitives import hashes
++ from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
++ # ---------------------------------------------------------------------------
++ # ---------------------------------------------------------------------------
++ # ---------------------------------------------------------------------------
++ # ---------------------------------------------------------------------------
++ # ---------------------------------------------------------------------------
++ # ---------------------------------------------------------------------------
++ # ---------------------------------------------------------------------------
++ # ---------------------------------------------------------------------------
++ # ---------------------------------------------------------------------------
++ # ---------------------------------------------------------------------------
++ # ---------------------------------------------------------------------------
++ # ---------------------------------------------------------------------------
++ # ---------------------------------------------------------------------------
++ # ---------------------------------------------------------------------------
++ # ---------------------------------------------------------------------------
++ # ---------------------------------------------------------------------------
++ # ---------------------------------------------------------------------------
++ # ---------------------------------------------------------------------------
++ # Logging
++ logging.basicConfig(
++     level=logging.INFO,
++     format="%(asctime)s [%(levelname)s] %(message)s",
++     datefmt="%H:%M:%S",
++ )
++ log = logging.getLogger("moodle_connector")
++ # Paths
++ SCRIPT_DIR = Path(__file__).parent
++ CONFIG_FILE = SCRIPT_DIR / "config.json"
++ CREDENTIALS_FILE = SCRIPT_DIR / "credentials.enc"
++ CACHE_DIR = SCRIPT_DIR / "cache"
++ CACHE_DIR.mkdir(exist_ok=True)
++ # Credential encryption helpers
++ def _derive_key(password: str, salt: bytes) -> bytes:
++     """Derive a Fernet key from a password + salt via PBKDF2."""
++     kdf = PBKDF2HMAC(
++         algorithm=hashes.SHA256(),
++         length=32,
++         salt=salt,
++         iterations=480_000,
++     )
++     )
++     )
++     )
++     return base64.urlsafe_b64encode(kdf.derive(password.encode()))
++ def encrypt_credentials(data: dict, password: str) -> bytes:
++     """Encrypt a dict to bytes using a password-derived key."""
++     salt = os.urandom(16)
++     key = _derive_key(password, salt)
++     key = _derive_key(password, salt)
++     f = Fernet(key)
++     f = Fernet(key)
++     payload = json.dumps(data).encode()
++     return salt + f.encrypt(payload)
++ def decrypt_credentials(raw: bytes, password: str) -> dict:
++     """Decrypt bytes back to a dict."""
++     salt, token = raw[:16], raw[16:]
++     return json.loads(f.decrypt(token).decode())
++ # Simple disk cache
++ class DiskCache:
++     """Key-value cache backed by JSON files on disk."""
++     def __init__(self, directory: Path, default_ttl: int = 300):
++         self.dir = directory
++         self.dir.mkdir(parents=True, exist_ok=True)
++         self.default_ttl = default_ttl
++     def _path(self, key: str) -> Path:
++         safe = hashlib.sha256(key.encode()).hexdigest()
++         return self.dir / f"{safe}.json"
++     def get(self, key: str) -> Optional[Any]:
++         p = self._path(key)
++         p = self._path(key)
++         if not p.exists():
++             return None
++         try:
++         try:
++         try:
++         try:
++         try:
++         try:
++         try:
++         try:
++         try:
++         try:
++             entry = json.loads(p.read_text(encoding="utf-8"))
++             if time.time() < entry["expires"]:
++                 return entry["value"]
++             p.unlink(missing_ok=True)
++         except Exception:
++             pass
++         return None
++         return None
++         return None
++     def set(self, key: str, value: Any, ttl: Optional[int] = None) -> None:
++         entry = {"expires": time.time() + (ttl or self.default_ttl), "value": value}
++         p.write_text(json.dumps(entry, ensure_ascii=False), encoding="utf-8")
++     def invalidate(self, key: str) -> None:
++         self._path(key).unlink(missing_ok=True)
++ # Microsoft OAuth2 authentication (browser-based / MSAL)
++ class MicrosoftAuthenticator:
++     """
++     """
++     """
++     """
++     """
++     """
++     Handles Microsoft OAuth2 authentication for Moodle SSO.
++     Strategy:
++     1. Try MSAL device-code flow (headless-friendly).
++     2. If a Playwright browser is available, use it for interactive MFA.
++     3. Cache the access token and refresh it automatically.
++     AUTH_BASE = "https://login.microsoftonline.com"
++     def __init__(self, config: dict, cred_file: Path, password: str):
++         self.config = config
++         self.cred_file = cred_file
++         self.password = password
++         self._token: Optional[str] = None
++         self._moodle_token: Optional[str] = None
++     # ------------------------------------------------------------------
++     # ------------------------------------------------------------------
++     # ------------------------------------------------------------------
++     # ------------------------------------------------------------------
++     # ------------------------------------------------------------------
++     # ------------------------------------------------------------------
++     # ------------------------------------------------------------------
++     # ------------------------------------------------------------------
++     # ------------------------------------------------------------------
++     # ------------------------------------------------------------------
++     # ------------------------------------------------------------------
++     # ------------------------------------------------------------------
++     # ------------------------------------------------------------------
++     # ------------------------------------------------------------------
++     # ------------------------------------------------------------------
++     # ------------------------------------------------------------------
++     # ------------------------------------------------------------------
++     # ------------------------------------------------------------------
++     # ------------------------------------------------------------------
++     # ------------------------------------------------------------------
++     # Credential persistence
++     def _load_credentials(self) -> dict:
++         if self.cred_file.exists():
++             try:
++                 raw = self.cred_file.read_bytes()
++                 return decrypt_credentials(raw, self.password)
++             except Exception as exc:
++                 log.warning("Could not decrypt credentials: %s", exc)
++         return {}
++     def _save_credentials(self, data: dict) -> None:
++         raw = encrypt_credentials(data, self.password)
++         self.cred_file.write_bytes(raw)
++         log.debug("Credentials saved to %s", self.cred_file)
++     # Token acquisition
++     def get_moodle_token(self, base_url: str) -> str:
++         """Return a valid Moodle web-service token, refreshing if needed."""
++         # First, check if token is in config
++         if hasattr(self, 'config') and self.config.get("moodle", {}).get("web_service_token"):
++             token = self.config["moodle"]["web_service_token"]
++             if token:
++             if token:
++             if token:
++             if token:
++             if token:
++                 log.debug("Using Moodle token from config.")
++                 return token
++                 return token
++                 return token
++                 return token
++                 return token
++         creds = self._load_credentials()
++         creds = self._load_credentials()
++         token = creds.get("moodle_token")
++         expires = creds.get("moodle_token_expires", 0)
++         if token and time.time() < expires:
++             log.debug("Using cached Moodle token.")
++             return token
++         # Need to (re)authenticate
++         log.info("Moodle token missing or expired — starting authentication...")
++         token = self._authenticate_moodle(base_url, creds)
++         creds["moodle_token"] = token
++         creds["moodle_token_expires"] = time.time() + 3600 * 8  # 8h TTL
++         self._save_credentials(creds)
++         self._save_credentials(creds)
++         return token
++     def _authenticate_moodle(self, base_url: str, creds: dict) -> str:
++         """
++         """
++         """
++         """
++         """
++         """
++         """
++         """
++         Attempt Moodle authentication via multiple strategies:
++         1. Existing username/password stored in encrypted creds
++         2. Interactive browser login (Playwright) for Microsoft SSO/MFA
++         3. Manual token entry fallback
++         # Strategy 1: Try username/password if stored (Moodle local login)
++         username = creds.get("username")
++         password = creds.get("password")
++         if username and password:
++             token = self._try_moodle_login_token(base_url, username, password)
++                 log.info("Authenticated via stored credentials.")
++         # Strategy 2: Interactive browser SSO (Microsoft MFA)
++         log.info("Attempting browser-based Microsoft SSO login...")
++             token = self._playwright_sso_login(base_url, creds)
++         except ImportError:
++             log.warning("Playwright not installed — skipping browser login.")
++         except Exception as exc:
++         except Exception as exc:
++             log.warning("Browser login failed: %s", exc)
++         # Strategy 3: Manual fallback
++         return self._manual_token_entry(creds)
++     def _try_moodle_login_token(self, base_url: str, username: str, password: str) -> Optional[str]:
++         """Try Moodle's /login/token.php endpoint (works for local accounts)."""
++         url = f"{base_url.rstrip('/')}/login/token.php"
++             resp = requests.post(url, data={
++                 "username": username,
++                 "password": password,
++                 "service": "moodle_mobile_app",
++             }, timeout=30)
++             data = resp.json()
++             data = resp.json()
++             if "token" in data:
++                 return data["token"]
++             log.warning("Token login failed: %s", data.get("error", "unknown"))
++             log.warning("Token login request failed: %s", exc)
++     def _playwright_sso_login(self, base_url: str, creds: dict) -> Optional[str]:
++         Use Playwright to drive the Microsoft SSO / MFA flow and extract
++         the Moodle web-service token.
++         The browser navigates to /login/token.php?service=moodle_mobile_app
++         which redirects through Microsoft login. After successful auth Moodle
++         returns a page with the token in JSON.
++         from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
++         login_url = (
++             f"{base_url.rstrip('/')}/login/token.php"
++             f"?service=moodle_mobile_app"
++         )
++         )
++         )
++         )
++         )
++         )
++         )
++         )
++         )
++         )
++         )
++         )
++         )
++         with sync_playwright() as pw:
++             browser = pw.chromium.launch(headless=False)
++             ctx = browser.new_context()
++             page = ctx.new_page()
++             log.info("Opening browser for Microsoft login — complete MFA in the browser window.")
++             page.goto(login_url)
++             # Pre-fill username if available
++             username = creds.get("username") or creds.get("email", "")
++             if username:
++                 try:
++                 try:
++                     page.fill('input[type="email"], input[name="loginfmt"]', username, timeout=5000)
++                     page.keyboard.press("Enter")
++                     page.wait_for_timeout(1000)
++                 except Exception:
++                     pass
++             # Wait up to 3 minutes for the user to complete MFA
++             token = None
++             deadline = time.time() + 180
++             while time.time() < deadline:
+
+### package.json  [code]
+-   "version": "1.0.1",
++   "version": "1.0.3",
+
+### requirements.txt  [docs]
++ requests>=2.31.0
++ cryptography>=41.0.0
++ playwright>=1.40.0
++ mcp>=0.1.0

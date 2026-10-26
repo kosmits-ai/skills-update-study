@@ -1,0 +1,154 @@
+smithnodebyte/smithnode  1.0.5 -> 1.0.6
+change_type: docs+code   changelog: - Updated contributor documentation in AI_CONTRIBUTOR_GUIDE.md and CONTRIBUTING.md for clarity and improved workflow. - Improved main project README.md with refined instructions and security best practices. - Enhanced VALIDATOR_GUIDE.md to better assist validator setup and operation. - Made internal updates to smithnode-core source files for stability and maintainability (main.rs, p2p/mod.rs). - No breaking changes to external APIs or skill metadata.
+
+### AI_CONTRIBUTOR_GUIDE.md  [docs]
++ > **Note:** This guide is for AI agents who want to **contribute code** to SmithNode. Running a validator does NOT require GitHub credentials — see [VALIDATOR_GUIDE.md](VALIDATOR_GUIDE.md).
+
+### CONTRIBUTING.md  [docs]
++ > **Note:** This guide is for **contributors** who want to submit code. If you just want to **run a validator**, see [VALIDATOR_GUIDE.md](VALIDATOR_GUIDE.md) — no GitHub credentials needed.
+
+### README.md  [docs]
+- - **P2P binary seeding** — upgraded nodes relay binaries to peers for staggered network-wide updates
+- - [x] P2P state sync + binary seeding
++ - **P2P peer relay** — upgraded nodes relay binaries to peers for staggered network-wide updates
++ - [x] P2P state sync + peer relay
+
+### VALIDATOR_GUIDE.md  [docs]
+- 5. **Downloads** the binary (from P2P seeds or HTTP)
++ 5. **Downloads** the binary (from peer relays or HTTP)
+
+### smithnode-core/src/main.rs  [code]
+-                             // ── P2P BINARY RELAY: Try peer seeds first, then HTTP ──
+-                             let peer_seeds = p2p::get_seed_urls(&upgrade.version, &download_key);
+-                             // Build URL list: peer seeds first (P2P relay), then operator HTTP URL
+-                             let mut try_urls: Vec<String> = peer_seeds;
+-                                 tracing::info!("🌱 {} P2P seed(s) available + 1 HTTP source", try_urls.len() - 1);
+-                                 let source = if i < try_urls.len() - 1 { "P2P seed" } else { "HTTP" };
+-                             // ── ANNOUNCE AS P2P SEED ──
+-                                 let seed_announcement = p2p::BinarySeedAnnouncement {
+-                                     seed_url: format!("http://127.0.0.1:{}/upgrade-binary", p2p_port_for_update + 10),
+-                                 let _ = network_handle_for_update.broadcast_binary_seed(seed_announcement).await;
++                             // ── P2P BINARY RELAY: Try peer relays first, then HTTP ──
++                             let peer_relays = p2p::get_relay_urls(&upgrade.version, &download_key);
++                             // Build URL list: peer relays first (P2P relay), then operator HTTP URL
++                             let mut try_urls: Vec<String> = peer_relays;
++                                 tracing::info!("🌱 {} P2P relay(s) available + 1 HTTP source", try_urls.len() - 1);
++                                 let source = if i < try_urls.len() - 1 { "P2P relay" } else { "HTTP" };
++                             // ── ANNOUNCE AS P2P RELAY ──
++                                 let relay_announcement = p2p::PeerRelayAnnouncement {
++                                     relay_url: format!("http://127.0.0.1:{}/upgrade-binary", p2p_port_for_update + 10),
++                                 let _ = network_handle_for_update.broadcast_peer_relay(relay_announcement).await;
+
+### smithnode-core/src/p2p/mod.rs  [code]
+- const TOPIC_BINARY_SEED: &str = "smithnode/binary-seed/1.0.0";
+- /// P2P Binary Seed Announcement — after a peer downloads the upgrade binary,
+- /// it announces itself as a seed so other peers can download from it via P2P
+- pub struct BinarySeedAnnouncement {
+-     /// Version being seeded
+-     /// Platform this seed has (e.g. "darwin_arm64", "linux_x64")
+-     pub seed_url: String,
+-     /// Peer ID of the seeder
+- /// Global binary seed tracker — collects seed announcements from peers
+- static BINARY_SEEDS: std::sync::OnceLock<Arc<RwLock<Vec<BinarySeedAnnouncement>>>> = std::sync::OnceLock::new();
+- pub fn get_binary_seeds() -> &'static Arc<RwLock<Vec<BinarySeedAnnouncement>>> {
+-     BINARY_SEEDS.get_or_init(|| Arc::new(RwLock::new(Vec::new())))
+- /// Record a binary seed from a peer
+- /// Maximum number of binary seed entries to prevent unbounded memory growth
+- const MAX_BINARY_SEEDS: usize = 500;
+- pub fn record_binary_seed(seed: BinarySeedAnnouncement) {
+-     let seeds = get_binary_seeds();
+-     let seeds = get_binary_seeds();
+-     let mut list = seeds.write_or_recover();
+-     if !list.iter().any(|s| s.peer_id == seed.peer_id && s.version == seed.version && s.platform == seed.platform) {
+-         tracing::info!("🌱 New binary seed: peer {} has v{} for {}", &seed.peer_id[..12.min(seed.peer_id.len())], seed.version, seed.platform);
+-         if list.len() >= MAX_BINARY_SEEDS {
+-             tracing::debug!("🧹 Pruned {} old binary seed entries", drain_count);
+-         list.push(seed);
+- /// Get seed URLs for a specific version and platform
+- pub fn get_seed_urls(version: &str, platform: &str) -> Vec<String> {
+-     let list = seeds.read_or_recover();
+-         .filter(|s| s.version == version && s.platform == platform)
+-         .map(|s| s.seed_url.clone())
+-     BroadcastBinarySeed(BinarySeedAnnouncement),  // "I have the binary, download from me"
+-     binary_seed_topic: IdentTopic,  // P2P binary distribution seed announcements
+-     /// Broadcast that we have the binary and can seed it to peers
+-     pub async fn broadcast_binary_seed(&self, seed: BinarySeedAnnouncement) -> anyhow::Result<()> {
+-         self.command_tx.send(NetworkCommand::BroadcastBinarySeed(seed)).await?;
+-         let binary_seed_topic = IdentTopic::new(TOPIC_BINARY_SEED);
+-         swarm.behaviour_mut().gossipsub.subscribe(&binary_seed_topic)?;
+-             binary_seed_topic,
+-                     TOPIC_BINARY_SEED => {
+-                         self.handle_binary_seed_message(&message.data).await;
+-             NetworkCommand::BroadcastBinarySeed(seed) => {
+-                 tracing::info!("🌱 Broadcasting binary seed: v{} for {} at {}", seed.version, seed.platform, seed.seed_url);
+-                 if let Ok(data) = serde_json::to_vec(&seed) {
+-                         .publish(self.binary_seed_topic.clone(), data)
+-                         tracing::warn!("Failed to broadcast binary seed: {}", e);
+-                         tracing::info!("📢 Binary seed broadcasted to P2P network");
+-     /// Handle incoming binary seed announcement — a peer has the upgrade binary
+-     async fn handle_binary_seed_message(&mut self, data: &[u8]) {
+-         match serde_json::from_slice::<BinarySeedAnnouncement>(data) {
+-             Ok(seed) => {
+-                     "🌱 Peer {} is seeding v{} for {} at {}",
+-                     &seed.peer_id[..12.min(seed.peer_id.len())],
+-                     seed.version,
+-                     seed.platform,
+-                     seed.seed_url
+-                 record_binary_seed(seed);
+-                 tracing::debug!("Failed to parse binary seed message: {}", e);
++ const TOPIC_PEER_RELAY: &str = "smithnode/peer-relay/1.0.0";
++ /// P2P Peer Relay Announcement — after a peer downloads the upgrade binary,
++ /// it announces itself as a relay so other peers can download from it via P2P
++ pub struct PeerRelayAnnouncement {
++     /// Version being relayed
++     /// Platform this relay has (e.g. "darwin_arm64", "linux_x64")
++     pub relay_url: String,
++     /// Peer ID of the relayer
++ /// Global peer relay tracker — collects relay announcements from peers
++ static PEER_RELAYS: std::sync::OnceLock<Arc<RwLock<Vec<PeerRelayAnnouncement>>>> = std::sync::OnceLock::new();
++ pub fn get_peer_relays() -> &'static Arc<RwLock<Vec<PeerRelayAnnouncement>>> {
++     PEER_RELAYS.get_or_init(|| Arc::new(RwLock::new(Vec::new())))
++ /// Record a peer relay
++ /// Maximum number of peer relay entries to prevent unbounded memory growth
++ const MAX_PEER_RELAYS: usize = 500;
++ pub fn record_peer_relay(relay: PeerRelayAnnouncement) {
++     let relays = get_peer_relays();
++     let relays = get_peer_relays();
++     let mut list = relays.write_or_recover();
++     if !list.iter().any(|r| r.peer_id == relay.peer_id && r.version == relay.version && r.platform == relay.platform) {
++         tracing::info!("🌱 New peer relay: peer {} has v{} for {}", &relay.peer_id[..12.min(relay.peer_id.len())], relay.version, relay.platform);
++         if list.len() >= MAX_PEER_RELAYS {
++             tracing::debug!("🧹 Pruned {} old peer relay entries", drain_count);
++         list.push(relay);
++ /// Get relay URLs for a specific version and platform
++ pub fn get_relay_urls(version: &str, platform: &str) -> Vec<String> {
++     let list = relays.read_or_recover();
++         .filter(|r| r.version == version && r.platform == platform)
++         .map(|r| r.relay_url.clone())
++     BroadcastPeerRelay(PeerRelayAnnouncement),  // "I have the binary, download from me"
++     peer_relay_topic: IdentTopic,  // P2P binary distribution relay announcements
++     /// Broadcast that we have the binary and can relay it to peers
++     pub async fn broadcast_peer_relay(&self, relay: PeerRelayAnnouncement) -> anyhow::Result<()> {
++         self.command_tx.send(NetworkCommand::BroadcastPeerRelay(relay)).await?;
++         let peer_relay_topic = IdentTopic::new(TOPIC_PEER_RELAY);
++         swarm.behaviour_mut().gossipsub.subscribe(&peer_relay_topic)?;
++             peer_relay_topic,
++                     TOPIC_PEER_RELAY => {
++                         self.handle_peer_relay_message(&message.data).await;
++             NetworkCommand::BroadcastPeerRelay(relay) => {
++                 tracing::info!("🌱 Broadcasting peer relay: v{} for {} at {}", relay.version, relay.platform, relay.relay_url);
++                 if let Ok(data) = serde_json::to_vec(&relay) {
++                         .publish(self.peer_relay_topic.clone(), data)
++                         tracing::warn!("Failed to broadcast peer relay: {}", e);
++                         tracing::info!("📢 Peer relay broadcasted to P2P network");
++     /// Handle incoming peer relay announcement — a peer has the upgrade binary
++     async fn handle_peer_relay_message(&mut self, data: &[u8]) {
++         match serde_json::from_slice::<PeerRelayAnnouncement>(data) {
++             Ok(relay) => {
++                     "🌱 Peer {} is relaying v{} for {} at {}",
++                     &relay.peer_id[..12.min(relay.peer_id.len())],
++                     relay.version,
++                     relay.platform,
++                     relay.relay_url
++                 record_peer_relay(relay);
++                 tracing::debug!("Failed to parse peer relay message: {}", e);

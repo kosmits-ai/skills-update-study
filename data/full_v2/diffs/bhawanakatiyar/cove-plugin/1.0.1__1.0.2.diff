@@ -1,0 +1,201 @@
+bhawanakatiyar/cove-plugin  1.0.1 -> 1.0.2
+change_type: code   changelog: v1.0.2  - No code or documentation changes detected in this release. - Version bump only; functionality remains unchanged.
+
+### config/default.yaml  [code]
++ # LLM Provider (optional — set to use CoVe without the OpenClaw sidecar)
++ # If not set, CoVe routes LLM calls through the sidecar at localhost:8888.
++ # Set llm_provider + llm_api_key, or just set the env var (GEMINI_API_KEY,
++ # ANTHROPIC_API_KEY, or OPENAI_API_KEY) and the provider is auto-detected.
++ #
++ # llm_provider: "gemini"       # gemini | anthropic | openai
++ # llm_api_key: ""              # or use env var instead
+
+### src/config.js  [code]
++   // Direct LLM API mode (no sidecar required)
++   // Provider: 'gemini' | 'anthropic' | 'openai' | null (null = use sidecar)
++   llm_provider: null,
++   llm_api_key: null,
++   }
++   // Direct LLM provider — auto-detect from available API keys if not explicitly set
++   merged.llm_api_key = process.env.COVE_LLM_API_KEY
++     || process.env.GEMINI_API_KEY
++     || process.env.ANTHROPIC_API_KEY
++     || process.env.OPENAI_API_KEY
++     || merged.llm_api_key || null;
++   if (process.env.COVE_LLM_PROVIDER) {
++     merged.llm_provider = process.env.COVE_LLM_PROVIDER;
++   } else if (!merged.llm_provider && merged.llm_api_key) {
++     // Auto-detect provider from which env var was set
++     if (process.env.GEMINI_API_KEY) merged.llm_provider = 'gemini';
++     else if (process.env.ANTHROPIC_API_KEY) merged.llm_provider = 'anthropic';
++     else if (process.env.OPENAI_API_KEY) merged.llm_provider = 'openai';
+
+### src/verifier.js  [code]
+-  * Environment variables:
+-  *   BRAVE_API_KEY         — Brave Search API key (for standard/deep policies)
+- Environment:
++  *
++  *
++  * Environment variables (direct API — no sidecar required):
++  *   GEMINI_API_KEY       — Use Gemini directly (auto-detects provider)
++  *   ANTHROPIC_API_KEY    — Use Claude directly (auto-detects provider)
++  *   OPENAI_API_KEY       — Use OpenAI directly (auto-detects provider)
++  *   COVE_LLM_PROVIDER    — Explicit provider override: gemini | anthropic | openai
++  *   COVE_LLM_API_KEY     — Explicit API key (overrides provider-specific vars)
++  * Environment variables (sidecar mode):
++  * Common:
++  *   BRAVE_API_KEY        — Brave Search API key (for standard/deep policies)
++ Environment (direct API — no sidecar required):
++   GEMINI_API_KEY        Use Gemini directly (auto-detects provider)
++   ANTHROPIC_API_KEY     Use Claude directly (auto-detects provider)
++   OPENAI_API_KEY        Use OpenAI directly (auto-detects provider)
++   COVE_LLM_PROVIDER     Explicit provider: gemini | anthropic | openai
++   COVE_LLM_API_KEY      Explicit API key (overrides provider-specific vars)
++ Environment (sidecar mode — used when no API key is set):
++ Common:
+
+### src/verify_claims.js  [code]
+-  * Works with any OpenClaw installation — routes LLM calls through the
+-  * local sidecar proxy at localhost:8888.
+-  * Call the LLM via the OpenClaw sidecar proxy (localhost:8888/v1/chat/completions).
+-  * This works with any provider the user has configured (Gemini, Claude, etc).
+-  * @param {object} config  - Resolved config from config.js (proxy_key, proxy_port, model).
+- function callLLM(messages, options = {}, config = {}) {
+-     req.setTimeout(options.timeout || 30000, () => { req.destroy(); reject(new Error('LLM request timed out')); });
++ /**
++ /**
++  *
++  * Works standalone or with OpenClaw. If an LLM API key is configured
++  * (GEMINI_API_KEY, ANTHROPIC_API_KEY, or OPENAI_API_KEY), calls the
++  * provider directly. Otherwise routes through the OpenClaw sidecar proxy.
++  */
++  */
++ const https = require('https');
++  * Provider-specific API configurations.
++  * Each provider defines how to build the request for its API.
++ const PROVIDERS = {
++   gemini: {
++     hostname: 'generativelanguage.googleapis.com',
++     buildPath: (model, apiKey) =>
++       `/v1beta/models/${model}:generateContent?key=${apiKey}`,
++     defaultModel: 'gemini-2.0-flash',
++     buildBody: (messages, options) => ({
++       contents: messages.map(m => ({
++         role: m.role === 'assistant' ? 'model' : 'user',
++         parts: [{ text: m.content }],
++       })),
++       generationConfig: {
++         maxOutputTokens: options.maxTokens || 2048,
++         temperature: options.temperature ?? 0.1,
++         temperature: options.temperature ?? 0.1,
++       },
++       },
++     }),
++     }),
++     }),
++     extractContent: (data) => {
++     extractContent: (data) => {
++     extractContent: (data) => {
++       if (data.error) throw new Error(data.error.message || JSON.stringify(data.error));
++       if (data.error) throw new Error(data.error.message || JSON.stringify(data.error));
++       if (data.error) throw new Error(data.error.message || JSON.stringify(data.error));
++       return data.candidates?.[0]?.content?.parts?.[0]?.text || '';
++     },
++     },
++     },
++     },
++   },
++   },
++   },
++   anthropic: {
++     hostname: 'api.anthropic.com',
++     buildPath: () => '/v1/messages',
++     defaultModel: 'claude-sonnet-4-6-20250514',
++     buildHeaders: (apiKey) => ({
++       'x-api-key': apiKey,
++       'anthropic-version': '2023-06-01',
++     buildBody: (messages, options, model) => {
++       // Anthropic expects system as a top-level field, not in messages
++       const system = messages.filter(m => m.role === 'system').map(m => m.content).join('\n');
++       const msgs = messages.filter(m => m.role !== 'system');
++       return {
++         model,
++         max_tokens: options.maxTokens || 2048,
++         ...(system ? { system } : {}),
++         messages: msgs,
++       };
++       return data.content?.[0]?.text || '';
++   openai: {
++     hostname: 'api.openai.com',
++     buildPath: () => '/v1/chat/completions',
++     defaultModel: 'gpt-4o-mini',
++     buildHeaders: (apiKey) => ({ Authorization: `Bearer ${apiKey}` }),
++     buildBody: (messages, options, model) => ({
++       model,
++       messages,
++       max_tokens: options.maxTokens || 2048,
++       temperature: options.temperature ?? 0.1,
++       return data.choices?.[0]?.message?.content || '';
++ };
++  * Make an HTTPS request and return the parsed JSON response.
++ function httpsPost(hostname, path, headers, body, timeout) {
++   return new Promise((resolve, reject) => {
++     const payload = JSON.stringify(body);
++     const req = https.request({
++       hostname,
++       port: 443,
++       path,
++       method: 'POST',
++       headers: {
++         'Content-Type': 'application/json',
++         'Content-Length': Buffer.byteLength(payload),
++         ...headers,
++     }, (res) => {
++       let data = '';
++       res.on('data', (chunk) => { data += chunk; });
++       res.on('end', () => {
++         try { resolve(JSON.parse(data)); }
++         catch { reject(new Error(`Failed to parse response: ${data.slice(0, 300)}`)); }
++       });
++     });
++     req.on('error', reject);
++     req.setTimeout(timeout, () => { req.destroy(); reject(new Error('LLM request timed out')); });
++     req.setTimeout(timeout, () => { req.destroy(); reject(new Error('LLM request timed out')); });
++     req.write(payload);
++     req.end();
++   });
++ }
++  * Call the LLM — routes to a direct provider API or the OpenClaw sidecar proxy.
++  * If config.llm_provider is set (gemini/anthropic/openai), calls the provider
++  * API directly using config.llm_api_key. Otherwise, routes through the local
++  * sidecar proxy at localhost:{proxy_port}.
++  * @param {object} config  - Resolved config from config.js.
++ async function callLLM(messages, options = {}, config = {}) {
++   const timeout = options.timeout || 30000;
++   const provider = PROVIDERS[config.llm_provider];
++   // Direct API mode
++   if (provider && config.llm_api_key) {
++     const model = options.model || config.model || provider.defaultModel;
++     const path = provider.buildPath(model, config.llm_api_key);
++     const headers = provider.buildHeaders ? provider.buildHeaders(config.llm_api_key) : {};
++     const body = provider.buildBody(messages, options, model);
++     const data = await httpsPost(provider.hostname, path, headers, body, timeout);
++     return provider.extractContent(data);
++   }
++   // Sidecar proxy mode (original behavior)
+
+### test_simulation.js  [code]
+- const { getBraveApiKey } = require('./src/web_search');
+- const braveKey = getBraveApiKey();
+- assert(typeof getBraveApiKey === 'function', 'getBraveApiKey is a function');
+- console.log(`    Brave API key: ${braveKey ? 'found' : 'not configured'}`);
++ const { braveSearch } = require('./src/web_search');
++ assert(typeof braveSearch === 'function', 'braveSearch is a function');
++ assert(config.brave_api_key === null || typeof config.brave_api_key === 'string', 'brave_api_key resolved in config');
++ console.log(`    Brave API key: ${config.brave_api_key ? 'found' : 'not configured'}`);
++ // Direct LLM provider tests
++ console.log('\n🤖 LLM provider tests');
++ assert(config.llm_provider === null || typeof config.llm_provider === 'string', 'llm_provider resolved in config');
++ assert(config.llm_api_key === null || typeof config.llm_api_key === 'string', 'llm_api_key resolved in config');
++ console.log(`    LLM provider: ${config.llm_provider || 'sidecar (default)'}`);
++ console.log(`    LLM API key: ${config.llm_api_key ? 'found' : 'not set (will use sidecar)'}`);

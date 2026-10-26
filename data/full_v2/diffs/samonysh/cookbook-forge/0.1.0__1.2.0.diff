@@ -1,0 +1,3443 @@
+samonysh/cookbook-forge  0.1.0 -> 1.2.0
+change_type: instructions+docs+code   changelog: **Major update: adds full multi-format build scripts, templates, prompts, and site skeletons for Cookbook-forge automation.**  - Added assets and scripts to support automated conversion from MDX to ElegantBook LaTeX/PDF, Nextra site, and optimized EPUB using both LLM and pure JS pipelines. - Included full Nextra v3 website skeleton with Dockerfile, config, scripts, and pages for instant deployment. - Provided LLM prompt templates for MDX→LaTeX and MDX→EPUB conversion, and utility scripts for dia
+
+### SKILL.md  [instructions]
+- version: "1.0.0"
+- - `scripts/mdx2tex.mjs` — MDX → ElegantBook LaTeX 转换器（先按 code fence 分块，避免代码内 `#`/`{}`/`_` 被转义；从 frontmatter 读 title；支持 callout→tcolorbox、表格→tabularx、图片→figure、列表→itemize）。
+- - `scripts/build-epub.mjs` — MDX → EPUB 完整构建（tokenize-first 转换；callout→div.class；代码块不被 heading 正则误伤；自动拷贝图片并登记 MIME；CSS 追加 callout/math/table/code 样式）。
+- │   ├── Dockerfile
+- #### 5b. ElegantBook LaTeX + PDF
+- 调用 `elegantbook-latex` skill，按以下流程：
+- 1. 在 `latex-pdf/latex/` 下初始化 ElegantBook 工程（参考 `project-cookbook-latex` 的目录规范）：
+-    - `main.tex` 全局配置 + `\input{chapters/...}`
+-    - `chapters/` 每章一个 `.tex`
+-    - `figures/` 放图片（从 `mdx/public/figures/` 拷贝）
+-    - `diagrams/` 放图表源
+-    - `metadata/` 放 sources / word-count / build-notes
+- 2. **MDX → LaTeX 转换**（写 `scripts/mdx2tex.mjs` 或 pandoc + 后处理），关键映射：
+-    - `# 标题` → `\chapter{}` / `\section{}` / `\subsection{}`
+-    - `**粗体**` `*斜体*` → `\textbf{}` `\emph{}`
+-    - 表格 → `booktabs` + `tabularx`，宽表用 `xltabular`/`longtable`
+-    - 代码围栏 → `tcolorbox + listings` 环境（见 project-cookbook-latex §10）
+-    - `<div className="callout xxx">` → `\begin{tcolorbox}[...]` 自定义环境
+-    - 图片 → `\includegraphics` + `\begin{figure}`
+-    - `$...$` / `$$...$$` 数学公式原样保留
+-    - 跨章链接 → `\ref{ch:xx}` / `\autoref`
+- 3. 封面图片必须 1280×1024（见 project-cookbook-latex §6），记录来源。
+- 4. 用 XeLaTeX 两遍编译生成 PDF。
+- 5. 强制质量闸门（来自 project-cookbook-latex §质量闸门）：
+-    - 代码块必须 tcolorbox/listings
+-    - LaTeX 可复现编译
+- #### 5d. EPUB
+- 从 `mdx/` 权威内容生成 EPUB（不是从 PDF/LaTeX 反推）：
+- 1. MDX → XHTML（每章一个 xhtml，去掉 JSX 仅保留 HTML 语义标签）。
+- 2. 在 `epub/build/` 下建立 EPUB3 结构：
+-    - `OEBPS/content.opf`（清单 + spine + 元数据）
+-    - `OEBPS/toc.ncx` + `nav.xhtml`（导航）
+-    - `OEBPS/Text/*.xhtml`
+- 3. CSS 使用本 Skill 自带的 `assets/stylesheet.template.css` 作为基础样式，若内容包含公式图片场景则额外引入 `assets/stylesheet.formula-image.css`，要求：
+-    - 强制白底黑字（防编辑器误触发 dark scheme）
+-    - 代码字体：LXGW WenKai Mono
+-    - 代码块 tcolorbox 风格（边框 + 浅灰背景 + 左侧蓝条）
+-    - 表格 booktabs 风格（顶/底粗线 + 行间细线）
+-    - 响应式图片
+- 4. 字体必须**子集化嵌入**（14MB TTF → ~300KB WOFF2），用 `scripts/subset-fonts.mjs`：
+-    - 优先通过 `fonteditor-core`（`npm install fonteditor-core`）从 xhtml 收集实际使用字符后做 TTF→WOFF2 子集化
+-    - 若未安装，脚本会提示安装命令，并给出 Python (`fonttools+brotli`) fallback 命令
+- 5. 若内容含"公式即图片"场景，用 `scripts/optimize-formula-images.mjs` 修复 HTML 结构。
+- 6. 用 `scripts/epub-zip.mjs` 打包（手写 ZIP，mimetype STORED 且为第一；零依赖）。
+- 7. 自检：
+-    - `namelist()[0] == "mimetype"`
+- EPUB 样式贴近 ElegantBook（中文衬线/楷体、蓝色标题、代码块左侧蓝条），但要兼容老旧电子阅读器：
+- - 不使用 flex/grid 复杂布局
+- - 颜色用 `!important` 覆盖阅读器主题
+- - 禁用 `@media (prefers-color-scheme: dark)` 块（防白底白字）
+- 9a. [可选] MDX → ElegantBook LaTeX，xelatex 两遍编译出 PDF
+- 9c. [可选] MDX → EPUB，子集化字体，Python 打包，自检
++ version: "1.2.0"
++ - `scripts/lmdx2tex.mjs` — **LLM 驱动**的 MDX → ElegantBook LaTeX 转换器。通过子 agent 逐章节调用 LLM 智能转换，避免正则的脆弱性。
++ - `scripts/lbuild-epub.mjs` — **LLM 驱动**的 MDX → EPUB3 转换器。通过子 agent 逐章节调用 LLM 智能转换为 XHTML，然后组装为 EPUB。
++ - `assets/prompts/mdx-to-latex.md` — LLM 转换 MDX→LaTeX 的系统 Prompt 模板（定义所有映射规则）。
++ - `assets/prompts/mdx-to-epub.md` — LLM 转换 MDX→EPUB XHTML 的系统 Prompt 模板。
++ - `assets/elegantbook-main.template.tex.txt` — 优化版 ElegantBook main.tex 模板（.tex.txt 后缀以兼容 SkillHub 文件类型白名单，脚本读取时按纯文本处理）。
++ │   ├── Dockerfile.txt                # 重命名为 Dockerfile 后可直接 docker compose up
++ #### 5b. ElegantBook LaTeX + PDF（LLM 驱动，推荐）
++ 调用 `elegantbook-latex` skill，使用 **LLM 逐章节转换**流程：
++ 1. **初始化工程目录**：在 `latex-pdf/latex/` 下创建标准结构：
++    - `main.tex`（使用 `assets/elegantbook-main.template.tex.txt` 模板）
++    - `chapters/` 每章一个 `.tex`（由 LLM 生成）
++    - `figures/` 图片（从 `mdx/public/figures/` 拷贝）
++    - `diagrams/` 图表源文件
++    - `metadata/` 元数据
++ 2. **LLM 逐章节转换**（核心步骤，使用 Task 工具调用子 agent）：
++    对每个 `mdx/*.mdx` 文件，使用 Task 工具启动子 agent：
++    对每个 `mdx/*.mdx` 文件，使用 Task 工具启动子 agent：
++    - 子 agent 读取 `assets/prompts/mdx-to-latex.md` 转换规则
++    - 子 agent 读取对应的 MDX 源文件
++    - 子 agent 读取对应的 MDX 源文件
++    - 子 agent 输出高质量 LaTeX 代码到 `chapters/<slug>.tex`
++    - **关键**：每个章节独立转换，LLM 能够正确理解语义结构（callout、代码、公式、表格、图片）
++    逐章转换的优势对比脚本转换：
++    - ✅ Callout 卡片（JSX div）正确转为 tcolorbox，标题提取准确
++    - ✅ 代码块原样保留在 verbatim 环境中，不转义内部字符
++    - ✅ 公式 $...$ 和 $$...$$ 正确识别并保留
++    - ✅ GFM 表格正确转为 booktabs/tabularx，列数自动匹配
++    - ✅ 图片路径正确转换，caption 提取准确
++    - ✅ 行内格式（粗体、斜体、代码、链接）语义正确转换
++    - ✅ LaTeX 特殊字符仅在纯文本中转义，不污染代码/公式
++ 3. **组装 main.tex**：使用 `scripts/lmdx2tex.mjs` 或手工将 `\input{chapters/xxx}` 写入 main.tex。
++ 4. **样式优化**：main.tex 基于 ElegantBook 文档类，已优化：
++    - codeblock 环境（listings + tcolorbox，灰色背景+圆角边框）
++    - callout tcolorbox（蓝/黄/红/绿四色对应 chapteroutline/recipe/pitfall/keypoints）
++    - booktabs 表格（`\arraystretch=1.25`，`\tabcolsep=5pt`）
++    - hyperref 蓝色链接
++    - 图形路径 `\graphicspath{{figures/}}`
++    - 防止孤行寡行
++ 5. **编译**：ElegantBook 文档类依赖 `elegantbook.cls`，需要先准备好 cls 文件：
++    - **TeXLive/MiKTeX 用户**：`tlmgr install elegantbook`（或在 TeXLive Manager 中搜索安装）
++    - **手动获取**：从 [ElegantLaTeX/elegantbook](https://github.com/ElegantLaTeX/ElegantBook) 下载 `elegantbook.cls`，复制到 `latex/` 目录
++    - 准备好后运行：`cd latex && xelatex main.tex && xelatex main.tex`（两遍以生成目录/交叉引用）
++ 6. **质量闸门**：
++    - 代码块必须 tcolorbox/listings 样式
++    - LaTeX 可复现编译（零 error）
++ #### 5d. EPUB（LLM 驱动，推荐）
++ 从 `mdx/` 权威内容生成 EPUB，使用 **LLM 逐章节转换**流程：
++ 1. **LLM 逐章节 MDX → XHTML 转换**（核心步骤，使用 Task 工具调用子 agent）：
++    - 子 agent 读取 `assets/prompts/mdx-to-epub.md` 转换规则
++    - 子 agent 输出合法的 EPUB3 XHTML 章节文件
++    - **关键**：每个章节独立转换，LLM 语义理解保证转换质量
++    LLM 转换 vs 脚本转换的优势：
++    - ✅ Callout 卡片（JSX div）正确转为语义化 HTML div，附 CSS 类名
++    - ✅ 代码块内容正确 HTML 实体转义（`&`→`&amp;`，`<`→`&lt;`）
++    - ✅ 公式正确包裹为 `<span class="math-inline">` / `<div class="math-block">`
++    - ✅ GFM 表格正确转为 `<table class="gfm-table">` 含 thead/tbody
++    - ✅ 图片用 `<figure>` + `<figcaption>` 语义化包裹
++    - ✅ 内部章节链接（`./chXX.mdx`）正确转为 `chXX.xhtml`
++    - ✅ XHTML 合法性（XML 声明、标签闭合、属性双引号）
++ 2. **组装 EPUB3 结构**：在 `epub/build/` 下建立：
++    - `OEBPS/content.opf`（manifest + spine + 元数据）
++    - `OEBPS/nav.xhtml`（EPUB3 导航）
++    - `OEBPS/Text/*.xhtml`（LLM 生成的章节）
++ 3. **CSS 样式**：使用 `assets/stylesheet.template.css`（epub-reader-optimizer 风格），已优化：
++    - **强制白底黑字** `!important`（防编辑器误触发 dark scheme 导致白底白字）
++    - 代码字体：LXGW WenKai Mono / Source Code Pro / Consolas
++    - 代码块 tcolorbox 风格（浅灰背景 `#f8f9fb` + 圆角 + 左侧 4px 蓝条 `#4a90d9`）
++    - 表格 booktabs 风格（顶/底 2px 粗线 + 行间 1px 细线）
++    - Callout 卡片四色左边框（蓝/橙/红/绿对应 chapteroutline/recipe/pitfall/keypoints）
++    - 响应式图片（`max-width: 100%`）
++    - 数学公式行内/块级样式
++    - 不写 `@media (prefers-color-scheme: dark)` 块（防白底白字）
++    - 分页控制（标题/代码块/图表 `page-break-inside: avoid`）
++ 4. **字体子集化嵌入**（必须）：
++    - LXGW WenKai Lite 14MB TTF → ~300KB WOFF2（仅保留 EPUB 实际使用字符）
++    - 用 `scripts/subset-fonts.mjs`（优先 fonteditor-core，Python fonttools fallback）
++ 5. **若内容含"公式即图片"**：用 `scripts/optimize-formula-images.mjs` 修复 HTML 结构，使用 `assets/stylesheet.formula-image.css`。
++ 6. **打包**：用 Python zipfile（**不要用 PowerShell Compress-Archive**），保证：
++    - `mimetype` 第一个条目且 STORED（不压缩）
++    - 其他文件 DEFLATE 压缩
++ 7. **自检**：
++    - `z.read("mimetype") == b"application/epub+zip"`
++    - XHTML 文件均为合法 XML
++ 9a. [可选] **LLM 驱动** MDX → ElegantBook LaTeX（scripts/lmdx2tex.mjs + Task 子 agent 逐章转换），xelatex 两遍编译出 PDF
++ 9c. [可选] **LLM 驱动** MDX → EPUB（scripts/lbuild-epub.mjs + Task 子 agent 逐章转换），子集化字体，Python 打包，自检
+
+### assets/elegantbook-main.template.tex.txt  [docs]
++ % ElegantBook CookBook 主文件
++ % 由 lmdx2tex.mjs 自动生成 — 请勿手动编辑
++ \documentclass[12pt,a4paper,openany]{elegantbook}
++ % ==================== 书籍元信息 ====================
++ \title{__BOOK_TITLE__}
++ \subtitle{__BOOK_SUBTITLE__}
++ \author{__BOOK_AUTHOR__}
++ \institute{__BOOK_INSTITUTE__}
++ \date{\today}
++ \version{__BOOK_VERSION__}
++ % ==================== 数学宏包 ====================
++ \usepackage{amsmath,amssymb}
++ \usepackage{fontspec}
++ % ==================== 表格宏包 ====================
++ \usepackage{booktabs}
++ \usepackage{tabularx}
++ \usepackage{xltabular}
++ \usepackage{longtable}
++ \usepackage{array}
++ \usepackage{makecell}
++ \usepackage{multirow}
++ \usepackage{threeparttable}
++ \usepackage{pdflscape}
++ \usepackage{needspace}
++ \renewcommand{\arraystretch}{1.25}
++ \setlength{\tabcolsep}{5pt}
++ % ==================== 代码块（listings + tcolorbox）====================
++ \usepackage{listings}
++ \usepackage[most]{tcolorbox}
++ \tcbuselibrary{listingsutf8}
++ \lstdefinestyle{cookbookcode}{
++   basicstyle=\ttfamily\small,
++   breaklines=true,
++   breakatwhitespace=true,
++   columns=fullflexible,
++   keepspaces=true,
++   showstringspaces=false,
++   frame=none,
++   tabsize=2,
++   extendedchars=true,
++   literate={-}{{-}}1 {á}{{\'a}}1 {é}{{\'e}}1 {í}{{\'i}}1 {ó}{{\'o}}1 {ú}{{\'u}}1
++            {ñ}{{\~n}}1 {ü}{{\"u}}1
++ }
++ }
++ }
++ \newtcblisting{codeblock}[2][]{
++   listing only,
++   listing style=cookbookcode,
++   listing options={
++     inputencoding=utf8,
++     extendedchars=true,
++     literate={-}{{-}}1
++   },
++   title={#2},
++   breakable,
++   enhanced,
++   colback=gray!3,
++   colframe=gray!45,
++   boxrule=0.4pt,
++   arc=2mm,
++   left=1.5mm, right=1.5mm, top=1mm, bottom=1mm,
++   fonttitle=\bfseries\small,
++   #1
++ % ==================== 超链接 ====================
++ \usepackage{hyperref}
++ \hypersetup{
++   colorlinks=true,
++   linkcolor=blue,
++   urlcolor=blue,
++   citecolor=blue,
++   bookmarks=true,
++   bookmarksopen=true
++ % ==================== 图形 ====================
++ \usepackage{graphicx}
++ \graphicspath{{figures/}}
++ % ==================== 页眉页脚 ====================
++ \fancyhead[LE,RO]{\thepage}
++ \fancyhead[LO]{\nouppercase{\leftmark}}
++ \fancyhead[RE]{\nouppercase{\rightmark}}
++ % ==================== 防止孤行寡行 ====================
++ \widowpenalty=10000
++ \clubpenalty=10000
++ \begin{document}
++ \maketitle
++ \tableofcontents
++ __CHAPTER_INPUTS__
++ \end{document}
+
+### assets/nextra-template/Dockerfile.txt  [docs]
++ # ===== 阶段 1: 依赖安装 =====
++ FROM node:18-alpine AS deps
++ WORKDIR /app
++ WORKDIR /app
++ WORKDIR /app
++ RUN apk add --no-cache libc6-compat
++ COPY package.json package-lock.json* ./
++ RUN if [ -f package-lock.json ]; then \
++       npm ci --no-audit --no-fund; \
++     else \
++       npm install --no-audit --no-fund; \
++     fi
++ # ===== 阶段 2: 构建 =====
++ FROM node:18-alpine AS builder
++ ENV NEXT_TELEMETRY_DISABLED=1
++ ENV NEXT_TELEMETRY_DISABLED=1
++ COPY --from=deps /app/node_modules ./node_modules
++ COPY . .
++ RUN npm run build
++ # ===== 阶段 3: 运行时 =====
++ FROM node:18-alpine AS runner
++ ENV NODE_ENV=production
++ ENV PORT=3000
++ ENV HOSTNAME=0.0.0.0
++ RUN addgroup -g 1001 -S nodejs && adduser -S nextjs -u 1001
++ COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
++ COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
++ COPY --from=builder --chown=nextjs:nodejs /app/public ./public
++ USER nextjs
++ EXPOSE 3000
++ CMD ["node", "server.js"]
+
+### assets/nextra-template/components/PdfDownload.tsx  [code]
++ export default function PdfDownload({ href, label }: { href: string; label: string }) {
++   return (
++     <a className="download-btn" href={href} download>⬇️ {label}</a>
++   )
++ }
+
+### assets/nextra-template/docker-compose.yml  [code]
++ services:
++   cookbook:
++     build:
++       context: .
++       dockerfile: Dockerfile
++     image: {{BOOK_SLUG}}-site:latest
++     container_name: {{BOOK_SLUG}}
++     restart: unless-stopped
++     ports:
++       - "3000:3000"
++     environment:
++       - NODE_ENV=production
++       - PORT=3000
++       - HOSTNAME=0.0.0.0
++       - NEXT_TELEMETRY_DISABLED=1
++     healthcheck:
++       test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:3000/zh > /dev/null 2>&1 || exit 1"]
++       interval: 30s
++       timeout: 10s
++       retries: 3
++       start_period: 30s
+
+### assets/nextra-template/middleware.js  [code]
++ import { NextResponse } from 'next/server'
++ export const config = {
++   matcher: ['/((?!api|_next|.*\\..*).*)']
++ }
++ }
++ export function middleware(req) {
++   const { pathname } = req.nextUrl
++   if (pathname === '/') {
++     return NextResponse.redirect(new URL('/zh', req.url))
++   }
++   return NextResponse.next()
+
+### assets/nextra-template/next.config.mjs  [code]
++ import nextra from 'nextra'
++ const withNextra = nextra({
++   theme: 'nextra-theme-docs',
++   themeConfig: './theme.config.tsx',
++   defaultShowCopyCode: true,
++   latex: {
++     renderer: 'katex',
++     options: { strict: 'ignore', trust: true, displayMode: false }
++   },
++   },
++   search: { codeblocks: false },
++   mdxOptions: {
++     rehypePrettyCodeOptions: { theme: 'github-dark-dimmed' }
++   }
++ })
++ })
++ export default withNextra({
++   output: 'standalone',
++   i18n: {
++     locales: ['zh', 'en'],
++     defaultLocale: 'zh'
++   reactStrictMode: true,
++   images: { unoptimized: true }
+
+### assets/nextra-template/package.json  [code]
++ {
++   "name": "{{BOOK_SLUG}}-site",
++   "version": "0.1.0",
++   "private": true,
++   "scripts": {
++     "dev": "next dev",
++     "build": "next build",
++     "start": "next start",
++     "prepare:diagrams": "node scripts/render-plantuml.mjs && node scripts/export-drawio.mjs",
++     "prepare:meta": "node scripts/build-meta.mjs",
++     "renumber": "node scripts/renumber-content.mjs",
++     "convert": "npm run prepare:diagrams && npm run prepare:meta && npm run renumber"
++   },
++   },
++   },
++   "dependencies": {
++     "next": "^14.2.15",
++     "nextra": "^3.2.4",
++     "nextra-theme-docs": "^3.2.4",
++     "react": "^18.3.1",
++     "react-dom": "^18.3.1"
++   "devDependencies": {
++     "@types/node": "^20.12.12",
++     "@types/react": "^18.3.3",
++     "typescript": "^5.4.5"
++   "engines": {
++     "node": ">=18.17.0"
++   }
++ }
+
+### assets/nextra-template/pages/_app.tsx  [code]
++ import type { AppProps } from 'next/app'
++ import '../styles/globals.css'
++ export default function App({ Component, pageProps }: AppProps) {
++   return <Component {...pageProps} />
++ }
+
+### assets/nextra-template/pages/_meta.ts  [code]
++ export default {
++   zh: { title: '简体中文', type: 'page' },
++   en: { title: 'English', type: 'page' }
++ }
+
+### assets/nextra-template/scripts/build-meta.mjs  [code]
++ import { promises as fs } from "node:fs";
++ import path from "node:path";
++ const pagesDir = path.resolve("pages/zh");
++ const metaPath = path.join(pagesDir, "_meta.ts");
++ const GROUP_SEPARATORS = [
++   { before: "ch00", title: "📖 前言与全景" },
++   { before: "ch04", title: "I · 核心概念" },
++   { before: "ch07", title: "II · 架构与实现" },
++   { before: "ch10", title: "III · 实战 Recipes" },
++   { before: "ch13", title: "IV · 生产实践" },
++   { before: "appendix", title: "📚 附录" },
++ ];
++ const TITLE_MAP = {
++   index: "🏠 首页",
++   preface: "前言",
++   references: "参考文献",
++   downloads: "📥 下载",
++ };
++ function chapNum(slug) {
++   const m = slug.match(/^ch(\d+)/);
++   return m ? parseInt(m[1], 10) : null;
++ }
++ }
++ }
++ }
++ }
++ }
++ function humanTitle(slug) {
++   if (TITLE_MAP[slug]) return TITLE_MAP[slug];
++   return slug
++     .replace(/^ch\d+-/, "")
++     .replace(/^appendix-([a-z])-/, (_, l) => `附录 ${l.toUpperCase()}：`)
++     .split("-")
++     .map(w => w[0].toUpperCase() + w.slice(1))
++     .join(" ");
++ const files = (await fs.readdir(pagesDir))
++   .filter(f => f.endsWith(".mdx"))
++   .map(f => f.replace(/\.mdx$/, ""));
++ const chapters = files.filter(f => /^ch\d+/.test(f)).sort((a, b) => chapNum(a) - chapNum(b));
++ const others = files.filter(f => !/^ch\d+/.test(f));
++ const ordered = [];
++ if (others.includes("index")) ordered.push("index");
++ if (others.includes("preface")) ordered.push("preface");
++ let sepIdx = 0;
++ for (const ch of chapters) {
++   while (sepIdx < GROUP_SEPARATORS.length) {
++     const g = GROUP_SEPARATORS[sepIdx];
++     const gNum = g.before === "appendix" ? Infinity : chapNum(g.before) ?? 0;
++     if (chapNum(ch) >= gNum && g.before !== "appendix") {
++       ordered.push(`---sep-${sepIdx}`);
++       sepIdx++;
++     } else break;
++   }
++   }
++   ordered.push(ch);
++ if (chapters.length > 0) {
++   ordered.push(`---sep-${sepIdx}`);
++   sepIdx++;
++ for (const o of others) {
++   if (o === "index" || o === "preface" || o === "downloads" || o === "references") continue;
++   ordered.push(o);
++ if (others.includes("references")) ordered.push("references");
++ if (others.includes("downloads")) ordered.push("downloads");
++ const lines = ["// 自动生成 - 如需调整顺序/标题请修改 scripts/build-meta.mjs", "export default {"];
++ for (const key of ordered) {
++   if (key.startsWith("---sep-")) {
++     const idx = parseInt(key.split("-")[2], 10);
++     lines.push(`  "${key}": { type: "separator", title: ${JSON.stringify(GROUP_SEPARATORS[idx]?.title ?? "")} },`);
++   } else {
++     lines.push(`  ${JSON.stringify(key)}: ${JSON.stringify(humanTitle(key))},`);
++ lines.push("};");
++ await fs.writeFile(metaPath, lines.join("\n"), "utf8");
++ console.log(`Wrote ${metaPath}`);
+
+### assets/nextra-template/scripts/render-plantuml.mjs  [code]
++ import { promises as fs } from "node:fs";
++ import path from "node:path";
++ import { execSync } from "node:child_process";
++ const srcDir = path.resolve("public/diagrams-src");
++ const outDir = path.resolve("public/figures");
++ await fs.mkdir(outDir, { recursive: true });
++ const files = (await fs.readdir(srcDir)).filter(f => f.endsWith(".puml")).sort();
++ let ok = 0, fail = 0;
++ for (const file of files) {
++   const figBase = file.replace(/\.puml$/, "");
++   const firstLine = (await fs.readFile(path.join(srcDir, file), "utf8")).split(/\r?\n/, 1)[0];
++   const m = firstLine.match(/@startuml\s+(\S+)/);
++   const alias = m ? m[1] : null;
++   try {
++     for (const fmt of ["svg", "png"]) {
++       const cmd =
++         `docker run --rm -v "${srcDir}:/data" -v "${outDir}:/out" ` +
++         `plantuml/plantuml:latest -charset UTF-8 -output /out -t${fmt} /data/${file}`;
++       execSync(cmd, { stdio: ["ignore", "ignore", "pipe"], windowsHide: true });
++     }
++     }
++     const baseName = alias || figBase;
++     if (baseName !== figBase) {
++       try { await fs.copyFile(path.join(outDir, baseName + ".svg"), path.join(outDir, figBase + ".svg")); } catch {}
++       try { await fs.copyFile(path.join(outDir, baseName + ".png"), path.join(outDir, figBase + ".png")); } catch {}
++     ok++;
++   } catch (e) {
++     console.error(`Failed: ${file}`, e.message);
++     fail++;
++   }
++ }
++ console.log(`PlantUML done. ${ok} ok, ${fail} fail.`);
++ process.exit(fail === 0 ? 0 : 1);
+
+### assets/nextra-template/scripts/renumber-content.mjs  [code]
++ import { promises as fs } from "node:fs";
++ import path from "node:path";
++ const pagesDir = path.resolve("pages/zh");
++ const re = new RegExp(
++   "第\\s*((?:\\d+)(?:\\s*(?:[-–—、,，]|与|和)\\s*\\d+)*)\\s*章",
++   "g",
++ );
++ function parseNums(s) {
++   return s
++     .split(/\s*(?:[-–—、,，]|与|和)\s*/)
++     .map(x => parseInt(x.trim(), 10))
++     .filter(n => !isNaN(n));
++ }
++ }
++ }
++ function mergeRanges(nums) {
++   const sorted = [...new Set(nums)].sort((a, b) => a - b);
++   const out = [];
++   let i = 0;
++   while (i < sorted.length) {
++     let j = i;
++     while (j + 1 < sorted.length && sorted[j + 1] === sorted[j] + 1) j++;
++     if (j > i) out.push(`${sorted[i]}–${sorted[j]}`);
++     else out.push(String(sorted[i]));
++     i = j + 1;
++   }
++   }
++   return out.join("、");
++ async function processFile(file) {
++   const full = path.join(pagesDir, file);
++   let text = await fs.readFile(full, "utf8");
++   const fmEnd = text.indexOf("\n---", 4);
++   const fm = fmEnd >= 0 ? text.slice(0, fmEnd + 4) : "";
++   let body = fmEnd >= 0 ? text.slice(fmEnd + 4) : text;
++   const masks = [];
++   let m;
++   const fenceRe = /```[\s\S]*?```/g;
++   while ((m = fenceRe.exec(body)) !== null) masks.push([m.index, m.index + m[0].length]);
++   const codeRe = /`[^`\n]+`/g;
++   while ((m = codeRe.exec(body)) !== null) masks.push([m.index, m.index + m[0].length]);
++   const linkRe = /\[[^\]]*\]\([^)]*\)/g;
++   while ((m = linkRe.exec(body)) !== null) masks.push([m.index, m.index + m[0].length]);
++   masks.sort((a, b) => a[0] - b[0]);
++   function inMask(pos) {
++     for (const [s, e] of masks) if (pos >= s && pos < e) return true;
++     return false;
++   body = body.replace(re, (match, expr, offset) => {
++     if (inMask(offset)) return match;
++     const nums = parseNums(expr);
++     if (nums.length === 0) return match;
++     return `**${match}**`;
++   });
++   await fs.writeFile(full, fm + body, "utf8");
++   console.log(`Processed ${file}`);
++ const files = (await fs.readdir(pagesDir)).filter(f => f.endsWith(".mdx"));
++ for (const f of files) await processFile(f);
++ console.log("renumber-content done (linking hook: customize mapping before running)");
+
+### assets/nextra-template/scripts/scaffold-nextra.mjs  [code]
++ #!/usr/bin/env node
++ // scaffold-nextra.mjs
++ //
++ //
++ //
++ // 在 nextra-site/ 目录下把模板里的 {{XXX}} 占位符替换为真实值，并拷贝 MDX 章节。
++ // 用法：
++ //   node scripts/scaffold-nextra.mjs --slug python-decorators --title "Python 装饰器 CookBook" [--github URL] [--year 2026] [--mdx ../mdx]
++ // 运行后还需：
++ //   npm install && npm run build
++ import { promises as fs } from "node:fs";
++ import path from "node:path";
++ import { fileURLToPath } from "node:url";
++ // 动态定位仓库根目录：从 __dirname 向上查找包含 scripts/lib/diagram-renderer.mjs 的目录。
++ // 这样无论脚本运行在 <repo>/assets/nextra-template/scripts/ 还是被拷贝到 <book>/nextra-site/scripts/ 都能正确定位。
++ const __filename = fileURLToPath(import.meta.url);
++ const __dirname = path.dirname(__filename);
++ let REPO_ROOT = path.resolve(__dirname);
++ while (REPO_ROOT !== path.parse(REPO_ROOT).root) {
++   try {
++     await fs.access(path.join(REPO_ROOT, "scripts", "lib", "diagram-renderer.mjs"));
++     break;
++   } catch {
++     REPO_ROOT = path.dirname(REPO_ROOT);
++   }
++   }
++   }
++   }
++   }
++ }
++ }
++ }
++ }
++ }
++ const diagModUrl = new URL(
++   `file://${path.join(REPO_ROOT, "scripts", "lib", "diagram-renderer.mjs").replace(/\\/g, "/")}`
++ ).href;
++ const { extractDiagramBlocks, renderAll, replaceBlocks } = await import(diagModUrl);
++ function parseArgs(argv) {
++   const opts = {};
++   for (let i = 2; i < argv.length; i++) {
++     const a = argv[i];
++     if (a.startsWith("--")) {
++       const key = a.slice(2);
++       const val = argv[i + 1] && !argv[i + 1].startsWith("--") ? argv[++i] : "true";
++       opts[key] = val;
++     }
++     }
++     }
++   return opts;
++ const args = parseArgs(process.argv);
++ const slug = args.slug || "cookbook";
++ const title = args.title || "CookBook";
++ const github = args.github || `https://example.com/${slug}`;
++ const year = args.year || new Date().getFullYear().toString();
++ const siteDir = path.resolve(".");
++ const mdxDir = path.resolve(args.mdx || "../mdx");
++ console.log(`Scaffolding Nextra site at ${siteDir}`);
++ console.log(`  slug=${slug}, title=${title}, github=${github}, year=${year}`);
++ console.log(`  mdx source=${mdxDir}`);
++ // ---------- 1. 拷贝 MDX 章节到 pages/zh ----------
++ const zhDir = path.join(siteDir, "pages", "zh");
++ const enDir = path.join(siteDir, "pages", "en");
++ await fs.mkdir(zhDir, { recursive: true });
++ await fs.mkdir(enDir, { recursive: true });
++ if (await fs.stat(mdxDir).catch(() => null)) {
++   // bookRoot 是 mdx/ 的父目录（renderAll 期望 <bookRoot>/mdx/public/figures 存在）
++   const bookRoot = path.resolve(path.join(mdxDir, ".."));
++   const mdxFiles = (await fs.readdir(mdxDir)).filter(f => f.endsWith(".mdx"));
++   for (const f of mdxFiles) {
++     let content = await fs.readFile(path.join(mdxDir, f), "utf8");
++     // ---- 处理 mermaid/plantuml 内嵌代码块：调用 kroki 渲染为 SVG，并在 MDX 里替换为图片引用 ----
++     const blocks = extractDiagramBlocks(content);
++     if (blocks.length > 0) {
++       console.log(`  [${f}] 发现 ${blocks.length} 个 mermaid/plantuml 代码块，渲染到 SVG...`);
++       const results = await renderAll(bookRoot, blocks, {
++         onProgress: (m) => console.log("    ", m),
++       });
++       content = replaceBlocks(content, results);
++       console.log(`  [${f}] 已替换 ${blocks.length} 个图表代码块为图片引用`);
++     // Nextra 站点里图片引用走 /figures/
++     content = content.replace(/public\/figures\//g, "/figures/");
++     await fs.writeFile(path.join(zhDir, f), content, "utf8");
++     // 英文占位骨架
++     const enF = path.join(enDir, f);
++     if (!(await fs.stat(enF).catch(() => null))) {
++       const titleM = content.match(/title:\s*"?([^"\n]+)"?/);
++       const enTitle = titleM ? titleM[1] : f;
++       await fs.writeFile(enF,
++ `---
++ title: "${enTitle}"
++ ---
++ > 🚧 English translation is in progress. Contributions welcome.
++ `, "utf8");
++   console.log(`Copied ${mdxFiles.length} MDX files to pages/zh/ and generated en skeletons.`);
++ } else {
++   console.warn("mdx dir not found at", mdxDir, "— skipping MDX copy.");
++ // ---------- 2. 拷贝 figures ----------
++ const srcFig = path.join(mdxDir, "public", "figures");
++ const dstFig = path.join(siteDir, "public", "figures");
++ await fs.mkdir(dstFig, { recursive: true });
++ if (await fs.stat(srcFig).catch(() => null)) {
++   const figs = await fs.readdir(srcFig);
++   for (const fn of figs) {
++     const s = path.join(srcFig, fn);
++     if ((await fs.stat(s)).isFile()) await fs.copyFile(s, path.join(dstFig, fn));
++   console.log(`Copied ${figs.length} figures to public/figures/`);
++ // ---------- 3. 替换模板占位符 ----------
++ async function replaceInFile(file, replacements) {
++   if (!(await fs.stat(file).catch(() => null))) return;
++   let text = await fs.readFile(file, "utf8");
++   for (const [k, v] of Object.entries(replacements)) {
++     text = text.split(`{{${k}}}`).join(v);
++   await fs.writeFile(file, text, "utf8");
++ const reps = {
++   BOOK_SLUG: slug,
++   BOOK_TITLE: title,
++   GITHUB_REPO_URL: github,
++   YEAR: year,
++ };
++ const targets = [
++   "package.json",
++   "theme.config.tsx",
++   "docker-compose.yml",
++ ];
++ for (const t of targets) await replaceInFile(path.join(siteDir, t), reps);
++ console.log("Substituted placeholders in:", targets.join(", "));
++ // ---------- 4. 运行 build-meta.mjs 生成 _meta.ts（如存在）--------
++ console.log("\nDone. Next steps:");
++ console.log("  npm install");
++ console.log("  npm run prepare:meta       # generates pages/zh/_meta.ts");
++ console.log("  npm run prepare:diagrams   # renders PlantUML via Docker (if any)");
++ console.log("  npm run build");
+
+### assets/nextra-template/styles/globals.css  [code]
++ /* Callout 卡片 */
++ .callout {
++   border-left: 4px solid;
++   padding: 0.75em 1em;
++   margin: 1em 0;
++   border-radius: 4px;
++ }
++ }
++ }
++ }
++ }
++ .callout h4 { margin-top: 0; }
++ .callout.chapteroutline { background: rgba(59,130,246,0.08); border-color: #3b82f6; }
++ .callout.keypoints      { background: rgba(34,197,94,0.08);  border-color: #22c55e; }
++ .callout.recipe         { background: rgba(245,158,11,0.08); border-color: #f59e0b; }
++ .callout.pitfall        { background: rgba(239,68,68,0.08);  border-color: #ef4444; }
++ .dark .callout.chapteroutline { background: rgba(59,130,246,0.16); }
++ .dark .callout.keypoints      { background: rgba(34,197,94,0.16); }
++ .dark .callout.recipe         { background: rgba(245,158,11,0.16); }
++ .dark .callout.pitfall        { background: rgba(239,68,68,0.16); }
++ /* figure + caption */
++ figure { margin: 1.25em 0; text-align: center; }
++ figure img { max-width: 100%; height: auto; }
++ figcaption {
++   font-size: 0.875em;
++   color: var(--nx-color-fg-default, #6b7280);
++   margin-top: 0.5em;
++ /* 表格横向滚动 */
++ .overflow-x-auto { overflow-x: auto; }
++ .overflow-x-auto > table { min-width: 540px; }
++ /* 下载按钮 */
++ .download-btn {
++   display: inline-block;
++   padding: 0.5em 1em;
++   margin-right: 0.5em;
++   border-radius: 6px;
++   background: #2563eb;
++   color: #fff;
++   font-weight: 600;
++   text-decoration: none;
++ .download-btn:hover { background: #1d4ed8; }
++ .download-btn.secondary { background: #6b7280; }
++ .download-btn.secondary:hover { background: #4b5563; }
++ /* 封面网格 */
++ .cover-grid {
++   display: grid;
++   grid-template-columns: auto 1fr;
++   gap: 1.5em;
++   align-items: start;
++   margin: 1em 0 2em;
++ @media (max-width: 640px) {
++   .cover-grid { grid-template-columns: 1fr; }
+
+### assets/nextra-template/theme.config.tsx  [code]
++ import type { DocsThemeConfig } from 'nextra-theme-docs'
++ const config: DocsThemeConfig = {
++   logo: <span style={{ fontWeight: 700 }}>{{BOOK_TITLE}}</span>,
++   project: { link: '{{GITHUB_REPO_URL}}' },
++   docsRepositoryBase: '{{GITHUB_REPO_URL}}/tree/main',
++   darkMode: true,
++   i18n: [
++     { locale: 'zh', name: '简体中文' },
++     { locale: 'en', name: 'English' }
++   ],
++   search: { placeholder: '搜索文档…' },
++   editLink: { content: '在 GitHub 上编辑此页 →' },
++   feedback: { content: '问题或建议？' },
++   footer: { content: '© {{YEAR}} {{BOOK_TITLE}} · 基于 Nextra 构建' },
++   toc: { backToTop: true }
++ }
++ export default config
+
+### assets/nextra-template/tsconfig.json  [code]
++ {
++   "compilerOptions": {
++     "target": "ES2020",
++     "lib": ["dom", "dom.iterable", "esnext"],
++     "allowJs": true,
++     "skipLibCheck": true,
++     "strict": false,
++     "noEmit": true,
++     "esModuleInterop": true,
++     "module": "esnext",
++     "moduleResolution": "bundler",
++     "resolveJsonModule": true,
++     "isolatedModules": true,
++     "jsx": "preserve",
++     "incremental": true,
++     "paths": {
++       "@/*": ["./*"]
++     }
++   },
++   "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx"],
++   "exclude": ["node_modules"]
++ }
+
+### assets/prompts/mdx-to-epub.md  [docs]
++ # MDX → EPUB3 XHTML 章节转换 Prompt
++ 你是一位精通 EPUB3 标准、XHTML 和中文电子书排版的转换器。你的任务是将单个 MDX 章节文件**逐字逐义**转换为高质量的 EPUB3 XHTML 章节文件。
++ ## 输入
++ 你会收到一个完整的 MDX 章节文件内容（含 YAML frontmatter 和正文）。
++ ## 输出规则
++ 输出一个完整的、合法的 EPUB3 XHTML 文档。
++ ### 1. 文件结构
++ 输出必须是完整的 XHTML 文档：
++ ```xml
++ ```xml
++ ```xml
++ ```xml
++ ```xml
++ ```xml
++ <?xml version="1.0" encoding="UTF-8"?>
++ <!DOCTYPE html>
++ <html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" xml:lang="zh-CN" lang="zh-CN">
++ <head>
++ <meta http-equiv="Content-Type" content="text/html; charset=UTF-8"/>
++ <title><章节标题，从 frontmatter title 提取></title>
++ <link rel="stylesheet" type="text/css" href="../css/stylesheet.css"/>
++ </head>
++ <body>
++ <!-- 正文内容 -->
++ </body>
++ </html>
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ### 2. 标题映射
++ | MDX | XHTML |
++ |---|---|
++ |---|---|
++ |---|---|
++ | （章节开头，从 frontmatter title 提取） | `<h1>章节标题</h1>`（**必须是 `<body>` 的第一个元素**） |
++ | `# 标题` | 同上，合并为 `<h1>` |
++ | `## N.M 标题` | `<h2 id="slug化后的锚点">N.M 标题</h2>` |
++ | `### N.M.K 标题` | `<h3 id="...">N.M.K 标题</h3>` |
++ | `#### 标题` | `<h4>标题</h4>` |
++ | `##### 标题` | `<h5>标题</h5>` |
++ | `###### 标题` | `<h6>标题</h6>` |
++ **强制要求**：每章 `<body>` 的第一个元素**必须是 `<h1>章名</h1>`**，章名从 frontmatter 的 `title:` 字段取（与 `<title>` 一致）。即便原 MDX 正文以 `##` 开头，也要在最前面补一个 `<h1>`——这能让 EPUB 阅读器进入章节时立刻看到章名，同时提供清晰的语义层级。
++ `<h2>` 需要生成 `id` 属性（id 内容由节标题 slug 化：中文保留、空格变 `-`、去掉标点），便于 callout 内的目录链接跳转。
++ ### 3. Callout 卡片
++ 将 `<div className="callout TYPE">...</div>` 转为语义化 HTML div：
++ | className | XHTML |
++ | `chapteroutline` | `<div class="callout callout-chapteroutline">` |
++ | `recipe` | `<div class="callout callout-recipe">` |
++ | `pitfall` | `<div class="callout callout-pitfall">` |
++ | `keypoints` | `<div class="callout callout-keypoints">` |
++ callout 内部的 `#### 标题` 转为 `<h4>标题</h4>`，内部列表/段落/代码块正常转换。
++ 示例：
++ <div class="callout callout-chapteroutline">
++ <h4>📘 本章地图</h4>
++ <p>本章解决三个问题：...</p>
++ <ul>
++ <li><a href="#11-函数是一等公民">1.1 函数是一等公民</a></li>
++ ...
++ </ul>
++ </div>
++ ### 4. 代码块
++ Markdown 围栏代码块：
++ ````
++ ````
++ ```python
++ # code here
++ 转为：
++ <pre class="code-block"><code class="language-python"># code here
++ </code></pre>
++ **关键**：
++ - 代码内容必须 HTML 实体转义（`&` → `&amp;`, `<` → `&lt;`, `>` → `&gt;`）
++ - 但代码内容本身**完整保留**，包括注释、空行、中文注释
++ - `class="language-xxx"` 标识语言
++ mermaid / plantuml / excalidraw 代码块转为占位提示：
++ <div class="diagram-placeholder">[图表：mermaid — 请在网站/PDF版本查看完整渲染]</div>
++ ### 5. 数学公式
++ - 行内公式 `$E=mc^2$` → `<span class="math-inline">\(E=mc^2\)</span>`
++ - 块级公式 `$$...$$` →
++   ```xml
++   <div class="math-block">
++   \[ ... \]
++   </div>
++   ```
++ - 公式内部 LaTeX 代码**原样保留**（在 `<span>`/`<div>` 内），不做 HTML 转义
++ ### 6. 表格（GFM 表格）
++ GFM 表格转为标准 HTML table，添加 `class="gfm-table"`：
++ <table class="gfm-table">
++ <thead>
++ <tr>
++ <tr>
++ <th>维度</th>
++ <th>普通函数</th>
++ <th>装饰器</th>
++ </tr>
++ </tr>
++ </thead>
++ <tbody>
++ <td>输入</td>
++ <td>数据</td>
++ <td><strong>另一个函数</strong></td>
++ <!-- ... -->
++ </tbody>
++ </table>
++ 单元格内的行内格式（粗体、代码、斜体）需要正确转换。
++ 表格单元格中的内容需要 HTML 实体转义。
++ ### 7. 图片
++ Markdown 图片 `![alt](src)`：
++ <figure>
++ <img src="../Images/<basename>" alt="<alt文本>"/>
++ <figcaption><alt文本></figcaption>
++ </figure>
++ - 只取文件名（basename），路径为 `../Images/xxx.svg`
++ - alt 文本需要 HTML 实体转义
++ - 用 `<figure>` + `<figcaption>` 包裹（EPUB3 语义化）
++ ### 8. 行内格式
++ | Markdown | XHTML |
++ | `**粗体**` | `<strong>粗体</strong>` |
++ | `*斜体*` | `<em>斜体</em>` |
++ | `` `代码` `` | `<code>代码</code>` |
++ | `[文字](url)` | `<a href="url">文字</a>`（外部链接正常用 href；内部章节链接 `./chXX.mdx` 转为 `chXX.xhtml`，锚点链接 `#anchor` 保留） |
++ | `![alt](src)` | 见上方图片规则 |
++ | `$公式$` | `<span class="math-inline">\(公式\)</span>` |
++ | `---` | `<hr/>` |
++ 行内代码 `<code>` 内的内容需要 HTML 实体转义。
++ ### 9. 列表
++ - 无序列表：`<ul><li>item</li></ul>`
++ - 有序列表：`<ol><li>item</li></ol>`
++ - 列表项中的行内格式正确转换
++ - 支持嵌套列表（嵌套 `<ul>`/`<ol>` 在 `<li>` 内部）
++ ### 10. 段落
++ 普通文本段落用 `<p>` 包裹。段落内的换行符转为空格（HTML 中折叠空白）。
++ 段落文本需要 HTML 实体转义。
++ ### 11. HTML 实体转义
++ 对**非代码、非公式**的文本内容，转义：
++ - `&` → `&amp;`
++ - `<` → `&lt;`
++ - `>` → `&gt;`
++ - `"` → `&quot;`（在属性值内）
++ **代码块** (`<pre><code>`) 和**行内代码** (`<code>`) 内部的内容也必须转义（这是 XML 规范要求）。
++ **公式** (`<span class="math-inline">` 和 `<div class="math-block">`) 内部的 LaTeX 代码**不转义**。
++ ### 12. 内部链接转换
++ MDX 中的内部链接需要转换：
++ - `./ch01-basics.mdx` → `ch01-basics.xhtml`
++ - `./ch02-advanced.mdx#section` → `ch02-advanced.xhtml#section`
++ - `#anchor` → 保留为 `#anchor`（在同一文件内）
++ - `[文字](#anchor)` → 锚点 slug 化（小写、空格变 `-`、去掉中文标点）
++ ### 13. 章节末尾
++ - "延伸阅读"列表正常转 `<ul>`
++ - "参考文献"用 `<ol>`，链接用 `<a href>`
++ - `---` 转 `<hr/>`
++ ## 质量要求
++ 1. **合法性**：输出必须是合法的 XML/XHTML，所有标签正确闭合，属性用双引号
++ 2. **完整性**：MDX 中的每一句话、每一段落都必须出现，不得省略
++ 3. **正确性**：HTML 实体转义正确，代码块、公式内容完整保留
++ 4. **语义化**：使用正确的 HTML5 语义标签（`<figure>`, `<figcaption>`, `<thead>`, `<tbody>` 等）
++ 5. **不要输出任何解释性文字**，只输出 XHTML 代码
++ 6. **不要输出 ```xml 或 ```html 围栏标记**，直接输出 XML 代码
++ 7. XML 声明必须在第一行，前面不能有空行
+
+### assets/prompts/mdx-to-latex.md  [docs]
++ # MDX → ElegantBook LaTeX 章节转换 Prompt
++ 你是一位精通 LaTeX（特别是 ElegantBook 文档类）和中文技术写作的转换器。你的任务是将单个 MDX 章节文件**逐字逐义**转换为高质量的 LaTeX 代码。
++ ## 输入
++ 你会收到一个完整的 MDX 章节文件内容（含 YAML frontmatter 和正文）。
++ ## 输出规则
++ ### 1. 文件结构
++ 输出纯 LaTeX 代码（不含 markdown 围栏标记），第一行必须是：
++ ```latex
++ ```latex
++ ```latex
++ ```latex
++ ```latex
++ ```latex
++ ```latex
++ ```latex
++ \chapter{<从 frontmatter title 字段提取的中文标题>}
++ \label{ch:<从 frontmatter slug 字段提取的标识>}
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ 如果是 `index.mdx`（前言/全景图章），则用 `\chapter*{...}` 代替 `\chapter{...}`。
++ ### 2. 标题映射
++ | MDX | LaTeX |
++ |---|---|
++ |---|---|
++ |---|---|
++ |---|---|
++ | `# 标题` | `\section*{标题}` |
++ | `## N.M 标题` | `\section{N.M 标题}` |
++ | `### N.M.K 标题` | `\subsection{N.M.K 标题}` |
++ | `#### 标题` | `\subsubsection{标题}` |
++ | `##### 标题` | `\paragraph{标题}` (很少用) |
++ | `###### 标题` | `\subparagraph{标题}` (很少用) |
++ **注意**：`## N.M` 是正文章节标题（对应 `\section`），不是 `\chapter`。整本书只有一个 `\chapter`，就是文件开头那一个。
++ ### 3. Callout 卡片（`<div className="callout TYPE">`）
++ 将 JSX `<div className="callout X">...</div>` 转为 `tcolorbox` 环境。callout 内部的 markdown 需要先转为 LaTeX：
++ | className | tcolorbox 命令 |
++ | `chapteroutline` | `\begin{tcolorbox}[colback=blue!5,colframe=blue!40,title={📘 本章地图}]` |
++ | `recipe` | `\begin{tcolorbox}[colback=yellow!5,colframe=orange!40,title={🍳 Recipe}]`（从 `#### 🍳 Recipe N-M：标题` 提取标题覆盖） |
++ | `pitfall` | `\begin{tcolorbox}[colback=red!5,colframe=red!40,title={⚠️ 陷阱}]`（从 `#### ⚠️ 陷阱 N：标题` 提取标题覆盖） |
++ | `keypoints` | `\begin{tcolorbox}[colback=green!5,colframe=green!40,title={✅ 核心要点}]` |
++ 如果 callout 内部有 `#### 标题`，将其提取为 `title={...}` 参数。
++ callout 内部的列表、段落、代码块都需要正确转换。callout 结尾用 `\end{tcolorbox}`。
++ ### 4. 代码块
++ Markdown 围栏代码块转为 ElegantBook 自定义的 `codeblock` 环境：
++ ````
++ ````
++ ```python
++ # code here
++ # code here
++ 转为：
++ \begin{codeblock}{python}
++ \end{codeblock}
++ **关键**：代码块内部的内容**原样保留，不做任何 LaTeX 转义**（因为 `codeblock` 是 verbatim 环境）。但语言标识要正确传入。
++ mermaid / plantuml / excalidraw 代码块转为灰色占位提示框：
++ \begin{tcolorbox}[colback=gray!5,colframe=gray!40,title={Diagram: mermaid}]
++ 图表源码见 diagrams/ 目录，在 Nextra 网站和 PDF 版本中渲染。
++ \end{tcolorbox}
++ 如果代码块第一行是 `# file: path/to/file.py` 形式的注释，将文件名作为 codeblock 的副标题：
++ \begin{codeblock}[title={examples/first\_class.py}]{python}
++ （注意下划线在 `[]` 可选参数里需要转义为 `\_`）
++ ### 5. 数学公式
++ - 行内公式 `$...$` → **原样保留** `$...$`
++ - 块级公式 `$$...$$` → 转为 `\[...\]`
++ \[
++ T: f \mapsto f'
++ \]
++ 公式内部的 LaTeX 代码**不要转义**，原样保留。
++ ### 6. 表格（GFM 表格）
++ GFM 表格转为 `booktabs + tabularx` 格式：
++ \begin{table}[htbp]
++ \centering
++ \centering
++ \begin{tabularx}{\textwidth}{X X X}
++ \toprule
++ 维度 & 普通函数 & 装饰器 \\
++ \midrule
++ 输入 & 数据 & \textbf{另一个函数} \\
++ 输出 & 数据 & \textbf{包裹后的函数} \\
++ 用法 & \texttt{result = f(x)} & \texttt{f = deco(f)}（或 \texttt{@deco}） \\
++ 典型场景 & 业务逻辑 & 横切关注点：日志/缓存/权限 \\
++ \bottomrule
++ \end{tabularx}
++ \end{table}
++ 列数根据表头自动计算，每列使用 `X` 格式（自动宽度）。表头行**不加粗**（booktabs 风格本身已有区分），但单元格中的行内格式（粗体、代码）需要正确转换。
++ ### 7. 图片
++ Markdown 图片 `![alt](src)` 转为 figure 环境：
++ \begin{figure}[htbp]
++ \includegraphics[width=0.85\textwidth]{figures/<basename>}
++ \caption{<alt 文本，去掉"图 N-M"前缀如果已经在 alt 中>}
++ \end{figure}
++ 只取 `src` 的文件名（basename），不保留路径前缀 `public/figures/`。图片路径固定为 `figures/xxx.svg`。
++ **重要**：如果图片 alt 文本以"图 N-M"开头（如"图 1-1：@log 装饰器调用时序"），caption 中保留该编号。
++ ### 8. 行内格式
++ | Markdown | LaTeX |
++ | `**粗体**` | `\textbf{粗体}` |
++ | `*斜体*` | `\emph{斜体}` |
++ | `` `代码` `` | `\texttt{代码}` |
++ | `[文字](url)` | 外部链接用 `\href{url}{文字}`；内部章节链接（`./chXX.mdx` 或 `#anchor`）只保留文字 |
++ | `![alt](src)` | 见上方图片规则 |
++ | `$公式$` | 原样保留 |
++ | `---` (水平分割线) | `\vspace{0.5em}\hrule\vspace{0.5em}` |
++ ### 9. 列表
++ - 无序列表 `- item` → `itemize` 环境
++ - 有序列表 `1. item` → `enumerate` 环境
++ - 列表项中的行内格式（粗体、代码等）需要正确转换
++ - 支持嵌套列表
++ \begin{itemize}
++ \item 要点 1：\textbf{函数是一等公民} + \textbf{闭包}
++ \item 要点 2：\texttt{@deco} 只是 \texttt{f = deco(f)} 的语法糖
++ \end{itemize}
++ ### 10. 纯文本转义
++ 对**非代码、非公式、非链接**的普通中文/英文文本，需要正确转义 LaTeX 特殊字符：
++ | 字符 | 转义 |
++ | `\` | `\textbackslash{}` (仅在非代码环境中) |
++ | `&` | `\&` |
++ | `%` | `\%` |
++ | `$` | `\$` (但行内公式的 `$` 不要转义) |
++ | `#` | `\#` |
++ | `_` | `\_` (但代码块和公式中的 `_` 不要转义) |
++ | `{` | `\{` |
++ | `}` | `\}` |
++ | `~` | `\textasciitilde{}` |
++ | `^` | `\textasciicircum{}` |
++ **关键原则**：先识别行内结构（粗体、代码、链接、公式），再对剩余纯文本转义。不要对代码块、公式块、URL 内部做转义。
++ ### 11. 段落
++ 普通段落直接输出文本（转义后），段落之间空一行。不要用 `\par` 命令。
++ ### 12. 章节末尾
++ - "延伸阅读"部分的列表正常转 `itemize`
++ - "参考文献"部分用 `enumerate`，链接用 `\href`
++ - 去掉原始 MDX 末尾的 `---` 分割线后多余的空行
++ ## 质量要求
++ 1. **完整性**：MDX 中的每一句话、每一段落都必须出现在 LaTeX 输出中，不得省略
++ 2. **正确性**：LaTeX 特殊字符转义正确，代码块和公式不转义
++ 3. **可编译性**：输出的 .tex 文件必须能被 XeLaTeX 直接编译（使用 ElegantBook 文档类）
++ 4. **中文支持**：中文文本直接写入，不需要特殊包裹（ElegantBook 通过 fontspec 配置了中文字体）
++ 5. **不要输出任何解释性文字**，只输出 LaTeX 代码
++ 6. **不要输出 ```latex 围栏标记**，直接输出 LaTeX 代码
++ 7. 代码块内容必须完全保留（包括注释、空行、中文注释）
+
+### assets/stylesheet.formula-image.css  [code]
++ /* ========================================================================
++    EPUB Reader Optimizer — 公式即图片型 EPUB 专用 CSS 模板
++    适用：出版社/Sigil 流水线产出的技术书 EPUB，公式被栅格化为 GIF 图片
++    配合：assets/optimize_formula_images.py(给公式 img 加 math-inline class)
++         assets/subset_fonts.py(子集化字体并嵌入 Fonts/*.woff2)
++    ======================================================================== */
++ /* ---------- 字体声明（嵌入 WOFF2 子集字体） ---------- */
++ @font-face {
++ @font-face {
++     font-family: "LXGW WenKai";
++     font-style: normal;
++     font-style: normal;
++     font-style: normal;
++     font-weight: normal;
++     font-weight: normal;
++     src: url("../Fonts/LXGWWenKai.woff2") format("woff2");
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++     font-family: "LXGW WenKai Mono";
++     src: url("../Fonts/LXGWWenKaiMono.woff2") format("woff2");
++ /* ---------- 基础排版 ---------- */
++ html, body {
++     font-family: "LXGW WenKai", "KaiTi", "STKaiti", serif;
++     font-family: "LXGW WenKai", "KaiTi", "STKaiti", serif;
++     line-height: 1.85;
++     text-align: justify;
++     color: #222;
++     background-color: #ffffff;
++     word-wrap: break-word;
++     word-wrap: break-word;
++ p {
++     text-indent: 0;
++     margin: 0.8em 0;
++ h1, h2, h3, h4, h5, h6 {
++     font-weight: bold;
++     font-weight: bold;
++     font-weight: bold;
++     font-weight: bold;
++     font-weight: bold;
++     line-height: 1.4;
++     margin: 1.2em 0 0.6em 0;
++     page-break-after: avoid;
++ h1 { font-size: 1.6em; border-bottom: 2px solid #4a90d9; padding-bottom: 0.3em; }
++ h2 { font-size: 1.4em; border-bottom: 1px solid #b8d4eb; padding-bottom: 0.2em; }
++ h3 { font-size: 1.2em; color: #2c5d8f; }
++ h4 { font-size: 1.1em; color: #3a3a3a; }
++ /* ---------- 行内代码 ---------- */
++ code {
++     font-family: "LXGW WenKai Mono", "Courier New", Consolas, Menlo, monospace;
++     font-family: "LXGW WenKai Mono", "Courier New", Consolas, Menlo, monospace;
++     font-size: 0.88em;
++     background-color: #f3f4f6;
++     color: #c0392b;
++     color: #c0392b;
++     padding: 0.1em 0.35em;
++     border-radius: 3px;
++     border: 1px solid #e5e7eb;
++     word-break: break-all;
++     word-break: break-all;
++ /* ---------- 代码块 ---------- */
++ pre, pre.code-block, pre.代码无行号 {
++     font-size: 0.82em;
++     font-size: 0.82em;
++     line-height: 1.55;
++     background-color: #f8f9fb;
++     color: #2d2d2d;
++     border: 1px solid #d4d8de;
++     border-left: 4px solid #4a90d9;
++     border-radius: 6px;
++     padding: 0.9em 1em;
++     margin: 1.3em 0;
++     overflow-x: auto;
++     overflow-x: auto;
++     white-space: pre-wrap;
++     tab-size: 4;
++     page-break-inside: avoid;
++     page-break-inside: avoid;
++     page-break-inside: avoid;
++ pre code, pre.code-block code {
++     font-family: inherit;
++     font-size: inherit;
++     background: transparent;
++     color: inherit;
++     border: none;
++     border: none;
++     padding: 0;
++     border-radius: 0;
++ td pre { border: none; padding: 0; margin: 0; background: transparent; }
++ .strong-code-line {
++     display: inline-block;
++     display: inline-block;
++     display: inline-block;
++     display: inline-block;
++     width: 100%;
++     background-color: #d8e6f5;
++     border-radius: 2px;
++     padding: 0 2px;
++ /* ---------- 公式（核心：行内/块级双轨）----------
++    规则总览：
++    - 默认行内：公式 img 跟随文字流，高度限制为 1.3em，与中文文字基线对齐。
++    - 独立段落：父元素是 p.图 / p.sgc-11 / p.sgc-3 / p.formula-block 时才居中独占一行，
++      并解除高度限制（让大公式正常显示）。
++ */
++ /* 默认行内 */
++ span.math-inline,
++ span.math-formula {
++     display: inline;
++     display: inline;
++     display: inline;
++     display: inline;
++     line-height: inherit;
++ span.math-inline img.formula-img,
++ span.math-formula img.formula-img {
++     vertical-align: middle;
++     vertical-align: middle;
++     vertical-align: middle;
++     vertical-align: middle;
++     vertical-align: middle;
++     max-height: 1.3em;
++     max-height: 1.3em;
++     max-height: 1.3em;
++     width: auto;
++     width: auto;
++     width: auto;
++     height: auto;
++     height: auto;
++     height: auto;
++     margin: 0 0.1em;
++     margin: 0 0.1em;
++     margin: 0 0.1em;
++ /* 独立公式段落（centered, own line） */
++ p.图, p.sgc-11, p.sgc-3, p.formula-block {
++     text-align: center;
++     text-align: center;
++     text-align: center;
++     text-align: center;
++     margin: 0.9em 0;
++     line-height: 1.2;
++ p.图 span.math-inline,       p.图 span.math-formula,
++ p.sgc-11 span.math-inline,   p.sgc-11 span.math-formula,
++ p.sgc-3 span.math-inline,    p.sgc-3 span.math-formula,
++ p.formula-block span.math-inline,
++ p.formula-block span.math-formula {
++     line-height: normal;
++     max-width: 100%;
++     max-width: 100%;
++ p.图 img.formula-img,        p.图 > img,
++ p.sgc-11 img.formula-img,    p.sgc-11 > img,
++ p.sgc-3 img.formula-img,     p.sgc-3 > img,
++ p.formula-block img.formula-img, p.formula-block > img {
++     max-height: none;
++     max-height: none;
++     max-width: 95%;
++     margin: 0;
++ /* LaTeX 文本备份（隐藏；将来 MathJax 可读取 data-latex 渲染） */
++ span.math-tex { display: none; }
++ /* ---------- 内容图（非公式）---------- */
++ img.content-img {
++ p.图 img.content-img,
++ p.sgc-11 img.content-img,
++ p.sgc-3 img.content-img {
++     max-width: 96%;
++     margin: 0.4em auto;
++ /* 兜底：任何未加类的 img 在普通段落中也按行内处理 */
++ p > img:not(.content-img):not(.formula-img) {
++ /* ---------- 图说 / 表题 / 代码清单标题 ---------- */
++ p.图题 {
++     font-size: 0.85em;
++     font-size: 0.85em;
++     color: #555;
++     margin: 0.3em 0 1.2em 0;
++ p.表题 {
++     font-size: 0.9em;
++     font-size: 0.9em;
++     color: #333;
++     margin: 1em 0 0.4em 0;
++ p.代码清单标题 {
++     text-align: right;
++     color: #666;
++     font-style: italic;
++     margin: 0 0 0.3em 0;
++ /* ---------- 表格 ---------- */
++ table {
++     margin: 1em auto 1.5em auto !important;
++     border-collapse: collapse;
++     border-spacing: 0;
++ th {
++     padding: 0.4em 0.6em;
++     border: 1px solid #888;
++     background-color: #e8eef5;
++     color: #1a3a5c;
++ td {
++     padding: 0.35em 0.6em;
++     text-align: left;
++     vertical-align: top;
++     border: 1px solid #b8b8b8;
++ tr:nth-of-type(even) { background-color: #f6f8fb; }
++ table code { font-size: 0.85em; }
++ /* ---------- 提示框 / 引用 ---------- */
++ blockquote {
++     border-left: 4px solid #b8d4eb;
++     background-color: #f4f8fc;
++     margin: 1em 0;
++     padding: 0.4em 0.8em;
++     color: #2c5d8f;
++ p.超强提示, p.超强提示标签 {
++     background-color: #fdecea;
++     border-left: 5px solid #e74c3c;
++     padding: 0.5em 0.8em;
++     padding: 0.5em 0.8em;
++     padding: 0.5em 0.8em;
++     margin: 0.6em 0;
++     margin: 0.6em 0;
++     margin: 0.6em 0;
++     border-radius: 0 4px 4px 0;
++     border-radius: 0 4px 4px 0;
++     border-radius: 0 4px 4px 0;
++ p.强提示, p.强提示标签 {
++     background-color: #fff4e0;
++     border-left: 5px solid #f39c12;
++ p.提示, p.提示标签 {
++     background-color: #eaf4fc;
++     border-left: 5px solid #3498db;
++ /* ---------- 注释 / 上下标 ---------- */
++ .注释编号, .注释编号下 {
++     font-size: 0.78em;
++     line-height: 0;
++     position: relative;
++     vertical-align: baseline;
++     top: -0.5em;
++     text-decoration: none;
++ .注释内容 {
++     border-left: 4px solid #aaa;
++     background-color: #fafafa;
++     padding: 0.4em 0.7em;
++     margin: 0 0 1.2em 0;
++     color: #444;
++     border-radius: 0 3px 3px 0;
++ /* ---------- 列表 ---------- */
++ ul { list-style-type: disc; }
++ ul ul { list-style-type: circle; }
++ ul ul ul { list-style-type: square; }
++ ol { list-style-type: decimal-leading-zero; }
++ ol ol { list-style-type: lower-alpha; }
++ ol ol ol { list-style-type: lower-roman; }
++ li { margin: 0.3em 0; }
++ .代码编号分隔, .列表编号分隔 { display: none; }
++ /* ---------- 链接 / TOC ---------- */
++ a { text-decoration: none; color: #2c5d8f; }
++ .toc-level-1 { text-indent: 0; margin: 0.2em 0; line-height: 1.6; font-weight: bold; }
++ .toc-level-2 { text-indent: 1.5em; margin: 0.1em 0; line-height: 1.5; }
++ .toc-level-3 { text-indent: 3em; margin: 0.1em 0; line-height: 1.5; font-size: 0.92em; color: #555; }
++ hr {
++     border-top: 1px solid #ccc;
++     margin: 1.2em 0;
+
+### assets/stylesheet.template.css  [code]
++ /* ========================================================================
++    EPUB Reader Optimizer — 通用基础 CSS 模板
++    适用：中英文对照 / 中文译本 EPUB
++    思路：白底黑字 + 纯色高对比 + 强制字体 + 双语段落分层
++    使用：复制为 stylesheet.css 覆盖原文件，按需调整变量值
++    ======================================================================== */
++ /* ---------- 基础排版 ---------- */
++ html, body { margin: 0; padding: 0; }
++ body, body.calibre {
++   display: block;
++   display: block;
++   display: block;
++   display: block;
++   display: block;
++   display: block;
++   font-size: 1em;
++   font-size: 1em;
++   font-size: 1em;
++   font-size: 1em;
++   font-size: 1em;
++   line-height: 1.85;
++   line-height: 1.85;
++   text-align: justify;
++   text-align: justify;
++   text-justify: inter-ideograph;
++   word-wrap: break-word;
++   word-wrap: break-word;
++   word-wrap: break-word;
++   word-wrap: break-word;
++   padding: 0.5em 0.75em;
++   margin: 0;
++   color: #000000 !important;
++   color: #000000 !important;
++   color: #000000 !important;
++   color: #000000 !important;
++   color: #000000 !important;
++   color: #000000 !important;
++   color: #000000 !important;
++   color: #000000 !important;
++   color: #000000 !important;
++   background-color: #ffffff !important;
++   background-color: #ffffff !important;
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ /* ---------- 强制白底（解决"白字"问题的关键） ---------- */
++ html, body, section, article, div, p, span,
++ html, body, section, article, div, p, span,
++ h1, h2, h3, h4, h5, h6, li, td, th, blockquote, figure, figcaption {
++ /* ---------- 强制黑字（容器级兜底） ---------- */
++ h1, h2, h3, h4, h5, h6, li, td, th, blockquote, figcaption,
++ .calibre, .calibre1, .calibre2, .calibre3, .calibre4,
++ .calibre, .calibre1, .calibre2, .calibre3, .calibre4,
++ .para, .para1, .para2, .para3, .para4, .para5, .para6, .para7,
++ .para, .para1, .para2, .para3, .para4, .para5, .para6, .para7,
++ .simplepara, .simplepara1, .collaboratorsection {
++ /* ---------- 统一字体大小（正文/代码/表格 ~1em） ---------- */
++ body { font-size: 1em !important; }
++ p, li, td, th, caption, blockquote, dd, dt, figcaption,
++ .normal, .Para, .para, .para1, .para2, .para3,
++ .simplepara, .simplepara1 {
++ .simplepara, .simplepara1 {
++   font-size: 1em !important;
++   font-size: 1em !important;
++   font-size: 1em !important;
++   font-size: 1em !important;
++   font-size: 1em !important;
++   font-size: 1em !important;
++   line-height: 1.75;
++   margin: 0.4em 0;
++ /* ---------- 全局字体（按需替换字体栈） ---------- */
++ body, p, div, span, h1, h2, h3, h4, h5, h6, li, td, th, caption,
++ figcaption, dt, dd, blockquote, a, strong, em, i, b,
++ .simplepara, .simplepara1,
++ .chaptertitle, .chapterTitle, .chapterNumber,
++ .heading, .heading1, .heading2, .heading3,
++ .heading4, .heading5, .heading6, .heading7, .heading8, .heading9, .heading10,
++ .heading-1, .heading-2, .heading-3, .heading-4, .heading-5, .heading-6,
++ .booktitle, .booksubtitle, .booknotestitle, .forewordtitle,
++ .citation, .citationcontent, .citationcontent1,
++ .captioncontent, .caption, .caption1, .captionnumber,
++ .tocentry, .tocchapter, .tocsection,
++ .collaboratorsection, .seriestitle, .seriestitle1, .seriestitle2,
++ .tablestyle1, .tablestyle2, .tablestyle3, .tablestyle4,
++ .tablestyle1, .tablestyle2, .tablestyle3, .tablestyle4,
++ .tablestyle5, .tablestyle6, .tablestyle7 {
++ .tablestyle5, .tablestyle6, .tablestyle7 {
++   font-family:
++   font-family:
++   font-family:
++   font-family:
++   font-family:
++     "LXGW WenKai", "LXGW WenKai Screen", "LXGW WenKai GB",
++     "霞鹜文楷", "霞鹜文楷 GB",
++     "Source Han Serif SC", "Noto Serif CJK SC",
++     "Songti SC", "STSong", "SimSun", serif !important;
++ /* ---------- 段落 ---------- */
++ p, .para, .para1, .para2, .para3, .para5, .para7,
++   margin: 0.5em 0;
++   margin: 0.5em 0;
++ .para4, .para6 { display: inline; text-indent: 0; }
++ /* ---------- 双语段落：英文蓝色小字，中文黑色加左边线 ---------- */
++ [lang="en"], [xml\:lang="en"] {
++   color: #0000cc !important;
++ [lang="zh"], [xml\:lang="zh"] {
++   font-weight: 500;
++ p[lang="zh"], p[xml\:lang="zh"],
++ div.collaboratorsection[lang="zh"], div.collaboratorsection[xml\:lang="zh"],
++ div.para2[lang="zh"], div.para2[xml\:lang="zh"] {
++   border-left: 3px solid #0000ff;
++   padding: 0.15em 0.6em 0.15em 0.8em;
++   margin: 0.4em 0 0.9em 0;
++ p[lang="en"] + p[lang="zh"],
++ p[xml\:lang="en"] + p[xml\:lang="zh"],
++ div[lang="en"] + div[lang="zh"],
++ div[xml\:lang="en"] + div[xml\:lang="zh"] {
++   margin-top: 0.25em;
++ /* ---------- 标题（统一缩小，避免过大） ---------- */
++ .chaptertitle, .calibre1, .chapterTitle {
++   font-size: 1.3em !important; font-weight: 700; line-height: 1.4;
++   margin: 1.2em 0 0.5em;
++   border-bottom: 1px solid #ccc;
++   padding-bottom: 0.25em;
++   text-indent: 0; text-align: left;
++   page-break-after: avoid; break-after: avoid;
++   page-break-after: avoid; break-after: avoid;
++   page-break-after: avoid; break-after: avoid;
++   page-break-after: avoid; break-after: avoid;
++ .chapterNumber {
++   font-size: 1.6em !important;
++   text-align: center;
++   color: #4a90d9 !important;
++ .chaptertitle[lang="zh"] {
++   margin-top: 0.2em; font-size: 1.2em !important;
++   border-bottom: none; padding-bottom: 0;
++ .heading2, .heading4, .heading5,
++ .heading-2, .heading-3, .heading-4 {
++   font-size: 1.08em !important; font-weight: 700; line-height: 1.4;
++   margin: 1em 0 0.4em;
++   text-align: left; text-indent: 0;
++   text-align: left; text-indent: 0;
++ .heading2[lang="zh"], .heading4[lang="zh"], .heading5[lang="zh"] {
++   margin-top: 0.1em; font-size: 1.04em !important;
++ .heading1, .heading6, .heading8, .heading10,
++ .heading-1 {
++   font-size: 1.15em !important; font-weight: 700; line-height: 1.4;
++   margin: 1em 0 0.3em;
++ .heading1[lang="zh"], .heading6[lang="zh"],
++ .heading8[lang="zh"], .heading10[lang="zh"] {
++   margin-top: 0.1em; font-size: 1.08em !important;
++ .headingnumber {
++   display: inline-block; padding-right: 0.4em;
++   color: #0000ff;
++   color: #0000ff;
++   color: #0000ff;
++   color: #0000ff;
++   color: #0000ff;
++ /* 覆盖原 epub.css 中过大的标题字号 */
++ h1 { font-size: 1.15em !important; }
++ h2 { font-size: 1.08em !important; }
++ h3 { font-size: 1.04em !important; }
++ h4, h5, h6 { font-size: 1em !important; }
++ /* ---------- 章首 © 信息条（缩小、淡化） ---------- */
++ .chaptercontextinformation {
++   font-size: 0.85em;
++   font-size: 0.85em;
++   color: #000000;
++   color: #000000;
++   border-bottom: 1px solid #000000;
++   padding-bottom: 0.4em;
++   margin-bottom: 1em;
++ .chaptercontextinformation a { color: #0000ff; text-decoration: none; }
++ /* ---------- 列表 ---------- */
++ ul, ol { margin: 0.4em 0 0.7em 1.5em; padding-left: 0.4em; line-height: 1.8; }
++ li { margin: 0.25em 0; font-size: 1em !important; }
++ .unorderedlistmarkbullet, .unorderedlistmarkbullet1 {
++   display: block; list-style-type: disc; margin: 0.3em 0 0.5em 1.5em;
++ .unorderedlistmarkdash {
++   display: block; list-style-type: "— "; margin: 0.3em 0 0.5em 1.5em; text-indent: 0;
++ .listitem { display: list-item; list-style-position: outside; }
++ .itemnumber {
++   display: inline-block; min-width: 1.6em; padding-right: 0.4em;
++   font-weight: 600; color: #0000ff;
++ .itemcontent { display: inline-block; vertical-align: top; }
++ /* ---------- 图片：行内公式不换行，独立图片居中 ---------- */
++ figure, .figure, .figure1,
++ figure, .figure, .figure1,
++ .mediaobject, .mediaobject1, .mediaobject2 {
++   display: block; text-align: center; margin: 1.2em auto;
++   text-indent: 0;
++   text-indent: 0;
++   page-break-inside: avoid; break-inside: avoid;
++   page-break-inside: avoid; break-inside: avoid;
++   page-break-inside: avoid; break-inside: avoid;
++ /* 默认行内：段落内的图片跟随文字流，不单独换行 */
++ p img, li img, td img, th img {
++   display: inline !important;
++   display: inline !important;
++   vertical-align: middle;
++   max-height: 1.3em;
++   width: auto;
++   height: auto;
++   height: auto;
++   margin: 0 0.1em;
++ /* 独立图片（居中段落、figure 内）保持块级 */
++ p.center img, figure img, .figure img, .mediaobject img {
++   display: block !important;
++   max-width: 100% !important;
++   max-height: none;
++   margin: 0.5em auto;
++ /* 全局 img 兜底 */
++ img { max-width: 100%; height: auto; vertical-align: middle; }
++ .imagestyle, .imagestyle1, .imagestyle2, .imagestyle3, .imagestyle4,
++ .imagestyle5, .imagestyle6, .imagestyle7, .imagestyle8, .imagestyle9,
++ .imagestyle10, .imagestyle11, .imagestyle12, .imagestyle13, .imagestyle14,
++ .imagestyle15, .imagestyle16, .imagestyle17, .imagestyle18, .imagestyle19 {
++   width: auto !important; max-width: 100% !important; height: auto;
++   margin: 0.4em auto; padding: 0; border: 0;
++ .calibre14 { max-width: 100%; width: auto; margin: 0 auto; }
++ /* 行内公式 SVG（Springer 风格） */
++ img[src*="_TeX_IEq"] {
++   display: inline-block; height: 1em;
++   vertical-align: middle; margin: 0 0.15em;
++ /* 块公式 */
++ .equation, .equation1, .equationwrapper, .equationcontent {
++   display: block; text-align: center; text-indent: 0;
++   margin: 0.7em 0; overflow-x: auto;
++ .equationcontent img { max-width: 95%; height: auto; }
++ /* 图说 */
++ figcaption, .caption, .caption1, .captioncontent {
++   display: block; font-size: 1em; color: #000000;
++   text-align: center; margin: 0.4em auto 0.8em; line-height: 1.5;
++ .captionnumber {
++   font-weight: 700; color: #0000ff;
++   padding-right: 0.4em; font-style: normal;
++ /* ---------- 代码块：方框 + 等宽字体（统一所有变体一个边框） ---------- */
++ /* 覆盖所有 <pre> 和 programlisting 变体 */
++ pre,
++ pre.programlisting,
++ pre.programlisting.code,
++ pre.programlisting.con,
++ pre.programlisting.gen,
++ pre.programlisting.code-one,
++ pre.programlisting.con-one,
++ pre.programlisting.gen-one,
++ .programcode, .programcode1 {
++   background: #f8f9fb !important;
++   border: 1px solid #d4d8de !important;
++   border-left: 4px solid #4a90d9 !important;
++   border-radius: 6px;
++   padding: 0.8em 1em;
++   margin: 1em 0;
++     "LXGW WenKai Mono", "LXGW WenKai Mono Light",
++     "霞鹜文楷等宽", "霞鹜文楷 Mono",
+
+### assets/template-mdx/chapter-template.mdx  [docs]
++ ---
++ ---
++ ---
++ ---
++ title: "第 N 章 <章节标题>"
++ chapter: N
++ slug: "chNN-<slug>"
++ wordCountTarget: 4000
++ status: "draft"
++ references:
++   - "<source-1>"
++ <div className="callout chapteroutline">
++ #### 📘 本章地图
++ 本章在全书中的位置：<链接到全景图章，并说明为什么需要这一章，读者学完能做什么>。
++ - [N.1 <小节标题>](#n1-小节标题)
++ - [N.2 <小节标题>](#n2-小节标题)
++ - [N.3 Recipes](#n3-recipes)
++ - [N.4 常见陷阱](#n4-常见陷阱)
++ - [N.5 要点总结](#n5-要点总结)
++ - [N.6 延伸阅读](#n6-延伸阅读)
++ </div>
++ </div>
++ </div>
++ </div>
++ </div>
++ ## N.1 <小节标题>
++ <原理部分：解释为什么需要这个概念/机制，它解决什么问题，背后的设计思想是什么。用通俗语言引入，再逐步深入技术细节。>
++ <实用部分：给出最小可运行示例，代码带中文注释。必要时配表格对比参数、返回值、配置项。>
++ | 参数 | 类型 | 默认值 | 说明 |
++ |---|---|---|---|
++ | `name` | string | - | 必填，名称 |
++ | `opts` | object | `{}` | 可选配置 |
++ ```python
++ ```python
++ # file: examples/quickstart.py
++ # 描述：演示 <功能> 的最小用法
++ import xxx
++ # 1) 初始化客户端
++ client = xxx.Client(api_key="...")  # 从环境变量读取更安全
++ # 2) 调用核心方法
++ result = client.do_something(
++     name="demo",
++     opts={"timeout": 30},  # 30 秒超时
++ )
++ # 3) 处理返回值
++ print(result.data)
++ ```
++ ```
++ ```
++ <图示：架构/流程/时序，用 mermaid/plantuml/drawio/excalidraw，必须有编号与标题，且在正文中引用（"如图 N-1 所示"）。>
++ 图 N-1 <图标题>
++ ```mermaid
++ flowchart LR
++     A[用户] --> B[客户端]
++     B --> C[服务端]
++ <解释段落：说明图中每个节点的职责、数据流向、关键交互。>
++ ## N.2 <小节标题>
++ <继续按"原理 → 实用 → 表格 → 图 → 解释"的节奏写>
++ ## N.3 Recipes
++ <div className="callout recipe">
++ <div className="callout recipe">
++ #### 🍳 Recipe N-1：<任务名>
++ **Problem**：<要解决的具体问题，适用场景>
++ **Solution**：
++ # 关键代码，带中文注释
++ **Discussion**：<解释为什么这样做、背后原理、关键参数含义、可能的变体>
++ **See Also**：[相关小节](#n1-小节标题) / [其他章](./chXX-xxx.mdx)
++ #### 🍳 Recipe N-2：<任务名>
++ ...
++ ...
++ ## N.4 常见陷阱
++ <div className="callout pitfall">
++ #### ⚠️ 陷阱 1：<一句话描述>
++ <现象、根因、正确做法、规避方式>
++ #### ⚠️ 陷阱 2：<一句话描述>
++ ## N.5 要点总结
++ <div className="callout keypoints">
++ #### ✅ 核心要点
++ - 要点 1：<一句话>
++ - 要点 2：<一句话>
++ - 要点 3：<一句话>
++ - 要点 4：<一句话>
++ ## N.6 延伸阅读
++ - 本书其他章节：[<第 X 章>](./chXX-xxx.mdx)、[<第 Y 章>](./chYY-yyy.mdx)
++ - 官方文档：<链接>
++ - 相关论文/博客：<链接>
++ **本章参考文献**
++ 1. <作者>. 《<标题>》. <来源>, <年份/日期>. <URL>
++ #### 📐 数学公式书写约定
++ - 行内公式：`$E=mc^2$`（紧挨着文字，不留空格）。
++ - 块级公式：`$$` 必须**独占一行**，公式内部不要有空行，例如：
++   ```mdx
++   $$
++   $$
++   \int_0^1 f(x)\,dx = F(1) - F(0)
++   ```
++   ```
++   ```
++   Nextra KaTeX、EPUB CSS、LaTeX 三个转换器都按此约定识别块级公式。
++ - 公式后紧跟解释段落，避免"裸公式"无说明。
++ #### 🧭 Mermaid 书写约定
++ - **缩进规则（重要）**：mermaid 代码块内，`mindmap` 下的 `root((...))` **必须顶格写**（不缩进），子节点用 2 空格缩进。错误写法（root 缩进 2+ 空格）会被 Markdown 解析器当作列表续行，换行被吞掉，导致 "Parse error ... Expecting SPACELINE"。
++   ✅ 正确：
++   ```mermaid
++   ```mermaid
++   mindmap
++   mindmap
++   root((主题))
++     分类一
++       id1["@retry(times=N)"]
++       id2["@cache 60s"]
++     分类二
++       id3[节点文本]
++   ❌ 错误（root 缩进 2 空格）：
++     root((主题))      ← 这会被 MDX 当成 list，所有换行被合并
++       分类一
++ - **mindmap 节点**：节点文本不要直接出现 `(` `)`（会被解析为圆角矩形语法）。如果必须包含括号（如函数调用、参数签名），请用 `id["文本"]` 显式包裹（id 要唯一，不可重复使用 `id`）。
++ - **flowchart/sequenceDiagram** 等其他图无此缩进限制，但节点文本若含 `(` `)` `[` `]` 建议也用双引号包裹以避免歧义。
++ - EPUB 版本无法运行 mermaid JS，转换器会自动把 mermaid 代码块降级为"图表占位符"div，所以关键信息请在正文中用文字复述。
+
+### references/style-guide-oreilly.md  [docs]
++ # O'Reilly CookBook 行文布局参考
++ > 本文件是 Cookbook Generator 生成章节时的写作风格参考。写作时不必照搬文字，但必须遵循其结构与节奏。
++ ## O'Reilly CookBook 系列核心特征
++ ### 1. 问题驱动（Problem / Solution / Discussion）
++ O'Reilly CookBook 的灵魂是 Recipe 三段式：
++ - **Problem**：用一句话精准描述问题场景（"如何在 Flask 中实现基于 Token 的认证？"）。
++ - **Solution**：给出最短可运行代码或命令，让读者立刻能跑通。
++ - **Discussion**：解释为什么这样做、关键参数含义、边界条件、替代方案、性能/安全权衡、常见错误。
++ 写 Recipe 章节时，每个小节都应当能套进这个模板。即使是概念章，也要把"为什么需要 X"作为第一句。
++ ### 2. 章节开头的"本章速览"
++ 每章开头 1–2 页：
++ - 这章要解决什么问题域。
++ - 读者读完后能做什么。
++ - 这章在全书中的位置（前置知识 / 后续章节）。
++ - 小节列表 + 一句话说明。
++ ### 3. 代码先于文字
++ O'Reilly 的排版节奏是：**给出代码 → 解释代码 → 给出变式**。不要先讲三段理论再给代码。读者是来解决问题的，先看到能跑的东西会更有耐心读后面的解释。
++ 代码要求：
++ - 必须是真实可运行的（不要伪代码，除非明确标注）。
++ - 每行/每个关键步骤有注释。
++ - 文件路径、版本号、依赖明确标出。
++ - 长代码拆成多段，每段前后都有解释。
++ ### 4. 图表用于"建立心智模型"
++ O'Reilly 的图不多，但每张图都回答一个具体问题：
++ - 架构图：组件之间谁调用谁？
++ - 时序图：一次请求经过哪些环节？
++ - 状态机图：对象的生命周期是什么？
++ - 流程图：决策点在哪里？
++ 每张图必须有编号和图注，正文中必须引用（"如图 4-2 所示…"）。不要放装饰性的图。
++ ### 5. "See Also" 交叉引用网
++ 每章/每个 Recipe 末尾的"See Also"指向：
++ - 本书其他章节（鼓励读者跳转）。
++ - 官方文档、RFC、论文、经典博客。
++ 这让书变成一个知识网络，而不是线性阅读。
++ ### 6. "Warning / Note / Tip" 三类标注
++ - **Warning**（红色/警告）：会导致数据丢失、安全漏洞、生产故障的坑。
++ - **Note**（蓝色/提示）：容易忽略但重要的细节。
++ - **Tip**（绿色/技巧）：能让代码更优雅或性能更好的小窍门。
++ 本 Cookbook Generator 在 MDX 中统一用 callout 卡片表达：
++ - `callout pitfall` → Warning
++ - `callout keypoints` → Note
++ - `callout recipe` → Tip/Recipe
++ ### 7. 面向实践者的"深度"
++ O'Reilly CookBook 不是入门书，也不是纯理论书。深度体现在：
++ - 不只讲 API 怎么调用，还讲内部实现、设计权衡。
++ - 不只讲 happy path，还讲错误处理、并发、性能、调试。
++ - 不只有"怎么做"，还有"为什么不那样做"。
++ 写原理部分时，至少要回答一次"为什么这样设计"。
++ ## Springer Handbook 系列核心特征（补充用于综述/手册类章）
++ ### 1. 分层结构 + 全景图先行
++ Springer Handbook 开篇必有一张"全书地图"（Taxonomy / Roadmap），把领域分成若干子领域，每章对应一个节点。综述章节也遵循"先总后分"：
++ - 第一节：领域定义、历史、分类法。
++ - 后续：按分类法每类一章/一节。
++ - 末尾：对比表（不同方法的优劣、适用场景）。
++ ### 2. 术语表 + 符号表
++ Handbook 会在章首或附录列出本章用到的：
++ - 关键术语（中英对照 + 定义）。
++ - 数学符号（如果有公式）。
++ - 缩写表。
++ 本生成器在附录中自动生成术语表。
++ ### 3. 对比表格密度高
++ Springer Handbook 大量使用表格做横向对比：
++ - 不同算法的时间/空间复杂度。
++ - 不同工具的特性矩阵。
++ - 不同研究流派的前提/结论对比。
++ 写综述/对比章节时，至少有 1–2 张对比表。
++ ### 4. 引用规范
++ 每个关键论断都有引用。本生成器统一在章末列出参考文献，并在 `metadata/sources.md` 维护完整来源。
++ ## 写作节奏建议（每章 4000 字左右）
++ ```text
++ [100 字] 章节引入：这章解决什么问题 + 与全景图的关系
++ [200 字] 本章地图 callout
++ [每节 800–1200 字]
++   - 原理引入 (200 字)
++   - 代码/示例 (带注释)
++   - 表格 (如有)
++   - 图 (如有) + 解释
++   - 关键讨论 (300 字)
++ [600 字] Recipes (2–3 个)
++ [300 字] 常见陷阱 callout
++ [200 字] 要点总结 callout
++ [200 字] 延伸阅读 + 参考文献
++ ```
++ ## 风格禁忌
++ - ❌ 教材式："本章我们将学习…"
++ - ❌ 营销式："XX 是世界上最好的…"
++ - ❌ 翻译腔：长句堆叠、被动语态泛滥
++ - ❌ 不写注释的大段代码
++ - ❌ 没有图的架构章 / 没有代码的实操章
++ - ❌ 空话："XX 非常重要""XX 性能很高"（要给数据/基准/解释为什么）
++ ## 风格鼓励
++ - ✅ 第二人称对话式："你会发现…""你需要…"
++ - ✅ 短句 + 主动语态
++ - ✅ 具体数字：版本号、性能数字、时间复杂度
++ - ✅ "在生产环境中""在 10k QPS 下" 这类场景限定
++ - ✅ 真实代码 > 伪代码，标注来源文件
++ - ✅ 跨章链接形成知识网络
+
+### references/style-guide-springer.md  [docs]
++ # Springer Handbook 行文布局参考
++ > 本文件作为 Cookbook Generator 在生成"综述 / 手册"类内容时的补充参考。与 `style-guide-oreilly.md` 配合使用：CookBook 章节偏 Problem/Solution，综述/手册章节偏 Taxonomy/Survey/Reference。
++ ## 1. 全景图先行（Big Picture First）
++ Springer Handbook 每个部分开篇必有一张"领域地图"（Taxonomy / Mind Map / Classification）：
++ - 把整个领域分成若干个子领域/分支。
++ - 每个子领域标注本书对应的章节编号。
++ - 用箭头表示分支之间的依赖/演化关系。
++ 在 MDX 中这对应 `ch00-overview.mdx`。该章必须包含：
++ - 一张总览图（mermaid mindmap / flowchart，或 drawio 架构图）。
++ - 一段"阅读路线"：不同背景读者推荐的章节顺序。
++ - 一张"章节依赖关系表"。
++ ## 2. 分层结构（Hierarchical Organization）
++ 典型层次：
++ ```
++ ```
++ ```
++ Part (部分) → Chapter (章) → Section (节) → Subsection (小节)
++ 每个 Part 有一张扉页图 + 一段概述，说明这一部分解决什么问题、包含哪几章、与其他 Part 的关系。
++ 在 MDX/_meta.ts 中用 separator 模拟 Part：
++ ```ts
++ export default {
++   index: "🏠 首页",
++   '---sep-1': { type: 'separator', title: "Part I · 基础" },
++   "ch01-xxx": "1. ...",
++   "ch02-xxx": "2. ...",
++   '---sep-2': { type: 'separator', title: "Part II · 进阶" },
++   // ...
++ }
++ ## 3. 每章结构（Springer Handbook 模式）
++ 综述/手册类章节推荐结构：
++ 1. **Introduction / Motivation**：这一子领域的定义、历史、为什么重要。
++ 2. **Background / Preliminaries**：必要的数学/概念背景（可引用前置章节）。
++ 3. **Taxonomy / Classification**：把该子领域的方法/技术分成几类，每类一段简述，给出分类图。
++ 4. **Detailed Methods**：逐类深入讲解原理（公式）、算法、代表性工作。
++ 5. **Comparison / Discussion**：横向对比表（精度、速度、适用场景、前提假设）。
++ 6. **Applications / Case Studies**：实际应用案例。
++ 7. **Open Challenges / Future Directions**：未解决问题、研究前沿。
++ 8. **Conclusion** + **References**。
++ ## 4. 表格密度
++ Springer Handbook 的表格用于"可查阅"的参考价值。常见表格类型：
++ | 表类型 | 示例 |
++ |---|---|
++ | 符号表 | 数学符号、含义、首次出现章节 |
++ | 缩写表 | 缩写、全称、中文译名 |
++ | 分类对比表 | 方法名、年份、核心思想、复杂度、适用场景、代表论文 |
++ | 参数配置表 | 参数、类型、默认值、推荐范围、影响 |
++ | API 速查表 | 函数签名、功能、参数、返回值、版本 |
++ | 术语中英对照表 | 中文、英文、缩写、定义 |
++ 宽表（>5 列）必须在 MDX 中用 `<div className="overflow-x-auto">` 包裹。
++ ## 5. 公式规范
++ - 行内公式用 `$...$`，块级公式用 `$$...$$`（KaTeX 兼容）。
++ - 每个块级公式带编号（手动加 `\tag{N.M}`）。
++ - 公式后必须有自然语言解释每个符号的含义（尤其是首次出现时）。
++ - 不要堆公式不解释。公式是工具，不是目的。
++ ## 6. 引用规范
++ - 关键论断、算法、数据点必须有来源。
++ - 格式：行内用 `[作者 年份]` 或上角标，章末"参考文献"列出完整条目。
++ - 论文条目格式：`作者. 标题. 会议/期刊, 年份. DOI/URL`
++ - 网络资料条目格式：`作者/组织. 标题. 站点名, 日期. URL (访问日期)`
++ - 所有来源同步到 `metadata/sources.md`。
++ ## 7. 索引与交叉引用
++ - 每个术语首次出现时加粗，并在附录"术语表"中收录。
++ - 跨章引用必须是可点击链接：`[见第 3 章 §3.2](./ch03-xxx.mdx#32-小节标题)`。
++ - 图表带编号（图 N-M、表 N-M），正文中引用"如图 N-M 所示"。
++ - 附录包含：
++   - 附录 A：API/配置速查表
++   - 附录 B：术语表
++   - 附录 C：符号表（如有数学公式）
++   - 附录 D：图表索引
++   - 附录 E：参考文献
++ ## 8. 与 O'Reilly 风格的取舍
++ | 维度 | O'Reilly CookBook | Springer Handbook |
++ |---|---|---|
++ | 主驱动 | Problem/Solution | Taxonomy/Survey |
++ | 代码密度 | 高 | 中（多为伪代码/算法） |
++ | 公式密度 | 低 | 中-高 |
++ | 表格密度 | 中 | 高（速查） |
++ | 章节引入 | "你会学到…" | "本节回顾…" |
++ | 适合章类型 | 实操、Recipes、API 用法 | 原理、综述、对比、参考 |
++ | 语气 | 对话式（第二人称） | 学术式（第三人称/被动） |
++ 同一本书中两种风格混用：
++ - 基础/概念/架构/综述章 → Springer Handbook 风格
++ - 实操/Recipes/API/调试章 → O'Reilly CookBook 风格
++ - 附录/速查 → Springer Handbook 风格
+
+### scripts/epub-zip.mjs  [code]
++ #!/usr/bin/env node
++ // epub-zip.mjs
++ //
++ //
++ //
++ //
++ //
++ // 将一个目录打包为合规的 EPUB 文件（手写 ZIP，Node 内置 zlib，零外部依赖）。
++ // 用法（CLI）：
++ //   node epub-zip.mjs <src_dir> <out.epub>
++ // 用法（API）：
++ //   import { buildEpub } from "./epub-zip.mjs";
++ //   await buildEpub("epub/build", "epub/book.epub");
++ // EPUB 规范要点：
++ // - mimetype 必须是 zip 中第一个条目
++ // - mimetype 必须 STORED（不压缩）、内容固定为 application/epub+zip
++ // - 其他文件可 DEFLATE 压缩
++ // 不要用 PowerShell 的 Compress-Archive，它生成的 zip 不满足上述要求。
++ import { promises as fs, constants as FSConst } from "node:fs";
++ import path from "node:path";
++ import zlib from "node:zlib";
++ import { pathToFileURL } from "node:url";
++ const MIMETYPE = "application/epub+zip";
++ // ---------- 最小 ZIP 写入器 ----------
++ function crc32(buf) {
++   let c;
++   const table = crc32.table || (crc32.table = (() => {
++     const t = new Uint32Array(256);
++     for (let n = 0; n < 256; n++) {
++       c = n;
++       for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
++       t[n] = c >>> 0;
++     }
++     }
++     return t;
++   })());
++   c = 0xFFFFFFFF;
++   for (let i = 0; i < buf.length; i++) c = table[(c ^ buf[i]) & 0xFF] ^ (c >>> 8);
++   return (c ^ 0xFFFFFFFF) >>> 0;
++ }
++ }
++ }
++ }
++ }
++ function dosDateTime(d) {
++   const time = ((d.getHours() & 0x1F) << 11) |
++                ((d.getMinutes() & 0x3F) << 5) |
++                ((d.getSeconds() / 2) & 0x1F);
++   const date = (((d.getFullYear() - 1980) & 0x7F) << 9) |
++                (((d.getMonth() + 1) & 0x0F) << 5) |
++                (d.getDate() & 0x1F);
++   return { time, date };
++ async function walkDir(dir, base = dir) {
++   const out = [];
++   const entries = await fs.readdir(dir, { withFileTypes: true });
++   for (const ent of entries) {
++     const full = path.join(dir, ent.name);
++     const rel = path.relative(base, full).split(path.sep).join("/");
++     if (ent.isDirectory()) {
++       out.push(...await walkDir(full, base));
++     } else {
++       out.push({ full, rel });
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   return out;
++ export async function buildEpub(srcDir, outFile) {
++   srcDir = path.resolve(srcDir);
++   outFile = path.resolve(outFile);
++   try {
++     const st = await fs.stat(srcDir);
++     if (!st.isDirectory()) throw new Error(`源目录不存在：${srcDir}`);
++   } catch (e) {
++     throw new Error(`源目录不存在：${srcDir}`);
++   // 1) 确保 mimetype 文件存在且内容正确
++   await fs.writeFile(path.join(srcDir, "mimetype"), MIMETYPE, "ascii");
++   // 2) 收集所有文件，强制 mimetype 在最前
++   const allFiles = await walkDir(srcDir);
++   const ordered = [];
++   const rest = [];
++   for (const f of allFiles) {
++     if (f.rel === "mimetype") ordered.unshift(f);
++     else rest.push(f);
++   ordered.push(...rest);
++   try { await fs.unlink(outFile); } catch {}
++   const chunks = [];
++   const central = [];
++   let offset = 0;
++   const now = new Date();
++   const { time: dosTime, date: dosDate } = dosDateTime(now);
++   function writeChunk(buf) {
++     chunks.push(buf);
++     offset += buf.length;
++   function writeU16LE(n) {
++     const b = Buffer.alloc(2); b.writeUInt16LE(n, 0); return b;
++   function writeU32LE(n) {
++     const b = Buffer.alloc(4); b.writeUInt32LE(n >>> 0, 0); return b;
++   for (const { full, rel } of ordered) {
++     const data = await fs.readFile(full);
++     const isMimetype = rel === "mimetype";
++     const method = isMimetype ? 0 : 8; // STORED or DEFLATE
++     const compData = isMimetype ? data : zlib.deflateRawSync(data, { level: 9 });
++     const crc = crc32(data);
++     const nameBuf = Buffer.from(rel, "utf8");
++     // Local file header
++     const localHeader = Buffer.concat([
++       writeU32LE(0x04034b50),     // signature
++       writeU16LE(20),             // version needed
++       writeU16LE(20),             // version needed
++       writeU16LE(0x0800),         // general purpose (bit 11 = UTF-8 names)
++       writeU16LE(method),         // compression
++       writeU16LE(dosTime),
++       writeU16LE(dosDate),
++       writeU32LE(crc),
++       writeU32LE(compData.length),
++       writeU32LE(data.length),
++       writeU16LE(nameBuf.length),
++       writeU16LE(0),              // extra len
++       nameBuf,
++     ]);
++     ]);
++     const entryOffset = offset;
++     writeChunk(localHeader);
++     writeChunk(compData);
++     // Central directory entry (will be written later)
++     central.push({
++       name: nameBuf, method, crc,
++       compSize: compData.length, uncompSize: data.length,
++       offset: entryOffset, dosTime, dosDate,
++     });
++   const centralStart = offset;
++   for (const c of central) {
++     const cd = Buffer.concat([
++       writeU32LE(0x02014b50),     // signature
++       writeU16LE(20),             // version made by
++       writeU16LE(0x0800),         // flags (UTF-8)
++       writeU16LE(c.method),
++       writeU16LE(c.dosTime),
++       writeU16LE(c.dosDate),
++       writeU32LE(c.crc),
++       writeU32LE(c.compSize),
++       writeU32LE(c.uncompSize),
++       writeU16LE(c.name.length),
++       writeU16LE(0),              // extra
++       writeU16LE(0),              // comment
++       writeU16LE(0),              // disk
++       writeU16LE(0),              // internal attrs
++       writeU32LE(0),              // external attrs
++       writeU32LE(c.offset),
++       c.name,
++     writeChunk(cd);
++   const centralSize = offset - centralStart;
++   // End of central directory
++   writeChunk(Buffer.concat([
++     writeU32LE(0x06054b50),
++     writeU16LE(0),
++     writeU16LE(0),
++     writeU16LE(0),
++     writeU16LE(central.length),
++     writeU16LE(central.length),
++     writeU32LE(centralSize),
++     writeU32LE(centralStart),
++   ]));
++   await fs.writeFile(outFile, Buffer.concat(chunks));
++   // 3) 自检：读回校验 mimetype 首条且 STORED，并遍历 central directory
++   const buf = await fs.readFile(outFile);
++   // 3a) 第一个 local header 必须是 mimetype + STORED
++   if (buf.readUInt32LE(0) !== 0x04034b50) throw new Error("ZIP local header 签名错误");
++   if (buf.readUInt16LE(8) !== 0) throw new Error("mimetype 必须为 STORED（未压缩）");
++   const nameLen0 = buf.readUInt16LE(26);
++   if (buf.slice(30, 30 + nameLen0).toString("utf8") !== "mimetype") {
++     throw new Error("zip 第一个条目不是 mimetype");
++   if (buf.slice(30 + nameLen0, 30 + nameLen0 + MIMETYPE.length).toString("ascii") !== MIMETYPE) {
++     throw new Error("mimetype 内容不正确");
++   // 3b) 从末尾查找 EOCD，遍历 central directory
++   const eocdSig = Buffer.from([0x50, 0x4b, 0x05, 0x06]);
++   let eocdOff = -1;
++   for (let i = buf.length - 22; i >= Math.max(0, buf.length - 65557); i--) {
++     if (buf[i] === 0x50 && buf.readUInt32LE(i) === 0x06054b50) { eocdOff = i; break; }
++   if (eocdOff < 0) throw new Error("EOCD 未找到，ZIP 损坏");
++   const cdEntries = buf.readUInt16LE(eocdOff + 10);
++   const cdSize = buf.readUInt32LE(eocdOff + 12);
++   const cdStart = buf.readUInt32LE(eocdOff + 16);
++   const entryNames = [];
++   let p = cdStart;
++   for (let i = 0; i < cdEntries; i++) {
++     if (buf.readUInt32LE(p) !== 0x02014b50) throw new Error(`Central dir entry ${i} 签名错误`);
++     const method = buf.readUInt16LE(p + 10);
++     const nlen = buf.readUInt16LE(p + 28);
++     const elen = buf.readUInt16LE(p + 30);
++     const clen = buf.readUInt16LE(p + 32);
++     const name = buf.slice(p + 46, p + 46 + nlen).toString("utf8");
++     entryNames.push({ name, method });
++     p += 46 + nlen + elen + clen;
++   if (entryNames.length !== central.length) {
++     throw new Error(`Central dir entry 数不匹配：expected ${central.length}, got ${entryNames.length}`);
++   const st2 = await fs.stat(outFile);
++   console.log(`已生成 EPUB：${outFile}`);
++   console.log(`大小：${(st2.size / 1024 / 1024).toFixed(2)} MB，条目数：${entryNames.length}`);
++   for (const e of entryNames.slice(0, 8)) {
++     console.log(`  - ${e.name} (${e.method === 0 ? "STORED" : "DEFLATE"})`);
++   if (entryNames.length > 8) console.log(`  ... (+${entryNames.length - 8} more)`);
++ // ---------- CLI ----------
++ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
++   const [, , srcDir, outFile] = process.argv;
++   if (!srcDir || !outFile) {
++     console.error("用法：node epub-zip.mjs <src_dir> <out.epub>");
++     process.exit(1);
++     process.exit(1);
++   buildEpub(srcDir, outFile).catch(err => {
++     console.error("✗ 构建失败：", err.message);
++   });
+
+### scripts/kroki-render.mjs  [code]
++ // kroki-render.mjs — Render PlantUML (.puml) to SVG/PNG via https://kroki.io
++ // Usage: node kroki-render.mjs <input.puml> <output.(svg|png)>
++ import { promises as fs } from "node:fs";
++ import path from "node:path";
++ import zlib from "node:zlib";
++ import https from "node:https";
++ const [,, inFile, outFile] = process.argv;
++ if (!inFile || !outFile) {
++   console.error("Usage: node kroki-render.mjs <input.puml> <output.(svg|png)>");
++   process.exit(1);
++ }
++ const fmt = path.extname(outFile).slice(1).toLowerCase();
++ const src = await fs.readFile(inFile, "utf8");
++ // Encode for kroki: deflate + base64url
++ const deflated = zlib.deflateSync(src, { level: 9 });
++ const b64 = deflated.toString("base64")
++   .replace(/\+/g, "-")
++   .replace(/\//g, "_")
++   .replace(/=+$/, "");
++ const url = `https://kroki.io/plantuml/${fmt}/${b64}`;
++ console.log("POST →", url.slice(0, 100) + "...");
++ await new Promise((resolve, reject) => {
++   const req = https.request(url, { method: "GET", headers: { "User-Agent": "cookbookgen" } }, (res) => {
++     if (res.statusCode !== 200) {
++       let body = "";
++       res.on("data", c => body += c);
++       res.on("end", () => reject(new Error(`HTTP ${res.statusCode}: ${body.slice(0, 500)}`)));
++       return;
++     }
++     const chunks = [];
++     res.on("data", c => chunks.push(c));
++     res.on("end", async () => {
++       await fs.writeFile(outFile, Buffer.concat(chunks));
++       console.log(`Wrote ${outFile} (${chunks.reduce((a,c)=>a+c.length,0)} bytes)`);
++       resolve();
++     });
++   });
++   req.on("error", reject);
++   req.end();
++ });
+
+### scripts/lbuild-epub.mjs  [code]
++ #!/usr/bin/env node
++ // lbuild-epub.mjs
++ //
++ //
++ // LLM-driven MDX → EPUB3 转换器。
++ // 核心思路：逐个读取 mdx/*.mdx 文件，通过 LLM 子 agent 智能转换为 XHTML 章节，
++ // 然后组装 EPUB3 包（OPF/NCX/NAV/CSS/Fonts），最后用 Python zipfile 打包为合规 EPUB。
++ // 用法（CLI）：node lbuild-epub.mjs [--title "书名"]
++ //   - 输入：工作目录下 mdx/*.mdx
++ //   - 输出：epub/book.epub
++ import { promises as fs } from "node:fs";
++ import path from "node:path";
++ import { fileURLToPath } from "node:url";
++ import { execSync } from "node:child_process";
++ import { parseFrontmatter } from "./lib/mdx-utils.mjs";
++ import { extractDiagramBlocks, renderAll, replaceBlocks } from "./lib/diagram-renderer.mjs";
++ const __filename = fileURLToPath(import.meta.url);
++ const __dirname = path.dirname(__filename);
++ const SKILL_ROOT = path.resolve(__dirname, "..");
++ // ---------- CLI 参数 ----------
++ const args = process.argv.slice(2);
++ function getArg(name, def) {
++   const i = args.indexOf(`--${name}`);
++   if (i >= 0 && i + 1 < args.length) return args[i + 1];
++   return def;
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ const BOOK_TITLE = getArg("title", "CookBook");
++ const BOOK_LANG = getArg("lang", "zh-CN");
++ // ---------- 目录配置 ----------
++ const mdxDir = path.resolve("mdx");
++ const outDir = path.resolve("epub");
++ const buildDir = path.join(outDir, "build");
++ const OEBPS = path.join(buildDir, "OEBPS");
++ await fs.mkdir(path.join(OEBPS, "Text"), { recursive: true });
++ await fs.mkdir(path.join(OEBPS, "Images"), { recursive: true });
++ await fs.mkdir(path.join(OEBPS, "css"), { recursive: true });
++ await fs.mkdir(path.join(OEBPS, "Fonts"), { recursive: true });
++ await fs.mkdir(path.join(buildDir, "META-INF"), { recursive: true });
++ // ---------- 工具 ----------
++ function escHtml(s) {
++   return String(s)
++     .replace(/&/g, "&amp;")
++     .replace(/</g, "&lt;")
++     .replace(/>/g, "&gt;")
++     .replace(/"/g, "&quot;");
++ // ---------- 读取 Prompt 模板 ----------
++ const promptTemplatePath = path.join(SKILL_ROOT, "assets", "prompts", "mdx-to-epub.md");
++ const PROMPT_TEMPLATE = await fs.readFile(promptTemplatePath, "utf8");
++ // ---------- 主流程 ----------
++ console.log("=== LLM-driven MDX → EPUB3 转换器 ===\n");
++ const mdxEntries = [];
++ for (const f of (await fs.readdir(mdxDir)).filter(f => f.endsWith(".mdx")).sort()) {
++   const mdxPath = path.join(mdxDir, f);
++   const raw = await fs.readFile(mdxPath, "utf8");
++   const fm = parseFrontmatter(raw);
++   const chapNum = Number.parseInt(fm.fm.chapter, 10);
++   mdxEntries.push({
++     file: f,
++     mdxPath,
++     raw,
++     title: fm.title,
++     slug: fm.slug,
++     fm: fm.fm,
++     order: Number.isFinite(chapNum) ? chapNum : Number.MAX_SAFE_INTEGER,
++   });
++   });
++ mdxEntries.sort((a, b) => a.order - b.order || a.file.localeCompare(b.file));
++ if (mdxEntries.length === 0) {
++   console.error("错误：mdx/ 目录下没有找到 .mdx 文件");
++   process.exit(1);
++ console.log(`找到 ${mdxEntries.length} 个 MDX 章节文件（按 chapter: 字段排序）:\n`);
++ for (const e of mdxEntries) console.log(`  [${e.order === Number.MAX_SAFE_INTEGER ? " -" : String(e.order).padStart(2)}] ${e.file}  →  ${e.title}`);
++ console.log("");
++ const chapterFiles = [];
++ const pendingTasks = [];
++ for (const entry of mdxEntries) {
++   const f = entry.file;
++   const mdxPath = entry.mdxPath;
++   const raw = entry.raw;
++   const title = entry.title;
++   const slug = entry.slug;
++   const xhtmlName = f.replace(/\.mdx$/, ".xhtml");
++   const xhtmlPath = path.join(OEBPS, "Text", xhtmlName);
++   console.log(`\n━━━ 转换章节: ${f} (${title}) ━━━`);
++   // ---------- 处理 mermaid/plantuml 代码块：先渲染成 SVG ----------
++   const blocks = extractDiagramBlocks(raw);
++   let mdxForLlm = raw;
++   if (blocks.length > 0) {
++     console.log(`  提取到 ${blocks.length} 个 mermaid/plantuml 代码块，渲染中...`);
++     const results = await renderAll(path.resolve("."), blocks, {
++       onProgress: (m) => console.log("   ", m),
++     });
++     });
++     });
++     for (const r of results) {
++       try {
++         await fs.copyFile(r.svgAbsPath, path.join(imgDir, r.svgFileName));
++       } catch {}
++     }
++     }
++     mdxForLlm = replaceBlocks(raw, results, (r) => {
++       const alt = r.caption.replace(/"/g, "&quot;");
++       return `\n\n![${r.caption}](/figures/${r.svgFileName})\n\n图：${r.caption}\n\n`;
++     console.log(`  ✓ 已替换 ${blocks.length} 个图表代码块为 Markdown 图片引用`);
++   }
++   }
++   }
++   }
++   // 构造 LLM prompt
++   const prompt = `${PROMPT_TEMPLATE}
++ ---
++ ---
++ ## 待转换的 MDX 文件（${f}）：
++ \`\`\`mdx
++ ${mdxForLlm}
++ \`\`\`
++ 请立即开始转换。只输出完整的 XHTML 文档，不要任何解释。输出必须以 <?xml 开头。
++ 注意：mermaid/plantuml 代码块已被预处理为 ![caption](/figures/diagram-<hash>.svg) 图片语法，请把这些图片转换为 <figure><img src="../Images/<svg-file>"/></figure>，不要保留 mermaid 源码。`;
++   const promptFile = path.join(OEBPS, "Text", `._prompt_${slug}.txt`);
++   await fs.writeFile(promptFile, prompt, "utf8");
++   console.log(`  PROMPT_FILE: ${promptFile}`);
++   console.log(`  OUTPUT_FILE: ${xhtmlPath}`);
++   let xhtmlContent = null;
++   try {
++     xhtmlContent = await fs.readFile(xhtmlPath, "utf8");
++     if (!xhtmlContent.includes("<?xml")) {
++       xhtmlContent = null;
++     } else {
++       console.log(`  ✓ 使用缓存结果`);
++   } catch {}
++   if (!xhtmlContent) {
++     pendingTasks.push({
++       format: "epub-xhtml",
++       mdxFile: f,
++       mdxPath,
++       promptFile,
++       outputFile: xhtmlPath,
++       slug,
++       title,
++       validation: { mustStartWith: "<?xml" },
++     // 生成占位 XHTML
++     const placeholder = `<?xml version="1.0" encoding="UTF-8"?>
++ <!DOCTYPE html>
++ <!DOCTYPE html>
++ <html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" xml:lang="zh-CN" lang="zh-CN">
++ <head>
++ <meta http-equiv="Content-Type" content="text/html; charset=UTF-8"/>
++ <title>${escHtml(title)}</title>
++ <link rel="stylesheet" type="text/css" href="../css/stylesheet.css"/>
++ </head>
++ <body>
++ <body>
++ <h1>${escHtml(title)}</h1>
++ <p><em>此章节需要 LLM 转换。任务清单见 ${escHtml("epub/.conversion-plan.json")}。</em></p>
++ </body>
++ </html>`;
++     await fs.writeFile(xhtmlPath, placeholder, "utf8");
++     xhtmlContent = placeholder;
++     console.log(`  ⚠ 写入占位符 — 待 LLM 转换`);
++   chapterFiles.push({
++     id: slug,
++     href: `Text/${xhtmlName}`,
++     title,
++     f,
++ // ---------- 拷贝图片 ----------
++ console.log("\n━━━ 拷贝图片资源 ━━━");
++ const manifestExtra = [];
++ const figSrcDir = path.resolve(mdxDir, "public", "figures");
++ try {
++ try {
++   const figs = await fs.readdir(figSrcDir);
++   let idx = 0;
++   for (const fn of figs) {
++     const src = path.join(figSrcDir, fn);
++     if (!(await fs.stat(src)).isFile()) continue;
++     await fs.copyFile(src, path.join(OEBPS, "Images", fn));
++     const ext = path.extname(fn).slice(1).toLowerCase();
++     const mime = ext === "svg" ? "image/svg+xml"
++                : ext === "png" ? "image/png"
++                : ext === "jpg" || ext === "jpeg" ? "image/jpeg"
++                : ext === "gif" ? "image/gif"
++                : "application/octet-stream";
++     manifestExtra.push(`<item id="img-${idx++}" href="Images/${fn}" media-type="${mime}"/>`);
++   console.log(`  拷贝了 ${figs.length} 个图片到 OEBPS/Images/`);
++ } catch {
++   console.log("  未找到图片目录，跳过");
++ manifestExtra.push(`<item id="css" href="css/stylesheet.css" media-type="text/css"/>`);
++ // ---------- 生成 content.opf ----------
++ console.log("\n━━━ 生成 EPUB 元数据文件 ━━━");
++ const manifestItems = [
++   `<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>`,
++   ...manifestExtra,
++   ...chapterFiles.map(c =>
++     `<item id="${c.id}" href="${c.href}" media-type="application/xhtml+xml"/>`),
++ ].join("\n");
++ const spineItems = chapterFiles.map(c => `<itemref idref="${c.id}"/>`).join("\n");
++ const opf = `<?xml version="1.0" encoding="UTF-8"?>
++ <package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="uid">
++ <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
++ <dc:title>${escHtml(BOOK_TITLE)}</dc:title>
++ <dc:language>${BOOK_LANG}</dc:language>
++ <dc:identifier id="uid">urn:cookbook:${Date.now()}</dc:identifier>
++ <dc:creator>Cookbook Forge</dc:creator>
++ <meta property="dcterms:modified">${new Date().toISOString().replace(/\.\d{3}Z$/, 'Z')}</meta>
++ </metadata>
++ <manifest>
++ ${manifestItems}
++ </manifest>
++ <spine>
++ ${spineItems}
++ </spine>
++ </package>`;
++ await fs.writeFile(path.join(OEBPS, "content.opf"), opf, "utf8");
++ console.log("  ✓ content.opf");
++ // ---------- container.xml ----------
++ const container = `<?xml version="1.0" encoding="UTF-8"?>
++ <container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
++ <rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles>
++ </container>`;
++ await fs.writeFile(path.join(buildDir, "META-INF", "container.xml"), container, "utf8");
++ console.log("  ✓ META-INF/container.xml");
++ // ---------- nav.xhtml (EPUB3 导航) ----------
++ const navItems = chapterFiles.map(c =>
++   `      <li><a href="${c.href}">${escHtml(c.title)}</a></li>`
++ ).join("\n");
++ const nav = `<?xml version="1.0" encoding="UTF-8"?>
++ <html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
++ <head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8"/><title>目录</title></head>
++ <nav epub:type="toc">
++ <h2>目录</h2>
++ <ol>
++ ${navItems}
++ </ol>
++ </nav>
++ </body></html>`;
++ await fs.writeFile(path.join(OEBPS, "nav.xhtml"), nav, "utf8");
++ console.log("  ✓ nav.xhtml");
++ // ---------- mimetype ----------
++ await fs.writeFile(path.join(buildDir, "mimetype"), "application/epub+zip", "ascii");
++ console.log("  ✓ mimetype");
++ // ---------- CSS ----------
++ // 优先使用优化过的 CSS（llm 生成的 EPUB 会用 cookbook-forge 的标准 CSS）
++ const cssSrc = path.join(SKILL_ROOT, "assets", "stylesheet.template.css");
++ let css = await fs.readFile(cssSrc, "utf8");
++ // 追加 CookBook 专用样式
++ css += `
++ /* === CookBook Forge LLM Converter 追加样式 === */
++ .callout {
++   margin: 1em 0;
++   margin: 1em 0;
++   margin: 1em 0;
++   margin: 1em 0;
++   padding: 0.75em 1em;
++   border-radius: 4px;
++   page-break-inside: avoid;
++   page-break-inside: avoid;
++   page-break-inside: avoid;
++   break-inside: avoid;
++ .callout-chapteroutline { border-left: 4px solid #3b82f6; background: rgba(59,130,246,0.08); }
++ .callout-recipe         { border-left: 4px solid #f59e0b; background: rgba(245,158,11,0.08); }
++ .callout-pitfall        { border-left: 4px solid #ef4444; background: rgba(239,68,68,0.08); }
++ .callout-keypoints      { border-left: 4px solid #22c55e; background: rgba(34,197,94,0.08); }
++ .callout h4 { margin-top: 0; color: #000000 !important; }
++ table.gfm-table {
++   display: table;
++   border-collapse: collapse;
++   margin: 1em auto;
++   width: auto;
++   max-width: 100%;
++   border-top: 2px solid #000000;
++   border-bottom: 2px solid #000000;
++ table.gfm-table th {
++   font-weight: 700;
++   color: #000000 !important;
++   color: #000000 !important;
++   border-bottom: 1.5px solid #000000;
++   padding: 0.45em 0.8em;
+
+### scripts/lib/diagram-renderer.mjs  [code]
++ // scripts/lib/diagram-renderer.mjs
++ // 统一图表渲染 pipeline：
++ //   - 从 MDX 正文中提取 ```mermaid / ```plantuml 代码块
++ //   - 调用 https://kroki.io 渲染为 SVG（离线时跳过并返回 placeholder）
++ //   - 写入 mdx/public/figures/diagram-<hash>.svg
++ //   - 同时保留源码到 mdx/public/diagrams-src/diagram-<hash>.<ext>（供作者二次修改）
++ //   - 返回替换映射 { start, end, alt, svgFileName }，供各格式转换器把代码块替换为图片引用
++ import { promises as fs } from "node:fs";
++ import path from "node:path";
++ import crypto from "node:crypto";
++ import zlib from "node:zlib";
++ import https from "node:https";
++ const KROKI_TYPE_MAP = {
++   mermaid: "mermaid",
++   plantuml: "plantuml",
++   puml: "plantuml",
++   nomnoml: "nomnoml",
++   svgbob: "svgbob",
++   erd: "erd",
++   ditaa: "ditaa",
++   bytefield: "bytefield",
++   seqdiag: "seqdiag",
++   actdiag: "actdiag",
++   nwdiag: "nwdiag",
++   packetdiag: "packetdiag",
++   rackdiag: "rackdiag",
++ };
++ };
++ const EXT_MAP = {
++   mermaid: "mmd",
++   plantuml: "puml",
++   puml: "puml",
++ /**
++ /**
++ /**
++  * 从 MDX 正文里抽取 ```mermaid / ```plantuml 围栏代码块。
++  * 返回一个数组：{ lang, body, index, match, hash, svgFile, srcFile, caption }
++  *   - index: 匹配在原文中的起始下标
++  *   - match: 整个 ```...``` 匹配文本（含首尾 ``` 行）
++  *   - hash: 内容稳定 hash（前 10 位 hex）
++  *   - caption: 代码块下方紧邻的 "> ..." 引用/标题文本（如果有），否则 fallback 到 "<lang> diagram"
++  */
++  */
++  */
++ export function extractDiagramBlocks(mdxBody) {
++   const blocks = [];
++   // 围栏代码块（支持 ``` 或 ~~~），语言标记 = mermaid / plantuml / puml
++   const re = /(^|\n)(```|~~~)(mermaid|plantuml|puml)\s*\n([\s\S]*?)\n\2(\s*\n)?/g;
++   let m;
++   while ((m = re.exec(mdxBody)) !== null) {
++     const lang = m[3];
++     const body = m[4].replace(/\r\n/g, "\n");
++     const fullMatch = m[0].replace(/^\n/, ""); // 去掉前导换行（匹配组1）
++     const hash = crypto.createHash("sha1").update(`${lang}:${body}`).digest("hex").slice(0, 10);
++     // 尝试在匹配结束位置后找一个形如 "> xxx" 或 "图 N-M xxx" 的标题
++     let caption = null;
++     const after = mdxBody.slice(m.index + m[0].length);
++     const capMatch = after.match(/^\s*(?:>\s*([^\n]+)|(图[\s\S]*?))\s*\n/);
++     if (capMatch) {
++       caption = (capMatch[1] || capMatch[2] || "").trim().replace(/^图\s*/, "");
++     }
++     }
++     blocks.push({
++       lang,
++       body,
++       index: m.index + (m[0].startsWith("\n") ? 1 : 0),
++       match: fullMatch,
++       hash,
++       caption: caption || `${lang} diagram`,
++     });
++     });
++   }
++   }
++   }
++   return blocks;
++ }
++ }
++ }
++ }
++ }
++ function krokiEncode(text) {
++   const deflated = zlib.deflateSync(text, { level: 9 });
++   return deflated.toString("base64")
++     .replace(/\+/g, "-")
++     .replace(/\//g, "_")
++     .replace(/=+$/, "");
++ function krokiFetch(type, fmt, encoded) {
++   const url = `https://kroki.io/${type}/${fmt}/${encoded}`;
++   return new Promise((resolve, reject) => {
++     const req = https.request(url, { method: "GET", headers: { "User-Agent": "cookbook-forge" } }, (res) => {
++       if (res.statusCode !== 200) {
++         let body = "";
++         res.on("data", (c) => (body += c));
++         res.on("end", () => reject(new Error(`kroki HTTP ${res.statusCode}: ${body.slice(0, 300)}`)));
++         return;
++       }
++       }
++       const chunks = [];
++       res.on("data", (c) => chunks.push(c));
++       res.on("end", () => resolve(Buffer.concat(chunks)));
++     req.on("error", reject);
++     req.setTimeout(30000, () => req.destroy(new Error("kroki request timeout")));
++     req.end();
++   });
++  * 渲染所有图表到 SVG，并拷贝/写入到 mdx/public/figures 与 mdx/public/diagrams-src。
++  * 已存在的 SVG 不重复请求（按 hash 命中缓存）。
++  *
++  *
++  * @param {string} bookRoot  项目根（包含 mdx/ 子目录）
++  * @param {Array} blocks     extractDiagramBlocks() 返回的 blocks 数组
++  * @returns {Promise<Array>} 同 blocks 数组，每项增加 { svgFileName, svgAbsPath, srcAbsPath, rendered:bool, error?:string }
++ export async function renderAll(bookRoot, blocks, { onProgress } = {}) {
++   const figDir = path.join(bookRoot, "mdx", "public", "figures");
++   const srcDir = path.join(bookRoot, "mdx", "public", "diagrams-src");
++   await fs.mkdir(figDir, { recursive: true });
++   await fs.mkdir(srcDir, { recursive: true });
++   const results = [];
++   for (const b of blocks) {
++     const type = KROKI_TYPE_MAP[b.lang];
++     const ext = EXT_MAP[b.lang] || b.lang;
++     const svgFileName = `diagram-${b.hash}.svg`;
++     const srcFileName = `diagram-${b.hash}.${ext}`;
++     const svgAbsPath = path.join(figDir, svgFileName);
++     const srcAbsPath = path.join(srcDir, srcFileName);
++     const r = { ...b, svgFileName, svgAbsPath, srcAbsPath, rendered: false };
++     // 始终写源码（方便作者修改后重渲染）
++     await fs.writeFile(srcAbsPath, b.body, "utf8");
++     try {
++       let buf;
++       try {
++         buf = await fs.readFile(svgAbsPath);
++         if (onProgress) onProgress(`cache ${svgFileName}`);
++       } catch {
++         const encoded = krokiEncode(b.body);
++         buf = await krokiFetch(type, "svg", encoded);
++         await fs.writeFile(svgAbsPath, buf);
++         if (onProgress) onProgress(`rendered ${svgFileName} (${buf.length} bytes)`);
++       r.rendered = true;
++     } catch (e) {
++       r.error = e.message;
++       if (onProgress) onProgress(`FAIL ${svgFileName}: ${e.message}`);
++       // 写一个占位 SVG（含错误信息），下游格式不会因网络挂掉而崩
++       const placeholder = `<svg xmlns="http://www.w3.org/2000/svg" width="600" height="80" viewBox="0 0 600 80">
++   <rect width="600" height="80" fill="#fff5f5" stroke="#fca5a5"/>
++   <text x="20" y="30" font-family="sans-serif" font-size="14" fill="#991b1b">[diagram render failed] ${b.lang}</text>
++   <text x="20" y="55" font-family="monospace" font-size="11" fill="#7f1d1d">${String(e.message).replace(/&/g,"&amp;").replace(/</g,"&lt;").slice(0,100)}</text>
++ </svg>`;
++       await fs.writeFile(svgAbsPath, placeholder, "utf8");
++     results.push(r);
++   return results;
++  * 把 blocks 里的代码块从 mdxBody 中替换为 Markdown 图片语法。
++  * @param {string} mdxBody  原始 MDX 正文
++  * @param {Array} results  renderAll() 返回的结果数组
++  * @param {(r) => string} imgRef  生成图片 Markdown 的函数。默认：`![<lang> diagram](/figures/<svgFileName>)`
++  *                                注意：替换后会在末尾补两个换行，保证与后续段落分隔。
++ export function replaceBlocks(mdxBody, results, imgRef) {
++   imgRef =
++     imgRef ||
++     ((r) => `![${r.lang} diagram](/figures/${r.svgFileName})`);
++   // 按 index 倒序替换，避免偏移
++   const sorted = [...results].sort((a, b) => b.index - a.index);
++   let out = mdxBody;
++   for (const r of sorted) {
++     out =
++       out.slice(0, r.index) +
++       imgRef(r) +
++       "\n\n" +
++       out.slice(r.index + r.match.length);
++   return out;
+
+### scripts/lib/mdx-utils.mjs  [code]
++ // scripts/lib/mdx-utils.mjs
++ // 共享的 MDX frontmatter 解析工具，被 lmdx2tex.mjs / lbuild-epub.mjs 等复用。
++ export function normalizeNewlines(raw) {
++   return String(raw).replace(/\r\n/g, "\n");
++ }
++ }
++ /**
++  * 解析 MDX frontmatter。支持：
++  *   key: value           简单键值
++  *   key: "quoted value"  带引号（自动去引号）
++  *   key:                 列表，后跟 "  - item" 行，收集为数组
++  * @param {string} raw  MDX 原文
++  * @returns {{ title: string, slug: string, fm: Record<string, string|string[]>, body: string }}
++  */
++ export function parseFrontmatter(raw) {
++   const normalized = normalizeNewlines(raw);
++   const m = normalized.match(/^---\n([\s\S]*?)\n---\n/);
++   if (!m) return { title: "Chapter", slug: "chapter", fm: {}, body: normalized };
++   const fm = {};
++   const lines = m[1].split("\n");
++   let currentKey = null;
++   for (const line of lines) {
++     const kv = line.match(/^(\w+):\s*(.*)$/);
++     if (kv) {
++       const key = kv[1];
++       const val = kv[2].trim();
++       currentKey = key;
++       if (val === "" || val === "[]") {
++         fm[key] = [];
++       } else {
++         fm[key] = val.replace(/^["']|["']$/g, "");
++       }
++       continue;
++     }
++     }
++     const item = line.match(/^\s+-\s+(.+)$/);
++     if (item && currentKey) {
++       if (!Array.isArray(fm[currentKey])) fm[currentKey] = [];
++       fm[currentKey].push(item[1].trim().replace(/^["']|["']$/g, ""));
++   }
++   return {
++     title: (typeof fm.title === "string" && fm.title) || "Chapter",
++     slug: (typeof fm.slug === "string" && fm.slug) || "chapter",
++     fm,
++     body: normalized.slice(m[0].length),
++   };
+
+### scripts/lmdx2tex.mjs  [code]
++ #!/usr/bin/env node
++ // lmdx2tex.mjs
++ //
++ //
++ //
++ // LLM-driven MDX → ElegantBook LaTeX 转换器。
++ // 核心思路：逐个读取 mdx/*.mdx 文件，通过 LLM 子 agent 智能转换为 LaTeX 章节，
++ // 然后组装 main.tex（使用 ElegantBook 文档类）。
++ // 用法（CLI）：node lmdx2tex.mjs [--title "书名"] [--author "作者"]
++ //   - 输入：工作目录下 mdx/*.mdx
++ //   - 输出：latex/chapters/*.tex、latex/main.tex、latex/figures/（拷贝图）
++ // 与 mdx2tex.mjs 的区别：
++ //   - mdx2tex.mjs 使用正则替换（脆弱，容易转义错误）
++ //   - lmdx2tex.mjs 使用 LLM 逐章转换（语义理解，转换质量高）
++ import { promises as fs } from "node:fs";
++ import path from "node:path";
++ import { fileURLToPath } from "node:url";
++ import { execSync } from "node:child_process";
++ import { parseFrontmatter } from "./lib/mdx-utils.mjs";
++ import { extractDiagramBlocks, renderAll, replaceBlocks } from "./lib/diagram-renderer.mjs";
++ const __filename = fileURLToPath(import.meta.url);
++ const __dirname = path.dirname(__filename);
++ const SKILL_ROOT = path.resolve(__dirname, "..");
++ // ---------- CLI 参数解析 ----------
++ const args = process.argv.slice(2);
++ function getArg(name, def) {
++   const i = args.indexOf(`--${name}`);
++   if (i >= 0 && i + 1 < args.length) return args[i + 1];
++   return def;
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ const BOOK_TITLE = getArg("title", "CookBook");
++ const BOOK_AUTHOR = getArg("author", "Cookbook Generator");
++ const BOOK_SUBTITLE = getArg("subtitle", "");
++ const BOOK_VERSION = getArg("version", "1.0");
++ const BOOK_INSTITUTE = getArg("institute", "");
++ // ---------- 目录配置 ----------
++ const mdxDir = path.resolve("mdx");
++ const texDir = path.resolve("latex/chapters");
++ const figDir = path.resolve("latex/figures");
++ const diagramSrcDir = path.resolve("latex/diagrams");
++ await fs.mkdir(texDir, { recursive: true });
++ await fs.mkdir(figDir, { recursive: true });
++ await fs.mkdir(diagramSrcDir, { recursive: true });
++ // ---------- 读取 Prompt 模板 ----------
++ const promptTemplatePath = path.join(SKILL_ROOT, "assets", "prompts", "mdx-to-latex.md");
++ const PROMPT_TEMPLATE = await fs.readFile(promptTemplatePath, "utf8");
++ // ---------- 主转换流程 ----------
++ console.log("=== LLM-driven MDX → ElegantBook LaTeX 转换器 ===\n");
++ const mdxEntries = [];
++ for (const f of (await fs.readdir(mdxDir)).filter(f => f.endsWith(".mdx")).sort()) {
++   const mdxPath = path.join(mdxDir, f);
++   const raw = await fs.readFile(mdxPath, "utf8");
++   const fm = parseFrontmatter(raw);
++   const chapNum = Number.parseInt(fm.fm.chapter, 10);
++   mdxEntries.push({
++     file: f,
++     mdxPath,
++     raw,
++     title: fm.title,
++     slug: fm.slug,
++     fm: fm.fm,
++     order: Number.isFinite(chapNum) ? chapNum : Number.MAX_SAFE_INTEGER,
++   });
++ mdxEntries.sort((a, b) => a.order - b.order || a.file.localeCompare(b.file));
++ if (mdxEntries.length === 0) {
++   console.error("错误：mdx/ 目录下没有找到 .mdx 文件");
++   process.exit(1);
++ console.log(`找到 ${mdxEntries.length} 个 MDX 章节文件（按 chapter: 字段排序）:\n`);
++ for (const e of mdxEntries) console.log(`  [${e.order === Number.MAX_SAFE_INTEGER ? " -" : String(e.order).padStart(2)}] ${e.file}  →  ${e.title}`);
++ console.log("");
++ const chapterRefs = [];
++ const convertedSlugs = [];
++ const pendingTasks = [];
++ for (const entry of mdxEntries) {
++   const f = entry.file;
++   const mdxPath = entry.mdxPath;
++   const raw = entry.raw;
++   const title = entry.title;
++   const slug = entry.slug;
++   console.log(`\n━━━ 转换章节: ${f} (${title}) ━━━`);
++   // ---------- 处理 mermaid/plantuml 代码块：先渲染成 SVG ----------
++   // 抽取本章所有图表代码块，kroki 渲染到 mdx/public/figures/diagram-<hash>.svg，
++   // 然后把 MDX 里的 ```mermaid/```plantuml 代码块替换为 LaTeX figure 引用。
++   const blocks = extractDiagramBlocks(raw);
++   let mdxForLlm = raw;
++   if (blocks.length > 0) {
++     console.log(`  提取到 ${blocks.length} 个 mermaid/plantuml 代码块，渲染中...`);
++     const results = await renderAll(path.resolve("."), blocks, {
++       onProgress: (m) => console.log("   ", m),
++     });
++     });
++     });
++     for (const r of results) {
++       try {
++         await fs.copyFile(r.svgAbsPath, path.join(figDir, r.svgFileName));
++       } catch {}
++     }
++     }
++     }
++     }
++     mdxForLlm = replaceBlocks(raw, results, (r) => {
++       const caption = r.caption.replace(/[\\{}%_#&$]/g, (c) => `\\${c}`);
++       const fname = r.svgFileName.replace(/\.svg$/, "");
++       return `\n\n\\begin{figure}[htbp]\n\\centering\n\\includegraphics[width=0.85\\textwidth]{${fname}}\n\\caption{${caption}}\n\\end{figure}\n\n`;
++     console.log(`  ✓ 已替换 ${blocks.length} 个图表代码块为 LaTeX figure 引用`);
++   }
++   }
++   }
++   }
++   }
++   }
++   // 构造 LLM prompt（写入 prompt 文件供 agent 读取）
++   const prompt = `${PROMPT_TEMPLATE}
++ ---
++ ---
++ ## 待转换的 MDX 文件（${f}）：
++ \`\`\`mdx
++ ${mdxForLlm}
++ \`\`\`
++ 请立即开始转换。只输出 LaTeX 代码，不要任何解释。输出文件第一行必须是 \\chapter{...} 或 \\chapter*{...}。
++ 注意：mermaid/plantuml 代码块已被预处理为 \\begin{figure}...\\end{figure} 引用，请保留这些 LaTeX 代码原样，不要再尝试渲染或处理 mermaid 源码。`;
++   const promptFile = path.join(texDir, `._prompt_${slug}.txt`);
++   await fs.writeFile(promptFile, prompt, "utf8");
++   const texOutputPath = path.join(texDir, `${slug}.tex`);
++   console.log(`  PROMPT_FILE: ${promptFile}`);
++   console.log(`  OUTPUT_FILE: ${texOutputPath}`);
++   // 尝试读取已有缓存
++   let texContent = null;
++   try {
++     texContent = await fs.readFile(texOutputPath, "utf8");
++     if (!texContent.trim().startsWith("\\chapter")) {
++       texContent = null;
++     } else {
++       console.log(`  ✓ 使用缓存结果`);
++   } catch {
++     // 文件不存在
++   if (!texContent) {
++     pendingTasks.push({
++       format: "latex",
++       mdxFile: f,
++       mdxPath,
++       promptFile,
++       outputFile: texOutputPath,
++       slug,
++       title,
++       validation: { mustStartWith: "\\chapter" },
++     const placeholder = `% LLM_CONVERSION_PENDING: ${f}
++ % This chapter needs to be converted by an LLM agent.
++ % Prompt file: ${promptFile}
++ % Output file: ${texOutputPath}
++ %
++ % After filling this file, re-run: node lmdx2tex.mjs
++ \\chapter{${title.replace(/[_#&%$]/g, '\\$&')}}
++ \\label{ch:${slug}}
++ % [LLM output will replace this block]
++ `;
++     await fs.writeFile(texOutputPath, placeholder, "utf8");
++     console.log(`  ⚠ 写入占位符 — 待 LLM 转换`);
++   chapterRefs.push({ slug, f, title, texPath: texOutputPath });
++   convertedSlugs.push(slug);
++ // ---------- 拷贝图片资源 ----------
++ console.log("\n━━━ 拷贝资源文件 ━━━");
++ const figSrc = path.join(mdxDir, "public", "figures");
++ try {
++ try {
++   const figs = await fs.readdir(figSrc);
++   let count = 0;
++   let count = 0;
++   for (const fn of figs) {
++     const s = path.join(figSrc, fn);
++     if ((await fs.stat(s)).isFile()) {
++     if ((await fs.stat(s)).isFile()) {
++       await fs.copyFile(s, path.join(figDir, fn));
++       count++;
++       count++;
++   console.log(`  拷贝了 ${count} 个图片到 latex/figures/`);
++ } catch {
++ } catch {
++   console.log("  未找到 public/figures 目录，跳过图片拷贝");
++ const diagSrc = path.join(mdxDir, "public", "diagrams-src");
++   const diags = await fs.readdir(diagSrc);
++   for (const fn of diags) {
++     const s = path.join(diagSrc, fn);
++       await fs.copyFile(s, path.join(diagramSrcDir, fn));
++   console.log(`  拷贝了 ${count} 个图表源文件到 latex/diagrams/`);
++   // 可选目录，不存在则跳过
++ // ---------- 生成 main.tex ----------
++ console.log("\n━━━ 生成 main.tex ━━━");
++ const mainTemplatePath = path.join(SKILL_ROOT, "assets", "elegantbook-main.template.tex.txt");
++ let mainTemplate = await fs.readFile(mainTemplatePath, "utf8");
++ const inputs = chapterRefs.map(c => `\\input{chapters/${c.slug}}`).join("\n");
++ mainTemplate = mainTemplate
++   .replace(/__BOOK_TITLE__/g, BOOK_TITLE)
++   .replace(/__BOOK_SUBTITLE__/g, BOOK_SUBTITLE)
++   .replace(/__BOOK_AUTHOR__/g, BOOK_AUTHOR)
++   .replace(/__BOOK_INSTITUTE__/g, BOOK_INSTITUTE)
++   .replace(/__BOOK_VERSION__/g, BOOK_VERSION)
++   .replace("__CHAPTER_INPUTS__", inputs);
++ await fs.writeFile(path.resolve("latex/main.tex"), mainTemplate, "utf8");
++ // ---------- 输出结构化任务清单（供 TRAE agent 编排）----------
++ // 保留 prompt 文件以便 agent 读取（不删除），并写一份 JSON 清单。
++ const planPath = path.resolve("latex/.conversion-plan.json");
++ const plan = {
++   format: "latex",
++   bookTitle: BOOK_TITLE,
++   totalChapters: chapterRefs.length,
++   pendingCount: pendingTasks.length,
++   pending: pendingTasks,
++   cached: chapterRefs
++     .filter(c => !pendingTasks.some(p => p.slug === c.slug))
++     .map(c => ({ slug: c.slug, file: c.f, title: c.title, texPath: c.texPath })),
++   instructions: pendingTasks.length
++     ? [
++         "For each task in `pending`, invoke a Task/sub-agent with these instructions:",
++         "  1. Read `promptFile` (it contains full conversion rules + the MDX source).",
++         "  2. Convert the MDX chapter to ElegantBook LaTeX per those rules.",
++         "  3. Write ONLY raw LaTeX code to `outputFile` (no markdown fences, no prose).",
++         "  4. First line must be \\chapter{...} or \\chapter*{...}.",
++         "After all tasks complete, re-run `node lmdx2tex.mjs` to regenerate main.tex with final content.",
++       ]
++     : ["All chapters already converted; main.tex is ready for xelatex."],
++ };
++ await fs.writeFile(planPath, JSON.stringify(plan, null, 2), "utf8");
++ // ---------- 清理临时 prompt 文件（仅对已缓存章节） ----------
++ for (const c of chapterRefs) {
++   if (pendingTasks.some(p => p.slug === c.slug)) continue;
++   const pf = path.join(texDir, `._prompt_${c.slug}.txt`);
++   try { await fs.unlink(pf); } catch {}
++ console.log(`\n━━━ 完成 ━━━`);
++ console.log(`\n已生成:`);
++ console.log(`  - latex/main.tex (主文件，使用 ElegantBook 文档类)`);
++ console.log(`  - latex/chapters/ (${chapterRefs.length} 个章节文件)`);
++ console.log(`  - latex/figures/ (图片资源)`);
++ if (pendingTasks.length > 0) {
++   console.log(`\n⚠ 有 ${pendingTasks.length} 个章节需要 LLM 转换：`);
++   for (const t of pendingTasks) {
++     console.log(`    • ${t.slug}  →  ${t.outputFile}`);
++   console.log(`\n任务清单已写入: ${planPath}`);
++   console.log(`主 agent（TRAE）读取该 JSON 后可并发调度 Task 逐章转换。`);
++   console.log(`全部转换完成后重新运行: node lmdx2tex.mjs`);
++ } else {
++   console.log(`\n✓ 所有章节已转换完成。`);
++ console.log(`\n编译方法:`);
++ console.log(`  1. 将 ElegantBook 的 elegantbook.cls 放入 latex/ 目录（TeXLive 用户已自带）`);
++ console.log(`  2. cd latex && xelatex main.tex && xelatex main.tex`);
+
+### scripts/optimize-formula-images.mjs  [code]
++ #!/usr/bin/env node
++ // optimize-formula-images.mjs
++ //
++ //
++ //
++ //
++ // 处理"公式即图片"型 EPUB（出版社/Sigil 流水线产出，公式被栅格化为 GIF/PNG 图片）。
++ // 主要工作：
++ // 1. 识别 <img> 是公式还是普通插图（看 alt 属性）。
++ // 2. 把公式 img 包裹成 <span class="math-inline" data-latex="...">，CSS 即可按行内/块级双轨渲染。
++ // 3. 给非公式 img 加 class="content-img"，由 CSS 控制响应式尺寸。
++ // 4. 给 <pre> 加 class="code-block"，由 CSS 加边框/等宽字体。
++ // 5. 给"段落只含一个公式 img"的孤立公式段加 class="formula-block"，由 CSS 居中独占一行。
++ // 用法（CLI）：
++ //   node optimize-formula-images.mjs <xhtml_file_or_dir>
++ // 用法（API）：
++ //   import { processHtml, processPath } from "./optimize-formula-images.mjs";
++ //   const out = processHtml(htmlStr);
++ import { promises as fs } from "node:fs";
++ import path from "node:path";
++ import { pathToFileURL } from "node:url";
++ // ---------- 公式识别 ----------
++ const MATH_CHARS = "=+\u2212\u00D7\u00F7\u2264\u2265\u2260\u2248\u221E\u221A\u2211\u222B\u2208\u2282\u2286\u2229\u222A\u03C3\u03BC\u03B8\u03B2\u03B1\u03BB\u03B3\u03B4\u03C0\u03C9\u03B5\u2202";
++ function hasMathFormula(altText) {
++   if (altText == null) return false;
++   const s = String(altText).trim();
++   if (s === "" || s === "{%}") return false;
++   // LaTeX 命令、上下标、大括号
++   if (/\\[a-zA-Z]+|[\\{}_^]/.test(s)) return true;
++   // 常见数学符号 / 运算符 / 希腊字母
++   for (const ch of MATH_CHARS) if (s.includes(ch)) return true;
++   // 短(≤4)的纯字母/数字/空白/逗号/点/分号 — 视为数学符号
++   if (s.length <= 4 && /^[A-Za-z\u03B1-\u03C9\u0391-\u03A90-9\s,.;]+$/.test(s)) return true;
++   // 单字母 + 1 位下标 (如 x1, N2)
++   if (/^[A-Za-z]\d?$/.test(s)) return true;
++   return false;
++ }
++ }
++ }
++ }
++ }
++ }
++ // ---------- HTML 转义 ----------
++ function htmlEscape(s) {
++   return String(s)
++     .replace(/&/g, "&amp;")
++     .replace(/"/g, "&quot;")
++     .replace(/</g, "&lt;")
++     .replace(/>/g, "&gt;");
++ function appendClass(attrStr, klass) {
++   // attrStr 是开标签里 attribute 部分（含前导空格或空串），返回改写后 attribute 串
++   if (/class\s*=\s*"/.test(attrStr)) {
++     return attrStr.replace(/class\s*=\s*"([^"]*)"/, (_m, existing) =>
++       `class="${existing} ${klass}"`);
++   }
++   }
++   }
++   }
++   return attrStr + ` class="${klass}"`;
++ // ---------- 主处理 ----------
++ export function processHtml(html) {
++   // 1) 处理所有 <img .../> —— 区分公式 vs 内容图
++   html = html.replace(/<img[^>]+\/>/g, (full) => {
++     const altM = full.match(/alt="([^"]*)"/);
++     const srcM = full.match(/src="([^"]*)"/);
++     if (!srcM) return full;
++     const src = srcM[1];
++     const alt = altM ? altM[1] : "";
++     if (hasMathFormula(alt)) {
++       return (
++         `<span class="math-inline" data-latex="${htmlEscape(alt)}">` +
++         `<img src="${src}" alt="${htmlEscape(alt)}" class="formula-img" />` +
++         `</span>`
++       );
++     }
++     }
++     }
++     }
++     // 普通内容图：加 content-img 类
++     if (/class\s*=\s*"/.test(full)) {
++       return full.replace(/class\s*=\s*"([^"]*)"/, (_m, e) => `class="${e} content-img"`);
++     return full.replace("<img ", '<img class="content-img" ');
++   });
++   });
++   // 2) <pre ...> 加 code-block 类
++   html = html.replace(/<pre(\s[^>]*)?>/g, (full, attrs = "") => {
++     return `<pre${appendClass(attrs, "code-block")}>`;
++   // 3) 给"段落只含一个公式 img/span"的孤立段落加 formula-block 类
++   html = html.replace(
++     /<p(\s[^>]*)?>(\s*<span class="math-inline"[^>]*>.*?<\/span>\s*)<\/p>/gs,
++     (_m, attrs = "", inner) => {
++       return `<p${appendClass(attrs, "formula-block")}>${inner}</p>`;
++   );
++   return html;
++ export async function processPath(target) {
++   const abs = path.resolve(target);
++   let st;
++   try { st = await fs.stat(abs); } catch { throw new Error(`路径不存在：${abs}`); }
++   let files;
++   if (st.isFile()) {
++     files = [abs];
++   } else {
++     const all = [];
++     async function walk(dir) {
++       const ents = await fs.readdir(dir, { withFileTypes: true });
++       for (const e of ents) {
++         const f = path.join(dir, e.name);
++         if (e.isDirectory()) await walk(f);
++         else if (/\.x?html?$/i.test(e.name)) all.push(f);
++       }
++     await walk(abs);
++     files = all;
++   for (const f of files) {
++     const src = await fs.readFile(f, "utf8");
++     const dst = processHtml(src);
++     await fs.writeFile(f, dst, "utf8");
++     console.log(`  \u2713 ${f}  (${src.length.toLocaleString()} \u2192 ${dst.length.toLocaleString()} bytes)`);
++   return files.length;
++ // ---------- CLI ----------
++ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
++   const target = process.argv[2];
++   if (!target) {
++     console.error("用法：node optimize-formula-images.mjs <xhtml_file_or_dir>");
++     process.exit(1);
++   processPath(target)
++     .then((n) => console.log(`完成，共处理 ${n} 个文件。`))
++     .catch((err) => { console.error("\u2717 失败：", err.message); process.exit(1); });
+
+### scripts/render-diagrams.mjs  [code]
++ #!/usr/bin/env node
++ // render-diagrams.mjs
++ // 扫描 mdx/*.mdx 中所有 ```mermaid / ```plantuml 代码块，
++ // 调用 kroki.io 渲染为 SVG，写入 mdx/public/figures/diagram-<hash>.svg，
++ // 同时把源码保存到 mdx/public/diagrams-src/diagram-<hash>.<ext>（保留原文件便于修改），
++ // 再把原 mdx 里的代码块原地替换为 ![caption](/figures/diagram-<hash>.svg) 图片语法。
++ //
++ //
++ // 用法：
++ //   node scripts/render-diagrams.mjs            # 扫描 cwd/mdx
++ //   node scripts/render-diagrams.mjs <bookDir>  # 指定项目根
++ // 特性：
++ //   - 幂等：已有 SVG 不重复请求（按 hash 命中缓存）
++ //   - 不修改用户手写的 .mmd/.puml 源文件（只把从 mdx 中抽取的代码块写入 diagrams-src/）
++ //   - 同时渲染 mdx/public/diagrams-src/*.puml / *.mmd 独立源文件（之前的用法）
++ import { promises as fs } from "node:fs";
++ import path from "node:path";
++ import { fileURLToPath } from "node:url";
++ import {
++   extractDiagramBlocks,
++   renderAll,
++   replaceBlocks,
++ } from "./lib/diagram-renderer.mjs";
++ const __dirname = path.dirname(fileURLToPath(import.meta.url));
++ const bookRoot = path.resolve(process.argv[2] || process.cwd());
++ const mdxDir = path.join(bookRoot, "mdx");
++ console.log("=== Diagram Renderer (mermaid/plantuml → kroki SVG) ===\n");
++ console.log("book root:", bookRoot);
++ let totalBlocks = 0;
++ let totalFiles = 0;
++ // 1) 处理 mdx 文件里的内嵌代码块
++ const mdxFiles = (await fs.readdir(mdxDir)).filter((f) => f.endsWith(".mdx"));
++ for (const f of mdxFiles) {
++   const fp = path.join(mdxDir, f);
++   const raw = await fs.readFile(fp, "utf8");
++   const blocks = extractDiagramBlocks(raw);
++   if (blocks.length === 0) continue;
++   console.log(`\n• ${f}: 发现 ${blocks.length} 个图表代码块`);
++   const results = await renderAll(bookRoot, blocks, {
++     onProgress: (msg) => console.log("   ", msg),
++   });
++   const newBody = replaceBlocks(raw, results);
++   if (newBody !== raw) {
++     await fs.writeFile(fp, newBody, "utf8");
++     totalFiles++;
++   }
++   }
++   totalBlocks += blocks.length;
++ }
++ }
++ // 2) 处理 mdx/public/diagrams-src/ 下的独立 .puml / .mmd 文件（与历史 kroki-render.mjs 用法兼容）
++ const srcDir = path.join(mdxDir, "public", "diagrams-src");
++ const figDir = path.join(mdxDir, "public", "figures");
++ await fs.mkdir(figDir, { recursive: true });
++ try {
++   const standalone = (await fs.readdir(srcDir)).filter((f) =>
++     /\.(puml|plantuml|mmd|mermaid)$/i.test(f)
++   );
++   const typeMap = { puml: "plantuml", plantuml: "plantuml", mmd: "mermaid", mermaid: "mermaid" };
++   for (const fn of standalone) {
++     const body = await fs.readFile(path.join(srcDir, fn), "utf8");
++     const ext = path.extname(fn).slice(1).toLowerCase();
++     const type = typeMap[ext];
++     if (!type) continue;
++     // 独立文件：hash 基于文件内容，输出 <basename>.svg
++     const outName = fn.replace(/\.[^.]+$/, "") + ".svg";
++     const outPath = path.join(figDir, outName);
++     try {
++       await fs.access(outPath);
++       console.log(`\n• standalone ${fn}: cache hit (${outName})`);
++     } catch {
++       const { default: kry } = await import("./lib/diagram-renderer.mjs");
++       // 直接复用 kroki 逻辑：encode + fetch
++       const zlib = await import("node:zlib");
++       const https = await import("node:https");
++       const deflated = zlib.deflateSync(body, { level: 9 });
++       const b64 = deflated.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
++       const url = `https://kroki.io/${type}/svg/${b64}`;
++       await new Promise((resolve, reject) => {
++         const req = https.request(url, { method: "GET", headers: { "User-Agent": "cookbook-forge" } }, (res) => {
++           if (res.statusCode !== 200) return reject(new Error(`HTTP ${res.statusCode}`));
++           const chunks = [];
++           res.on("data", (c) => chunks.push(c));
++           res.on("end", async () => {
++             await fs.writeFile(outPath, Buffer.concat(chunks));
++             console.log(`\n• standalone ${fn}: rendered → ${outName}`);
++             resolve();
++           });
++         });
++         req.on("error", reject);
++         req.setTimeout(30000, () => req.destroy(new Error("timeout")));
++         req.end();
++       });
++     }
++     totalBlocks++;
++ } catch {
++   // diagrams-src 目录可能不存在，忽略
++ console.log(`\n━━━ 完成 ━━━`);
++ console.log(`处理 ${mdxFiles.length} 个 MDX 文件，替换 ${totalBlocks} 个图表代码块，修改 ${totalFiles} 个 MDX 文件。`);
++ console.log(`SVG 输出目录: ${figDir}`);
++ console.log(`源码保留目录: ${srcDir}`);
+
+### scripts/subset-fonts.mjs  [code]
++ #!/usr/bin/env node
++ // subset-fonts.mjs
++ //
++ //
++ //
++ //
++ //
++ // 从 EPUB 的 xhtml 章节中收集实际用到的字符，将 TTF 字体子集化后转成 WOFF2 嵌入。
++ // 实现策略：
++ //   优先使用纯 JS 的 `fonteditor-core`（ECOM 出品，支持 TTF/WOFF/WOFF2 读写 + 子集化）。
++ //   如果用户未安装 fonteditor-core，脚本会提示 `npm install fonteditor-core` 并给出
++ //   Python (fonttools+brotli) 的兜底命令作为"无 JS 方案时的 fallback"。
++ // 用法（CLI）：
++ //   node subset-fonts.mjs <epub_OEBPS_dir>
++ // 用法（API）：
++ //   import { collectChars, subsetFont } from "./subset-fonts.mjs";
++ // 会在 OEBPS_DIR/Fonts 下产出 LXGWWenKai.woff2 和 LXGWWenKaiMono.woff2。
++ // 前提：OEBPS_DIR/Fonts 下已有完整版的 LXGWWenKaiLite-Regular.ttf
++ //       和 LXGWWenKaiMonoLite-Regular.ttf。
++ import { promises as fs } from "node:fs";
++ import path from "node:path";
++ import { createRequire } from "node:module";
++ import { pathToFileURL } from "node:url";
++ const require = createRequire(import.meta.url);
++ const FONT_MAP = [
++   { src: "LXGWWenKaiLite-Regular.ttf",     out: "LXGWWenKai.woff2" },
++   { src: "LXGWWenKaiMonoLite-Regular.ttf", out: "LXGWWenKaiMono.woff2" },
++ ];
++ export async function collectChars(oebpsDir) {
++   const chars = new Set();
++   const textDir = path.join(oebpsDir, "Text");
++   let entries;
++   try {
++   try {
++   try {
++     entries = await fs.readdir(textDir);
++   } catch {
++   } catch {
++   } catch {
++     return chars;
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   for (const name of entries) {
++     if (!/\.x?html?$/i.test(name)) continue;
++     const txt = await fs.readFile(path.join(textDir, name), "utf8");
++     const stripped = txt.replace(/<[^>]+>/g, " ");
++     for (const ch of stripped) chars.add(ch);
++   // 兜底：ASCII 可见字符 (0x20–0x7E)
++   for (let c = 0x20; c < 0x7F; c++) chars.add(String.fromCharCode(c));
++   // CJK 标点
++   for (let c = 0x3000; c < 0x3040; c++) chars.add(String.fromCharCode(c));
++   // 全角 ASCII
++   for (let c = 0xFF00; c < 0xFFF0; c++) chars.add(String.fromCharCode(c));
++   return chars;
++ }
++ }
++ }
++ }
++ }
++ async function loadFonteditor() {
++     return require("fonteditor-core");
++     return null;
++ export async function subsetFont(ttfPath, outPath, charSet) {
++   const FE = await loadFonteditor();
++   if (!FE) {
++     throw new Error(
++       "未安装 fonteditor-core。请执行：\n" +
++         "  npm install fonteditor-core\n" +
++         "或退回到 Python 方案：\n" +
++         "  pip install fonttools brotli\n" +
++         "  python scripts/subset_fonts.py <OEBPS_DIR>"
++     );
++   const { Font } = FE;
++   const buf = await fs.readFile(ttfPath);
++   const font = Font.create(buf, { type: "ttf", subset: [...charSet].join(""), hinting: true });
++   const woff2Buf = font.write({ type: "woff2" });
++   await fs.writeFile(outPath, woff2Buf);
++   const before = (await fs.stat(ttfPath)).size;
++   const after = (await fs.stat(outPath)).size;
++   console.log(`  \u2705 ${path.basename(ttfPath)} (${before.toLocaleString()} \u2192 ${after.toLocaleString()} bytes, ${(before / after).toFixed(1)}\u00D7)`);
++ export async function subsetFonts(oebpsDir) {
++   const abs = path.resolve(oebpsDir);
++     if (!(await fs.stat(abs)).isDirectory()) throw new Error();
++     throw new Error(`目录不存在：${abs}`);
++   const chars = await collectChars(abs);
++   console.log(`\u{1F4CA} 共收集 ${chars.size} 个唯一字符`);
++   const fontsDir = path.join(abs, "Fonts");
++   await fs.mkdir(fontsDir, { recursive: true });
++   for (const { src, out } of FONT_MAP) {
++     const srcPath = path.join(fontsDir, src);
++     const outPath = path.join(fontsDir, out);
++     try {
++       await fs.access(srcPath);
++     } catch {
++       console.log(`  \u26A0\uFE0F  跳过，未找到 ${src}`);
++       continue;
++     }
++     await subsetFont(srcPath, outPath, chars);
++     await fs.unlink(srcPath); // EPUB 只带 WOFF2
++   console.log(`\n完成。子集中字体在：${fontsDir}`);
++ // ---------- CLI ----------
++ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
++   const dir = process.argv[2];
++   if (!dir) {
++     console.error("用法：node subset-fonts.mjs <epub_OEBPS_dir>");
++     process.exit(1);
++     process.exit(1);
++   subsetFonts(dir).catch((err) => {
++     console.error("\u2717 失败：", err.message);
++   });
+
+### scripts/word-count.mjs  [code]
++ import { promises as fs } from "node:fs";
++ import path from "node:path";
++ // 计数 GFM 表格数：连续 ≥2 行 `|...|` 且第 2 行是分隔行 `| --- | --- |` 才算一张表。
++ function countGfmTables(text) {
++   const lines = text.split("\n");
++   let count = 0;
++   let i = 0;
++   const sepRe = /^\|\s*:?-+:?\s*(\|\s*:?-+:?\s*)+\|?\s*$/;
++   const rowRe = /^\s*\|.*\|\s*$/;
++   while (i < lines.length) {
++     if (rowRe.test(lines[i]) && i + 1 < lines.length && sepRe.test(lines[i + 1])) {
++       count++;
++       i += 2;
++       while (i < lines.length && rowRe.test(lines[i])) i++;
++     } else {
++       i++;
++     }
++   }
++   return count;
++ }
++ }
++ }
++ const mdxDir = path.resolve("mdx");
++ const outFile = path.resolve("metadata/word-count.txt");
++ await fs.mkdir(path.dirname(outFile), { recursive: true });
++ const files = (await fs.readdir(mdxDir)).filter(f => f.endsWith(".mdx"));
++ let totalCjk = 0, totalEn = 0, totalRecipes = 0, totalTables = 0, totalCodeBlocks = 0, totalFigs = 0;
++ const perChapter = [];
++ for (const f of files) {
++   const raw = await fs.readFile(path.join(mdxDir, f), "utf8");
++   let text = raw.replace(/^---[\s\S]*?---/, "");
++   const codeBlocks = (text.match(/```[\s\S]*?```/g) || []).length;
++   totalCodeBlocks += codeBlocks;
++   text = text.replace(/```[\s\S]*?```/g, " ");
++   const tables = countGfmTables(text);
++   totalTables += tables;
++   const figs = (text.match(/!\[[^\]]*\]\([^)]+\)/g) || []).length;
++   totalFigs += figs;
++   const recipes = (text.match(/🍳 Recipe/g) || []).length;
++   totalRecipes += recipes;
++   const cjk = (text.match(/[\u4e00-\u9fff]/g) || []).length;
++   const en = (text.match(/[a-zA-Z]+/g) || []).length;
++   totalCjk += cjk;
++   totalEn += en;
++   perChapter.push({ file: f, cjk, en, est: cjk + en });
++ const totalEst = totalCjk + totalEn;
++ const lines = [];
++ lines.push("# Word Count Report");
++ lines.push("");
++ lines.push("");
++ lines.push("");
++ lines.push(`Generated: ${new Date().toISOString()}`);
++ lines.push(`Total CJK characters: ${totalCjk}`);
++ lines.push(`Total English words: ${totalEn}`);
++ lines.push(`Estimated total word count: ${totalEst}`);
++ lines.push(`Chapters: ${files.length}`);
++ lines.push(`Recipes: ${totalRecipes}`);
++ lines.push(`Tables: ${totalTables}`);
++ lines.push(`Code blocks: ${totalCodeBlocks}`);
++ lines.push(`Figures/images: ${totalFigs}`);
++ lines.push("## Per-chapter breakdown");
++ lines.push("| File | CJK | EN | Est. words |");
++ lines.push("|---|---|---|---|");
++ for (const c of perChapter) {
++   lines.push(`| ${c.file} | ${c.cjk} | ${c.en} | ${c.est} |`);
++ await fs.writeFile(outFile, lines.join("\n"), "utf8");
++ console.log(`Wrote ${outFile}`);
++ console.log(`Total est. words: ${totalEst} (CJK ${totalCjk}, EN ${totalEn})`);

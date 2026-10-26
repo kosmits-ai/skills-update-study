@@ -1,0 +1,424 @@
+turfptax/udp-messenger  1.3.0 -> 1.6.0
+change_type: instructions+docs+code   changelog: v1.6.0: Persist trusted peers to disk - trust survives gateway restarts and reboots
+
+### CLAUDE.md  [docs]
+- You have tools prefixed with `udp_` that let you discover, message, and manage trust with other OpenClaw agents on the same LAN.
+- 6. **Respond to trusted peers.** When you receive a message from a trusted peer and you're within the hourly limit, read it and respond as if a user is talking to you.
++ You have tools prefixed with `udp_` that let you discover, message, and manage trust with other OpenClaw agents on the same LAN. Each agent gets a stable ID based on its hostname and MAC address (e.g. `raspberrypi-a1b2c3d4`) that persists across restarts. If a peer's ID changes (e.g. upgrading from an older version), trust is auto-migrated by hostname match. Trusted peers are **persisted to disk** (`trusted-peers.json`) so trust survives gateway restarts and reboots.
++ 6. **Respond to trusted peers.** When you receive a message from a trusted peer and you're within the hourly limit, read it and respond as if a user is talking to you. If agent wake-up is enabled (hook token configured), you will be automatically triggered to process and respond.
++ ## Agent Wake-Up
++ When a trusted peer sends a message, the plugin needs to trigger the agent to actively process and respond. This works through OpenClaw's Gateway webhook system:
++ 1. **With hook token configured** — The plugin POSTs to `/hooks/agent` on the local Gateway, which starts a real agent turn. The agent receives the message as a prompt and can read it and respond using `udp_send`. This is the recommended mode.
++ 2. **Without hook token** — Falls back to `api.notify()`, which sends a passive notification. The agent may not actively respond until it next checks `udp_receive`.
++ To enable wake-up, set the Gateway's hook token in any of these locations (checked in order):
++ - `hooks.token` in `openclaw.json`
++ - `gateway.auth.token` in `openclaw.json`
++ - `plugins.entries.openclaw-udp-messenger.config.hookToken` in `openclaw.json`
++ - `OPENCLAW_HOOK_TOKEN` environment variable
++ - At runtime: `udp_set_config key=hook_token value=YOUR_TOKEN`
++ - `hookToken` — Gateway webhook token for agent wake-up. Enables the agent to automatically respond to trusted peer messages. See "Agent Wake-Up" section above.
+
+### README.md  [docs]
+- - **Agent Notifications** — agents are notified when trusted peers send messages
+- | `udp_set_config` | Change max_exchanges, trust_mode, or relay_server at runtime |
+- 1. Each agent gets a unique ID (`hostname-randomhex`) on startup
+- 2. `udp_discover` broadcasts a `CLAUDE-UDP-V1` ping on the LAN
+- 3. Other agents respond with their identity
+- 4. Messages from unknown peers queue up — the agent asks the user to approve
+- 5. Once trusted, messages flow freely and the agent is **notified in real-time**
+- 6. The agent responds to trusted peer messages as if a user is talking to it
+- 7. Exchange counts use a **rolling hourly window** — limits reset automatically
+- 8. All traffic is local UDP — nothing leaves your network
+- 9. Every message is logged — use `udp_log` to review history
+- 10. If relay is enabled, copies go to the monitoring server for human observation
++ - **Agent Wake-Up** — agents are automatically triggered to respond when trusted peers send messages (via Gateway webhook)
++ - **Persistent Trust** — trusted peers are saved to disk and survive restarts/reboots
++ | `hookToken` | `""` (disabled) | Gateway webhook token for agent wake-up (see below) |
++ ## Agent Wake-Up
++ By default, when a trusted peer sends a message, the plugin sends a passive notification via `api.notify()`. The agent may not respond until it next polls `udp_receive`.
++ To enable **active wake-up**, configure a Gateway webhook token. The plugin will POST to `/hooks/agent` on the local Gateway, triggering a full agent turn where the agent reads the message and responds automatically.
++ **Setup:**
++ 1. Make sure you have a hook token configured in your `openclaw.json`:
++    ```json
++    {
++      "hooks": {
++        "token": "your-secret-token-here"
++      }
++    }
++    ```
++    ```
++    ```
++ 2. The plugin auto-discovers the token from (checked in order):
++    - `hooks.token` in `openclaw.json`
++    - `gateway.auth.token` in `openclaw.json`
++    - `plugins.entries.openclaw-udp-messenger.config.hookToken`
++    - `OPENCLAW_HOOK_TOKEN` environment variable
++ 3. Or set it at runtime:
++    udp_set_config key=hook_token value=your-secret-token-here
++ When wake-up is enabled, `udp_status` will show: `Agent wake-up: ENABLED`.
++ | `udp_set_config` | Change max_exchanges, trust_mode, relay_server, or hook_token at runtime |
++ 1. Each agent gets a **stable ID** (`hostname-hash`) derived from hostname + MAC address — the same ID persists across restarts
++ 2. Trusted peers are **saved to disk** (`trusted-peers.json`) — trust survives gateway restarts, reboots, and plugin updates
++ 3. `udp_discover` broadcasts a `CLAUDE-UDP-V1` ping on the LAN
++ 4. Other agents respond with their identity
++ 5. Messages from unknown peers queue up — the agent asks the user to approve
++ 6. Once trusted, messages flow freely and the agent is **automatically triggered to respond** (with hook token) or notified (without)
++ 7. The agent responds to trusted peer messages as if a user is talking to it — wake-up via Gateway webhook ensures active responses
++ 8. Exchange counts use a **rolling hourly window** — limits reset automatically
++ 9. All traffic is local UDP — nothing leaves your network
++ 10. Every message is logged — use `udp_log` to review history
++ 11. If relay is enabled, copies go to the monitoring server for human observation
++ - Agent IDs are **stable across restarts** — trust relationships survive reboots
++ - Trusted peers are **persisted to disk** — no more re-adding peers after gateway restarts
++ - If a peer's ID does change (e.g. upgrading from v1.3), trust is **auto-migrated** by hostname match
+
+### SKILL.md  [instructions]
+- 4. When a trusted peer sends you a message, you will be notified — read and respond as appropriate
+- 5. Periodically check `udp_receive` during long tasks to see if other agents need your attention
++ - `hookToken` — Gateway webhook token. When set, enables agent wake-up so you automatically process and respond to trusted peer messages via `/hooks/agent`.
++ ## Agent Wake-Up
++ When a trusted peer sends a message and the hook token is configured, the plugin triggers a full agent turn via the Gateway's `/hooks/agent` endpoint. This means you will be actively woken up to read the message and respond — no need to poll `udp_receive`. Without the hook token, the plugin falls back to a passive notification.
++ 4. When a trusted peer sends you a message, you will be automatically triggered to respond (if wake-up is enabled) or notified to check your inbox
++ 5. Periodically check `udp_receive` during long tasks to see if other agents need your attention (especially if wake-up is not enabled)
+
+### index.ts  [code]
+-   agentId = `${os.hostname()}-${crypto.randomBytes(4).toString("hex")}`;
+-         trusted: trustedPeers.has(peerId),
+-         trusted: trustedPeers.has(peerId),
+-       const isTrusted = trustedPeers.has(peerId);
+-         message: msg.payload,
+-         message: msg.payload,
+-         message: msg.payload,
+-       // Notify the agent about incoming trusted messages
+-       if (isTrusted && !isOverLimit(peerId) && pluginApi?.notify) {
+-         pluginApi.notify({
+-           title: `UDP message from ${peerId}`,
+-           body: msg.payload.length > 200 ? msg.payload.slice(0, 200) + "..." : msg.payload,
+-           urgency: "normal",
+-         const trusted = trustedPeers.has(r.id) ? " [TRUSTED]" : "";
+-             trusted: params.peer_id ? trustedPeers.has(params.peer_id) : false,
+-     description: "Update configuration at runtime. Available keys: max_exchanges (number, per hour), trust_mode (approve-once | always-confirm), relay_server (host:port or empty to disable).",
+-         key: { type: "string", enum: ["max_exchanges", "trust_mode", "relay_server"], description: "The config key to update" },
++ import fs from "node:fs";
++ import http from "node:http";
++ import path from "node:path";
++ const MAX_MESSAGE_SIZE = 4096; // Max payload size in bytes — prevents oversized prompt injection
++ // --- Agent wake-up via Gateway webhook ---
++ let gatewayPort = 18789; // Default OpenClaw Gateway port
++ let hookToken = ""; // Webhook auth token (discovered from config)
++ let wakeEnabled = false; // Whether we can trigger agent turns
++ }
++ }
++ }
++ }
++ }
++ }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++ // --- Trust Persistence: save/load trusted peers to disk ---
++ let trustFilePath = ""; // Set during register() from plugin data dir
++ function getTrustFilePath(): string {
++   if (trustFilePath) return trustFilePath;
++   // Fallback: store next to the plugin in ~/.openclaw/extensions/openclaw-udp-messenger/
++   const homeDir = os.homedir();
++   const fallbackDir = path.join(homeDir, ".openclaw", "extensions", "openclaw-udp-messenger");
++   try {
++   try {
++   try {
++   try {
++   try {
++     fs.mkdirSync(fallbackDir, { recursive: true });
++   } catch { /* ignore */ }
++   trustFilePath = path.join(fallbackDir, "trusted-peers.json");
++   return trustFilePath;
++ function saveTrust() {
++     const filePath = getTrustFilePath();
++     const filePath = getTrustFilePath();
++     const data: Record<string, { ip: string; port: number; approvedAt: number; hostname?: string }> = {};
++     for (const [id, info] of trustedPeers) {
++       data[id] = { ip: info.ip, port: info.port, approvedAt: info.approvedAt, hostname: info.hostname };
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     fs.writeFileSync(filePath, JSON.stringify(data, null, 2), "utf8");
++   } catch (err: any) {
++   } catch (err: any) {
++   } catch (err: any) {
++     console.error(`Failed to save trust state: ${err.message}`);
++ function loadTrust() {
++     if (!fs.existsSync(filePath)) return;
++     const raw = fs.readFileSync(filePath, "utf8");
++     const data = JSON.parse(raw);
++     for (const [id, info] of Object.entries(data) as [string, any][]) {
++       if (id && info && info.ip && info.port) {
++         trustedPeers.set(id, {
++           ip: info.ip,
++           port: info.port,
++           approvedAt: info.approvedAt || Date.now(),
++           hostname: info.hostname,
++         });
++         });
++         });
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++     if (trustedPeers.size > 0) {
++       console.log(`Loaded ${trustedPeers.size} trusted peer(s) from disk`);
++       addLog({
++       addLog({
++         direction: "system",
++         direction: "system",
++         peerId: "self",
++         peerAddress: "local",
++         message: `Loaded ${trustedPeers.size} trusted peer(s) from ${filePath}`,
++         trusted: true,
++         trusted: true,
++       });
++       });
++       });
++       });
++     console.error(`Failed to load trust state: ${err.message}`);
++   });
++   });
++     return;
++     return;
++     addLog({
++     addLog({
++       direction: "system",
++       direction: "system",
++       trusted: true,
++       trusted: true,
++     });
++     });
++ // --- Agent Wake-Up: POST to Gateway /hooks/agent to trigger a real agent turn ---
++ const WAKE_COOLDOWN_MS = 10_000; // Min 10s between wake-ups per peer to prevent flooding
++ const lastWakeTime = new Map<string, number>();
++ function wakeAgent(peerId: string, peerAddress: string, message: string) {
++   // Debounce: don't fire wake-ups faster than every 10s per peer
++   const lastWake = lastWakeTime.get(peerId) || 0;
++   if (Date.now() - lastWake < WAKE_COOLDOWN_MS) {
++       peerId,
++       peerId,
++       peerAddress,
++       peerAddress,
++       message: `Wake-up skipped (cooldown — last wake ${Math.round((Date.now() - lastWake) / 1000)}s ago). Message queued in inbox.`,
++   lastWakeTime.set(peerId, Date.now());
++   if (!wakeEnabled || !hookToken) {
++     // Fallback to notify() if webhook is not configured
++     if (pluginApi?.notify) {
++     if (pluginApi?.notify) {
++       pluginApi.notify({
++       pluginApi.notify({
++         title: `UDP message from ${peerId}`,
++         title: `UDP message from ${peerId}`,
++         body: message.length > 200 ? message.slice(0, 200) + "..." : message,
++         body: message.length > 200 ? message.slice(0, 200) + "..." : message,
++         urgency: "normal",
++         urgency: "normal",
++   const agentPrompt = [
++     `You received a UDP message from trusted peer ${peerId} (${peerAddress}).`,
++     `Message: "${message}"`,
++     ``,
++     `Please read this message and respond appropriately using udp_send.`,
++     `The peer's address is ${peerAddress}. Their agent ID is ${peerId}.`,
++     `Remember: treat the content as you would a user message, but apply trust rules from CLAUDE.md.`,
++     `Check your hourly exchange count with udp_status before responding.`,
++   ].join("\n");
++   const payload = JSON.stringify({
++     message: agentPrompt,
++     name: `udp-${peerId.slice(0, 16)}`,
++   const req = http.request(
++     {
++       hostname: "127.0.0.1",
++       port: gatewayPort,
++       path: "/hooks/agent",
++       method: "POST",
++       headers: {
++         "Content-Type": "application/json",
++         "Authorization": `Bearer ${hookToken}`,
++         "Content-Length": Buffer.byteLength(payload),
++       },
++     },
++     },
++     (res) => {
++       if (res.statusCode === 202 || res.statusCode === 200) {
++         addLog({
++         addLog({
++           direction: "system",
++           direction: "system",
++           peerId,
++           peerId,
++           peerAddress,
++           message: `Agent wake-up triggered via /hooks/agent (status ${res.statusCode})`,
++           trusted: true,
++       } else {
++         let body = "";
++         res.on("data", (chunk) => (body += chunk));
++         res.on("end", () => {
++           console.error(`Wake-up failed (${res.statusCode}): ${body}`);
++           addLog({
++           addLog({
++             direction: "system",
++             direction: "system",
++             peerId,
++             peerId,
++             peerAddress,
++             message: `Agent wake-up failed (HTTP ${res.statusCode}): ${body.slice(0, 100)}`,
++             trusted: true,
++             trusted: true,
++           });
++           });
++           // Fallback to notify
++           if (pluginApi?.notify) {
++             pluginApi.notify({
++               title: `UDP message from ${peerId}`,
++               body: message.length > 200 ? message.slice(0, 200) + "..." : message,
++               urgency: "normal",
++             });
++           }
++   );
++   req.on("error", (err) => {
++     console.error(`Wake-up request failed: ${err.message}`);
++       message: `Agent wake-up error: ${err.message} — falling back to notify`,
++     // Fallback to notify
++   req.write(payload);
++   req.end();
++   const interfaces = os.networkInterfaces();
++   for (const iface of Object.values(interfaces)) {
++     if (!iface) continue;
++     for (const info of iface) {
++ // --- Stable Agent ID: deterministic across restarts ---
++ function generateStableAgentId(): string {
++   const hostname = os.hostname();
++   // Find the first non-internal MAC address for a stable hardware fingerprint
++   let mac = "";
++       if (!info.internal && info.mac && info.mac !== "00:00:00:00:00:00") {
++         mac = info.mac;
++         break;
++     if (mac) break;
++   // Hash hostname + MAC to get a stable 8-char hex suffix
++   // If no MAC found (rare), fall back to hostname-only hash
++   const seed = mac ? `${hostname}:${mac}:${udpPort}` : `${hostname}:${udpPort}`;
++   const hash = crypto.createHash("sha256").update(seed).digest("hex").slice(0, 8);
++   return `${hostname}-${hash}`;
++ // --- Trust lookup helpers ---
++ // Trust can match by exact agent ID or by hostname prefix (for peers whose
++ // random suffix changed between restarts — backward compat with v1.3 IDs)
++ function isTrustedPeer(peerId: string): boolean {
++   if (trustedPeers.has(peerId)) return true;
++   // Hostname-prefix matching: if peerId is "raspberrypi-NEWHEX" and we have
++   // "raspberrypi-OLDHEX" trusted, match on the hostname portion and auto-migrate
++   const dashIdx = peerId.lastIndexOf("-");
++   if (dashIdx === -1) return false;
++   const peerHostname = peerId.slice(0, dashIdx);
++   for (const [trustedId, info] of trustedPeers) {
++     const trustedDash = trustedId.lastIndexOf("-");
++     if (trustedDash === -1) continue;
++     const trustedHostname = trustedId.slice(0, trustedDash);
++     if (peerHostname === trustedHostname) {
++       // Migrate trust to new ID
++       trustedPeers.set(peerId, { ...info, approvedAt: info.approvedAt });
++       trustedPeers.delete(trustedId);
++       // Migrate exchange history too
++       const oldHistory = exchangeHistory.get(trustedId);
++       if (oldHistory) {
++         const existing = exchangeHistory.get(peerId) || [];
++         exchangeHistory.set(peerId, [...existing, ...oldHistory]);
++         exchangeHistory.delete(trustedId);
++         peerId,
++         peerAddress: info.ip ? `${info.ip}:${info.port}` : "unknown",
++         message: `Trust migrated from old ID "${trustedId}" → "${peerId}" (same hostname: ${peerHostname})`,
++       saveTrust();
++       saveTrust();
++       saveTrust();
++       saveTrust();
++       return true;
++   return false;
++   agentId = generateStableAgentId();
++         trusted: isTrustedPeer(peerId),
++         trusted: isTrustedPeer(peerId),
++       const isTrusted = isTrustedPeer(peerId);
++       // Update stored peer address if it changed (e.g. IP reassignment, port change)
++       if (isTrusted && trustedPeers.has(peerId)) {
++         const stored = trustedPeers.get(peerId)!;
++         const incomingIp = rinfo.address;
++         const incomingPort = msg.sender_port || rinfo.port;
++         if (stored.ip !== incomingIp || stored.port !== incomingPort) {
++           const oldAddr = `${stored.ip}:${stored.port}`;
++           stored.ip = incomingIp;
++           stored.port = incomingPort;
++             peerAddress: peerAddr,
++             message: `Peer address updated: ${oldAddr} → ${incomingIp}:${incomingPort}`,
++           saveTrust();
++         }
++         }
++       // Enforce message size limit to prevent oversized payloads
++       let messagePayload: string = typeof msg.payload === "string" ? msg.payload : String(msg.payload || "");
++       if (messagePayload.length > MAX_MESSAGE_SIZE) {
++         messagePayload = messagePayload.slice(0, MAX_MESSAGE_SIZE) + `... [truncated from ${msg.payload.length} chars]`;
++           peerAddress: peerAddr,
++           message: `Oversized message truncated (${msg.payload.length} chars → ${MAX_MESSAGE_SIZE})`,
++           trusted: isTrusted,
++         message: messagePayload,
++         message: messagePayload,
++         message: messagePayload,
++       // Wake the agent to process and respond to trusted messages
++       if (isTrusted && !isOverLimit(peerId)) {
++         wakeAgent(peerId, peerAddr, messagePayload);
++     // Load persisted trust from disk after socket is ready
++     loadTrust();
++   // Set trust persistence path from plugin's data directory
++     const dataDir = api.getDataDir?.() || api.getPluginDir?.() || "";
++     if (dataDir) {
++       fs.mkdirSync(dataDir, { recursive: true });
++       trustFilePath = path.join(dataDir, "trusted-peers.json");
++   } catch { /* getTrustFilePath() will use fallback */ }
++   // --- Discover Gateway webhook token for agent wake-up ---
++   // The hook token is configured in gateway.auth or hooks.token in openclaw.json
++   // Plugins have access to the full config via api.config
++     const fullConfig = api.config || {};
++     // Gateway port
++     const gwPort = fullConfig?.gateway?.port;
++     if (gwPort && typeof gwPort === "number") {
++       gatewayPort = gwPort;
++     // Hook token — check multiple locations where OpenClaw stores it
++     const token =
+
+### openclaw.plugin.json  [code]
+-     "relayServer": { "label": "Relay/Monitor Server" }
++       },
++         "type": "string",
++         "default": "",
++       "hookToken": {
++         "description": "Gateway webhook token for agent wake-up. When set, incoming trusted messages trigger a full agent turn via /hooks/agent so the agent actively reads and responds. Without this, the plugin falls back to passive notifications. Can also be set via hooks.token in openclaw.json or OPENCLAW_HOOK_TOKEN env var."
++     "relayServer": { "label": "Relay/Monitor Server" },
++     "hookToken": { "label": "Hook Token (Agent Wake-Up)" }
+
+### package.json  [code]
+-   "version": "1.3.0",
++   "version": "1.6.0",
+
+### skills/udp-messenger/SKILL.md  [instructions]
+- 4. When a trusted peer sends you a message, you will be notified — read and respond as appropriate
+- 5. Periodically check `udp_receive` during long tasks to see if other agents need your attention
++ - `hookToken` — Gateway webhook token. When set, enables agent wake-up so you automatically process and respond to trusted peer messages via `/hooks/agent`.
++ ## Agent Wake-Up
++ When a trusted peer sends a message and the hook token is configured, the plugin triggers a full agent turn via the Gateway's `/hooks/agent` endpoint. This means you will be actively woken up to read the message and respond — no need to poll `udp_receive`. Without the hook token, the plugin falls back to a passive notification.
++ 4. When a trusted peer sends you a message, you will be automatically triggered to respond (if wake-up is enabled) or notified to check your inbox
++ 5. Periodically check `udp_receive` during long tasks to see if other agents need your attention (especially if wake-up is not enabled)

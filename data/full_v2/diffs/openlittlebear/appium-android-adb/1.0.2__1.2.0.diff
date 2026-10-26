@@ -1,0 +1,295 @@
+openlittlebear/appium-android-adb  1.0.2 -> 1.2.0
+change_type: instructions+code   changelog: Promote direct uiautomator2+RapidOCR loop (ocr_bridge.py) as primary backend after successful 12306 booking. Document Appium failure mode on WRITE_SECURE_SETTINGS devices, clipboard Chinese input, virtual-list scroll unsticking.
+
+### .clawhub/origin.json  [code]
+- {
+-   "version": 1,
+-   "registry": "https://clawhub.ai",
+-   "slug": "appium-android-adb",
+-   "installedVersion": "1.0.0",
+-   "installedAt": 1779896221918,
+-   "fingerprint": "d6e25390ec2c11409a70c1dfd8f3315caf9370b2276622800fc89df79f1aaa8d"
+- }
+
+### SKILL.md  [instructions]
+- description: Read and control any Android app via Appium or uiautomator2. Provides a persistent bridge daemon (bridge_daemon.py) with dump/tap/scroll/type/wait commands AND direct uiautomator2 Python library support. For UC WebView (Alipay Nebula) apps like 12306, prefer uiautomator2 for scrolling and booking action clicks.
+- Generic Android bridge for any app. Reads screens as structured JSON, executes taps/scrolling/typing. Supports two backends:
+- | Backend | Best for | Limitations |
+- |---------|----------|-------------|
+- | **Appium** (bridge_daemon.py) | Native apps, structured dumps, `find`/`wait` | UC WebView virtual list taps fail on collapsed elements |
+- | **uiautomator2** (Python lib) | WebView content, scrolling, booking buttons | Conflicts with Appium (same session can't share AccessibilityService) |
+- ## Quick Start
+- ### Option A: bridge_daemon.py (Appium-based)
+- ### Option B: uiautomator2 (direct Python)
+- pip3 install uiautomator2  # already installed
+- python3 -c "
+- import uiautomator2 as u2
+- d = u2.connect()
+- d.app_start('com.MobileTicket')
+- "
+- Use for WebView scroll + booking button clicks. **Cannot run simultaneously with Appium.**
+- ⚠️ **May not work on UC WebView** (used by 12306, Alipay apps). The WebView filters touch events. For UC WebView scrolling, use uiautomator2's `d.swipe_ext()` instead.
+- | Native Android views (date tabs, search buttons, bottom nav) | Either — both work |
+- | App dump / text search / element inspection | bridge_daemon.py `dump` + `find` |
+- | UC WebView content (train list, booking pages) | **uiautomator2** |
+- | Clicking "预订" / "提交订单" / action buttons | uiautomator2 `d.text('预订').click()` |
+- | Scrolling UC WebView lists | uiautomator2 `d.swipe_ext('up', scale=0.3)` |
+- | OCR + coordinate tap | ADB `input tap` (works on visible content) |
+- | WebView text content (crashes UIAutomator2) | bridge_daemon.py `dump` (via Appium) |
+- - **Off-screen items**: COLLAPSED to y=407 (top) or y=2255 (bottom), h=6px
+- - **Action buttons**: "预订" buttons ALWAYS have proper bounds (h=87px) even in virtual lists
+- 1. Clicking action buttons like "预订", "提交订单", "查询车票" — they have persistent proper bounds
+- 2. Scrolling via `d.swipe_ext()` in uiautomator2
+- 3. OCR + coordinate-based ADB tap (with good image preprocessing)
+- 4. Element `click()` via uiautomator2 when the element has h > 20px
+- 1. Clicking collapsed text elements (train names, times, seat info) — h=6px bounds
+- 2. ADB `input tap` on WebView content — silently filtered by UC WebView
+- **Daemon died**: Run `start_bridge.sh` again.
+- **uiautomator2 conflict**: "AccessibilityService already registered" means Appium is running. Kill Appium first.
+- **Appium session error / ANDROID_HOME**: Ensure `export ANDROID_HOME=/usr/lib/android-sdk` before starting Appium.
+- **G7004 text not found**: Search with spaces: `G 7 0 0 4`, not `G7004`.
+- **"预订" not found**: The list may not have loaded yet. Wait and re-dump.
+- **OCR not reading Chinese**: Use `lang='chi_sim+eng'` with `--psm 6` config.
++ description: Read and control any Android app via Appium or uiautomator2. Primary backend (battle-proven on a real 12306 booking): direct uiautomator2 + RapidOCR via ocr_bridge.py (screenshot→OCR→click/swipe→verify loop). Appium bridge_daemon.py kept as fallback for native apps. For UC WebView (Alipay Nebula) apps like 12306, use the OCR loop for everything.
++ Generic Android bridge for any app. Reads screens via OCR, executes taps/scrolling/typing. Two backends:
++ | Backend | Status | Best for | Limitations |
++ |---------|--------|----------|-------------|
++ | **uiautomator2 + RapidOCR** (`ocr_bridge.py`) | ✅ **Primary** (proven end-to-end on 12306 booking 2026-08-30) | UC WebView apps, scrolling, booking buttons, Chinese input | Needs rapidocr_onnxruntime in a venv |
++ | **Appium** (`bridge_daemon.py`) | ⚠️ Fallback | Native apps, structured dumps, `find`/`wait` | **Dead on many consumer devices**: Realme etc. block WRITE_SECURE_SETTINGS, so io.appium.settings and IME switching fail → session never starts |
++ ## ⚠️ Appium Failure Mode (hit this in production)
++ On a Realme RMX3350 the Appium path was unusable:
++ - shell lacks `WRITE_SECURE_SETTINGS` → `io.appium.settings` commands fail
++ - `d.set_input_ime()` blocked → fastinput IME can't be activated → `send_keys` fails
++ - Result: Appium session creation error ("settings command problem"), bridge daemon useless
++ **Rule: try the OCR loop FIRST. Only fall back to Appium if the app is fully native and OCR is insufficient.**
++ ## Quick Start (primary — OCR loop)
++ # One-time venv (Python 3.10+):
++ python3 -m venv ~/.openclaw/workspace/.venv-12306
++ ~/.openclaw/workspace/.venv-12306/bin/pip install uiautomator2 rapidocr-onnxruntime opencv-python onnxruntime
++ # Every interaction is one command:
++ PY=~/.openclaw/workspace/.venv-12306/bin/python
++ $PY ocr_bridge.py dump                     # OCR whole screen: (text, l, t, r, b)
++ $PY ocr_bridge.py markers                  # page-state markers
++ $PY ocr_bridge.py tap-text 预订 --idx 0     # click OCR match, then re-OCR verify
++ $PY ocr_bridge.py tap 540 1987             # click exact coordinates
++ $PY ocr_bridge.py swipe up --scale 0.35    # normal list scroll
++ $PY ocr_bridge.py jump --n 3               # 3 rapid swipes (unstuck virtual list)
++ $PY ocr_bridge.py wait-text 提交订单        # poll until text appears
++ ```
++ `uiautomator2` auto-installs its atx-agent on the phone at first `connect()` — no Appium needed.
++ ## The Proven Loop
++ 1. `shot()`: `adb shell screencap -p /sdcard/s.png` → `adb pull` → RapidOCR → `[(text, l, t, r, b)]`
++ 2. Decide: page-state via `markers()`, position via `deps()` (HH:MM at x<250)
++ 3. Act: `d.click(cx, cy)` / `d.swipe_ext('up', scale=0.35)` / `d.swipe(x1,y1,x2,y2,duration=0.4)`
++ 4. **Always re-OCR after every action and verify the screen actually changed** — this is what makes the loop robust against the virtual list's lies.
++ ## Chinese Input (no IME needed)
++ IME switching is blocked on locked-down devices. The proven route:
++ ```python
++ d.set_clipboard('苏州')          # uiautomator2 clipboard (works where fastinput fails)
++ d.long_click(400, 330, duration=1.2)   # long-press the input field
++ # → OCR: the 粘贴 (paste) menu item appears → tap it
++ `ocr_bridge.py type 苏州 --x 400 --y 330` sets clipboard and long-presses the field.
++ ## Scrolling a UC WebView Virtual List
++ - Normal advance: `d.swipe_ext('up', scale=0.35)` (≈2 train cards per scroll on 12306)
++ - **List "skips" a section** (target train keeps getting jumped over): do `jump` — 3 rapid large swipes (`scale=0.5`, 1.2s apart), then micro-swipes back (`scale=0.15–0.25`, or `d.swipe(540, 1900, 540, 800, duration=0.4)`)
++ - Track position with departure-time markers: `deps()` = HH:MM texts at x<250 — you always know which time window is on screen, independent of the DOM
++ ## Option B: bridge_daemon.py (Appium, fallback only)
++ Cannot run simultaneously with uiautomator2 (same AccessibilityService).
++ ⚠️ **May not work on UC WebView** (used by 12306, Alipay apps). The WebView filters touch events. For UC WebView scrolling, use the OCR loop / `d.swipe_ext()` instead.
++ | UC WebView apps (12306, Alipay, many Chinese apps) — everything | **OCR loop** (`ocr_bridge.py`) |
++ | Screen state / text reading | `ocr_bridge.py dump` / `markers` / `deps` |
++ | Clicking anything visible | `ocr_bridge.py tap-text` / `tap` (u2 click) |
++ | Scrolling UC WebView lists | `ocr_bridge.py swipe` / `jump` / `micro` |
++ | Chinese text input | `d.set_clipboard` + long-press paste |
++ | Native apps with structured dumps / find / wait | bridge_daemon.py (Appium) — if the device allows it |
++ - **Off-screen items**: COLLAPSED to y≈407 (top) or y≈2255 (bottom), h=6px — DOM lies
++ - **The DOM is unreliable**: sometimes renders (usable), mostly collapsed. OCR is the dependable eye.
++ 1. `d.click(x, y)` from uiautomator2 — reliably delivers touches (unlike raw ADB)
++ 2. Scrolling via `d.swipe_ext()` / `d.swipe()`
++ 3. OCR + coordinate click (RapidOCR reads Chinese out of the box — no tesseract language packs)
++ 4. `d.set_clipboard()` + long-press paste for Chinese input
++ 5. `d.dump_hierarchy()` sometimes gives accurate data — use when it renders, never depend on it
++ 1. Raw `adb shell input tap` — filtered by UC WebView (observed 2026-08-30)
++ 2. Clicking collapsed text elements (train names, times, seat info) — h=6px bounds
++ 6. `d.set_input_ime()` / fastinput on Realme — WRITE_SECURE_SETTINGS blocked
++ **Appium session creation error / "settings command problem"**: Device blocks WRITE_SECURE_SETTINGS (Realme etc.). Stop fighting it — use the OCR loop.
++ **uiautomator2 conflict**: "AccessibilityService already registered" means Appium is running. Kill Appium first (`pkill -f appium`).
++ **OCR finds nothing / misreads**: RapidOCR is noisy on small text — narrow search to a region (x/y bounds) and re-shoot; the screen may still be animating (sleep 2-3s after actions).
++ **Train number not found**: DOM text has spaces (`G 7 0 0 4`), but OCR text does not (`G7004`). Match with regex on OCR: `^[GDCK]\d+`.
++ **tesseract missing**: Don't install it — RapidOCR (rapidocr-onnxruntime) needs no language data and read Chinese reliably in production.
+
+### ocr_bridge.py  [code]
++ #!/usr/bin/env python3
++ """OCR bridge for UC WebView apps — proven on a real 12306 booking (2026-08-30).
++ Direct uiautomator2 + RapidOCR interaction loop. Use this when:
++ - bridge_daemon.py (Appium) is blocked — e.g. device shell lacks
++   WRITE_SECURE_SETTINGS (Realme etc.), so io.appium.settings / IME switching fail
++ - the app uses UC WebView and the accessibility tree is collapsed/unreliable
++ The loop that works (repeat as needed):
++     screenshot → OCR → [(text, l, t, r, b)] → decide → click/swipe → re-OCR to verify
++ Dependencies (project venv, Python 3.10+):
++     pip install uiautomator2 rapidocr-onnxruntime opencv-python onnxruntime
++ CLI (one command per step, safe for agent tool calls):
++     ocr_bridge.py dump                     # OCR whole screen: (text l t r b)
++     ocr_bridge.py markers                  # page-state markers (提交订单/立即支付/...)
++     ocr_bridge.py deps                     # visible HH:MM departure times (x<250)
++     ocr_bridge.py tap-text <text> [--idx N] [--x0/--x1/--y0/--y1 F]
++     ocr_bridge.py tap <x> <y>              # d.click at coordinates
++     ocr_bridge.py swipe up|down [--scale 0.35]   # swipe_ext scroll
++     ocr_bridge.py micro up|down            # tiny scroll (scale 0.15)
++     ocr_bridge.py jump [--n 3]             # rapid large swipes (skip stuck sections)
++     ocr_bridge.py type <中文> [--x X --y Y]  # set_clipboard + long-press field
++     ocr_bridge.py wait-text <text> [--timeout 30]  # poll OCR until text appears
++     ocr_bridge.py shot [tag]               # screenshot to /tmp/<tag>.png
++ Importable too:
++     from ocr_bridge import shot, markers, deps, tap_text, scroll, jump, paste_text
++ """
++ import re
++ import subprocess
++ import sys
++ import time
++ import uiautomator2 as u2
++ from rapidocr_onnxruntime import RapidOCR
++ _OCR = RapidOCR()
++ # Page-state keywords observed on the 12306 order flow. Extend per app.
++ STATE_MARKERS = (
++     "提交订单", "选择乘车人", "乘车人", "立即支付", "快速支付", "订单处理中",
++     "预订", "静音车厢", "温馨提示", "确定", "确认", "下一步", "已选",
++ )
++ def shot(tag=None, pull_path="/tmp/sc.png"):
++     """Screenshot the phone and OCR it.
++     Returns list of (text, left, top, right, bottom) in OCR order.
++     """
++     subprocess.run(["adb", "shell", "screencap", "-p", "/sdcard/s.png"],
++                    timeout=15)
++     if tag:
++         pull_path = f"/tmp/{tag}.png"
++     subprocess.run(["adb", "pull", "/sdcard/s.png", pull_path], timeout=15)
++     res, _ = _OCR(pull_path)
++     out = []
++     if res:
++         for box, text, score in res:
++             xs = [p[0] for p in box]
++             ys = [p[1] for p in box]
++             out.append((text, int(min(xs)), int(min(ys)),
++                         int(max(xs)), int(max(ys))))
++     return out
++ def markers(t=None):
++     """Page-state markers currently on screen (list of matched texts)."""
++     t = t or shot()
++     t = t or shot()
++     return [x[0] for x in t if any(k in x[0] for k in STATE_MARKERS)]
++ def deps(t=None):
++     """Visible departure-time markers: HH:MM texts on the left edge (x<250)."""
++     return sorted(set(x[0] for x in t
++                       if x[1] < 250 and re.match(r"^\d{2}:\d{2}$", x[0])))
++ def find_text(t, text, idx=0, x0=None, x1=None, y0=None, y1=None):
++     """Nth OCR match of `text` (substring), optionally filtered by bounds."""
++     matches = [x for x in t if text in x[0]
++                and (x0 is None or x[1] >= x0) and (x1 is None or x[3] <= x1)
++                and (y0 is None or x[2] >= y0) and (y1 is None or x[4] <= y1)]
++     return matches[idx] if len(matches) > idx else None
++ def tap_text(text, idx=0, sleep=2.5, verify=True, **bounds):
++     """Click the center of the Nth OCR match of `text`, then re-OCR to verify."""
++     t = shot()
++     m = find_text(t, text, idx, **bounds)
++     if not m:
++         print(f"NOT FOUND: {text!r} (matches: {[x[0] for x in t if text in x[0]][:5]})")
++         return None
++     cx, cy = (m[1] + m[3]) // 2, (m[2] + m[4]) // 2
++     print(f"tap {text!r} -> ({cx},{cy})")
++     u2.connect().click(cx, cy)
++     time.sleep(sleep)
++     time.sleep(sleep)
++     return shot() if verify else m
++ def scroll(direction="up", scale=0.35, sleep=2.5):
++     """Normal list scroll. Proven scale=0.35 for 12306 train list."""
++     u2.connect().swipe_ext(direction, scale=scale)
++ def jump(n=3, scale=0.5):
++     """N rapid large swipes — breaks the virtual list out of a stuck/skipped
++     section (e.g. the list keeps jumping over a departure-time window)."""
++     d = u2.connect()
++     d = u2.connect()
++     for _ in range(n):
++         d.swipe_ext("up", scale=scale)
++         time.sleep(1.2)
++     time.sleep(3)
++ def paste_text(text, field_x=None, field_y=None, long=1.2):
++     """Chinese input without an IME: set clipboard, long-press the input field,
++     then (after OCR) tap the 粘贴 item. Realme blocks IME switching, so
++     d.set_clipboard + long-press paste is the proven route."""
++     d.set_clipboard(text)
++     time.sleep(0.5)
++     if field_x is not None:
++         d.long_click(field_x, field_y, duration=long)
++         time.sleep(1.5)
++     print(f"clipboard set to {text!r}; long-pressed field. Now tap 粘贴 via tap-text.")
++ def wait_text(text, timeout=30, interval=3):
++     """Poll OCR until `text` appears on screen."""
++     deadline = time.time() + timeout
++     while time.time() < deadline:
++         t = shot()
++         if any(text in x[0] for x in t):
++             print(f"FOUND: {text!r}")
++             return t
++         print(f"waiting for {text!r}...")
++         time.sleep(interval)
++     print(f"TIMEOUT waiting for {text!r}")
++     return None
++ def main():
++     args = sys.argv[1:]
++     if not args or args[0] in ("-h", "--help"):
++         print(__doc__)
++         print(__doc__)
++         return
++     cmd = args[0]
++     rest = args[1:]
++     def opt(name, default=None):
++         if name in rest:
++             i = rest.index(name)
++             return rest[i + 1]
++         return default
++     if cmd == "dump":
++         for x in shot():
++         for x in shot():
++         for x in shot():
++             print(x)
++             print(x)
++             print(x)
++     elif cmd == "markers":
++         print(markers())
++     elif cmd == "deps":
++         print(deps())
++     elif cmd == "tap-text":
++         text = rest[0]
++         tap_text(text, idx=int(opt("--idx", 0)),
++                  x0=opt("--x0"), x1=opt("--x1"),
++                  y0=opt("--y0"), y1=opt("--y1"))
++     elif cmd == "tap":
++         u2.connect().click(int(rest[0]), int(rest[1]))
++         time.sleep(2.5)
++     elif cmd == "swipe":
++         direction = rest[0] if rest else "up"
++         direction = rest[0] if rest else "up"
++         scroll(direction, scale=float(opt("--scale", 0.35)))
++     elif cmd == "micro":
++         scroll(direction, scale=0.15)
++     elif cmd == "jump":
++         jump(n=int(opt("--n", 3)))
++     elif cmd == "type":
++         paste_text(rest[0], field_x=int(opt("--x", -1)) if opt("--x") is not None else None,
++                    field_y=int(opt("--y", -1)) if opt("--y") is not None else None)
++     elif cmd == "wait-text":
++         wait_text(rest[0], timeout=int(opt("--timeout", 30)))
++     elif cmd == "shot":
++         tag = rest[0] if rest else None
++         shot(tag=tag)
++         print("saved")
++     else:
++         print(f"unknown command: {cmd}\n")
++ if __name__ == "__main__":
++     main()
+
+### start_bridge.sh  [code]
++     echo "  [!] If the device blocks WRITE_SECURE_SETTINGS (Realme etc.), Appium"
++     echo "      cannot work — use the OCR loop instead: ocr_bridge.py dump/tap-text/swipe"

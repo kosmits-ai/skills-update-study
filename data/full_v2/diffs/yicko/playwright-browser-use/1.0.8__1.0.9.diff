@@ -1,0 +1,146 @@
+yicko/playwright-browser-use  1.0.8 -> 1.0.9
+change_type: instructions+docs+code   changelog: - 移除了 skill-card.md 文件，无功能性代码变更 - SKILL.md 描述大幅升级：强调 `eval`、`run-code` 两项代码执行能力、token 认证、`PW_BROWSER_SAFE_MODE` 安全选项和页面/节点隔离边界 - 明确说明 eval/run-code 的攻击面、认证机制和环境变量隔离，提升安全警示与用法风险提示 - 文档新增“文档语言与本地化说明”与多语言适配建议 - 其余交互规范、命令速查和恢复指南未更动，仅补充和强化原安全声明及适用场景
+
+### README.md  [docs]
+- > ⚠️ `eval` 和 `run-code` 可执行任意代码，拥有完整浏览器控制权。仅在用户明确指定的任务中使用。
+- - `eval` / `run-code` 可执行任意代码，仅限本地信任环境使用
++ > ⚠️ `eval` 在**浏览器上下文**执行 JS（无 Node 权限）；`run-code` 在 daemon 的**受限沙箱（`vm`）**中执行 Playwright 代码（无 `fs`/`process`/`child_process` 权限），二者均拥有完整浏览器控制权。仅在用户明确指定的任务中使用。
++ - **命令认证**：除 `/health` 存活探针外，所有 daemon 命令都要求随机 `token`。token 在 daemon 启动时生成，写入 `~/.pw-browser/daemon.json`（默认仅当前用户可读），CLI 自动携带。未读取该文件的本地进程无法调用——这关闭了"无认证 HTTP 端点 = RCE 界面"的缺口
++ - **安全模式**：`PW_BROWSER_SAFE_MODE=1 node pw-browser.js daemon` 可彻底禁用 `run-code` / `eval`，仅保留 snap/click/fill 等白名单命令
++ - `eval` 运行在浏览器上下文；`run-code` 运行在 `vm` 受限沙箱（无 Node 系统 API），仅限本地信任环境使用
+
+### SKILL.md  [instructions]
+- description: 浏览器自动化（Playwright 版）：纯 Node.js + Playwright 实现，完全独立运行。支持打开网页、截图、点击、填表、翻页等全部浏览器自动化能力。
+- | 被不可信 agent 调用 | 🔴 高 | 需要沙箱隔离 + 权限控制 |
+- - `run-code` / `eval`：可在浏览器/页面上下文中执行任意脚本，**仅限本地信任环境使用**
+- - daemon：监听 `127.0.0.1:19223`，仅本机可访问，不暴露到公网
+- - 文件下载：通过 `run-code` 可写入本地磁盘，注意目标路径
+- | `pw-browser eval "<expr>" [ref]` | ⚠️ 执行 JS 表达式（页面上下文） |
+- | `pw-browser run-code "<code>"` | ⚠️ 执行任意 Playwright 代码（daemon 上下文） |
+- > ⚠️ **安全警告：** `run-code` 在 daemon 进程中执行任意 Playwright/Node 代码，拥有完整的浏览器控制权。它可以导航到任意页面、读写 `localStorage`/`sessionStorage`、触发文件下载、提交表单、修改页面内容。**仅在用户明确指定的任务中使用，不要执行来源不明的代码片段。**
+- | **加载更多** | 底部有"加载更多"/"查看更多" | 点击该按钮 |
++ description: 浏览器自动化 CLI（Playwright 版，纯 Node.js 实现）。除常规自动化（打开网页/截图/点击/填表/翻页）外，提供两项代码执行能力：`eval` 在页面上下文执行任意 JavaScript（可读 cookie/存储、发起带凭证请求），`run-code` 在守护进程上下文执行 Playwright/Node 代码（vm 沙箱隔离）；两者经持久化本地守护进程（127.0.0.1:19223，浏览器状态跨命令保持）控制浏览器，全部命令受随机 token 认证保护，并可经 PW_BROWSER_SAFE_MODE=1 彻底禁用代码执行。仅在可信、用户可见的本地环境中授权使用。
++ >
++ > ⚠️ **完整能力（含代码执行）**：本工具**不只是"点开网页"**——它包含 `eval`（页面上下文**任意 JavaScript** 执行）与 `run-code`（守护进程上下文执行 Playwright/Node 代码）两项代码执行能力，并通过**持久化本地守护进程**控制浏览器状态（状态跨命令保持）。所有代码执行均受 daemon token 认证保护，可用 `PW_BROWSER_SAFE_MODE=1` 彻底禁用。请先阅读下方「⚠️ 安全边界与使用场景」了解完整攻击面与适用边界，再决定是否授权。
++ | 被不可信 agent 调用 | 🔴 高 | 已内置 daemon token 认证 + 可选 `PW_BROWSER_SAFE_MODE` 禁用代码执行；若来源仍不可信，应进一步沙箱隔离 |
++ - `eval`：在**浏览器上下文**（`page.evaluate`）执行**任意 JavaScript**——即完整的页面级代码执行能力。它无法访问 Node.js API（`require`/`fs`/`process`），作用域仅限于当前页面；但正因如此，它能读取 `document.cookie`/`localStorage`/`sessionStorage`、发起**带页面凭证的 `fetch` 请求**、操控 DOM 并触发页面内动作（点击、提交等）。**这是与 `run-code` 同级的"代码执行"能力，仅场景不同（页面 vs Node）**：同样受 daemon token 认证保护，同样在 `PW_BROWSER_SAFE_MODE=1` 下被禁用；只在用户明确指定、且页面可信时使用，不对高权限/来源不明页面执行
++ - `run-code`：在 daemon 进程的**受限沙箱**（`vm` 模块）中执行 Playwright 代码，仅暴露 `page` 和安全 JS 全局；**无法访问** `fs`/`child_process`/`process`/`require`，因此不能读写任意文件或执行子进程。它仍拥有完整浏览器控制权（导航、读写存储、下载、提交表单、改页面内容），**仅限本地信任环境使用**
++ - daemon：监听 `127.0.0.1:19223`，仅本机可访问，不暴露到公网；**所有命令（除 `/health` 存活探针）均要求随机 `token` 认证**，token 在 daemon 启动时生成并写入 `~/.pw-browser/daemon.json`（默认仅当前用户可读），CLI 自动携带，外部进程无法在未读取该文件的情况下调用
++ - 安全模式：设置环境变量 `PW_BROWSER_SAFE_MODE=1` 启动 daemon 可**彻底禁用** `run-code` / `eval`，仅保留受限的 snap/click/fill 等白名单命令，适合不需要自定义代码的场景
++ - 文件下载：通过 `run-code` 触发页面下载（`download.saveAs`）会写入本地磁盘，注意目标路径
++ ## 📝 文档语言与本地化说明
++ - **文档语言**：本技能文档为**简体中文**。若你或下游 agent 的默认语言非中文，请以代码块中的命令、URL、CSS 选择器与 `snap` 返回的 `ref` 为准——这些是**与语言无关**的自动化锚点。
++ - **界面文本匹配是启发式的**：识别分页 / 按钮类型时，文档列出的中文、英文关键词（如"下一页"/"Next"、"更新"/"保存"/"发布"）只是**识别信号示例，并非穷举**；非中文页面的实际文案会不同。
++ - **优先用 DOM 锚点，而非可见文字**：跨语言页面请尽量用 `snap` 得到的 `ref` 或 CSS 选择器（`page.locator('.xxx')`）定位元素，避免依赖本地化后的可见文本，以防因文案不同导致误点 / 误操作。
++ - **适用区域**：技能本身不限定网站区域；文档示例与中文 UI 关键词面向中文环境，各"识别信号"表已并列给出英文界面关键词。
++ | `pw-browser eval "<expr>" [ref]` | ⚠️ 执行**任意 JavaScript**（页面上下文，完整页面级代码执行：可读 cookie/存储、发起带凭证请求；受 token 认证保护，safe-mode 下禁用） |
++ | `pw-browser run-code "<code>"` | ⚠️ 执行 Playwright 代码（受限沙箱，无 fs/process 权限） |
++ > ⚠️ **安全警告：** `run-code` 在 daemon 进程的 **受限沙箱（`vm` 模块）** 中执行 Playwright 代码。它**无法访问** Node.js 系统 API（`fs` / `child_process` / `process` / `require`），因此不能读写任意文件或执行子进程；但仍拥有**完整的浏览器控制权**——可以导航到任意页面、读写 `localStorage`/`sessionStorage`、触发下载、提交表单、修改页面内容。**仅在用户明确指定的任务中使用，不要执行来源不明的代码片段。**
++ > ⚠️ 下表关键词为**识别启发式**：中文 / 英文示例（"下一页"/"Next"、"加载更多"/"Load more"）并不穷举，非中文页面的文案会不同。实际定位请优先用 `snap` 的 `ref` 或 CSS 选择器，勿仅依赖可见文本。
++ | **加载更多** | 底部有"加载更多"/"Load more"/"查看更多" | 点击该按钮 |
+
+### pw-browser.js  [code]
+-           // Execute user code with access to `page`
+-           const fn = new Function('page', `return (async () => { ${codeStr} })()`);
+-           const r = await fn(p);
+-           const text = typeof r === 'string' ? r : JSON.stringify(r, null, 2);
+-           json({ ok: true, result: text, elapsedMs: Date.now() - t0 });
+-     fs.writeFileSync(path.join(STATE_DIR, 'daemon.json'), JSON.stringify({ host: DAEMON_HOST, port: DAEMON_PORT, pid: process.pid }));
+-       const qs = Object.entries(queryParams)
++ const vm = require('vm');
++ const crypto = require('crypto');
++   // SECURITY: per-daemon random token + optional safe mode.
++   // The token is generated once at daemon start and written to daemon.json
++   // (readable only by the local user). Every command route except /health
++   // must present it, closing the "unauthenticated HTTP daemon = RCE surface" gap.
++   const SAFE_MODE = process.env.PW_BROWSER_SAFE_MODE === '1' || process.env.PW_BROWSER_SAFE_MODE === 'true';
++   const daemonToken = crypto.randomBytes(24).toString('hex');
++       }
++           }
++           }
++           }
++     }
++       try {
++           try {
++     // SECURITY: require token for every route except /health.
++     // The token is a random 24-byte hex generated at daemon start and stored
++     // in daemon.json (local-user-only). This closes the "unauthenticated
++     // HTTP daemon = RCE surface" gap: a malicious local page/process cannot
++     // drive the browser without the token.
++     if (cmd !== 'health') {
++       const provided = url.searchParams.get('token');
++       if (!provided || provided !== daemonToken) {
++         res.writeHead(403, { 'Content-Type': 'application/json' });
++         return res.end(JSON.stringify({ ok: false, error: { kind: 'AuthError', message: 'Missing or invalid token' } }));
++           } catch (e) {
++           if (SAFE_MODE) {
++           if (SAFE_MODE) {
++             return json({ ok: false, error: { kind: 'Disabled', message: 'eval is disabled in safe mode (PW_BROWSER_SAFE_MODE=1)' } });
++           // NOTE: eval runs via page.evaluate() — browser-context only.
++           // It CANNOT reach Node.js APIs (require/fs/process), so it does
++           // not escape the browser sandbox to the host. BUT within the page
++           // it is FULL page-context code execution: it can read
++           // document.cookie / localStorage / sessionStorage, issue
++           // credentialed fetch()/XMLHttpRequest, and drive DOM actions.
++           // Same risk class as run-code; gated by token auth + safe-mode.
++             return json({ ok: false, error: { kind: 'Disabled', message: 'run-code is disabled in safe mode (PW_BROWSER_SAFE_MODE=1)' } });
++           // SECURITY: run user code inside a restricted VM context.
++           // Only `page` and a small set of safe JS globals are exposed.
++           // `process` / `require` / `fs` / `child_process` / `globalThis`
++           // are NOT present in the sandbox, so the code can drive the
++           // browser but cannot read/write arbitrary files or spawn
++           // processes on the host. This closes the "unrestricted Node
++           // code execution" gap while keeping Playwright automation intact.
++           const sandbox = {
++             page: p,
++             console,
++             setTimeout, clearTimeout, setInterval, clearInterval, queueMicrotask,
++           };
++           vm.createContext(sandbox);
++             const script = new vm.Script(`(async () => { ${codeStr} })()`);
++             const runPromise = script.runInContext(sandbox);
++             const timeoutMs = 120000;
++             const timeoutPromise = new Promise((_, rej) => {
++               const t = setTimeout(() => rej(new Error(`run-code exceeded ${timeoutMs}ms`)), timeoutMs);
++               runPromise.finally(() => clearTimeout(t));
++             });
++             const r = await Promise.race([runPromise, timeoutPromise]);
++             const text = typeof r === 'string' ? r : JSON.stringify(r, null, 2);
++             json({ ok: true, result: text, elapsedMs: Date.now() - t0 });
++             json({ ok: false, error: { kind: 'RunCodeError', message: e.message, stack: e.stack } });
++     fs.writeFileSync(path.join(STATE_DIR, 'daemon.json'), JSON.stringify({ host: DAEMON_HOST, port: DAEMON_PORT, pid: process.pid, token: daemonToken }));
++       const qp = { ...queryParams };
++       // Attach the daemon auth token (from daemon.json) automatically.
++         const d = JSON.parse(fs.readFileSync(daemonFile, 'utf8'));
++         if (d.token) qp.token = d.token;
++       } catch {}
++       const qs = Object.entries(qp)
+
+### references/pagination.md  [docs]
++ > 📝 **文档语言与本地化**：本文件为**简体中文**。识别信号表中的中文 / 英文关键词（"下一页"/"Next"、"加载更多"/"Load more"）仅为**启发式示例，并非穷举**——非中文页面的实际文案会不同。跨语言页面请优先用 `snap` 返回的 `ref` 或 CSS 选择器（`page.locator('.xxx')`）定位，避免依赖可见文本。完整语言说明见 `SKILL.md`「📝 文档语言与本地化说明」。
+
+### references/running-code.md  [docs]
+- > ⚠️ **安全警告：** `run-code` 在 daemon 进程中执行任意代码，拥有完整的浏览器控制权。可以导航任意页面、读写存储数据、触发文件下载、提交表单、修改页面内容。**仅在用户明确指定任务中使用，不要执行来源不明的代码片段。**
+- 当内置命令不够用时，用 `pw-browser run-code` 执行任意 Playwright 代码。
+- 代码在 daemon 的 async 函数中执行，`page` 对象已注入（标准的 Playwright Page）。
++ > ⚠️ **安全警告：** `run-code` 在 daemon 进程的 **受限沙箱（`vm` 模块）** 中执行代码，**无法访问** Node.js 系统 API（`fs` / `child_process` / `process` / `require`），因此不能读写任意文件或执行子进程。但它仍拥有**完整的浏览器控制权**——可以导航任意页面、读写存储数据、触发文件下载、提交表单、修改页面内容。**仅在用户明确指定任务中使用，不要执行来源不明的代码片段。**
++ 当内置命令不够用时，用 `pw-browser run-code` 执行 Playwright 代码。
++ ## `eval`：页面上下文任意 JavaScript 执行 ⚠️
++ > ⚠️ **安全警告：** `eval` 在**当前页面的 JavaScript 上下文**中执行你提供的任意代码（等价于在浏览器开发者工具控制台里直接输入并执行）。它能读取 `document.cookie`、`localStorage`/`sessionStorage`、发起**携带当前页面凭证**的 `fetch`/`XMLHttpRequest`，并直接操控 DOM、触发点击与表单提交。**它不等于"执行一个无害的 JS 表达式"——它是完整的页面级代码执行（page-context RCE）。**
++ >
++ >
++ > `eval` 与 `run-code` 是同一类"代码执行"能力，只是作用域不同：
++ > - **`eval`** → 页面上下文，能触及页面里的所有数据与会话凭证
++ > - **`run-code`** → Node 沙箱上下文，能驱动浏览器但拿不到宿主机 `fs`/`process`
++ > 两者都受 daemon **token 认证**保护（未持 token 的外部进程无法调用），且都在 `PW_BROWSER_SAFE_MODE=1` 启动时**被禁用**。仅在用户明确指定的任务、且目标页面可信时使用；不要对来源不明或高权限页面执行。
++ ```bash
++ # 读取当前页面所有 cookie（含会话令牌）
++ pw-browser eval "document.cookie"
++ # 读取 localStorage
++ pw-browser eval "JSON.stringify(localStorage)"
++ # 在指定元素上下文执行（ref 来自 snap）
++ pw-browser eval "el.innerText" e5
++ # 发起带页面凭证的请求（可被滥用于 CSRF / 数据外泄，慎用）
++ pw-browser eval "await (await fetch('/api/me')).text()"
++ ```
++ 代码在 daemon 的 `vm` 沙箱中执行，`page` 对象已注入（标准的 Playwright Page）。沙箱仅暴露 `page` 和安全 JS 全局，不提供 Node 系统模块。

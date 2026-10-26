@@ -1,0 +1,3638 @@
+xuanwuskill/has-anonymizer  1.0.1 -> 1.0.2
+change_type: instructions+docs+code   changelog: 1. **Fix chunk budget formula** — When mapping expands, budget reduction changes from 1:1 → ~0.49:1  2. **ContextOverflowError detection** — Detect prompt overflow + output truncation, preventing silent corruption  3. **Self-healing retry** — On overflow, automatically shrink chunk (×0.75) and retry up to 2 times  4. **Tool-Pair acceleration** — Skip Model-Pair, use diff algorithm to extract mapping, saving ~13.5% time  5. **16K fallback** — Default 8K, auto-upgrade to 16K only when mapping expa
+
+### SKILL.md  [instructions]
+-               "description": "Maximum parallel inference requests for scan/hide/seek batch operations (default: 4, max: 4)",
+- HaS (Hide and Seek) is an on-device privacy protection tool. It provides **text** and **image** anonymization capabilities, both running entirely on-device.
+- - **Text anonymization** (has-text): Powered by a 0.6B privacy model, supports 8 languages with open-set entity types for anonymization and restoration
+- - **Image anonymization** (has-image): Powered by a YOLO11 segmentation model, supports pixel-level detection and masking of 21 privacy categories
+- - **First introduction**: When users encounter HaS for the first time, demonstrate value through real-world scenarios rather than listing commands. Examples: anonymize contracts/resumes before sharing safely, anonymize before sending to cloud LLMs then restore the response, auto-mask faces/IDs/license plates and 20 other privacy categories in photos before publishing, scan workspace for privacy leak risks, anonymize logs before handing to ops/support
+- - **Scanning workspace/directory**: Use has-text scan for text files and has-image scan for image files simultaneously, then provide a consolidated report
+- - **Non-plaintext formats**: has-text only processes plaintext. For PDFs, Word documents, scanned images, etc., first convert to text using other available tools before processing
+- - **Text in images**: has-image covers most text-in-image scenarios by masking all 21 visual carriers (screens, paper, sticky notes, shipping labels, etc.) as a whole. For further recognition of text content in images, use OCR to extract text first, then run has-text scan for additional detection
+- - **Never delete original files**: Anonymization operations should output to new files, **never overwrite or delete the original files**. Image anonymization is irreversible; text anonymization can be restored but the original file should still be preserved as backup
+- - **Proactively inform about configurable options**: At appropriate moments, inform users about the following options and help them configure interactively:
+-   - **Text**: `--types` can specify any entity type (names, addresses, phone numbers, etc.), not limited to predefined types
+-   - **Image**: `--types` can specify which categories to mask (e.g., only faces, or only license plates), defaults to all 21 categories
+-   - **Masking method**: `--method` supports mosaic (default), blur, and solid color fill
+-   - **Masking strength**: `--strength` adjusts mosaic block size or blur intensity (default 15)
+- - **Post-scan report**: After scanning a workspace/directory, generate a consolidated privacy check report including:
+-   - Total files scanned (text and image counts separately)
+-   - Number and location of each type of sensitive content found
+-   - Risk level assessment (flag high-sensitivity items such as ID numbers, faces, etc.)
+-   - Recommended next steps (e.g., "Would you like to anonymize the above files?")
+- - **Report elapsed time after completion**: After task completion, report processing time to the user so they can perceive on-device inference performance. For single tasks, report individual time (e.g., "On-device inference complete, took 0.3s"); for batch tasks, report a summary (e.g., "Processed 12 texts + 8 images, total time 2.4s"). Do not display technical metrics like tok/s
+- # Part 1: Text Anonymization (has-text)
+- ## Core Concepts
+- ### Three-Level Semantic Tags
+- Tag format after anonymization: `<EntityType[ID].Category.Attribute>`
+- - **EntityType**: e.g., person name, address, organization
+- - **[ID]**: Sequential number for entities of the same type. After coreference resolution, the same entity shares the same number — "CloudGenius Inc.", "CloudGenius", and its Chinese equivalent all map to `<Organization[1].Company.CompanyName>`
+- - **Category.Attribute**: Semantic subdivision that helps LLMs understand the context of anonymized data (as opposed to `[REDACTED]`)
+- ### Open-Set Types
+- `--types` is not limited to predefined types — any natural language entity type can be specified (the model was trained on approximately 70,000 types). Parenthetical descriptions can be appended to type names to guide model focus, e.g., `"numeric values (transaction amounts)"`.
+- ### Public/Private Distinction and Multilingual Support
+- - **Public/private distinction**: Achieved by specifying discriminative types — e.g., use `"personal location"` instead of `"location"` to only anonymize private addresses while preserving public place names (tested and reliably stable). ⚠️ Public/private distinction for person names (`"personal name"` vs `"person name"`) is **unstable** on the current 0.6B model and should not be relied upon
+- - **Multilingual**: Natively supports 8 languages: Chinese, English, French, German, Spanish, Portuguese, Japanese, and Korean. Cross-lingual text can be processed in mixed form
+- ### Type Selection Guidelines
+- `--types` is flexibly determined by the Agent based on context:
+- - **User explicitly specifies** → follow user's request
+- - **Intent is clear, types are obvious** (e.g., "anonymize this contract" → names + organizations + amounts + addresses) → Agent decides autonomously
+- - **Intent is ambiguous or involves sensitive decisions** → first use `scan` to scan for as many entity types as possible, show discovered entities to the user for confirmation, then use `hide` to anonymize
+- ## Prerequisites: llama-server (Auto-managed, Local-Only)
+- HaS depends on llama-server to load the privacy model and provide inference. `has-text` auto-reuses or auto-starts a **local loopback** `llama-server` when a command needs the model. Non-loopback server URLs are rejected to ensure all data stays on-device. Same-language `seek` avoids starting the server when deterministic restoration succeeds. **Only stop a server if this task started it. Never terminate a pre-existing server that you merely detected on the same port.**
+- The model file is downloaded via the OpenClaw install mechanism to `~/.openclaw/tools/has-anonymizer/models/has_text_model.gguf` (639 MB, Q8_0 quantized). Runtime memory usage is approximately 1.4 GB (8K context).
+- **Platform notes**:
+- - macOS: OpenClaw can surface bundled install actions for `uv` and `llama.cpp` via Homebrew.
+- - Linux / WSL: install `uv` and `llama-server` manually first, then use OpenClaw's download install actions for the HaS model files.
+- **Model download mirrors**: OpenClaw's built-in install metadata currently points at HuggingFace. If that download fails or times out, use these ModelScope mirror URLs as a manual fallback instead of assuming automatic retry:
+- - Text model: `https://modelscope.cn/models/TencentXuanwu/HaS_Text_0209_0.6B_Q8` → download `has_text_model.gguf` to `~/.openclaw/tools/has-anonymizer/models/`
+- - Image model: `https://modelscope.cn/models/TencentXuanwu/HaS_Image_0209_FP32` → download `sensitive_seg_best.pt` to `~/.openclaw/tools/has-anonymizer/models/`
+- **Auto-managed local runtime**:
+- - Server URL: `http://127.0.0.1:8080` (hardcoded loopback; non-local URLs are rejected)
+- - Override the auto-start model path with env var `HAS_TEXT_MODEL_PATH=/abs/path/to/has_text_model.gguf`
+- - Override the parallel request cap with env var `HAS_TEXT_MAX_PARALLEL_REQUESTS` (default 4, max 4)
+- - Auto-start slot count is workload-aware: `has-text` only starts as many slots as the current command can actually use, capped by `--max-parallel-requests` and a fixed local ceiling of 4
+- - Auto-start keeps each slot at the full 8K context budget by scaling `-c` with `-np` (`np=1 -> c=8192`, `np=2 -> c=16384`, ..., `np=4 -> c=32768`)
+- - If a healthy local HaS server is already listening on the requested port, `has-text` reuses it only when it is clearly the HaS model and its `-np`/`-c` combination still preserves the full 8K context per slot; otherwise it starts a new local port instead and only stops the PID it created
+- **Manual fallback — Start**:
+- 1. Probe the default port (8080): `curl -fsS "http://127.0.0.1:8080/health"`
+- 2. If health is OK, identify the listening PID and inspect its command line:
+- ```bash
+- ```bash
+- pid="$(lsof -tiTCP:8080 -sTCP:LISTEN | head -n 1)"
+- cmd="$(ps -p "$pid" -o command=)"
+- ```
+- 3. Reuse the existing service **only** if the command line clearly shows both `llama-server` and `has_text_model.gguf`. Health alone is not enough; another model may already be using that port.
+- 4. If the running service is missing, unhealthy, or not the HaS model, leave that process alone and choose another free port (for example `8090`).
+- 5. Decide the slot budget before starting llama-server. Use `1` for serial `hide`-only work; for chunk-parallel `scan`, model-backed `seek`, or batch `hide --dir`, set it to the number of model work items you expect, capped at `--max-parallel-requests` and 4 local slots. Keep `-c = 8192 * parallel` so each slot retains the full 8K context budget.
+- 6. Start llama-server in the background and record the PID you started:
+- parallel="${HAS_TEXT_MAX_PARALLEL_REQUESTS:-4}"
+- [ "$parallel" -gt 4 ] && parallel=4
+- ctx_size=$((8192 * parallel))
+- server_pid=""
+- llama-server \
+-   --host 127.0.0.1 \
+-   -m ~/.openclaw/tools/has-anonymizer/models/has_text_model.gguf \
+-   -ngl 999 \
+-   -c "$ctx_size" \
+-   -np "$parallel" \
+-   -fa on \
+-   -ctk q8_0 \
+-   -ctv q8_0 \
+-   --port 8080 &
+- server_pid=$!
+- 7. Wait for readiness: poll the health endpoint until it returns ok
+- **After use — Stop**:
+- If and only if this task set `server_pid`, terminate that PID to free memory:
+- if [ -n "${server_pid:-}" ]; then
+-   kill "$server_pid"
+-   wait "$server_pid" 2>/dev/null || true
+- fi
+- Do not kill by port, and do not stop a server that you only reused.
+- ## Usage
+- ## Usage
+- {baseDir}/scripts/has-text.sh [global-options] <command> [options]
+- Global options:
+- | Option | Description |
+- |--------|-------------|
+- | `--pretty` | Pretty-print JSON output |
+- | `--pretty` | Pretty-print JSON output |
+- | `-q, --quiet` | For `hide`/`seek`, output text only without the JSON wrapper. `scan` still returns JSON |
+- Input methods (common to scan/hide/seek):
+- | stdin | Pipe input, e.g., `cat file \| has-text ...` |
+- > `--max-chunk-tokens`: Maximum tokens per chunk (default 3000), available for `scan`, `hide`, and model-backed `seek`.
+- > `--max-parallel-requests`: Shared parallel request cap for `scan`, model-backed `seek`, and batch `hide --dir` (default 4, env `HAS_TEXT_MAX_PARALLEL_REQUESTS`). Legacy aliases: `--max-parallel-chunks`, `--max-parallel-files`.
+- ## Command Reference
+- ## Command Reference
+- Directory mode rules for `scan`, `hide`, and `seek`: process only the immediate UTF-8 plaintext files in the target directory, never recurse into subdirectories, skip binary or non-UTF-8 files, and report symlinked files whose realpath escapes the input directory as `symlink_escape`.
+- ### scan (Privacy Scan)
+- ### scan (Privacy Scan)
+- Identifies sensitive entities only, without replacement. Suitable for quick privacy risk assessment of text. Long scans fan out chunk requests in parallel by default and merge them back in original chunk order so the output remains stable. `has-text` only starts llama-server when at least one chunk needs the model.
+- | `--types` | ✅ | Entity types to identify, JSON array format |
+- | `--dir` | | Batch-scan the immediate plaintext files in a directory (non-recursive) |
+- | `--max-parallel-requests` | | Maximum scan chunks to run in parallel (default 4, env `HAS_TEXT_MAX_PARALLEL_REQUESTS`). Set to `1` to force serial execution |
+- # Scan text for person names and phone numbers
+- {baseDir}/scripts/has-text.sh scan --types '["person name","phone number"]' --text "John's phone number is 13912345678"
+- # Scan a file for multiple entity types
+- {baseDir}/scripts/has-text.sh scan --types '["person name","address","phone number","email","ID number"]' --file /path/to/document.txt
+- # Batch-scan a directory of plaintext files
+- {baseDir}/scripts/has-text.sh scan --types '["person name","phone number"]' --dir ./reports/
+- **Output** (JSON): Single-file scan returns `{"entities": ...}`. Directory scan returns `{"results":[...],"count":N,"summary":{...}}` and may include `skipped` / `skipped_count`.
+- ### hide (Privacy Anonymization)
+- ### hide (Privacy Anonymization)
+- Identifies and replaces sensitive entities with semantic tags, outputting anonymized text + mapping table. `--dir` writes anonymized files plus one mapping JSON per source file. Batch mode treats each file independently; it does not accumulate new mappings across files, and `hide --dir` does not accept `--mapping`. If mapping extraction cannot validate the anonymized output, `hide` fails closed instead of returning an untrusted mapping. Empty files do not start llama-server.
+- | `--types` | ✅ | Entity types to anonymize, JSON array format |
+- | `--mapping` | Single-file only | Existing mapping dictionary (file path or inline JSON), for incremental anonymization to maintain cross-session consistency |
+- | `--dir` | | Batch-anonymize the immediate plaintext files in a directory (non-recursive) |
+- | `--output-dir` | | Batch output directory for anonymized files (default: `anonymized/` under the input directory) |
+- | `--mapping-dir` | | Batch output directory for per-file mapping JSON files (default: `mappings/` under the output directory) |
+- | `--max-parallel-requests` | | Maximum files to anonymize in parallel when using `--dir` (default 4, env `HAS_TEXT_MAX_PARALLEL_REQUESTS`) |
+- # First-time anonymization
+- {baseDir}/scripts/has-text.sh --pretty hide --types '["person name","address","phone number"]' --text "John lives in Brooklyn, New York, phone 13912345678"
+- # Incremental anonymization (carry previous mapping to maintain consistency)
+- {baseDir}/scripts/has-text.sh hide --types '["person name","address"]' --text "John is going to Boston on a business trip next week" --mapping mapping.json
+- # Batch-anonymize a directory of plaintext files
+- {baseDir}/scripts/has-text.sh hide --types '["person name"]' --dir ./docs/ --output-dir ./anonymized/ --mapping-dir ./anonymized/mappings/
+- **Output** (JSON): Single-file hide returns `{"text": "...", "mapping": {...}}`. Directory hide writes anonymized files and per-file mapping JSON files, then returns `{"results":[{"file":"...","output":"...","mapping":"..."}], ...}` plus optional `chunks`, `skipped`, and `skipped_count`.
+- > 💡 **mapping is the key**: Save the mapping and you can restore. Lose the mapping, and anonymization becomes irreversible.
+- > ⚠️ **Security**: Prefer passing mapping via file path (`--mapping mapping.json`) rather than inline JSON. Inline JSON appears in `ps aux` process listings and shell history, exposing the original sensitive data.
+- ### seek (Privacy Restoration)
+- Restores anonymized tags to original values using the mapping table. Uses pure string replacement for same-language text (very fast), and automatically switches to model inference for cross-language scenarios. Long model-backed `seek` requests are chunked automatically; each chunk only carries the mapping keys that actually appear in that chunk, and model-backed chunks can run in parallel up to `--max-parallel-requests`. If a model-backed seek chunk still contains anonymized tags after one pass, `seek` retries that chunk once with the same mapping and then fails closed if unresolved tags remain. Same-language files and files without surviving tags do not start llama-server. `--dir` writes the results to `restored/` or `--output-dir`. When restoring a directory produced by `hide --dir`, `seek --dir` uses each file's own mapping JSON under `<input-dir>/mappings/` by default, or the per-file directory specified by `--mapping-dir`. `seek --dir` does not accept a shared `--mapping`.
+- | `--mapping` | Single-file: ✅ | Mapping dictionary (file path or inline JSON) |
+- | `--dir` | | Batch-restore the immediate plaintext files in a directory (non-recursive) |
+- | `--mapping-dir` | | Batch mapping directory for per-file mapping JSON files (default: `mappings/` under the input directory) |
+- | `--output-dir` | | Batch output directory for restored files (default: `restored/` under the input directory) |
+- | `--max-parallel-requests` | | Maximum model-backed seek chunks to run in parallel (default 4, env `HAS_TEXT_MAX_PARALLEL_REQUESTS`) |
+- # Restore anonymized text
+- {baseDir}/scripts/has-text.sh -q seek --mapping mapping.json --text "<person name[1].personal.name> lives in <address[1].city.name>"
+- # Restore from file
+- {baseDir}/scripts/has-text.sh --pretty seek --mapping mapping.json --file anonymized.txt
+- # Batch-restore a directory produced by hide --dir (uses ./anonymized/mappings/*.mapping.json by default)
+- {baseDir}/scripts/has-text.sh seek --dir ./anonymized/ --output-dir ./restored/
+- # Batch-restore with an explicit per-file mapping directory
+- {baseDir}/scripts/has-text.sh seek --dir ./anonymized/ --mapping-dir ./exported-mappings/ --output-dir ./restored/
+- **Output** (JSON): Single-file seek returns `{"text": ...}`. Directory seek writes restored files and returns `{"results":[{"file":"...","output":"..."}], ...}` plus optional `chunks`, `skipped`, and `skipped_count`.
+- ## Typical Workflow
+- ### Anonymize → Send to Cloud LLM → Restore
+- 1. `hide` to anonymize → obtain anonymized text + mapping
+- 2. Send anonymized text to cloud LLM (no privacy data included)
+- 3. `seek` with mapping to restore the LLM response
+- > ⚠️ For multi-line text, it is recommended to use file intermediation (hide output → write to file → read), to avoid JSON parsing failures caused by shell variable handling.
+- # Part 2: Image Anonymization (has-image)
+- Performs pixel-level detection and masking of privacy regions in images. Based on a YOLO11 instance segmentation model, supports 21 privacy categories.
+- `has-image` loads its YOLO model directly and does **not** require `llama-server`.
+- {baseDir}/scripts/has-image.sh [global-options] <command> [options]
+- | `--model PATH` | Model file path (auto-detected by default, can be set via env var `HAS_IMAGE_MODEL`) |
+- ## Privacy Categories (21 Classes)
+- | ID | Category | Display Name | Group |
+- |----|----------|--------------|-------|
+- | 0 | `biometric_face` | Face | Biometric |
+- | 1 | `biometric_fingerprint` | Fingerprint | Biometric |
+- | 2 | `biometric_palmprint` | Palmprint | Biometric |
+- | 3 | `id_card` | ID Card | ID Document |
+- | 4 | `hk_macau_permit` | HK/Macau Permit | ID Document |
+- | 5 | `passport` | Passport | ID Document |
+- | 6 | `employee_badge` | Employee Badge | ID Document |
+- | 7 | `license_plate` | License Plate | Transportation |
+- | 8 | `bank_card` | Bank Card | Financial |
+- | 9 | `physical_key` | Physical Key | Security |
+- | 10 | `receipt` | Receipt | Document |
+- | 11 | `shipping_label` | Shipping Label | Document |
+- | 12 | `official_seal` | Official Seal | Document |
+- | 13 | `whiteboard` | Whiteboard | Information Carrier |
+- | 14 | `sticky_note` | Sticky Note | Information Carrier |
+- | 15 | `mobile_screen` | Mobile Screen | Information Carrier |
+- | 16 | `monitor_screen` | Monitor Screen | Information Carrier |
+- | 17 | `medical_wristband` | Medical Wristband | Medical |
+- | 18 | `qr_code` | QR Code | Encoding |
+- | 19 | `barcode` | Barcode | Encoding |
+- | 20 | `paper` | Paper | Document |
+- `--types` accepts English names, Chinese names, or IDs, comma-separated. Short names are also supported via partial matching (e.g. `face` → `biometric_face`, `fingerprint` → `biometric_fingerprint`). If a short name matches multiple categories, the CLI stops with an ambiguity error and asks for a more specific type.
+- Directory mode rules for `scan` and `hide`: process only the immediate files in the target directory, never recurse into subdirectories, and ignore symlinked files whose realpath escapes the input directory.
+- Identifies privacy regions only, **does not modify the image**.
+- # Scan a single image
+- {baseDir}/scripts/has-image.sh --pretty scan --image photo.jpg --types face,id_card
+- # Batch scan a directory
+- {baseDir}/scripts/has-image.sh --pretty scan --dir ./photos/ --types face,id_card
+- | `--image` | Either | Input image path |
+- | `--image` | Either | Input image path |
+- | `--dir` | Either | Batch scanning directory |
+- | `--types` | | Category filter (comma-separated), defaults to all 21 categories |
+- | `--types` | | Category filter (comma-separated), defaults to all 21 categories |
+- | `--conf` | | Confidence threshold (default 0.25) |
+- | `--conf` | | Confidence threshold (default 0.25) |
+- **Output** (JSON): `{"detections": [{"category": "...", "confidence": 0.95, "bbox": [...], "has_mask": true}], "summary": {"biometric_face": 2}}`
+- Detects and masks privacy regions, outputs the anonymized image.
+- # Mosaic all privacy regions
+- {baseDir}/scripts/has-image.sh hide --image photo.jpg
+- # Specify categories, method, and strength
+- {baseDir}/scripts/has-image.sh hide --image photo.jpg --types face,license_plate --method blur --strength 25
+- # Batch process a directory
+- {baseDir}/scripts/has-image.sh hide --dir ./photos/ --output-dir ./masked/
+- | `--dir` | Either | Batch processing directory |
+- | `--output` | | Output image path (defaults to `masked/` subdirectory under the source directory, preserving original filename) |
+- | `--output-dir` | | Batch output directory (defaults to `masked/` subdirectory under the input directory) |
+- | `--method` | | Masking method: `mosaic` (pixelation) / `blur` / `fill` (solid color), default `mosaic` |
+- | `--strength` | | Mosaic block size or blur radius (default 15) |
+- | `--fill-color` | | Fill color for `fill` method, hex format (default `#000000`) |
+- ### categories
+- Lists all 21 supported privacy categories with their IDs and Chinese display names.
+- {baseDir}/scripts/has-image.sh --pretty categories
++               "description": "Maximum parallel inference requests for scan/hide/restore batch operations (default: 4, max: 4)",
++ HaS exposes a single umbrella CLI:
++ - `has text ...` for text anonymization, restoration, and scanning
++ - `has image ...` for image scanning, masking, and category discovery
++ Use it when you need to remove private data locally before sending content elsewhere, inspect a directory for privacy risks, or mask visual privacy targets in photos and screenshots.
++ - Prefer `has text` for plaintext and `has image` for raster images. For mixed directories, run both and combine the results into one report.
++ - For PDFs, Word documents, or scanned pages, extract text first and then use `has text`. For screenshots/photos where the goal is simply to hide visible carriers such as faces, screens, paper, labels, or QR codes, use `has image`. If the goal is to reason about the text content inside an image, run OCR first and then use `has text`.
++ - Do not overwrite or delete the original files. Text commands can restore later, image masking is irreversible.
++ - Proactively mention configurable knobs when the user intent is clear: `has text` uses repeated `--type`; `has image` uses repeated `--type`, plus `--method` and `--strength`.
++ - If the user intent is ambiguous, start with `scan` before `hide`.
++ - After batch scans, summarize text file count, image file count, findings by type/category, high-risk items, and the suggested next step.
++ - If timing matters to the user, add `--timing` and report the elapsed result in plain language afterward.
++ ## Shared CLI Contract
++ The current CLI contract is designed for agents first:
++ - Success returns compact JSON.
++ - Failure also returns compact JSON with `error.code` and `error.message`.
++ - Returned path fields are absolute.
++   - This includes `file`, `output`, `mapping_output`, and `skipped[].file`.
++ - Invalid combinations fail fast instead of silently falling back.
++ - Directory mode is non-recursive. Only immediate children are processed.
++ - Batch results can include `skipped` and `skipped_count`.
++   - Treat `skipped` entries as unprocessed files, not as clean files.
++ Shared command layout:
++ {baseDir}/scripts/has.sh <text|image> <command> [options]
++ Shared options can be placed before or after the subcommand.
++ # Part 1: `has text`
++ `has text` is the plaintext namespace. It supports:
++ - `scan`
++ - `scan`
++ - `hide`
++ - `hide`
++ - `restore`
++ It runs entirely on-device and uses a local `llama-server` plus the HaS text model when model inference is required.
++ ## Core Text Concepts
++ ### Semantic tags
++ Anonymized text uses semantic tags such as:
++ ```text
++ <EntityType[ID].Category.Attribute>
++ This preserves structure better than a flat `[REDACTED]` token and is the reason restored downstream LLM output can remain usable.
++ ### Open-set types
++ Repeated `--type` flags are open-set. They are not limited to a fixed catalog. Natural language type names such as `"person name"`, `"address"`, `"phone number"`, or `"numeric values (transaction amounts)"` are valid.
++ ### Public/private distinction
++ Type wording matters. For example, `"personal location"` is usually safer than `"location"` if you want to preserve public places but hide private addresses. Public/private person-name distinctions remain less stable and should not be trusted without verification.
++ ### Multilingual support
++ The text model supports Chinese, English, French, German, Spanish, Portuguese, Japanese, and Korean, including mixed-language text.
++ ### Type name language
++ Match the `--type` language to the source text language:
++ - **Chinese text** → use Chinese type names: `--type "人名" --type "电话号码" --type "地址"`
++ - **Non-Chinese text** (English, French, German, etc.) → use English type names: `--type "person name" --type "phone number" --type "address"`
++ ## Text Runtime Prerequisites
++ `has text` auto-starts a local `llama-server` when needed.
++ - Override model path: `HAS_TEXT_MODEL_PATH=/abs/path/to/has_text_model.gguf`
++ - Override parallel cap: `HAS_TEXT_MAX_PARALLEL_REQUESTS`
++ - If HuggingFace downloads fail, see **Model Download Mirrors** below.
++ ## Text Usage
++ {baseDir}/scripts/has.sh text [--timing] [--verbose] <scan|hide|restore> [options]
++ Namespace options:
++ Namespace options:
++ | `--timing` | Include `elapsed_ms` in the JSON output |
++ | `--verbose` | Emit runtime status and progress messages to stderr |
++ Input methods:
++ | `--dir <path>` | Process immediate plaintext files in a directory |
++ | stdin | For single-text mode when no `--text`, `--file`, or `--dir` is provided |
++ Rules:
++ Rules:
++ - `--text`, `--file`, and `--dir` are mutually exclusive.
++ - Empty `--type` values are rejected.
++ - Empty `--type` values are rejected.
++ - Directory mode only accepts batch output flags.
++ - Single-file `hide` requires `--mapping-output`.
++ - Single-file `restore` requires `--mapping`.
++ - In text directory mode, `skipped` can include unprocessed files (binary, encoding, or read errors).
++ ## `has text scan`
++ Finds sensitive entities without replacing them.
++ {baseDir}/scripts/has.sh text scan --type "person name" --type "phone number" --file report.txt
++ {baseDir}/scripts/has.sh text scan --type "person name" --type "phone number" --dir ./reports/
++ Parameters:
++ Parameters:
++ Parameters:
++ Parameters:
++ Parameters:
++ | `--type` | yes | Entity type to scan for; repeat to add more |
++ | `--text` / `--file` / `--dir` | one input | Input source |
++ | `--text` / `--file` / `--dir` | one input | Input source |
++ | `--text` / `--file` / `--dir` | one input | Input source |
++ | `--max-chunk-tokens` | | Max tokens per chunk, default `5000` |
++ | `--max-parallel-requests` | | Max scan chunks in parallel, default `4` |
++ Output:
++ Output:
++ - Single-text mode returns `{"entities": ...}`
++ - Directory mode returns `{"results":[...],"count":N,"summary":{...}}`
++ - Batch output may include `skipped` and `skipped_count`
++ ## `has text hide`
++ Replaces sensitive entities with semantic tags.
++ {baseDir}/scripts/has.sh text hide --type "person name" --type "address" --text "John lives in Brooklyn" --mapping-output ./mapping.json
++ {baseDir}/scripts/has.sh text hide --type "person name" --file note.txt --output ./note.anonymized.txt --mapping-output ./note.mapping.json
++ {baseDir}/scripts/has.sh text hide --type "person name" --dir ./docs/
++ | `--type` | yes | Entity type to anonymize; repeat to add more |
++ | `--mapping-output` | single-file: yes | Output path for generated mapping JSON |
++ | `--output` | single-file | Output path for anonymized text |
++ | `--mapping` | single-file | Existing mapping JSON file for incremental anonymization |
++ | `--output-dir` | batch | Output directory for anonymized files (default: `<dir>/.has/anonymized/`) |
++ | `--mapping-dir` | batch | Output directory for per-file mapping JSON files (default: `<output-dir>/mappings/`) |
++ | `--max-chunk-tokens` | | Max tokens per chunk, default `3000` |
++ | `--max-parallel-requests` | | Max files in parallel for `--dir`, default `4` |
++ | `--no-tool-pair` | | Disable diff-based pair extraction; always use Model-Pair (slower but more robust) |
++ Behavior:
++ Behavior:
++ Behavior:
++ Behavior:
++ - Single-file mode never emits the mapping table inline.
++ - Single-file mode returns either:
++   - `{"text":"...","mapping_output":"/abs/path/to/map.json"}`
++   - `{"output":"/abs/path/to/out.txt","mapping_output":"/abs/path/to/map.json"}`
++ - Batch mode does not accept shared `--mapping`.
++ - Mapping files are sensitive assets. Protect them.
++ ## `has text restore`
++ Restores anonymized text using mapping JSON.
++ {baseDir}/scripts/has.sh text restore --mapping mapping.json --text "<person name[1].personal.name> lives in ..."
++ {baseDir}/scripts/has.sh text restore --mapping mapping.json --file anonymized.txt --output restored.txt
++ {baseDir}/scripts/has.sh text restore --dir ./.has/anonymized/ --output-dir ./.has/restored/
++ | `--mapping` | single-file: yes | Mapping JSON file path |
++ | `--output` | single-file | Output path for restored text |
++ | `--mapping-dir` | batch | Per-file mapping directory (default: `<dir>/mappings/`) |
++ | `--output-dir` | batch | Output directory for restored files (default: sibling `restored/` under `.has/`, or `<dir>/.has/restored/`) |
++ | `--max-chunk-tokens` | | Max tokens per chunk when model restore is needed, default `3000` |
++ | `--max-parallel-requests` | | Max model-backed restore chunks in parallel |
++ - Single-file mode returns inline `text` unless `--output` is provided.
++ - `restore --dir` uses per-file mapping JSON files. It does not accept a shared `--mapping`.
++ - `restore --dir` expects mapping files at `<mapping-dir>/<filename>.mapping.json` (matching the naming convention produced by `hide --dir`).
++ ## Typical Text Workflow
++ Anonymize text before sending it to a cloud LLM, then restore the answer:
++ 1. `hide` to produce anonymized text plus mapping
++ 2. send anonymized text to the cloud model **with a tag-format explanation** (see below)
++ 3. `restore` the model response with the mapping
++ For multi-line text, prefer file-based intermediates over shell variables.
++ ### Prompting the cloud LLM with anonymized text
++ When forwarding anonymized text to a cloud LLM, the agent **must** prepend a brief explanation of the tag format so the model understands and preserves the tags. Include wording equivalent to the following (adjust language to match the conversation):
++ > The text below has been anonymized. Sensitive entities are replaced by tags in the format `<EntityType[ID].Category.Attribute>`:
++ > - **EntityType** — the kind of entity (matches the `--type` value, e.g. `person name`, `address`, `phone number`).
++ > - **[ID]** — a numeric identifier. The same type + same ID always refers to the **same** real-world entity (e.g. every `<person name[1]>` is the same person; `<person name[2]>` is a different person).
++ > - **.Category.Attribute** — additional semantic classification of the entity.
++ > **Rules:**
++ > 1. Preserve every tag exactly as-is in your response — do not modify, translate, paraphrase, omit, or expand any tag.
++ > 2. When referring to an anonymized entity, reuse the original tag with the correct ID.
++ > 3. Do not attempt to guess the real values behind the tags.
++ Omitting this explanation may cause the cloud model to strip, rewrite, or misinterpret the tags, which will break the `restore` step.
++ ## Model Download Mirrors
++ If HuggingFace downloads fail, use these ModelScope mirrors:
++ - text model: `https://modelscope.cn/models/TencentXuanwu/HaS_Text_0209_0.6B_Q8`
++ - image model: `https://modelscope.cn/models/TencentXuanwu/HaS_Image_0209_FP32`
++ # Part 2: `has image`
++ `has image` is the image namespace. It supports:
++ - `categories`
++ It loads the YOLO segmentation model directly and does not require `llama-server`.
++ ## Image Usage
++ {baseDir}/scripts/has.sh image [--timing] [--model MODEL] <scan|hide|categories> [options]
++ | Option | Applies to | Description |
++ |--------|------------|-------------|
++ | `--timing` | all image commands | Include `elapsed_ms` in the JSON output |
++ | `--model PATH` | `scan`, `hide` | Override the image model path |
++ ## Image Privacy Categories
++ Common categories include `biometric_face`, `id_card`, `passport`, `license_plate`, `qr_code`, `mobile_screen`, and `paper`.
++ Use `has image categories` when you need the full catalog of 21 supported classes.
++ `--type` accepts:
++ - English names
++ - Chinese names
++ - numeric IDs
++ - unique partial matches such as `face`
++ - Ambiguous partial matches fail fast.
++ - Omit `--type` to scan or mask all supported categories.
++ - In image directory mode, `skipped` can include unprocessed files.
++ ## `has image scan`
++ Finds privacy regions without modifying the image.
++ {baseDir}/scripts/has.sh image scan --image photo.jpg --type face --type id_card
++ {baseDir}/scripts/has.sh image scan --dir ./photos/ --type face
++ | `--image` / `--dir` | one input | Single image or batch directory |
++ | `--image` / `--dir` | one input | Single image or batch directory |
++ | `--type` | | Category filter; repeat to add more |
++ | `--type` | | Category filter; repeat to add more |
++ | `--conf` | | Confidence threshold, default `0.25` |
++ | `--model` | | Override image model path |
++ | `--model` | | Override image model path |
++ - Single-image mode returns `detections` and `summary`
++ - Directory mode returns `results`, `count`, `summary`, and optional `skipped`
++ ## `has image hide`
++ Detects and masks privacy regions in images.
++ {baseDir}/scripts/has.sh image hide --image photo.jpg --type face --method blur --strength 25
++ {baseDir}/scripts/has.sh image hide --dir ./photos/
++ | `--output` | single-image | Output image path |
++ | `--output-dir` | batch | Output directory |
++ | `--method` | | `mosaic`, `blur`, or `fill`; default `mosaic` |
++ | `--strength` | | Mosaic block size or blur radius; default `15` |
++ | `--fill-color` | | Fill color for `fill`; default `#000000` |
++ | `--conf` | | Confidence threshold; default `0.25` |
++ - Refuses to overwrite the source image.
++ - Directory mode accepts `--output-dir`, not `--output`.
++ ## `has image categories`
++ Lists all supported image privacy categories.
++ {baseDir}/scripts/has.sh image categories
++ {baseDir}/scripts/has.sh image categories --timing
++ - Returns `{"categories":[...]}`
++ - Supports `--timing`
++ ## Suggested Combined Scan
++ For a mixed workspace:
++ 1. run `has text scan ... --dir <dir>` for plaintext
++ 2. run `has image scan --dir <dir>` for images
++ 3. merge the two JSON results into one privacy report
++ If the user wants masking after that, use `hide` on the specific files or directories you already identified.
+
+### references/DESIGN.md  [docs]
+- # HaS Text CLI — Requirements and Design Document
+- ## 1. Project Overview
+- `has_text` is the CLI tool for the HaS (Hide and Seek) privacy model. It wraps 6 atomic model capabilities plus helper tool capabilities into **3 user-facing commands**, providing a complete "anonymize → restore" pipeline.
+- It serves as the technical foundation for the upcoming OpenClaw HaS Plugin and HaS Skills.
+- ### Relationship with Upstream and Downstream
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- has_text_model.gguf (0.6B Qwen3)     ← on-device model
+-         ↕ llama-server (OpenAI API)
+-     has_text CLI                      ← this project (current layer)
+-         ↕
+-         ↕
+-   OpenClaw HaS Skills / Plugin       ← future integration layer
+-     6 major use cases                 ← see has_scenarios.md
+- ---
+- ---
+- ---
+- ---
+- ## 2. Design Principles
+- | Principle | Description |
+- |-----------|-------------|
+- | **No exposed atomic capabilities** | Users do not need to understand the internal NER, Hide_with, Hide_without, Pair, Split, Seek model capabilities or Tool-Seek helper capabilities — they only use the `hide`, `seek`, and `scan` commands |
+- | **Pipeline-friendly** | Supports `--text`, `--file`, and stdin input; JSON output is suitable for script composition |
+- | **Automatic chunking** | Long model-backed text operations are automatically chunked by token count (preserving sentence integrity). `hide` accumulates mapping across chunks; cross-language `seek` chunks by tag-safe boundaries and carries only the mapping keys present in each chunk |
+- | **Model + tool dual layer** | Each step uses the most stable mechanism currently available: `hide` keeps mapping extraction model-backed for correctness, while `seek` still prefers deterministic replacement when safe |
+- | **Fully self-contained** | All code (including language detection and the experimental `pair.py` helper) is built into the `has_text/` directory with no external code dependencies |
+- ## 3. Command Design
+- ### 3.1 `hide` — Anonymize
+- Replaces sensitive entities in text with anonymous tags, outputting anonymized text + mapping table.
+- **Input**:
+- **Input**:
+- **Input**:
+- - Text (`--text` / `--file` / stdin)
+- - Text (`--text` / `--file` / stdin)
+- - Entity types (`--types`, JSON array)
+- - Entity types (`--types`, JSON array)
+- - Optional (single-file only): existing mapping table (`--mapping`, for incremental anonymization)
+- **Output**:
+- **Output**:
+- **Output**:
+- ```json
+- ```json
+- ```json
+- {
+- {
+- {
+-   "text": "anonymized text...",
+-   "mapping": {
+-     "<person name[1].personal.name>": ["John"],
+-     "<address[1].city.district>": ["Brooklyn, New York"]
+-   }
+-   }
+- }
+- }
+- }
+- **Internal workflow (Phase 1 orchestration, invisible to users)**:
+- NER → entities found?
+-   ├─ has mapping → Model-Hide_with (maintain cross-text/cross-chunk consistency)
+-   └─ no mapping → Model-Hide_without (first-time anonymization)
+- → Model-Pair (mapping extraction)
+- → contains composite tags? → Model-Split + Tool-Mapping-Merge
+- → mapping self-check
+-   ├─ pass → output
+-   └─ fail → error (fail closed)
+- ### 3.2 `seek` — Restore
+- Restores text containing anonymous tags to its original form. Full restoration, no selective restoration.
+- - Anonymized text (`--text` / `--file` / stdin)
+- - Mapping table (`--mapping`, required for single-file seek)
+- - Batch mode: per-file mapping JSON files under `mappings/` by default, or an explicit `--mapping-dir` (no shared `--mapping`)
+-   "text": "restored original text..."
+- **Internal workflow (Phase 3 orchestration, invisible to users)**:
+- Does text contain tags?
+-   ├─ no → output directly
+-   └─ yes → language detection
+-        ├─ same language → Tool-Seek (deterministic replacement) → self-check
+-        │                   └─ fail → Model-Seek (fallback)
+-        └─ different language → chunk if needed → Model-Seek (cross-language restoration)
+- ### 3.3 `scan` — Scan
+- Identifies sensitive entities in text (identification only, no anonymization).
+-   "entities": {
+-     "person name": ["John", "Jane"],
+-     "address": ["Brooklyn, New York"],
+-     "phone number": []
+- **Internal workflow**: Calls Model-NER only.
+- ## 4. Recursive Chunking
+- ### 4.1 Why Chunking Is Needed
+- The model's recommended deployment context is 8192 tokens. A single `hide` call needs to fit:
+- - Two conversation turns (NER question + NER result + Hide instruction + Hide output)
+- - Mapping table (carried during `hide_with`)
+- Measured token budgets (Qwen3 tokenizer):
+- | Scenario | Available text tokens | ≈ Chinese characters |
+- |----------|----------------------|---------------------|
+- | hide_without (first chunk) | ~3400 | ~5000 |
+- | hide_with (10 mapping entries) | ~3280 | ~4900 |
+- | hide_with (55 mapping entries) | ~3100 | ~4600 |
+- ### 4.2 Chunking Strategy
+- - **Default threshold**: 3000 tokens/chunk (~400 tokens safety margin)
+- - **Dynamic `hide_with` budget**: After chunk 1, subtract the tokenized mapping JSON from the text budget before splitting the next chunk
+- - **Split rule**: Find the nearest sentence boundary near the threshold (`。！？\n`) and cut back, preserving sentence integrity
+- - **Fallback order**: Paragraph break > Period > Semicolon > Comma > Hard cut
+- ### 4.3 Cross-Chunk Consistency
+- Recursive chunking reuses the `hide_with` multi-turn conversation mechanism:
+- Chunk 1 → hide_without → anonymized_text₁ + mapping₁
+- Chunk 2 → shrink budget by mapping₁ → hide_with(mapping₁) → anonymized_text₂ + mapping₂
+- Chunk 3 → shrink budget by mapping₂ → hide_with(mapping₂) → anonymized_text₃ + mapping₃
+- ...
+- Final = concatenate all anonymized texts + mapping_N
+- When the same entity appears in different chunks, `hide_with` ensures consistent tag numbering via the mapping table.
+- ### 4.4 Key Metrics
+- | Metric | Measured Value |
+- |--------|---------------|
+- | Chinese token ratio | 1.86 chars/token (0.54 tokens/char) |
+- | Tag token expansion | Original entity ~2 tok → Tag ~10-13 tok (~5-6x) |
+- | Chat format overhead | ~8 tokens |
+- | hide_without fixed overhead | ~57 tokens |
+- | Average mapping entry size | ~18 tokens/entry |
+- ## 5. Internal Architecture
+- ### 5.1 Model Capabilities vs Tool Capabilities
+- | Component | Type | Purpose |
+- |-----------|:----:|---------|
+- | Model-NER | 🔵 Model | Entity recognition |
+- | Model-Hide | 🔵 Model | First-time anonymization (no mapping) |
+- | Model-Hide_with | 🔵 Model | Incremental anonymization (with mapping) |
+- | Model-Split | 🔵 Model | Split composite tags |
+- | Model-Pair | 🔵 Model | Mapping extraction (primary) |
+- | Model-Seek | 🔵 Model | Cross-language restoration (fallback) |
+- | Tool-Pair | 🟢 Tool | Diff-based mapping helper retained for offline/debug use (`pair.py`) |
+- | Tool-Seek | 🟢 Tool | Deterministic tag replacement |
+- | Tool-Language Detection | 🟢 Tool | Language detection |
+- | Tool-Tag Extraction | 🟢 Tool | Composite tag detection |
+- | Tool-Mapping Merge | 🟢 Tool | Mapping table merge |
+- ### 5.2 File Structure
+- scripts/has_text/
+- ├── __init__.py          # Package init
+- ├── __main__.py          # python -m has_text entry point
+- ├── has_text.py          # CLI argparse dispatcher
+- ├── client.py            # llama-server HTTP client (chat + tokenize)
+- ├── prompts.py           # 6 prompt template builders (character-exact match with training templates)
+- ├── chunker.py           # Token-aware text chunker
+- ├── mapping.py           # Mapping utilities (merge, I/O, tag detection, JSON tolerance)
+- ├── pair.py              # Experimental diff-based mapping helper (not on the main hide path)
+- ├── lang.py              # Language detection: Unicode script heuristics (self-contained)
+- └── commands/
+-     ├── __init__.py
+-     ├── scan.py          # scan command
+-     ├── hide.py          # hide command (Phase 1 full workflow orchestration)
+-     └── seek.py          # seek command (Phase 3 full workflow orchestration)
+- ### 5.3 Dependencies
+- | Dependency | Type | Description |
+- |------------|------|-------------|
+- | `requests` | Python package | HTTP calls to llama-server |
+- | `llama-server` | External service | Loads `has_text_model.gguf` for inference |
+- > Note: `pair.py` and language detection (`lang.py`) remain built-in with no external code dependencies, even though `hide` currently uses Model-Pair on the main path.
+
+### references/eval/eval.py  [code]
++ #!/usr/bin/env python3
++ """Run scan → hide → restore on test cases and collect evidence for LLM judge.
++ Infrastructure checks only: command success, JSON validity, file existence,
++ leftover tags. All semantic evaluation (entity coverage, anonymization quality,
++ restoration fidelity) is left to the LLM judge reading results.json.
++ """
++ from __future__ import annotations
++ import argparse
++ import json
++ import re
++ import shutil
++ import subprocess
++ import sys
++ from dataclasses import dataclass
++ from pathlib import Path
++ from typing import Any
++ TAG_RE = re.compile(r"<[^<>]+>")
++ _EVAL_DIR = Path(__file__).resolve().parent
++ _SKILL_ROOT = _EVAL_DIR.parents[1]
++ _TEST_CASE_DIR = _EVAL_DIR / "test_case"
++ # ---------------------------------------------------------------------------
++ # ---------------------------------------------------------------------------
++ # ---------------------------------------------------------------------------
++ # ---------------------------------------------------------------------------
++ # ---------------------------------------------------------------------------
++ # ---------------------------------------------------------------------------
++ # ---------------------------------------------------------------------------
++ # ---------------------------------------------------------------------------
++ # CLI runner
++ @dataclass
++ class CmdResult:
++     command: list[str]
++     exit_code: int
++     stdout: str
++     stderr: str
++     payload: Any | None
++     error: str | None
++ def run_cmd(command: list[str], *, cwd: Path) -> CmdResult:
++     """Run a command, parse stdout as JSON, return structured result."""
++     proc = subprocess.run(
++         command, cwd=cwd, text=True, capture_output=True, check=False
++     )
++     )
++     )
++     )
++     )
++     )
++     )
++     )
++     )
++     )
++     stdout = proc.stdout.strip()
++     payload, error = None, None
++     if stdout:
++         try:
++         try:
++             payload = json.loads(stdout)
++         except json.JSONDecodeError as exc:
++             error = str(exc)
++     else:
++     else:
++         error = "empty stdout"
++     return CmdResult(command, proc.returncode, proc.stdout, proc.stderr, payload, error)
++ # Single-case evaluation
++ def evaluate_case(
++     case: dict[str, Any],
++     has_cli: Path,
++     case_dir: Path,
++     skill_root: Path,
++ ) -> dict[str, Any]:
++     """Run scan/hide/restore and collect evidence. Only infrastructure checks."""
++     text = case["text"]
++     expected = case["expected_entities"]
++     has_expected = any(len(v) > 0 for v in expected.values())
++     type_args = sum((["--type", t] for t in case["types"]), [])
++     (case_dir / "original.txt").write_text(text, encoding="utf-8")
++     errors: list[str] = []
++     # --- scan ---
++     scan_cmd = [str(has_cli), "text", "scan", *type_args, "--text", text]
++     scan = run_cmd(scan_cmd, cwd=skill_root)
++     _save_cmd(case_dir / "scan.cmd.json", scan)
++     scan_entities: dict[str, list[str]] = {}
++     if scan.exit_code != 0:
++         errors.append("scan_failed")
++     elif scan.error:
++         errors.append("scan_not_json")
++     elif isinstance(scan.payload, dict):
++         raw = scan.payload.get("entities", {})
++         if isinstance(raw, dict):
++             scan_entities = {
++                 str(k): [str(i) for i in v]
++                 for k, v in raw.items()
++                 if isinstance(v, list)
++             }
++         else:
++         else:
++             errors.append("scan_no_entities_field")
++     # --- hide ---
++     mapping_path = case_dir / "mapping.json"
++     hide_cmd = [
++         str(has_cli), "text", "hide", *type_args,
++         "--text", text, "--mapping-output", str(mapping_path),
++     ]
++     hide = run_cmd(hide_cmd, cwd=skill_root)
++     _save_cmd(case_dir / "hide.cmd.json", hide)
++     hide_text = ""
++     if isinstance(hide.payload, dict):
++         hide_text = str(hide.payload.get("text", ""))
++     if hide.exit_code != 0:
++         errors.append("hide_failed")
++     elif hide.error:
++         errors.append("hide_not_json")
++     elif not hide_text:
++         errors.append("hide_no_text")
++     mapping: dict[str, Any] = {}
++     if not mapping_path.exists():
++         if hide.exit_code == 0:
++             errors.append("mapping_missing")
++             mapping = json.loads(mapping_path.read_text(encoding="utf-8"))
++         except Exception:
++             errors.append("mapping_invalid")
++     # --- restore ---
++     restore_ran = False
++     restore_text = ""
++     leftover_tags: list[str] = []
++     if hide.exit_code == 0 and hide_text:
++         restore_cmd = [
++             str(has_cli), "text", "restore",
++             "--mapping", str(mapping_path), "--text", hide_text,
++         ]
++         restore = run_cmd(restore_cmd, cwd=skill_root)
++         _save_cmd(case_dir / "restore.cmd.json", restore)
++         restore_ran = True
++         if restore.exit_code != 0:
++             errors.append("restore_failed")
++         elif restore.error:
++             errors.append("restore_not_json")
++             if isinstance(restore.payload, dict):
++                 restore_text = str(restore.payload.get("text", ""))
++             if not restore_text:
++                 errors.append("restore_no_text")
++         leftover_tags = TAG_RE.findall(restore_text)
++         if leftover_tags:
++             errors.append("restore_has_leftover_tags")
++     elif has_expected:
++         errors.append("restore_skipped")
++     status = "error" if errors else "ok"
++     return {
++         "id": case["id"],
++         "language": case["language"],
++         "status": status,
++         "errors": errors,
++         "types": case["types"],
++         "original_text": text,
++         "expected_entities": expected,
++         "scan_entities": scan_entities,
++         "hide_text": hide_text,
++         "mapping": mapping,
++         "restore_ran": restore_ran,
++         "restore_text": restore_text,
++         "restore_leftover_tags": leftover_tags,
++     }
++     }
++ # I/O helpers
++ def _save_cmd(path: Path, result: CmdResult) -> None:
++     """Save raw command execution details for debugging."""
++     path.write_text(
++     path.write_text(
++         json.dumps(
++             {
++                 "command": result.command,
++                 "exit_code": result.exit_code,
++                 "stdout": result.stdout,
++                 "stderr": result.stderr,
++                 "error": result.error,
++             },
++             ensure_ascii=False,
++             indent=2,
++         )
++         )
++         + "\n",
++         encoding="utf-8",
++         encoding="utf-8",
++ def _write_json(path: Path, data: Any) -> None:
++         json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
++ # Main
++ def main() -> int:
++     parser = argparse.ArgumentParser(
++         prog="eval",
++         description=(
++             "Run has text scan/hide/restore on test cases and collect evidence. "
++             "Only infrastructure checks are applied; semantic evaluation is "
++             "delegated to the LLM judge reading results.json."
++         ),
++     parser.add_argument(
++     parser.add_argument(
++     parser.add_argument(
++     parser.add_argument(
++     parser.add_argument(
++     parser.add_argument(
++         "--cases",
++         default=str(_TEST_CASE_DIR / "text_short_cases.json"),
++         help="Path to the test case dataset JSON.",
++         "--has-cli",
++         default=str(_SKILL_ROOT / "scripts" / "has.sh"),
++         help="Path to the has CLI entry point.",
++         "--work-dir",
++         default="/tmp/has-eval",
++         help="Directory for artifacts and reports.",
++         "--case-id",
++         action="append",
++         dest="case_ids",
++         help="Run only specific case IDs (repeatable).",
++         "--limit",
++         type=int,
++         help="Run only the first N cases.",
++         "--keep",
++         action="store_true",
++         help="Keep existing work directory.",
++     args = parser.parse_args()
++     cases_path = Path(args.cases).resolve()
++     has_cli = Path(args.has_cli).resolve()
++     work_dir = Path(args.work_dir).resolve()
++     dataset = json.loads(cases_path.read_text(encoding="utf-8"))
++     cases: list[dict[str, Any]] = dataset["cases"]
++     if args.case_ids:
++         ids = set(args.case_ids)
++         cases = [c for c in cases if c["id"] in ids]
++     if args.limit is not None:
++         cases = cases[: args.limit]
++     if not args.keep and work_dir.exists():
++         shutil.rmtree(work_dir)
++     work_dir.mkdir(parents=True, exist_ok=True)
++     counts = {"ok": 0, "error": 0}
++     results: list[dict[str, Any]] = []
++     for i, case in enumerate(cases, 1):
++         case_dir = work_dir / "cases" / case["id"]
++         case_dir.mkdir(parents=True, exist_ok=True)
++         print(
++             f"[{i}/{len(cases)}] {case['id']} ...",
++             end="", flush=True, file=sys.stderr,
++         result = evaluate_case(case, has_cli, case_dir, _SKILL_ROOT)
++         icon = "✓" if result["status"] == "ok" else "✗"
++         print(f" {icon} {result['status']}", file=sys.stderr)
++         if result["errors"]:
++             print(f"       {result['errors']}", file=sys.stderr)
++         counts[result["status"]] += 1
++         results.append(result)
++         _write_json(case_dir / "result.json", result)
++     summary = {
++         "dataset": str(cases_path),
++         "work_dir": str(work_dir),
++         "case_count": len(results),
++         "counts": counts,
++         "error_ids": [r["id"] for r in results if r["status"] == "error"],
++     _write_json(work_dir / "summary.json", summary)
++     _write_json(work_dir / "results.json", results)
++     print(json.dumps(summary, ensure_ascii=False, separators=(",", ":")))
++     return 0
++ if __name__ == "__main__":
++     sys.exit(main())
+
+### references/eval/test_case/text_long_cases.json  [code]
++ {
++   "cases": [
++     {
++       "id": "zh-long-01",
++       "language": "zh-CN",
++       "types": [
++         "人名",
++         "电话号码",
++         "工号",
++         "地址",
++         "邮箱"
++       ],
++       "text": "【机密】天远信息技术有限公司2025年度内部审计专项报告\n报告编号：IA-2025-Q4-017\n审计领域：供应商管理与采购合规性\n\n一、审计背景与范围\n\n根据公司2025年度审计工作计划的安排，内部审计部于第四季度对公司采购中心执行了一次专项审计。本次审计的重点在于审查过去十八个月内涉及信息技术基础设施类采购项目的合规性，评估采购流程中的内部控制设计和执行效果。审计组由内审部高级审计师周建华担任组长，成员包括两名审计专员和一名外聘的信息技术顾问。审计工作于2025年10月15日正式启动，历时八周，于12月10日完成现场审计程序和初步报告撰写。\n\n审计的范围覆盖了从供应商准入审查、报价评审和比选、合同签署与履约管理到验收结算与付款的完整采购业务循环。此外，审计组还对采购项目中涉及的资产登记和信息安全管理事项进行了延伸测试。在整个审计过程中，审计组共审阅了采购档案147份、供应商评审资料53份、合同文本39份、付款凭证216笔。为了全面了解业务操作流程的实际执行情况，审计组还对采购中心全部12名岗位人员进行了面对面访谈，每次访谈时长约45分钟至一小时不等。所有访谈均按照标准化的审计访谈模板进行，访谈记录经被访谈人签字确认后归入审计底稿。\n\n二、关键审计发现\n\n（一）供应商准入审查中存在的不足\n\n在对53份新供应商准入评审资料的系统性复核中，审计组发现有7份资料存在不同程度的文件瑕疵。详细分析如下：\n\n其中3份供应商准入卷宗中缺少资质证书有效期的交叉验证记录。公司采购管理制度明确要求，在供应商注册登记时，经办人员应当通过国家企业信用信息公示系统或行业主管部门网站对供应商提交的营业执照、资质证书和安全许可证的有效期进行独立验证，并将验证截屏保存在审批卷宗中。审计组在复核这三份卷宗时发现，经办人员只是将供应商自行提供的证照扫描件归档，但没有附上独立验证的截屏记录。虽然事后审计组通过独立查询确认了这三家供应商的资质均在有效期内，但文件记录的缺失意味着审批时的控制活动没有得到有效执行。\n\n另有2份卷宗缺少实地考察报告或替代的远程视频验证记录。公司制度允许对于年采购额预计低于50万元的新供应商采用视频验证代替现场考察，但这两份卷宗既没有现场考察报告也没有视频验证记录。经办人员在访谈中解释说，当时因为出差行程冲突，原计划的考察被推迟了，但后续没有跟进安排补充验证。审计组注意到，这两家供应商目前仍在公司的合格供应商名录中并有在途的采购业务。\n\n还有2份卷宗的信用评估报告引用了超过两年前的征信数据而未注明数据的时效性及其局限。公司信用评估指引要求引用的征信数据原则上不应超过最近12个月，如因特殊原因使用较早期的数据，应在评估报告中注明理由和相关风险提示。审计组认为，使用过期征信数据而不加说明可能影响信用评估结论的可靠性，特别是在当前经济环境下企业的信用状况变化较为频繁。\n\n需要特别说明的是，上述7家存在文件瑕疵的供应商中，有4家属于公司的长期合作伙伴，在准入评审时采用了针对老供应商续约的简化流程。内审部理解提高业务效率的考量，但认为即便是续约评审也应当保留关键控制节点的验证记录，以满足监管合规和内部治理的基本要求。审计组建议采购中心在2026年第一季度内完成对简化流程适用条件的重新评估，并更新相关操作指引。\n\n（一之一）供应商管理制度的演进历史\n\n为了更全面地理解当前供应商准入评审中存在的问题，审计组回顾了公司供应商管理制度的历史沿革。天远信息的第一版《供应商管理制度》制定于2018年，当时公司的年采购规模约为4500万元，在册供应商不超过30家。这一版本的制度对供应商准入评审的要求相对简单，主要包括营业执照验证、法人代表身份确认和基本的财务状况审查三个步骤。\n\n2020年，随着公司业务规模的扩大和信息技术采购需求的快速增长，采购中心对制度进行了第一次重大修订。修订后的版本增加了资质证书独立验证、实地考察或视频验证、信用评估报告和行业口碑调查四个新的审查环节。同时引入了供应商分级管理的概念：将供应商按年采购额和业务关键性分为战略级、重要级和一般级三个层级，不同层级适用不同深度的审查要求。\n\n2022年底，公司在引入新的企业资源管理系统后，对供应商管理流程进行了数字化改造。所有的准入评审环节被集成到系统中的电子化审批流程中，要求每个审查步骤都在系统中留下操作记录和附件。这次系统化改造本应显著提升文件记录的完整性，但审计组在本次审计中发现，系统设计中存在一个疏漏：系统虽然设置了审批节点，但各节点的附件上传被设计为非强制性，即经办人员可以在不上传验证截屏的情况下完成审批流转。这一系统设计上的缺陷直接导致了前述7份卷宗中文件记录缺失的问题。\n\n审计组建议信息技术部门在下一次系统维护窗口中，将供应商准入审批流程中所有涉及独立验证环节的附件上传设置为强制性必填项。在技术实现上，这一修改的工作量较小（预计开发和测试时间约一周），但在合规效果上可以从根本上避免文件记录缺失的问题复发。\n\n（二）报价评审与竞争性采购方面的问题\n\n在审阅的147份采购档案中，有23份涉及单一来源采购方式，占全部采购项目的比例约为15.6%。按照公司《采购管理制度》第十四条的规定，单一来源采购应当由采购经理提出书面申请，说明选择单一来源的理由和依据，经采购总监审批后方可执行。审计组逐一核对后发现，有8份单一来源采购缺少完整的审批记录。具体表现为：4份缺少采购总监的签字批准，2份有审批签字但缺少详细的理由说明，另有2份的审批表格中仅填写了\"技术需要\"四个字作为全部理由，缺乏具体的技术分析和市场调查说明。\n\n审计组选取了其中一个典型案例进行了深入调查。该案例涉及采购中心经理方志远主导的一次网络安全设备的完整采购项目。方志远的工号为EMP-2024-0731，于2024年7月入职公司，在加入天远信息之前有八年的IT采购工作经验。该采购项目的标的金额为人民币187万元，合同对手方为鼎创科技有限公司。鼎创科技是一家成立于2019年的网络安全解决方案提供商，注册地址位于深圳市南山区科技园路88号鼎创大厦12层，主要业务包括企业级防火墙、入侵检测系统和终端安全管理平台的研发与销售。\n\n方志远在采购审批表的单一来源理由栏中注明该供应商为\"唯一满足技术规格要求的厂商\"。然而，审计组在调阅该项目的技术评审记录时发现，评审委员会实际上曾收到过另外两家供应商提交的技术方案。在技术评审评分表上，三家供应商在八项核心指标中的得分如下：鼎创科技总分82.5分（满分100分），第二名供应商的总分为79分，第三名供应商的总分为71分。特别值得注意的是，排名第二的供应商在其中三项核心指标的得分与鼎创科技的差距均在5分以内。审计组因此认为，将该次采购定性为单一来源的依据不够充分，因为至少有一家其他供应商在技术上具备竞争力。\n\n审计组随后对方志远进行了详细的专项访谈。在访谈中，方志远解释说，之所以最终选择鼎创科技，是因为该厂商在前一年为公司的兄弟单位提供过同类型的网络安全设备，现场运行十个月以来表现稳定，设备可用率保持在99.7%以上。此外，鼎创科技承诺能够提供比其他两家供应商更短的交货周期。方志远还提到，鼎创科技的售后响应时效也优于竞争对手，合同中承诺了四小时内现场响应的服务条款。\n\n方志远同时坦承，对于采购审批流程中文件记录的不完整，他确实存在工作疏忽。他表示自己在填写单一来源理由时过于简略，没有充分展开说明技术评审的详细情况和选择鼎创科技的综合考量。但他强调，采购决策本身是基于技术评分、交货周期、售后服务和兄弟单位使用经验等多维度的综合比较做出的，不存在利益冲突或不当行为。审计组联系方志远时使用的手机号码为13912345678，该号码同时也是他在公司通讯录中登记的工作联系电话。\n\n审计组进一步调查发现，鼎创科技的客户经理何明在该项目的投标准备和评审过程中，曾多次与方志远进行沟通。何明的工作手机号为18765432100。根据方志远提供的手机通话记录和企业微信聊天截图，这些沟通主要涉及以下内容：设备技术参数的详细澄清、现场网络环境的兼容性确认、交货时间和安装排期的协调、以及报价方案的细节讨论。审计组在审阅这些通信记录后，未发现存在明显违反职业道德或公司利益冲突政策的内容。沟通的时间和频率也与项目的正常进展节奏基本一致。\n\n尽管如此，审计组仍然建议，对于涉及大额采购的项目，采购人员与潜在供应商之间的实质性业务沟通应当通过公司指定的采购协作平台或正式的企业邮件进行，并在采购卷宗中保留完整的沟通记录，以增强采购过程的透明度和可追溯性。\n\n（二之一）其他单一来源案例的详细审查\n\n除方志远主导的网络安全设备项目外，审计组还对其余7个缺少完整审批记录的单一来源采购案例逐一进行了复核。以下是审计组认为值得特别关注的另外两个案例：\n\n第二个典型案例涉及一项企业资源管理系统的年度维保和升级服务。该服务的年度合同金额为68万元，供应商为系统的原厂开发商。采购经办人员以\"维保服务只能由原厂提供\"为由申请了单一来源采购。审计组审查后认为，虽然原厂维保在技术上确实具有一定的排他性，但市场上存在经原厂授权的第三方服务商可以提供同等级别的维保服务，且报价通常比原厂低15%至25%。经办人员在审批材料中没有留存市场调研的证据，也没有说明为什么没有考虑授权第三方服务商的方案。\n\n第三个典型案例涉及为公司新办公区域采购的视频会议系统。该项目的合同金额为92万元，采购的理由是为了与公司总部和其他分支机构已有的视频会议系统保持品牌和技术标准的一致性。审计组认为这一理由虽然具有一定的合理性——统一品牌确实可以降低后续运维的复杂度和培训成本——但经办人员仍然应当提供一份书面的成本效益分析，量化说明统一品牌的维护成本节约与引入竞品的价格差异之间的权衡关系。现有的审批材料中完全缺少这方面的分析。\n\n审计组对全部23个单一来源采购项目按金额大小进行了排序。其中，金额最大的三个项目合计占单一来源采购总金额的58%。审计组建议，对于金额超过80万元的单一来源采购，应当在现有的审批流程基础上增加合规部门的独立审核环节。合规部门的职责不是评价采购决策的技术合理性，而是确认审批材料的完整性和流程的规范性。\n\n（二之二）供应商沟通管理现状评估\n\n审计组在对方志远与何明沟通记录审阅的基础上，进一步调查了采购中心整体的供应商沟通管理现状。调查结果显示，采购中心目前有4种主要的供应商沟通渠道：企业邮件、企业微信、电话和现场会议。\n\n在企业邮件方面，审计组抽查了采购中心12名员工过去六个月内与供应商之间的邮件往来记录（在获得相关授权的前提下）。抽查结果显示，绝大多数正式的报价确认、技术方案提交和合同条款协商都通过企业邮件进行，符合公司的沟通管理规范。但审计组注意到，有些重要的决策性沟通最初通过企业微信或电话达成一致后，并没有在邮件中进行正式的书面确认，这导致部分关键决策缺乏可追溯的书面依据。\n\n在企业微信方面，由于企业微信的聊天记录保留期限受限于公司的存储策略（目前设置为保留最近六个月），超过6个月的聊天记录在未主动导出的情况下将被系统自动清除。审计组发现，在方志远的采购项目中，部分早期的技术讨论记录已经因为超出保留期限而不可追溯。建议公司评估延长企业微信关键业务群组聊天记录保留期限的可行性，或者制定要求涉及重大采购决策的微信沟通应在24小时内通过邮件确认的操作规程。\n\n在电话沟通方面，公司虽然有通讯费用报销的详细记录，但通话内容本身没有留存。对于金额较大或争议性较高的采购项目，审计组建议采购人员在重要电话沟通后编写简要的通话备忘录，记录沟通的主要议题、达成的共识和后续行动事项。\n\n（三）合同管理与付款合规性检查\n\n在审计组对39份合同文本进行逐一复核的过程中，发现了以下几个方面的问题，涉及合同签署时效、验收标准设定和付款条件执行三个领域。\n\n关于合同签署时效方面，有5份合同的签署日期晚于实际到货日期或服务开始日期。换言之，供应商已经开始交付货物或提供服务，但正式的合同文本尚未完成签署程序。最极端的一个案例中，合同签署日期比实际到货日期晚了整整27天。这类操作虽然在某些紧急采购场景下可能有一定的合理业务理由，但从合规和风险管理的角度审视，这种做法显著增加了公司的法律敞口。在没有生效合同保护的情况下，如果交付的货物存在质量问题，或者服务未达到预期标准，公司在主张权利时将面临法律依据不足的困境。\n\n关于验收标准的问题，审计组发现有3份合同缺少明确的、可量化的验收标准。以一份IT运维外包服务合同为例，合同中的验收条款仅写明\"甲方对服务质量满意即视为验收通过\"，既没有定义具体的服务级别协议关键指标，也没有规定验收测试的具体流程和判定标准。审计组认为，这种模糊的验收条款不仅难以为日后可能出现的质量争议提供客观判定依据，也使得项目管理团队在日常监督供应商服务质量时缺乏明确的考核基准。\n\n在付款合规性方面，审计组发现有2份合同的实际付款节奏与合同约定的付款条件不一致。两份合同均约定为\"验收合格后30日内支付全部款项\"，但实际付款在验收报告签署后第7天即已完成，比合同约定时间提前了23天。财务分析师陈丽娜在接受审计访谈时对此作出了详细解释。陈丽娜的工号为EMP-2023-0415，她于2023年4月加入天远信息的财务部门，主要负责采购项目的财务分析和付款审批。陈丽娜表示，这两次提前付款是应供应商方面的紧急请求而做出的特殊安排。供应商在设备交付完成后不久即面临年底的资金周转压力，希望能够尽快收到货款以缓解现金流紧张。陈丽娜称她在处理提前付款时获得了财务总监的口头同意，但未按照公司财务审批流程的要求留存书面审批记录。\n\n审计组就此事与财务总监进行了确认。财务总监表示确实口头同意过这两笔提前付款，理由是维护与战略供应商的良好合作关系。但他也承认，口头审批的做法不符合公司的财务管理制度，今后将确保所有偏离合同付款条款的特殊安排都通过正式的书面审批流程。审计组再次强调，即便是出于商业合理性的特殊情况下的提前付款，也必须通过标准化的线上审批流程完成，并将审批记录自动关联至合同管理系统和财务核算系统，确保完整的审计跟踪链条。\n\n（三之三）供应商绩效考核体系评估\n\n审计组对采购中心现行的供应商绩效考核体系进行了系统性评估。目前，公司对合格供应商实行年度绩效评价制度，评价维度包括交货准时率、产品质量合格率、售后响应时效和商务配合度四个方面，各占25%的权重。\n\n审计组对最近两个年度的供应商绩效评价数据进行了统计分析。2024年度共有72家供应商接受了绩效评价，其中评价等级为\"优秀\"的有18家，\"良好\"的有39家，\"合格\"的有13家，\"需改进\"的有2家。没有供应商的评价结果为\"不合格\"。2025年度截至审计实施时已完成评价的有65家供应商，等级分布与上一年度基本相似。\n\n审计组注意到以下几个值得关注的现象：\n\n第一，绩效评价的分数分布过于集中。两个年度中，超过85%的供应商得分集中在75分至90分的区间内，标准差仅为8.3分。这种高度集中的分布可能说明评分标准不够精细，无法有效区分不同供应商的实际表现差异。审计组建议细化评分标准的分级描述，引入更多可量化的考核指标。\n\n第二，\"交货准时率\"这一指标的计算方式存在定义模糊的问题。目前的计算公式以合同约定的交货日期为基准，但在实际操作中，有些项目的交货日期曾经过双方协商进行了调整（延期或提前），而调整后的日期并没有统一反映到绩效考核系统中。这导致部分供应商的交货准时率数据不够准确。例如，鼎创科技在2025年度有一笔交货记录被系统判定为\"迟交3天\"，但方志远提供的邮件记录证明，双方已经在合同补充条款中将交货期延长了5天，系统中的数据未及时更新。\n\n第三，绩效考核结果的应用机制有待加强。审计组发现，过去两年中没有任何供应商因绩效考核结果较差而被暂停合作或从合格供应商名录中移除。2024年评为\"需改进\"的2家供应商在收到整改通知后提交了整改计划书，但采购中心没有对整改落实情况进行跟踪验证，这两家供应商目前仍在正常承接新的采购业务。审计组建议建立绩效考核结果与供应商合作状态之间的刚性联动机制——例如连续两年评为\"需改进\"的供应商应当自动触发资格重审程序。\n\n审计组还建议在现有的四个评价维度基础上增加\"合规配合度\"作为第五个维度，用于衡量供应商在采购流程中配合公司合规要求的表现。具体的评估内容可以包括：供应商是否按时提交合规所需的资质文件更新、是否配合公司的审计和检查要求、以及供应商自身是否发生过合规违规事件等。\n\n（三之一）合同风险敞口的量化评估\n\n审计组对前述5份\"先到货后签合同\"案例中的法律和财务风险进行了初步量化评估。5份合同的合计金额为413万元。在合同签署完成前的空窗期（平均为14天，最长为27天），公司在法律上缺乏明确的合同保护，面临的潜在风险包括：\n\n第一，货物质量瑕疵风险。如果在空窗期内发现到货设备存在质量问题，由于正式合同尚未签署，公司主张退换货的法律依据较为薄弱。虽然可以依据采购订单和供应商的报价确认函主张权利，但这些文件的法律约束力不如正式合同。审计组按照行业统计数据估算，大约有2%至3%的IT设备在到货后30天内发现隐性质量问题。以413万元的合同总金额和3%的瑕疵概率计算，潜在的质量索赔风险敞口约为12.4万元。\n\n第二，知识产权归属风险。在涉及软件定制开发和系统集成的项目中，如果合同未及时签署，软件著作权和技术方案的知识产权归属可能处于模糊状态。审计组审查的5份合同中有2份涉及一定程度的定制开发内容，涉及金额约为145万元。在正式合同未签署的情况下，供应商保留对其开发成果的知识产权主张权利的理论可能性，尽管在实务中这种争议发生的概率较低。\n\n第三，价格锁定风险。在合同空窗期内，如果上游原材料价格发生显著波动，供应商可能以未签署合同为由申请调整报价。虽然在实际操作中，供应商单方面调价的情况极为罕见，但从合规专业审计的角度，审计组仍然需要指出这一理论上的风险,并建议通过制度设计予以防范。\n\n审计组与法务部门就上述风险评估进行了交叉确认。法务部门认为审计组的风险识别方向基本准确，但在风险量化方面建议采用更为保守的估算方法。法务部门特别指出，虽然在实务中\"先到货后签合同\"的操作在IT行业并不罕见，但公司作为上市公司的全资子公司，在内控合规方面应当保持高于行业一般水平的标准。\n\n（三之二）付款流程的内部控制测试\n\n在对付款合规性进行审查的基础上，审计组还对公司的整体付款流程执行了一组标准化的内部控制测试。测试覆盖了付款流程的五个关键控制节点：发票验证、合同匹配、预算额度检查、审批授权和银行账号核对。\n\n测试方法采用的是随机抽样法，从全年1247笔采购付款（不含固定期间付款）中随机抽取50笔，逐一检验每笔付款在五个控制节点上的合规情况。测试结果如下：\n\n发票验证方面，50笔付款全部附有供应商开具的合规增值税专用发票或普通发票，发票信息与采购订单信息一致。合同匹配方面，48笔付款能够与现行合同完整匹配，2笔存在前述的金额偏差或分期偏差。预算额度检查方面，49笔付款在申请时系统自动完成了预算余额检查并通过，1笔由于跨年度预算调整的时间差，系统检查显示预算余额不足，但实际上调整后的预算可以覆盖该笔支出，财务人员手动确认后予以放行。审批授权方面，50笔付款全部有完整的电子审批流程记录。银行账号核对方面，50笔付款中有48笔的收款银行账号与供应商在公司系统中的注册账号一致，2笔因为供应商近期更换了开户银行，经办人员在付款前通过电话与供应商重新确认了新的账号信息。\n\n综合上述测试结果，审计组评估付款流程关键控制节点的整体有效性为\"有效\"级别。存在的少量偏差属于流程执行层面的个别问题，不构成系统性的控制缺陷。但审计组仍然建议，对于供应商变更银行账号的场景，应当建立书面确认和二次授权机制。目前依靠电话确认的方式存在被社会工程学攻击利用的风险——如果攻击者冒充供应商财务人员来电要求变更收款账号，仅凭电话确认可能无法有效防范此类欺诈。\n\n（四）资产验收与登记管理\n\n审计组对前述187万元网络安全设备采购项目的资产验收和固定资产登记情况进行了重点跟踪。验收报告显示，该批设备于2025年6月20日到货并于当日和次日完成了开箱检验和初步功能测试。初步功能测试的内容包括设备加电自检、网络连通性测试和管理界面登录验证。测试结果显示全部设备功能正常，与采购订单的规格清单一致。然而，正式的验收签字程序直到2025年8月3日才完成，比设备到货日期晚了整整44天。\n\n在这44天的间隙期内，设备实际上已经被部署到公司的生产网络环境中并上线运行，为公司的核心业务系统提供网络安全防护。但在公司的固定资产管理系统中，这批设备始终处于\"待登记\"状态。这种已经投入使用但尚未完成资产登记的情形，不仅影响公司固定资产统计的准确性和完整性，还可能对设备的保险理赔和会计折旧计算产生实质性影响。如果在这44天的无保障期内设备发生损坏，公司可能因为资产登记信息的缺失而面临保险理赔困难。\n\n审计组进一步调查了验收延迟的具体原因。根据公司内部规定，大额采购项目的正式验收必须由全部三名指定的验收委员签字确认。在该项目中，三名验收委员分别是采购中心的技术主管、信息安全部的安全架构师和财务部的资产管理专员。审计组发现，信息安全部的安全架构师在设备到货时正在休年假，从6月18日到7月10日不在岗。年假结束后，该人员又被紧急调派到公司的另一个安全项目中支援了两周，直到7月底才回到本职岗位。在此期间，没有人启动验收委员的替补程序，也没有人就验收延期向管理层提出预警。\n\n审计组认为，公司目前的验收管理制度存在单点依赖的风险，任何一名验收委员的缺席都可能导致整个验收流程停滞。审计组建议引入验收委员的预设替补机制，当指定委员因年假、出差或项目借调等原因无法在设备到货后五个工作日内参与验收时，自动启用预设的替补委员代行验收职责。同时，审计组建议在固定资产管理系统中增设一项自动提醒功能，当设备到货超过十五个工作日仍未完成资产登记时，系统自动向资产管理部门和相关业务主管发送催办邮件。\n\n（四之一）历史采购数据的趋势分析\n\n为了更好地理解上述发现的系统性背景，审计组对采购中心过去三年的采购数据进行了趋势分析。数据显示，2023年至2025年间，公司采购支出总额从1.2亿元增长至1.85亿元，年均复合增长率约为24%。其中，信息技术基础设施类采购的增速尤为突出，三年间从2800万元增长至7200万元，占总采购支出的比重从23%上升至39%。\n\n与采购规模快速扩张形成对比的是，采购中心的人员编制在同一时期仅从9人增加到12人，增幅约为33%。审计组计算了人均管理的采购项目数量和金额：2023年每人平均管理约12个项目、金额约1330万元，到2025年则上升到每人平均管理约18个项目、金额约1540万元。项目数量增长了50%，远超过人员增幅。审计组认为，采购中心面临的工作负荷压力是导致部分流程执行不到位的重要背景因素。\n\n从供应商分布的角度来看，公司目前的合格供应商名录中共有87家供应商。其中，前10家供应商的采购额合计占总采购支出的约62%，前20家则占到约81%，呈现出较为集中的供应商依赖结构。鼎创科技在所有供应商中的采购额排名第七位，年度采购额约为350万元。审计组注意到，排名靠前的供应商中，有3家的合格供应商准入评审材料存在前述章节中提到的文件瑕疵问题，这意味着公司在重要供应商的管理方面存在一定的控制风险。\n\n审计组还对单一来源采购的行业对标数据进行了横向比较。根据中国内部审计协会2024年发布的《信息技术采购内部审计实务指南》，国内同等规模的科技企业中，单一来源采购占全部IT采购的比例中位数约为12%至18%。天远信息的单一来源采购占比为15.6%，处于行业中位水平。但审计组认为，更值得关注的不是比例本身，而是审批记录的完整性。行业指南明确指出，单一来源采购的审批文件应当包含技术独占性论证、市场调研记录和风险评估三个核心要素，而公司有超过三分之一的单一来源采购缺少这些核心要素中的一个或多个。\n\n（四之二）方志远采购项目的财务影响评估\n\n审计组对方志远主导的187万元网络安全设备采购项目进行了详细的财务影响评估。评估的目的不是质疑采购决策本身的商业合理性，而是评估该项目中发现的流程控制缺陷可能带来的财务后果。方志远在后续的补充访谈中提供了该项目的完整商务比较表，显示了三家供应商在价格、交货期和售后服务方面的差异。\n\n从价格比较来看，鼎创科技的报价187万元在三家供应商中处于中间位置——排名第三的供应商报价为168万元，排名第二的供应商则报价为201万元。鼎创科技的报价比最低价高出约11.3%。按照常规的竞争性比价流程，采购团队通常会要求报价较低的供应商进行技术答辩，确认其低价是否以牺牲产品质量或服务范围为代价。在该项目中，虽然方志远表示确实对排名第三的供应商进行了技术方案评审，但评审记录中没有专门针对\"低价是否影响产品质量\"这一议题的书面分析。\n\n审计组估算，如果该项目按照标准的竞争性采购流程执行——即组织正式的技术答辩、要求供应商提交最终报价、并由采购委员会做出集体决策——可能会产生约8至15万元的成本节约空间。当然，这一估算是基于假设条件的推演，实际的谈判结果取决于多种因素。审计组明确指出，上述估算不构成对方志远采购决策的负面评价，而是用于说明标准的竞争性采购流程在成本管理方面的潜在价值。\n\n方志远对审计组的补充调查给予了充分的配合。他提供了自己与三家供应商沟通的全部邮件记录和会议纪要。审计组在审阅这些材料后确认，方志远在商务谈判过程中确实为公司争取了包括两年免费维保、现场培训等在内的附加条款，这些附加条款按市场价格估算约值12至18万元。综合考虑附加条款的价值，该项目的整体采购性价比在审计组看来属于合理范围，但流程控制的缺陷仍然需要在制度层面进行纠正。\n\n（四之三）财务控制环节的深入分析\n\n在对陈丽娜负责的付款审批环节进行深入分析后，审计组发现了更广泛的财务控制弱点。除了前述的2笔提前付款外，审计组还对陈丽娜在2025年经手的全部78笔采购付款进行了抽样测试（覆盖率约为40%，共测试31笔）。测试结果显示，31笔付款中有28笔完全符合合同约定和公司付款审批流程，3笔存在不同程度的偏差：\n\n第一笔是前述的提前付款之一，偏差天数为23天。第二笔涉及一个软件许可证续约项目，合同约定分三期付款，但实际在第二期付款时将第二期和第三期合并支付，原因是供应商的财务系统升级期间无法分两次开具发票。第三笔涉及一个办公设备采购项目，付款金额比合同约定金额多出了3200元，原因是运输费用在合同签署后发生了调整，但合同补充协议在审批付款时尚未完成签署。\n\n陈丽娜在访谈中对这些偏差逐一进行了说明，并表示每一笔偏差都有相应的业务理由。审计组认为，单独来看，每笔偏差的金额和风险等级都不高，但从内部控制设计的角度来看，这些偏差反映出公司在\"例外情况管理\"方面缺乏系统化的处理机制。目前公司的财务管理系统缺少一项关键功能：当付款申请的金额、时间或分期方式与合同约定不一致时，系统应当自动触发额外的审批节点，要求经办人员说明偏差原因并获得上一级管理者的书面批准。\n\n审计组建议财务部在下一轮系统升级中，将\"合同条款偏差检测\"功能纳入开发计划。该功能应至少覆盖以下偏差场景：付款金额偏差超过合同金额的2%或5000元（取较低值）、付款时间偏差超过合同约定的5个工作日、分期次数或分期比例的变更、以及付款对象与合同签约方不一致等。\n\n（四之四）跨部门协作中的信息流转分析\n\n审计组在审计过程中还观察到采购中心与其他部门之间在信息流转方面存在的一些问题。这些问题虽然不够单独构成审计发现，但作为改善建议的背景信息一并记录。\n\n在采购需求确认阶段，技术部门提出的采购需求书通常以邮件形式发送给采购中心。审计组抽查了20份采购需求书，发现有6份的技术规格描述不够详细，导致采购人员在准备招标文件时需要反复与技术部门沟通确认。每个项目平均往返沟通3至4轮，耗时约5至7个工作日。审计组建议技术部门制定标准化的采购需求模板，明确必填字段和技术参数的详细程度要求。\n\n在供应商评审阶段，技术评审和商务评审分别由不同的部门执行，但两个评审流程的衔接机制不够紧密。在个别案例中，技术评审已经完成但商务评审尚未启动，中间的等待时间长达两周。又如前述方志远主导的项目中，技术评审委员会的评分结果在传递给商务评审团队时，只传递了最终得分而没有附上评分的详细依据和评审专家的个别意见，使得商务团队在综合评价时缺乏完整的信息支撑。\n\n在验收和付款阶段，验收报告从项目现场提交到财务部门获批的平均周转时间为12个工作日。其中，验收报告的编写和签署平均需要6个工作日，报告在部门间流转和审核需要另外6个工作日。审计组注意到，如果公司能够将验收报告的审签流程从纸质文件改为电子化审批，预计可以将周转时间缩短至7个工作日以内。\n\n（五之一）采购中心历年审计整改跟踪情况\n\n为了评估本次审计发现的问题是否具有反复性，审计组回顾了采购中心过去三年接受的历次内部审计和外部审计的结果及整改情况。\n\n2023年第二季度，公司委托外部事务所对采购流程进行了一次第三方审计。该次审计提出了6项整改建议，其中3项涉及供应商管理，2项涉及合同管理，1项涉及付款控制。截至本次审计启动时，这6项建议中有4项已经落实到位，1项部分落实，1项尚未启动整改。尚未启动整改的那项建议恰好与本次审计中发现的\"单一来源采购审批记录不完整\"问题高度重叠，说明该问题至少已存在两年以上而未得到有效解决。审计组在报告中对此进行了特别标注，并建议管理层给予优先关注。\n\n2024年第一季度，内审部对采购中心执行了一次针对合同管理的专项检查。检查发现了2个与本次审计类似的问题：合同签署滞后于实际履约和验收标准不够量化。当时的整改承诺是在2024年第三季度前完成合同模板的修订和系统上线。审计组在本次审计中验证后发现，合同模板确实进行了修订并增加了验收标准的标准化条款，但在实际应用层面，新模板的使用率约为70%。仍有约30%的合同使用了旧版模板，原因是部分项目在新模板发布前已经启动了商务谈判，项目经办人员认为在谈判过程中更换模板可能引起供应商的困惑。审计组理解过渡期的困难，但认为应当设定一个明确的截止日期，过了截止日期后必须全面使用新版本模板。\n\n审计组还查阅了2024年第三季度的跟踪审计报告。该报告确认了合同模板修订工作已经完成，但同时指出新模板在推广应用方面的力度不够，建议加强对项目经办人员的培训。对照本次审计的发现来看，培训效果确实有所提升——使用旧模板的比例已从2024年第三季度的约45%下降至本次审计覆盖期间的约30%。但审计组认为30%的残留比例仍然过高，建议在系统层面设置强制约束,当经办人员尝试上传旧版合同模板时，系统应当弹出提示并要求说明使用旧版模板的特殊理由。\n\n从整改管理的角度来看，审计组对采购中心的整改态度给予了积极评价——每次审计提出的建议都被认真研究并制定了整改方案。但整改的执行深度和到位率仍有提升空间，特别是涉及跨部门协作和系统改造的整改事项往往因为资源协调困难而进度滞后。审计组建议公司层面建立审计整改的项目化管理机制，将重要的审计整改事项纳入部门年度绩效考核体系，明确整改责任人、完成时限和验收标准。\n\n（五之二）合规培训与意识提升评估\n\n审计组对采购中心2025年度的合规培训记录进行了审查。记录显示，采购中心在本年度共组织了3次合规相关的培训活动：一次关于《采购管理制度》修订内容的宣讲会（3月份，时长两小时），一次来自法务部的反商业贿赂合规培训（6月份，时长三小时），以及一次由财务部主办的报销与付款流程规范培训（9月份，时长一小时半）。三次培训的参加率分别为83%、92%和75%。\n\n审计组认为培训的覆盖面基本足够，但在培训有效性方面提出以下观察：\n\n首先，三次培训均采用集中授课的形式，缺乏互动环节和案例研讨。采购合规培训如果能够加入真实案例的讨论（当然需要对案例进行脱敏处理），教学效果会显著优于单向的制度宣讲。审计组建议在2026年的培训计划中，至少安排一次以案例研讨为主要形式的专题培训。\n\n其次，培训内容侧重于制度条文的讲解，缺少关于\"灰色地带\"决策判断的指导。例如，什么情况下可以使用企业微信与供应商讨论技术方案？供应商在工作时间之外通过私人电话讨论报价细节是否合规？这些都是采购人员在日常工作中经常遇到但现行制度中没有明确规定的情境。审计组建议合规培训应当增加对这类常见场景的具体指导,帮助采购人员建立清晰的行为边界认知。\n\n第三，培训后的效果评估机制较为简单。目前仅在培训结束后发放一份满意度问卷。审计组建议增加知识掌握的检验环节，例如在培训后一周内进行一次简短的在线测试，覆盖培训的核心知识点和典型场景判断。\n\n（五）信息安全与数据保护领域的延伸审计发现\n\n在对采购流程的审计过程中，审计组还对采购中心的信息安全管理实务进行了延伸性测试。这一测试并非本次审计的主要目标，但审计组在执行审计程序时偶然发现了一些值得关注的情况。\n\n首先，审计组发现采购中心有3名员工在日常工作中使用个人电子邮箱传输包含供应商报价信息和合同草稿的文件。按照公司信息安全政策的规定，涉及商业敏感信息的文件传输应当通过公司提供的企业邮箱或经批准的安全文件共享平台进行，明确禁止使用个人邮箱传输未经脱敏处理的业务文件。审计组在访谈中了解到，这3名员工使用个人邮箱的原因是企业邮箱附件大小限制为20兆字节，而部分包含高清设备照片和详细技术图纸的文件超出了这一限制。该问题已在信息安全管理的另一份报告中进行了专项记录和跟踪。\n\n其次，审计组注意到采购中心的IT安全管理员刘洋在采购项目的技术评审过程中，曾通过他的工作邮箱liuyang@tianyuan-tech.com向参与评审的外部技术顾问发送了包含公司内部网络拓扑简图和安全策略概述的文件。虽然刘洋在发送前已对文件进行了一定程度的脱敏处理，但审计组认为，即便是经过脱敏的网络架构信息，在通过邮件发送给外部人员时，也应当事先获得信息安全部门负责人的书面批准，并使用公司指定的加密传输方式。刘洋在访谈中表示，他当时认为脱敏后的信息不属于高敏感级别，因此没有走正式的外发审批流程。审计组已将此事项通报给信息安全部，由信息安全部根据公司的数据分类分级标准做进一步评估。\n\n三、审计结论与综合评价\n\n基于上述审计发现，审计组对采购中心内部控制的整体有效性给出\"基本有效，需要改进\"的综合评价意见。这一评价反映了审计组的判断：采购中心在基本的采购业务操作框架方面建立了较为完整的制度体系，大部分采购交易能够按照规定的流程执行。但在制度执行的一致性、文件记录的完整性和特殊情况处理的规范性方面，仍然存在若干需要改进的薄弱环节。\n\n审计组的主要改进建议概括如下：\n\n第一，强化供应商准入评审标准的执行力度。即使是长期合作伙伴的续约评审，也应保持关键验证节点的完整记录。建议采购中心制订一份针对续约评审的简化版检查清单，在提高效率的同时确保合规底线得到保障。完成时限建议为2026年3月31日前。\n\n第二，修订单一来源采购的审批流程和标准。当技术评审结果表明有两家或以上供应商满足基本技术要求且评分差距在合理范围内时，不应简单地将采购定性为单一来源。建议增加技术评审委员会出具的独立意见书环节，明确说明是否存在有效竞争以及选择特定供应商的客观理由。完成时限建议为2026年3月31日前。\n\n第三，建立合同签署时效的监控和预警机制。将合同签署完成时间纳入采购流程的关键绩效指标体系，设置到货前必须完成合同签署的硬性约束条件。对于确实需要紧急采购的情况，应当建立简化但仍然有效的应急审批通道。完成时限建议为2026年6月30日前。\n\n第四，完善偏离合同条款的特殊审批制度。所有偏离合同约定付款条件的提前支付或延迟支付均应通过标准化的线上审批流程完成，审批记录自动归入合同管理系统。口头审批不再作为有效的授权方式。完成时限建议为2026年3月31日前。\n\n第五，引入验收委员的替补机制和资产登记的超期预警功能。当指定的验收委员因故无法在规定时限内参与验收时，由预设的替补人员代行验收职责，确保资产管理流程的连续性。完成时限建议为2026年6月30日前。\n\n四、管理层回应\n\n采购中心总监和分管副总裁已对上述审计发现和改进建议进行了全面回应。对于供应商准入评审和单一来源采购相关的发现，采购中心表示将在2026年第一季度内完成制度修订和全员培训。对于合同管理、提前付款和资产登记方面的问题，采购中心和财务部门承诺将在2026年6月底前完成系统改造和流程更新。对于信息安全方面的延伸发现，信息安全部已启动专项评估程序。\n\n审计组将在2026年第三季度对上述整改措施的落实情况进行跟踪审计，届时将重新测试相关控制点的有效性，并就整改完成情况出具跟踪审计报告。\n\n审计组组长：周建华\n报告日期：2025年12月20日\n\n联系方式：如对本报告内容有疑问，请联系审计组组长周建华，工作手机13912345678或发送邮件至审计部公共邮箱。涉及鼎创科技相关事项的补充信息，可联系鼎创科技客户经理何明，手机号码18765432100。",
++       "expected_entities": {
++         "人名": [
++           "周建华",
++           "方志远",
++           "陈丽娜",
++           "何明",
++           "刘洋"
++         ],
++         ],
++         ],
++         ],
++         "电话号码": [
++           "13912345678",
++           "18765432100"
++         "工号": [
++           "EMP-2024-0731",
++           "EMP-2023-0415"
++         "地址": [
++           "深圳市南山区科技园路88号鼎创大厦12层"
++         "邮箱": [
++           "liuyang@tianyuan-tech.com"
++         ]
++       }
++     }
++   ]
++ }
+
+### references/eval/test_case/text_medium_cases.json  [code]
++ {
++   "cases": [
++     {
++     {
++     {
++     {
++     {
++     {
++     {
++     {
++     {
++     {
++     {
++     {
++     {
++     {
++     {
++     {
++     {
++     {
++     {
++     {
++     {
++     {
++     {
++     {
++     {
++     {
++     {
++     {
++     {
++     {
++       "id": "zh-medium-01",
++       "language": "zh-CN",
++       "language": "zh-CN",
++       "language": "zh-CN",
++       "language": "zh-CN",
++       "language": "zh-CN",
++       "language": "zh-CN",
++       "language": "zh-CN",
++       "language": "zh-CN",
++       "language": "zh-CN",
++       "language": "zh-CN",
++       "language": "zh-CN",
++       "language": "zh-CN",
++       "language": "zh-CN",
++       "language": "zh-CN",
++       "language": "zh-CN",
++       "language": "zh-CN",
++       "language": "zh-CN",
++       "language": "zh-CN",
++       "text": "上周三下午，客服二组在处理退款工单 TK-20260315-042 时发现该工单被反复转派了三次但始终没有最终归口。根据系统备注，最初的投诉由用户在 APP 端提交，原因是签收当天蓝牙耳机出现充电异常，连续三次充满后仅能使用不到两小时。一组的同事尝试过远程指导恢复出厂设置，但问题并未解决，随后建议走换货流程。组长在内部沟通群里确认情况后，将该工单重新指派给售后专员李明负责后续跟进。工单附件中记录了李明的直拨手机号 13912345678，用户备注希望在下午三点以后再联系，因为上午通常在开会，短信回复也比较慢。由于距首次投诉已超过 72 小时，按照服务承诺应优先在次日上午安排电话确认，并将处理进展同步更新到工单备注栏。主管要求本周五之前完成闭环，如果涉及产品质量问题还需同步通知供应链团队做批次排查。",
++       "types": [
++       "types": [
++       "types": [
++       "types": [
++       "types": [
++       "types": [
++       "types": [
++       "types": [
++       "types": [
++       "types": [
++       "types": [
++       "types": [
++       "types": [
++       "types": [
++       "types": [
++       "types": [
++       "types": [
++       "types": [
++       "types": [
++       "types": [
++       "types": [
++       "types": [
++       "types": [
++       "types": [
++       "types": [
++       "types": [
++       "types": [
++       "types": [
++       "types": [
++       "types": [
++         "人名",
++         "人名",
++         "人名",
++         "人名",
++         "人名",
++         "人名",
++         "人名",
++         "人名",
++         "人名",
++         "人名",
++         "人名",
++         "人名",
++         "人名",
++         "人名",
++         "人名",
++         "人名",
++         "人名",
++         "人名",
++         "电话号码"
++       ],
++       ],
++       ],
++       ],
++       ],
++       ],
++       ],
++       ],
++       ],
++       ],
++       ],
++       ],
++       ],
++       ],
++       ],
++       ],
++       ],
++       ],
++       ],
++       ],
++       ],
++       ],
++       ],
++       ],
++       ],
++       ],
++       ],
++       ],
++       ],
++       ],
++       "expected_entities": {
++       "expected_entities": {
++       "expected_entities": {
++       "expected_entities": {
++       "expected_entities": {
++       "expected_entities": {
++       "expected_entities": {
++       "expected_entities": {
++       "expected_entities": {
++       "expected_entities": {
++       "expected_entities": {
++       "expected_entities": {
++       "expected_entities": {
++       "expected_entities": {
++       "expected_entities": {
++       "expected_entities": {
++       "expected_entities": {
++       "expected_entities": {
++       "expected_entities": {
++       "expected_entities": {
++       "expected_entities": {
++       "expected_entities": {
++       "expected_entities": {
++       "expected_entities": {
++       "expected_entities": {
++       "expected_entities": {
++       "expected_entities": {
++       "expected_entities": {
++       "expected_entities": {
++       "expected_entities": {
++         "人名": [
++         "人名": [
++         "人名": [
++         "人名": [
++         "人名": [
++         "人名": [
++         "人名": [
++         "人名": [
++         "人名": [
++         "人名": [
++         "人名": [
++         "人名": [
++         "人名": [
++         "人名": [
++         "人名": [
++         "人名": [
++         "人名": [
++           "李明"
++         ],
++         ],
++         ],
++         ],
++         ],
++         ],
++         ],
++         ],
++         ],
++         ],
++         ],
++         ],
++         ],
++         ],
++         ],
++         ],
++         ],
++         ],
++         ],
++         ],
++         ],
++         ],
++         ],
++         ],
++         ],
++         ],
++         ],
++         ],
++         ],
++         ],
++         ],
++         "电话号码": [
++           "13912345678"
++         ]
++         ]
++         ]
++         ]
++         ]
++         ]
++         ]
++         ]
++         ]
++         ]
++         ]
++         ]
++         ]
++         ]
++         ]
++         ]
++         ]
++         ]
++         ]
++         ]
++         ]
++         ]
++         ]
++         ]
++         ]
++         ]
++         ]
++         ]
++         ]
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
+
+### references/eval/test_case/text_short_cases.json  [code]
++ {
++   "cases": [
++     {
++     {
++     {
++     {
++     {
++     {
++     {
++     {
++     {
++     {
++     {
++     {
++     {
++     {
++     {
++     {
++     {
++     {
++     {
++     {
++     {
++     {
++     {
++     {
++     {
++     {
++     {
++     {
++     {
++     {
++       "id": "zh-01",
++       "language": "zh-CN",
++       "language": "zh-CN",
++       "language": "zh-CN",
++       "language": "zh-CN",
++       "language": "zh-CN",
++       "language": "zh-CN",
++       "language": "zh-CN",
++       "language": "zh-CN",
++       "language": "zh-CN",
++       "language": "zh-CN",
++       "text": "张伟的手机号是13866667777，有事请在工作时间联系。",
++       "types": [
++       "types": [
++       "types": [
++       "types": [
++       "types": [
++       "types": [
++       "types": [
++       "types": [
++       "types": [
++       "types": [
++       "types": [
++       "types": [
++       "types": [
++       "types": [
++       "types": [
++       "types": [
++       "types": [
++       "types": [
++       "types": [
++       "types": [
++       "types": [
++       "types": [
++       "types": [
++       "types": [
++       "types": [
++       "types": [
++       "types": [
++       "types": [
++       "types": [
++       "types": [
++         "人名",
++         "人名",
++         "人名",
++         "人名",
++         "人名",
++         "人名",
++         "人名",
++         "人名",
++         "人名",
++         "人名",
++         "电话号码"
++         "电话号码"
++         "电话号码"
++       ],
++       ],
++       ],
++       ],
++       ],
++       ],
++       ],
++       ],
++       ],
++       ],
++       ],
++       ],
++       ],
++       ],
++       ],
++       ],
++       ],
++       ],
++       ],
++       ],
++       ],
++       ],
++       ],
++       ],
++       ],
++       ],
++       ],
++       ],
++       ],
++       ],
++       "expected_entities": {
++       "expected_entities": {
++       "expected_entities": {
++       "expected_entities": {
++       "expected_entities": {
++       "expected_entities": {
++       "expected_entities": {
++       "expected_entities": {
++       "expected_entities": {
++       "expected_entities": {
++       "expected_entities": {
++       "expected_entities": {
++       "expected_entities": {
++       "expected_entities": {
++       "expected_entities": {
++       "expected_entities": {
++       "expected_entities": {
++       "expected_entities": {
++       "expected_entities": {
++       "expected_entities": {
++       "expected_entities": {
++       "expected_entities": {
++       "expected_entities": {
++       "expected_entities": {
++       "expected_entities": {
++       "expected_entities": {
++       "expected_entities": {
++       "expected_entities": {
++       "expected_entities": {
++       "expected_entities": {
++         "人名": [
++         "人名": [
++         "人名": [
++         "人名": [
++         "人名": [
++         "人名": [
++         "人名": [
++         "人名": [
++         "人名": [
++           "张伟"
++         ],
++         ],
++         ],
++         ],
++         ],
++         ],
++         ],
++         ],
++         ],
++         ],
++         ],
++         ],
++         ],
++         ],
++         ],
++         ],
++         ],
++         ],
++         ],
++         ],
++         ],
++         ],
++         ],
++         ],
++         ],
++         ],
++         ],
++         ],
++         ],
++         "电话号码": [
++         "电话号码": [
++           "13866667777"
++         ]
++         ]
++         ]
++         ]
++         ]
++         ]
++         ]
++         ]
++         ]
++         ]
++         ]
++         ]
++         ]
++         ]
++         ]
++         ]
++         ]
++         ]
++         ]
++         ]
++         ]
++         ]
++         ]
++         ]
++         ]
++         ]
++         ]
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++       }
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++     },
++       "id": "zh-02",
++       "text": "请将合同初稿发送到林芳的邮箱 lin.fang@example.com。",
++         "邮箱"
++           "林芳"
++         "邮箱": [
++           "lin.fang@example.com"
++       "id": "zh-03",
++       "text": "入职登记表显示，陈磊的身份证号为310101199503156718。",
++         "身份证号"
++           "陈磊"
++         "身份证号": [
++           "310101199503156718"
++       "id": "zh-04",
++       "text": "请将样品寄到黄丽的地址：深圳市南山区科技园路22号。",
++         "地址"
++           "黄丽"
++         "地址": [
++           "深圳市南山区科技园路22号"
++       "id": "zh-05",
++       "text": "订单 ORD-20260315-007 需要杨帅签收，联系电话15011223344。",
++         "订单号",
++         "订单号": [
++           "ORD-20260315-007"
++           "杨帅"
++           "15011223344"
+
+### scripts/has.sh  [code]
++ #!/usr/bin/env bash
++ # Umbrella HaS CLI — dispatches to text/image sub-CLIs.
++ set -euo pipefail
++ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
++ print_help() {
++   cat <<'EOF'
++ usage: has <text|image> ...
++ Namespaces:
++   text   Text anonymization and restoration
++   image  Image privacy scanning and masking
++ Examples:
++   has text scan --type "person name" --file note.txt
++   has text hide --type "person name" --file note.txt --mapping-output note.mapping.json
++   has text restore --mapping mapping.json --file anonymized.txt
++   has image scan --type face --image photo.jpg
++   has image hide --type face --image photo.jpg
++   has image categories
++ EOF
++ }
++ }
++ }
++ emit_error() {
++   local code="$1"
++   local message="$2"
++   python3 - "$code" "$message" <<'PY'
++ import json
++ import sys
++ payload = {
++     "schema_version": "1",
++     "error": {
++         "code": sys.argv[1],
++         "message": sys.argv[2],
++     },
++ print(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
++ PY
++ if [[ $# -eq 0 ]]; then
++   emit_error "missing_namespace" "Choose a namespace: text or image."
++   exit 1
++ fi
++ case "$1" in
++   -h|--help|help)
++     print_help
++     exit 0
++     ;;
++     ;;
++     ;;
++     ;;
++   text)
++     shift
++     shift
++     export HAS_CLI_PROG="has text"
++     exec "$SCRIPT_DIR/has-text.sh" "$@"
++   image)
++     export HAS_CLI_PROG="has image"
++     exec "$SCRIPT_DIR/has-image.sh" "$@"
++   *)
++     emit_error "invalid_namespace" "Unknown namespace '$1'. Choose text or image."
++     exit 1
++ esac
+
+### scripts/has_image.py  [code]
+-     uv run has_image.py scan --image photo.jpg [--types face,id_card] [--conf 0.5]
+-     uv run has_image.py hide --image photo.jpg [--output masked.jpg] [--method mosaic]
+-     uv run has_image.py hide --dir ./photos/  [--output-dir ./masked/]
+- See `uv run has_image.py <command> --help` for details.
+- def _resolve_types(types_str: str | None) -> set[int] | None:
+-     """Parse --types into a set of class IDs, or None (= all)."""
+-     if not types_str:
+-     for token in types_str.split(","):
+-         token = token.strip()
+-                 _die(f"Unknown class ID: {cid}")
+-                 _die(f"Ambiguous type '{token}', matches: {matches}")
+- def _die(msg: str) -> None:
+-     print(f"Error: {msg}", file=sys.stderr)
+-     sys.exit(1)
+-     target = Path(output_path) if output_path else image.parent / "masked" / f"{image.stem}{image.suffix}"
+-         _die("Refusing to overwrite the original image; choose a different output path")
+-     return str(target)
+-         _die(f"Invalid color format: #{color_str}. Expected #RRGGBB")
+-         _die(f"Invalid color format: #{color_str}. Expected #RRGGBB")
+-         _die(f"Failed to read image: {image_path}")
+-                     _die("Fill color is required when --method=fill")
+-         _die(f"Failed to write masked image: {output_path}")
+-         "output": str(Path(output_path).resolve()),
+- def _iter_images(dir_path: str):
+-     """Yield image file paths from a directory."""
+-         _die(f"Not a directory: {dir_path}")
+-         if f.is_file() and f.suffix.lower() in IMAGE_EXTENSIONS:
+-             try:
+-                 resolved = f.resolve()
+-             except OSError:
+-                 continue
+-                 continue
+-             if not _is_within_directory(resolved, root):
+-             yield str(f)
+-         return {"results": [], "count": 0, "summary": {}}
+-     for image_path in image_paths:
+-     for image_path in image_paths:
+-         return {"results": [], "count": 0}
+-     return {"results": results, "count": len(results)}
+-     type_ids = _resolve_types(args.types)
+-     type_ids = _resolve_types(args.types)
+-             list(_iter_images(args.dir)),
+-             list(_iter_images(args.dir)),
+-         batch_result["elapsed_ms"] = round((time.time() - t0) * 1000)
+-         batch_result["elapsed_ms"] = round((time.time() - t0) * 1000)
+-         _output(batch_result, args.pretty)
+-         _output(batch_result, args.pretty)
+-     else:
+-         result["elapsed_ms"] = round((time.time() - t0) * 1000)
+-         result["elapsed_ms"] = round((time.time() - t0) * 1000)
+-         _output(result, args.pretty)
+-         _output(result, args.pretty)
+-         output_dir = args.output_dir or str(Path(args.dir) / "masked")
+-     _output({"categories": CATEGORIES}, args.pretty)
+- def _output(data: Any, pretty: bool = False) -> None:
+-     if pretty:
+-         print(json.dumps(data, ensure_ascii=False, indent=2))
+-         print(json.dumps(data, ensure_ascii=False, separators=(",", ":")))
+-     parser = argparse.ArgumentParser(
+-         prog="has_image",
+-             "  has_image scan --image photo.jpg --types face,id_card\n"
+-             "  has_image hide --image photo.jpg --method mosaic --strength 20\n"
+-             "  has_image hide --dir ./photos/ --output-dir ./masked/ --types face\n"
+-             "  has_image categories\n"
+-     parser.add_argument(
+-     parser.add_argument(
+-         "--pretty", action="store_true", help="Pretty-print JSON output"
+-         "--model", default=None,
+-     subparsers = parser.add_subparsers(dest="command", help="Available commands")
+-         "--types", default=None,
+-         "--types", default=None,
+-         help="Comma-separated category filter (e.g. face,id_card,license_plate). Default: all",
+-         help="Comma-separated category filter (e.g. face,id_card). Default: all",
+-     args = parser.parse_args()
+-     if not args.command:
+-         parser.print_help()
+-     args.func(args)
++     has-image scan --image photo.jpg [--type face] [--type id_card] [--conf 0.5]
++     has-image hide --image photo.jpg [--output masked.jpg] [--method mosaic]
++     has-image hide --dir ./photos/ [--output-dir ./.has/masked/]
++ See `has-image <command> --help` for details.
++ from dataclasses import dataclass
++ SCHEMA_VERSION = "1"
++ @dataclass(frozen=True)
++ class CLIError(Exception):
++     code: str
++     message: str
++     def __str__(self) -> str:
++         return self.message
++ class StructuredArgumentParser(argparse.ArgumentParser):
++     """ArgumentParser that reports machine-readable errors."""
++     def error(self, message: str) -> None:
++         raise CLIError("invalid_arguments", message)
++ def _emit_json(payload: dict[str, Any], *, stream=None) -> None:
++     target = stream or sys.stdout
++     print(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), file=target)
++ def _error_payload(code: str, message: str) -> dict[str, Any]:
++         "schema_version": SCHEMA_VERSION,
++         "schema_version": SCHEMA_VERSION,
++         "error": {
++             "code": code,
++             "message": message,
++         },
++     }
++     }
++ def _absolute_path(path: Path | str) -> str:
++     """Return a stable absolute path string without resolving symlink targets."""
++     return str(Path(path).expanduser().absolute())
++ def _resolve_types(type_values: list[str] | None) -> set[int] | None:
++     """Parse repeated --type flags into a set of class IDs, or None (= all)."""
++     if not type_values:
++     for raw_token in type_values:
++         token = raw_token.strip()
++             _die("invalid_type", "--type values must be non-empty strings.")
++                 _die("unknown_type", f"Unknown class ID: {cid}")
++         else:
++                 _die("ambiguous_type", f"Ambiguous type '{token}', matches: {matches}")
++                     "unknown_type",
++ def _die(code: str, msg: str) -> None:
++     raise CLIError(code, msg)
++ def _verbose(message: str) -> None:
++     """Emit a progress message to stderr when --verbose is active."""
++     if os.environ.get("HAS_IMAGE_VERBOSE") == "1":
++         print(message, file=sys.stderr)
++     try:
++             _die(
++             _die(
++                 "model_not_found",
++             )
++             )
++         _verbose(f"Loading image model from {path}...")
++         _verbose("Image model loaded.")
++             continue
++             continue
++             continue
++     target = Path(output_path) if output_path else image.parent / ".has" / "masked" / f"{image.stem}{image.suffix}"
++         _die("refusing_overwrite", "Refusing to overwrite the original image; choose a different output path")
++     return _absolute_path(target)
++         _die("invalid_color", f"Invalid color format: #{color_str}. Expected #RRGGBB")
++         _die("invalid_color", f"Invalid color format: #{color_str}. Expected #RRGGBB")
++         _die("read_failed", f"Failed to read image: {image_path}")
++                     _die("missing_fill_color", "Fill color is required when --method=fill")
++         _die("write_failed", f"Failed to write masked image: {output_path}")
++         "output": _absolute_path(output_path),
++ def _collect_images(dir_path: str) -> tuple[list[str], list[dict[str, str]]]:
++     """Collect immediate image files from a directory plus skipped entries."""
++         _die("invalid_directory", f"Not a directory: {dir_path}")
++     image_paths: list[str] = []
++     skipped: list[dict[str, str]] = []
++         if not f.is_file():
++         if f.suffix.lower() not in IMAGE_EXTENSIONS:
++             skipped.append({"file": _absolute_path(f), "reason": "unsupported_extension"})
++         try:
++             resolved = f.resolve()
++         except OSError as exc:
++             skipped.append({"file": _absolute_path(f), "reason": str(exc)})
++         if not _is_within_directory(resolved, root):
++             skipped.append({"file": _absolute_path(f), "reason": "symlink_escape"})
++         image_paths.append(_absolute_path(f))
++     return image_paths, skipped
++     skipped: list[dict[str, str]] | None = None,
++     skipped: list[dict[str, str]] | None = None,
++         result: dict[str, Any] = {"results": [], "count": 0, "summary": {}}
++         if skipped:
++         if skipped:
++             result["skipped"] = skipped
++             result["skipped"] = skipped
++             result["skipped_count"] = len(skipped)
++             result["skipped_count"] = len(skipped)
++         return result
++         return result
++     for idx, image_path in enumerate(image_paths):
++     for idx, image_path in enumerate(image_paths):
++         _verbose(f"Scanning image {idx + 1}/{len(image_paths)}: {Path(image_path).name}")
++     result = {
++     if skipped:
++     if skipped:
++         result["skipped"] = skipped
++         result["skipped"] = skipped
++         result["skipped_count"] = len(skipped)
++         result["skipped_count"] = len(skipped)
++     return result
++     return result
++         result: dict[str, Any] = {"results": [], "count": 0}
++         _verbose(f"Masking image {idx + 1}/{len(image_paths)}: {Path(image_path).name}")
++         )
++     result = {"results": results, "count": len(results)}
++     type_ids = _resolve_types(args.type)
++     type_ids = _resolve_types(args.type)
++     t0 = time.time()
++         image_paths, skipped = _collect_images(args.dir)
++         image_paths, skipped = _collect_images(args.dir)
++             image_paths,
++             image_paths,
++             skipped,
++             skipped,
++         elapsed_ms = round((time.time() - t0) * 1000)
++         elapsed_ms = round((time.time() - t0) * 1000)
++         elapsed_ms = round((time.time() - t0) * 1000)
++         elapsed_ms = round((time.time() - t0) * 1000)
++         _output("scan", batch_result, timing=args.timing, elapsed_ms=elapsed_ms)
++         _output("scan", result, timing=args.timing, elapsed_ms=elapsed_ms)
++         if args.output:
++                 "invalid_output_usage",
++                 "invalid_output_usage",
++                 "hide --dir does not support --output; use --output-dir instead.",
++         output_dir = args.output_dir or str(Path(args.dir) / ".has" / "masked")
++         _output("hide", batch_result, timing=args.timing, elapsed_ms=elapsed_ms)
++         if args.output_dir:
++                 "hide --image does not support --output-dir; use --output instead.",
++         _output("hide", result, timing=args.timing, elapsed_ms=elapsed_ms)
++     if args.model is not None:
++         _die(
++             "invalid_model_usage",
++             "categories does not support --model because it does not load the detection model.",
++     elapsed_ms = round((time.time() - t0) * 1000)
++     _output("categories", {"categories": CATEGORIES}, timing=args.timing, elapsed_ms=elapsed_ms)
++ def _output(
++     command: str,
++     data: dict[str, Any],
++     *,
++     timing: bool = False,
++     elapsed_ms: int | None = None,
++ ) -> None:
++     payload: dict[str, Any] = {
++         "command": command,
++     payload.update(data)
++     if timing and elapsed_ms is not None:
++         payload["elapsed_ms"] = elapsed_ms
++     _emit_json(payload)
++     prog_name = os.environ.get("HAS_CLI_PROG", "has-image")
++     shared_options = argparse.ArgumentParser(add_help=False)
++     shared_options.add_argument(
++     shared_options.add_argument(
++         "--timing",
++         action="store_true",
++         action="store_true",
++         default=argparse.SUPPRESS,
++         default=argparse.SUPPRESS,
++         default=argparse.SUPPRESS,
++         help="Include elapsed_ms in the JSON output",
++     )
++     )
++         "--verbose",
++         help="Emit runtime status and progress messages to stderr",
++     model_option = argparse.ArgumentParser(add_help=False)
++     model_option.add_argument(
++         "--model",
++     parser = StructuredArgumentParser(
++         parents=[shared_options, model_option],
++         parents=[shared_options, model_option],
++         parents=[shared_options, model_option],
++         prog=prog_name,
++             f"  {prog_name} scan --image photo.jpg --type face --type id_card\n"
++             f"  {prog_name} hide --image photo.jpg --method mosaic --strength 20\n"
++             f"  {prog_name} hide --dir ./photos/ --output-dir .has/masked/ --type face\n"
++             f"  {prog_name} categories\n"
++     subparsers = parser.add_subparsers(
++         dest="command",
++         help="Available commands",
++         parser_class=StructuredArgumentParser,
++         "--type", action="append", default=None,
++         "--type", action="append", default=None,
++         help="Category filter; repeat the flag to add more categories. Default: all",
++         help="Category filter; repeat the flag to add more categories. Default: all",
++         parents=[shared_options],
++     args: argparse.Namespace | None = None
++         args = parser.parse_args()
++         args.timing = getattr(args, "timing", False)
++         args.verbose = getattr(args, "verbose", False)
++         args.model = getattr(args, "model", None)
++         if not args.command:
++             raise CLIError("missing_command", "Choose a subcommand: scan, hide, or categories.")
++         if args.verbose:
++             os.environ["HAS_IMAGE_VERBOSE"] = "1"
++             os.environ.pop("HAS_IMAGE_VERBOSE", None)
++         args.func(args)
++     except CLIError as exc:
++         _emit_json(_error_payload(exc.code, exc.message))
++         sys.exit(1)
++     except (OSError, RuntimeError, ValueError) as exc:
++         _emit_json(_error_payload("runtime_error", str(exc)))
+
+### scripts/has_text/cli_utils.py  [code]
++ #!/usr/bin/env python3
++ # -*- coding: utf-8 -*-
++ """Shared CLI utilities for has_text commands.
++ Contains argument validation, I/O helpers, error handling, and output
++ formatting used by all three subcommands (hide, restore, scan).
++ """
++ from __future__ import annotations
++ import argparse
++ from dataclasses import dataclass
++ import json
++ import os
++ from pathlib import Path
++ import sys
++ import time
++ from typing import Any, Dict, List, Optional, Tuple
++ from .mapping import has_tags, load_mapping, save_mapping
++ from .parallel import DEFAULT_MAX_PARALLEL_REQUESTS, resolve_parallel_workers
++ # Rough token estimate used only for pre-server slot planning.
++ # Actual chunking always uses the real tokenizer via HaSClient.count_tokens.
++ def estimate_tokens_for_planning(text: str) -> int:
++     """Conservative character-based estimate, used only before the server starts."""
++     if not text:
++         return 0
++         return 0
++     # ~0.5 tokens per character is conservative for mixed CJK/Latin text.
++     return max(1, int(len(text) * 0.5))
++ # Fallback context size when the default 8K is too small (mapping overflow).
++ FALLBACK_CONTEXT_PER_SLOT = 16384
++ SCHEMA_VERSION = "1"
++ @dataclass(frozen=True)
++ class CLIError(Exception):
++     code: str
++     message: str
++     def __str__(self) -> str:
++         return self.message
++ class StructuredArgumentParser(argparse.ArgumentParser):
++     """ArgumentParser that reports machine-readable errors."""
++     def error(self, message: str) -> None:
++         raise CLIError("invalid_arguments", message)
++ def emit_json(payload: dict[str, Any], *, stream=None) -> None:
++     target = stream or sys.stdout
++     print(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), file=target)
++ def error_payload(code: str, message: str) -> dict[str, Any]:
++     return {
++         "schema_version": SCHEMA_VERSION,
++         "schema_version": SCHEMA_VERSION,
++         "error": {
++             "code": code,
++             "message": message,
++         },
++     }
++     }
++ def fatal(code: str, message: str) -> None:
++     raise CLIError(code, message)
++ def absolute_path(path: Path | str) -> str:
++     """Return a stable absolute path string without resolving symlink targets."""
++     return str(Path(path).expanduser().absolute())
++ def read_text(args: argparse.Namespace) -> str:
++     """Read input text from --text, --file, or stdin."""
++     if hasattr(args, "text") and args.text:
++         return args.text
++     if hasattr(args, "file") and args.file:
++         with open(args.file, "r", encoding="utf-8") as f:
++             return f.read()
++     # Try stdin
++     if not sys.stdin.isatty():
++         return sys.stdin.read()
++     fatal("missing_input", "Provide exactly one input source via --text, --file, --dir, or stdin.")
++ def parse_types(type_values: Optional[List[str]]) -> List[str]:
++     """Parse repeated --type flags into a normalized list."""
++     if not type_values:
++         fatal("missing_type", "Provide at least one --type value.")
++     parsed: List[str] = []
++     for raw_value in type_values:
++         value = str(raw_value).strip()
++         if not value:
++             fatal("invalid_type", "--type values must be non-empty strings.")
++         if value not in parsed:
++             parsed.append(value)
++     return parsed
++ def load_mapping_file(path: str) -> Dict[str, List[str]]:
++     mapping_path = Path(path)
++     if not mapping_path.is_file():
++         fatal("mapping_not_found", f"Mapping file not found: {path}")
++     return load_mapping(str(mapping_path))
++ def output(
++     command: str,
++     result: dict[str, Any],
++     *,
++     *,
++     timing: bool = False,
++     elapsed_ms: Optional[int] = None,
++ ) -> None:
++     payload: dict[str, Any] = {
++         "command": command,
++     payload.update(result)
++     if timing and elapsed_ms is not None:
++         payload["elapsed_ms"] = elapsed_ms
++     emit_json(payload)
++ def parallel_default() -> int:
++     """Read the shared parallel request budget from the environment."""
++     raw = os.environ.get("HAS_TEXT_MAX_PARALLEL_REQUESTS")
++     if raw is None:
++         return DEFAULT_MAX_PARALLEL_REQUESTS
++     try:
++     try:
++     try:
++     try:
++     try:
++         value = int(raw)
++     except ValueError:
++     except ValueError:
++         fatal("invalid_env", "HAS_TEXT_MAX_PARALLEL_REQUESTS must be an integer >= 1")
++     if value < 1:
++         fatal("invalid_env", "HAS_TEXT_MAX_PARALLEL_REQUESTS must be >= 1")
++     return value
++ def required_slots(total_requests: int, max_parallel_requests: int) -> int:
++     """Clamp server slots to the actual model work for this command."""
++     if total_requests <= 0:
++     return resolve_parallel_workers(total_requests, max_parallel_requests)
++ def read_utf8_text_file(path: Path) -> Tuple[Optional[str], Optional[str]]:
++     """Read a plaintext file, rejecting binary and non-UTF-8 content."""
++         with path.open("rb") as fh:
++             sample = fh.read(8192)
++     except OSError as exc:
++     except OSError as exc:
++         return None, str(exc)
++         return None, str(exc)
++     if b"\x00" in sample:
++         return None, "binary"
++         return path.read_text(encoding="utf-8"), None
++     except UnicodeDecodeError:
++         return None, "non_utf8"
++ def is_within_directory(path: Path, directory: Path) -> bool:
++     """Return whether `path` resolves within `directory`."""
++         path.relative_to(directory)
++         return True
++         return False
++ def collect_text_documents(dir_path: str) -> Tuple[List[Dict[str, str]], List[Dict[str, str]]]:
++     """Collect immediate plaintext files from a directory."""
++     directory = Path(dir_path)
++     if not directory.is_dir():
++         fatal("invalid_directory", f"Not a directory: {dir_path}")
++     directory_root = directory.resolve()
++     documents: List[Dict[str, str]] = []
++     skipped: List[Dict[str, str]] = []
++     for entry in sorted(directory.iterdir()):
++         if not entry.is_file():
++             continue
++             continue
++             continue
++             continue
++         try:
++             resolved_entry = entry.resolve()
++         except OSError as exc:
++             skipped.append({"file": absolute_path(entry), "reason": str(exc)})
++         if not is_within_directory(resolved_entry, directory_root):
++             skipped.append({"file": absolute_path(entry), "reason": "symlink_escape"})
++         text, skip_reason = read_utf8_text_file(entry)
++         if text is None:
++             skipped.append({"file": absolute_path(entry), "reason": skip_reason or "unreadable"})
++         documents.append({"file": absolute_path(entry), "text": text})
++     return documents, skipped
++ def write_text_output(path: Path, text: str) -> None:
++     """Write UTF-8 text with restrictive permissions (0600).
++     Both anonymized and restored text may contain sensitive information.
++     Match the restrictive permissions used by save_mapping.
++     """
++     """
++     import os as _os
++     path.parent.mkdir(parents=True, exist_ok=True)
++     fd = _os.open(str(path), _os.O_WRONLY | _os.O_CREAT | _os.O_TRUNC, 0o600)
++         if hasattr(_os, "fchmod"):
++             _os.fchmod(fd, 0o600)
++         else:
++             _os.chmod(str(path), 0o600)
++         f = _os.fdopen(fd, "w", encoding="utf-8")
++     except Exception:
++         _os.close(fd)
++         raise
++     with f:
++         f.write(text)
++ def resolve_single_output_path(
++     path_value: Optional[str],
++     input_path: Optional[Path] = None,
++     input_label: str = "input file",
++ ) -> Optional[Path]:
++     """Resolve a single-file output path and refuse obvious clobbers."""
++     if not path_value:
++         return None
++     output_path = Path(path_value)
++     if input_path is not None and output_path.resolve(strict=False) == input_path.resolve(strict=False):
++         fatal("refusing_overwrite", f"Refusing to overwrite {input_label}: {input_path}")
++     return output_path
++ def default_seek_mapping_dir(dir_path: str) -> Path:
++     """Return the default per-file mapping directory for batch restore."""
++     return Path(dir_path) / "mappings"
++ def default_restore_output_dir(dir_path: str) -> Path:
++     """Return the default output directory for batch restore.
++     If the input directory sits directly under a `.has/` parent
++     (e.g. `docs/.has/anonymized/`), place `restored/` as a sibling
++     under the same `.has/` tree → `docs/.has/restored/`.
++     Otherwise fall back to `<input-dir>/.has/restored/`.
++     d = Path(dir_path)
++     if d.parent.name == ".has":
++         return d.parent / "restored"
++     return d / ".has" / "restored"
++ def seek_mapping_path(mapping_dir: Path, source_path: Path) -> Path:
++     """Return the per-file mapping path generated by `hide --dir`."""
++     return mapping_dir / f"{source_path.name}.mapping.json"
+
+### scripts/has_text/client.py  [code]
+- # Per-script tokens-per-character ratios, measured against the HaS 0.6B Q8
+- # model tokenizer on representative text blocks:
+- #
+- #
+- #   Chinese (CJK Unified):  0.56  (540 chars → 302 tokens)
+- #   Japanese (hiragana/katakana + CJK): 0.74 measured, padded to 0.95
+- #   Korean (hangul):        0.67  (121 chars → 81 tokens)
+- #   Latin letters (English prose): 0.20  (1693 chars → 341 tokens)
+- #   Digits / ASCII punct:   ~0.55  (individual tokens in most contexts)
+- #   Fallback:               0.56  (conservative, avoids under-estimation)
+- # The Latin letter ratio (0.20) reflects subword merging in continuous English
+- # text. Digits and punctuation are usually emitted as individual tokens, so
+- # they get a higher ratio. We pad the letter ratio from 0.20 → 0.25 for safety.
+- _RATIO_CJK = 0.56
+- _RATIO_KANA = 0.95
+- _RATIO_HANGUL = 0.67
+- _RATIO_LATIN_LETTER = 0.25
+- _RATIO_DIGIT_PUNCT = 0.55
+- _RATIO_FALLBACK = 0.56
+- def _char_ratio(code: int) -> float:
+-     """Return the per-character token ratio for a Unicode code point."""
+-     # ASCII letters benefit from subword merging
+-     if 65 <= code <= 90 or 97 <= code <= 122:
+-         return _RATIO_LATIN_LETTER
+-     # ASCII digits and punctuation are mostly individual tokens
+-     if code < 0x0100:
+-         return _RATIO_DIGIT_PUNCT
+-     # CJK Unified Ideographs (shared by Chinese and Japanese kanji)
+-     if 0x4E00 <= code <= 0x9FFF:
+-         return _RATIO_CJK
+-         return _RATIO_CJK
+-         return _RATIO_CJK
+-     # Hiragana / Katakana
+-     if 0x3040 <= code <= 0x30FF:
+-         return _RATIO_KANA
+-     # Hangul Syllables
+-     if 0xAC00 <= code <= 0xD7AF:
+-         return _RATIO_HANGUL
+-     # CJK Extension A/B, Compatibility Ideographs, etc.
+-     if 0x3400 <= code <= 0x4DBF or 0x20000 <= code <= 0x2A6DF:
+-     # CJK punctuation, symbols, fullwidth forms
+-     if 0x3000 <= code <= 0x303F or 0xFF00 <= code <= 0xFFEF:
+-     return _RATIO_FALLBACK
+- def estimate_token_count(text: str) -> int:
+-     """Cheap local token estimate used when llama-server is unavailable.
+-     Uses per-script ratios calibrated against the HaS 0.6B model tokenizer
+-     so that CJK-heavy text is not under-estimated (which would produce
+-     chunks that exceed the model's context window).
+-     if not text:
+-         return 0
+-     total = sum(_char_ratio(ord(ch)) for ch in text)
+-     return max(1, int(total))
+-         return data["choices"][0]["message"]["content"]
+-             return [0] * estimate_token_count(text)
+-             return [0] * estimate_token_count(text)
+-         except self._requests.HTTPError:
++ class ContextOverflowError(RuntimeError):
++     """Raised when the request exceeds or fills the model's context window.
++     Covers both cases:
++     - Prompt alone exceeds context (HTTP 400, exceed_context_size_error)
++     - Prompt fits but output is truncated (finish_reason: "length")
++     def __init__(self, message: str, *, prompt_tokens: int = 0, ctx_size: int = 0):
++         super().__init__(message)
++         self.prompt_tokens = prompt_tokens
++         self.ctx_size = ctx_size
++             ContextOverflowError: If the prompt exceeds context or output
++                 is truncated due to context exhaustion.
++         try:
++             raise RuntimeError(
++             raise RuntimeError(
++             )
++             )
++         # Detect prompt overflow (HTTP 400 with exceed_context_size_error)
++         if resp.status_code == 400:
++             try:
++                 err = resp.json().get("error", {})
++             except Exception:
++                 err = {}
++             if err.get("type") == "exceed_context_size_error":
++                 raise ContextOverflowError(
++                     f"Prompt ({err.get('n_prompt_tokens', '?')} tokens) exceeds "
++                     f"context window ({err.get('n_ctx', '?')} tokens)",
++                     prompt_tokens=err.get("n_prompt_tokens", 0),
++                     ctx_size=err.get("n_ctx", 0),
++                 )
++         except self._requests.HTTPError as e:
++             ) from e
++         choice = data["choices"][0]
++         # Detect output truncation (finish_reason: "length")
++         if choice.get("finish_reason") == "length":
++             usage = data.get("usage", {})
++             raise ContextOverflowError(
++                 f"Output truncated: context full "
++                 f"(prompt {usage.get('prompt_tokens', '?')} + "
++                 f"completion {usage.get('completion_tokens', '?')} = "
++                 f"{usage.get('total_tokens', '?')} tokens)",
++                 prompt_tokens=usage.get("prompt_tokens", 0),
++                 ctx_size=usage.get("total_tokens", 0),
++         return choice["message"]["content"]
++                 f"Cannot connect to llama-server at {self.base_url} for tokenization.\n"
++                 f"Token counting requires a running llama-server."
++                 f"llama-server tokenize returned {e.response.status_code}: {e.response.text}"
+
+### scripts/has_text/commands/hide.py  [code]
+- from ..client import HaSClient
+-     print(f"Warning: {message}", file=sys.stderr)
+-     `hide_with` injects the full accumulated mapping into every later chunk.
+-     Subtracting its tokenized size keeps later requests inside the 8K context
+-     window instead of chunking solely on the raw source text.
+-         return max_chunk_tokens
+-     budget = max_chunk_tokens - mapping_tokens
+-     if budget <= 0:
+-             f"({len(mapping)} entries, ~{mapping_tokens} mapping tokens). "
+-     # Step 3: Model-Pair — extract mapping
+-     chunk_mapping = _model_pair(client, text, anonymized_text)
+-             print(
+-                 f"{prefix}Processing chunk {chunk_count + 1} "
+-                 f"({chunk.token_count} tokens, {len(chunk.text)} chars; "
+-                 f"text budget {chunk_budget})...",
+-                 file=sys.stderr,
+-         anonymized_text, accumulated_mapping = _hide_single_chunk(
+-             client,
+-             chunk.text,
+-             types,
+-             existing_mapping=accumulated_mapping if accumulated_mapping else None,
+-         remaining_text = next_remaining
++ import argparse
++ import os
++ import time
++ from ..client import ContextOverflowError, HaSClient
++ from ..pair import compute_pair_mapping
++ from ..server_runtime import DEFAULT_CONTEXT_PER_SLOT
++     if os.environ.get("HAS_TEXT_VERBOSE") == "1":
++         print(f"Warning: {message}", file=sys.stderr)
++ _HIDE_OVERHEAD = 200
++ # Pair call fixed overhead: pair prompt (~30) + pair mapping output (~200)
++ _PAIR_OVERHEAD = 230
++ # Anonymized output is roughly 1.05x the input (entity names become tags)
++ _OUTPUT_RATIO = 1.05
++ _MIN_CHUNK_TOKENS = 100
++ # Retry parameters for context overflow recovery
++ _RETRY_SHRINK_FACTOR = 0.75   # shrink chunk to 75% on overflow
++ _MAX_OVERFLOW_RETRIES = 2     # retry up to 2 times per chunk position
++     context_window: int = DEFAULT_CONTEXT_PER_SLOT,
++     context_window: int = DEFAULT_CONTEXT_PER_SLOT,
++     context_window: int = DEFAULT_CONTEXT_PER_SLOT,
++     context_window: int = DEFAULT_CONTEXT_PER_SLOT,
++     The Hide call is a 3-turn conversation where the source text appears as
++     input (T1-user) and the anonymized output (~1.05x input) appears as
++     T2-assistant.  The accumulated mapping is injected once in T2-user.
++     Context constraint for Hide:
++         T*(1 + α) + F_hide + M  ≤  context_window
++         T  ≤  (context_window - F_hide - M) / (1 + α)
++     Model-Pair imposes a fixed ceiling (independent of mapping):
++         T*(1 + α) + F_pair  ≤  context_window
++         T  ≤  (context_window - F_pair) / (1 + α)
++     # Pair ceiling (fixed, does not depend on mapping)
++     pair_limit = int((context_window - _PAIR_OVERHEAD) / (1 + _OUTPUT_RATIO))
++         hide_limit = int((context_window - _HIDE_OVERHEAD) / (1 + _OUTPUT_RATIO))
++         return min(max_chunk_tokens, hide_limit, pair_limit)
++     # Hide constraint: text appears ~2x, mapping appears 1x
++     hide_limit = int((context_window - _HIDE_OVERHEAD - mapping_tokens) / (1 + _OUTPUT_RATIO))
++     budget = min(max_chunk_tokens, hide_limit, pair_limit)
++     if budget < _MIN_CHUNK_TOKENS:
++             f"({len(mapping)} entries, ~{mapping_tokens} mapping tokens, "
++             f"derived budget {hide_limit}). "
++         )
++         )
++         )
++         )
++         )
++         )
++         )
++ # ======================================================================
++ # ======================================================================
++ # ======================================================================
++ # ======================================================================
++     anonymized_text: str,
++         else:
++         else:
++         else:
++         else:
++ # Tool-Pair mapping extraction (diff-based, no model call)
++ def _tool_pair(
++     original_text: str,
++ ) -> Optional[Dict[str, List[str]]]:
++     """Extract mapping via diff alignment.  Returns None if self-check fails."""
++     result = compute_pair_mapping(original_text, anonymized_text)
++     if not result.self_check.get("pass"):
++         return None
++     return result.normalized_mapping
++     tool_pair: bool = True,
++     tool_pair: bool = True,
++     tool_pair: bool = True,
++     Args:
++         tool_pair: If True, try diff-based pair extraction first (faster,
++             no model call).  Falls back to Model-Pair when self-check fails.
++     )
++     )
++     else:
++     # Step 3: Pair — extract mapping
++     chunk_mapping = None
++     if tool_pair:
++         chunk_mapping = _tool_pair(text, anonymized_text)
++         if chunk_mapping is not None:
++             # Tool-Pair succeeded; still need to split composites if any
++             chunk_mapping = _handle_composite_tags(client, chunk_mapping)
++             if not _mapping_self_check(anonymized_text, chunk_mapping):
++                 _warn("Tool-Pair mapping failed self-check after composite split, "
++                       "falling back to Model-Pair")
++                 chunk_mapping = None
++             else:
++                 _warn("Tool-Pair succeeded (skipped Model-Pair)")
++             _warn("Tool-Pair self-check failed, falling back to Model-Pair")
++     if chunk_mapping is None:
++         chunk_mapping = _model_pair(client, text, anonymized_text)
++             context_window=context_window,
++             context_window=context_window,
++             if os.environ.get("HAS_TEXT_VERBOSE") == "1":
++                 print(
++                     f"{prefix}Processing chunk {chunk_count + 1} "
++                     f"({chunk.token_count} tokens, {len(chunk.text)} chars; "
++                     f"text budget {chunk_budget})...",
++                     file=sys.stderr,
++                 )
++                 )
++                 )
++                 )
++                 )
++                 )
++                 )
++         # Retry with shrunk chunk on context overflow
++         current_chunk_text = chunk.text
++         current_budget = chunk_budget
++         for attempt in range(_MAX_OVERFLOW_RETRIES + 1):
++             try:
++                 anonymized_text, accumulated_mapping = _hide_single_chunk(
++                     client,
++                     client,
++                     current_chunk_text,
++                     types,
++                     types,
++                     existing_mapping=accumulated_mapping if accumulated_mapping else None,
++                     tool_pair=tool_pair,
++                     context_window=context_window,
++                 break
++             except ContextOverflowError:
++                 if attempt >= _MAX_OVERFLOW_RETRIES:
++                     raise
++                     raise
++                     raise
++                     raise
++                 current_budget = int(current_budget * _RETRY_SHRINK_FACTOR)
++                 if current_budget < _MIN_CHUNK_TOKENS:
++                 _warn(
++                     f"Context overflow on chunk {chunk_count + 1}, "
++                     f"retrying with reduced budget {current_budget}"
++                 retry_chunk = take_chunk(
++                     remaining_text,
++                     client.count_tokens,
++                     current_budget,
++                     index=chunk_count,
++                 if retry_chunk is None:
++                 current_chunk_text = retry_chunk.text
++         remaining_text = remaining_text[len(current_chunk_text):]
++             tool_pair=tool_pair,
++             }
++             }
++             }
++             }
++ # CLI handler
++ def cmd_hide(args: argparse.Namespace) -> None:
++     """Execute the hide (anonymize) command."""
++     from ..cli_utils import (
++         FALLBACK_CONTEXT_PER_SLOT,
++         absolute_path,
++         collect_text_documents,
++         fatal,
++         load_mapping_file,
++         output,
++         parse_types,
++         read_text,
++         required_slots,
++         resolve_single_output_path,
++         write_text_output,
++     from ..client import DEFAULT_SERVER
++     from ..mapping import save_mapping
++     from ..server_runtime import DEFAULT_CONTEXT_PER_SLOT, acquire_server
++     types = parse_types(args.type)
++     dir_path = getattr(args, "dir", None)
++     if dir_path and args.mapping:
++         fatal(
++         fatal(
++         fatal(
++         fatal(
++         fatal(
++         fatal(
++             "invalid_mapping_usage",
++             "hide --dir does not support --mapping; batch hide always writes per-file mappings.",
++     if dir_path and args.output:
++             "invalid_output_usage",
++             "invalid_output_usage",
++             "invalid_output_usage",
++             "invalid_output_usage",
++             "hide --dir does not support --output; use --output-dir instead.",
++     if dir_path and args.mapping_output:
++             "hide --dir does not support --mapping-output; use --mapping-dir instead.",
++     if not dir_path and args.output_dir:
++             "hide without --dir does not support --output-dir; use --output instead.",
++     if not dir_path and args.mapping_dir:
++             "hide without --dir does not support --mapping-dir; use --mapping-output instead.",
++     if not dir_path and not args.mapping_output:
++             "missing_mapping_output",
++             "Single-file hide requires --mapping-output so the mapping is not emitted inline.",
++     existing_mapping = None
++     existing_mapping_path: Optional[Path] = None
++     if args.mapping:
++         existing_mapping = load_mapping_file(args.mapping)
++         existing_mapping_path = Path(args.mapping)
++     t0 = time.time()
++     if dir_path:
++         raw_documents, skipped = collect_text_documents(dir_path)
++         documents = [
++             HideDocument(source=item["file"], text=item["text"])
++             for item in raw_documents
++         ]
++         _required = required_slots(
++             estimate_hide_batch_request_count(documents),
++             args.max_parallel_requests,
++         if documents and _required > 0:
++             with acquire_server(
++                 DEFAULT_SERVER,
++                 required_slots=_required,
++             ) as lease:
++                 client = lease.create_client()
++                 batch_result = run_hide_batch(
++                     documents,
++                     existing_mapping=existing_mapping,
++                     max_chunk_tokens=args.max_chunk_tokens,
++                     max_parallel_requests=args.max_parallel_requests,
++                     tool_pair=args.tool_pair,
++         elif documents:
++             batch_result = {
++                 "results": [
++                     {
++                         "file": document.source,
++                         "text": document.text,
++                         "mapping": dict(existing_mapping) if existing_mapping else {},
++                     }
++                     for document in documents
++                 ],
++                 "count": len(documents),
++             batch_result = {"results": [], "count": 0}
++         output_dir = Path(args.output_dir or str(Path(dir_path) / ".has" / "anonymized"))
++         mapping_dir = Path(args.mapping_dir or str(output_dir / "mappings"))
++         manifest_results: List[Dict[str, Any]] = []
++         for item in batch_result["results"]:
++             source_path = Path(str(item["file"]))
++             output_path = output_dir / source_path.name
++             mapping_path = mapping_dir / f"{source_path.name}.mapping.json"
++             if output_path.resolve() == source_path.resolve():
++                 fatal("refusing_overwrite", f"Refusing to overwrite source file: {source_path}")
++             write_text_output(output_path, str(item["text"]))
++             mapping_path.parent.mkdir(parents=True, exist_ok=True)
++             save_mapping(item["mapping"], str(mapping_path))
++             manifest_item: Dict[str, Any] = {
++                 "file": absolute_path(source_path),
++                 "output": absolute_path(output_path),
++                 "output": absolute_path(output_path),
++                 "mapping_output": absolute_path(mapping_path),
++             if "chunks" in item:
++                 manifest_item["chunks"] = item["chunks"]
++             manifest_results.append(manifest_item)
++         result = {"results": manifest_results, "count": len(manifest_results)}
++         if skipped:
++             result["skipped"] = skipped
++             result["skipped_count"] = len(skipped)
++         source_path = Path(args.file) if args.file else None
++         output_path = resolve_single_output_path(args.output, input_path=source_path)
++         mapping_output_path = resolve_single_output_path(
++             args.mapping_output,
++             input_path=source_path,
++             input_label="input file",
++         if mapping_output_path is None:
++             fatal(
++             fatal(
++                 "missing_mapping_output",
++                 "Single-file hide requires --mapping-output so the mapping is not emitted inline.",
++             )
++         if output_path is not None and output_path.resolve(strict=False) == mapping_output_path.resolve(strict=False):
++                 "invalid_output_usage",
++                 "hide output and mapping output must be different paths.",
++         if existing_mapping_path is not None:
++             resolved_mapping_input = existing_mapping_path.resolve(strict=False)
++             if output_path is not None and output_path.resolve(strict=False) == resolved_mapping_input:
++                 fatal(
++                 fatal(
++                     "refusing_overwrite",
++                     "refusing_overwrite",
++                     "--output must not overwrite the input --mapping file.",
++             if mapping_output_path.resolve(strict=False) == resolved_mapping_input:
++                     "--mapping-output must not overwrite the input --mapping file. "
++                     "Use a different path for the updated mapping.",
++         text = read_text(args)
++         if text.strip():
++             context_per_slot = DEFAULT_CONTEXT_PER_SLOT
++             for _attempt in range(2):
++                 try:
++                     with acquire_server(
++                         DEFAULT_SERVER,
++                         required_slots=1,
++                         context_per_slot=context_per_slot,
++                     ) as lease:
++                         client = lease.create_client()
++                         result = run_hide(
++                             client,
++                             text,
++                             types,
++                             existing_mapping=existing_mapping,
++                             max_chunk_tokens=args.max_chunk_tokens,
++                             tool_pair=args.tool_pair,
++                             context_window=context_per_slot,
++                         )
++                     break
++                 except RuntimeError as exc:
++                     if (
+
+### scripts/has_text/commands/scan.py  [code]
+- from ..chunker import DEFAULT_MAX_CHUNK_TOKENS, chunk_text
+- from ..client import HaSClient, estimate_token_count
+-     max_chunk_tokens: int = DEFAULT_MAX_CHUNK_TOKENS,
+-     max_chunk_tokens: int = DEFAULT_MAX_CHUNK_TOKENS,
+-     max_chunk_tokens: int = DEFAULT_MAX_CHUNK_TOKENS,
+-     max_chunk_tokens: int = DEFAULT_MAX_CHUNK_TOKENS,
+-     count_tokens: Callable[[str], int] = estimate_token_count,
+-     count_tokens: Callable[[str], int] = estimate_token_count,
++ import argparse
++ import time
++ from ..chunker import chunk_text
++ from ..client import HaSClient
++ # scan only produces a small JSON entity list (no full-text rewrite),
++ # so chunks can be larger than the 3000 default used by hide/seek.
++ DEFAULT_SCAN_MAX_CHUNK_TOKENS = 5000
++     )
++     max_chunk_tokens: int = DEFAULT_SCAN_MAX_CHUNK_TOKENS,
++     max_chunk_tokens: int = DEFAULT_SCAN_MAX_CHUNK_TOKENS,
++     max_chunk_tokens: int = DEFAULT_SCAN_MAX_CHUNK_TOKENS,
++     max_chunk_tokens: int = DEFAULT_SCAN_MAX_CHUNK_TOKENS,
++     count_tokens: Callable[[str], int],
++     count_tokens: Callable[[str], int],
++         )
++         )
++         ]
++                 )
++                 )
++                     types,
++                     types,
++             }
++ # ======================================================================
++ # ======================================================================
++ # CLI handler
++ def cmd_scan(args: argparse.Namespace) -> None:
++     """Execute the scan (NER) command."""
++     from ..cli_utils import (
++         collect_text_documents,
++         estimate_tokens_for_planning,
++         output,
++         parse_types,
++         read_text,
++         required_slots,
++     from ..client import DEFAULT_SERVER
++     from ..server_runtime import acquire_server
++     types = parse_types(args.type)
++     dir_path = getattr(args, "dir", None)
++     t0 = time.time()
++     if dir_path:
++         raw_documents, skipped = collect_text_documents(dir_path)
++         documents = [
++             ScanDocument(source=item["file"], text=item["text"])
++             for item in raw_documents
++         request_count = estimate_scan_batch_request_count(
++             documents,
++             max_chunk_tokens=args.max_chunk_tokens,
++             max_chunk_tokens=args.max_chunk_tokens,
++             count_tokens=estimate_tokens_for_planning,
++             count_tokens=estimate_tokens_for_planning,
++         if documents and request_count > 0:
++             with acquire_server(
++             with acquire_server(
++                 DEFAULT_SERVER,
++                 DEFAULT_SERVER,
++                 required_slots=required_slots(request_count, args.max_parallel_requests),
++                 required_slots=required_slots(request_count, args.max_parallel_requests),
++             ) as lease:
++             ) as lease:
++                 client = lease.create_client()
++                 client = lease.create_client()
++                 result = run_scan_batch(
++                     client,
++                     client,
++                     documents,
++                     max_chunk_tokens=args.max_chunk_tokens,
++                     max_chunk_tokens=args.max_chunk_tokens,
++                     max_parallel_requests=args.max_parallel_requests,
++                     max_parallel_requests=args.max_parallel_requests,
++         elif documents:
++             result = {
++                 "results": [
++                     {"file": document.source, "entities": {}}
++                     for document in documents
++                 ],
++                 "count": len(documents),
++                 "summary": {},
++         else:
++         else:
++             result = {"results": [], "count": 0, "summary": {}}
++         if skipped:
++             result["skipped"] = skipped
++             result["skipped_count"] = len(skipped)
++     else:
++         text = read_text(args)
++         request_count = estimate_scan_request_count(
++             text,
++         if request_count > 0:
++                 result = run_scan(
++                     text,
++             result = {"entities": {}}
++     elapsed_ms = round((time.time() - t0) * 1000)
++     output("scan", result, timing=args.timing, elapsed_ms=elapsed_ms)
+
+### scripts/has_text/commands/seek.py  [code]
+- from ..client import HaSClient, estimate_token_count
+-     print(f"Warning: {message}", file=sys.stderr)
+-         )
+-     count_tokens: Callable[[str], int] = estimate_token_count,
+-     count_tokens: Callable[[str], int] = estimate_token_count,
+-         print(
+-             "Tool-Seek self-check failed, falling back to Model-Seek...",
+-             file=sys.stderr,
++ import argparse
++ import os
++ from pathlib import Path
++ import time
++ from ..client import HaSClient
++     if os.environ.get("HAS_TEXT_VERBOSE") == "1":
++         print(f"Warning: {message}", file=sys.stderr)
++ # ======================================================================
++ # ======================================================================
++         else:
++     count_tokens: Callable[[str], int],
++     count_tokens: Callable[[str], int],
++                 )
++                 )
++             )
++             )
++             )
++             )
++             )
++             )
++             )
++         ]
++     )
++     )
++             try:
++     else:
++         if os.environ.get("HAS_TEXT_VERBOSE") == "1":
++             print(
++                 "Tool-Seek self-check failed, falling back to Model-Seek...",
++                 file=sys.stderr,
++ # CLI handler
++ def cmd_restore(args: argparse.Namespace) -> None:
++     """Execute the restore command."""
++     from ..cli_utils import (
++         absolute_path,
++         collect_text_documents,
++         default_restore_output_dir,
++         default_seek_mapping_dir,
++         estimate_tokens_for_planning,
++         fatal,
++         load_mapping_file,
++         output,
++         read_text,
++         required_slots,
++         resolve_single_output_path,
++         seek_mapping_path,
++         write_text_output,
++     from ..client import DEFAULT_SERVER
++     from ..mapping import has_tags, load_mapping
++     from ..server_runtime import acquire_server
++     dir_path = getattr(args, "dir", None)
++     t0 = time.time()
++     if dir_path:
++         if args.mapping:
++             fatal(
++             fatal(
++             fatal(
++             fatal(
++             fatal(
++             fatal(
++                 "invalid_mapping_usage",
++                 "restore --dir does not support --mapping; use per-file mappings under <dir>/mappings or --mapping-dir.",
++         if args.output:
++                 "invalid_output_usage",
++                 "invalid_output_usage",
++                 "invalid_output_usage",
++                 "invalid_output_usage",
++                 "restore --dir does not support --output; use --output-dir instead.",
++         raw_documents, skipped = collect_text_documents(dir_path)
++         documents = [
++             SeekDocument(source=item["file"], text=item["text"])
++             for item in raw_documents
++         mapping_dir_arg = getattr(args, "mapping_dir", None)
++         mapping_dir = Path(mapping_dir_arg) if mapping_dir_arg else default_seek_mapping_dir(dir_path)
++         restored_results: List[Optional[Dict[str, Any]]] = [None] * len(documents)
++         pending_documents: List[tuple[int, SeekDocument, Dict[str, List[str]]]] = []
++         missing_mappings: List[str] = []
++         for index, document in enumerate(documents):
++             source_path = Path(document.source)
++             document_mapping: Optional[Dict[str, List[str]]] = None
++             per_file_mapping_path = seek_mapping_path(mapping_dir, source_path)
++             if per_file_mapping_path.is_file():
++                 document_mapping = load_mapping(str(per_file_mapping_path))
++             elif has_tags(document.text):
++                 missing_mappings.append(str(per_file_mapping_path))
++                 continue
++                 continue
++                 continue
++             if document_mapping is None:
++                 if has_tags(document.text):
++                     fatal(
++                         "missing_mapping",
++                         "Batch restore requires per-file mappings under "
++                         f"{mapping_dir} for files that still contain anonymized tags."
++                     )
++                     )
++                     )
++                 restored_results[index] = {"file": document.source, "text": document.text}
++             restored = restore_without_model(document.text, document_mapping)
++             if restored is not None:
++                 restored_results[index] = {"file": document.source, "text": restored}
++             else:
++                 pending_documents.append((index, document, document_mapping))
++         if missing_mappings:
++                 "missing_mapping",
++                 "Missing per-file mapping JSON for batch restore: "
++                 + ", ".join(sorted(missing_mappings))
++         if pending_documents:
++             request_count = 0
++             for _, document, document_mapping in pending_documents:
++                 try:
++                     request_count += estimate_seek_model_request_count(
++                         document.text,
++                         document.text,
++                         document_mapping,
++                         document_mapping,
++                         max_chunk_tokens=args.max_chunk_tokens,
++                         max_chunk_tokens=args.max_chunk_tokens,
++                         count_tokens=estimate_tokens_for_planning,
++                 except RuntimeError:
++                     request_count += 1
++             with acquire_server(
++             with acquire_server(
++                 DEFAULT_SERVER,
++                 DEFAULT_SERVER,
++                 required_slots=required_slots(
++                     max(request_count, 1),
++                     args.max_parallel_requests,
++                 ),
++             ) as lease:
++             ) as lease:
++                 client = lease.create_client()
++                 client = lease.create_client()
++                 for index, document, document_mapping in pending_documents:
++                     item = run_seek(
++                         client,
++                         max_parallel_requests=args.max_parallel_requests,
++                     item["file"] = document.source
++                     restored_results[index] = item
++         output_dir_path = Path(args.output_dir or str(default_restore_output_dir(dir_path)))
++         manifest_results: List[Dict[str, Any]] = []
++         for item in restored_results:
++             if item is None:
++             source_path = Path(item["file"])
++             output_path = output_dir_path / source_path.name
++             if output_path.resolve() == source_path.resolve():
++                 fatal("refusing_overwrite", f"Refusing to overwrite source file: {source_path}")
++             write_text_output(output_path, str(item["text"]))
++             manifest_item: Dict[str, Any] = {
++                 "file": absolute_path(source_path),
++                 "output": absolute_path(output_path),
++             }
++             if "chunks" in item:
++                 manifest_item["chunks"] = item["chunks"]
++             manifest_results.append(manifest_item)
++         result = {"results": manifest_results, "count": len(manifest_results)}
++         if skipped:
++             result["skipped"] = skipped
++             result["skipped_count"] = len(skipped)
++         if args.mapping_dir:
++                 "restore without --dir does not support --mapping-dir.",
++         if args.output_dir:
++                 "restore without --dir does not support --output-dir; use --output instead.",
++         if not args.mapping:
++             fatal("missing_mapping", "restore requires --mapping in single-file mode.")
++         mapping_path = Path(args.mapping)
++         mapping = load_mapping_file(args.mapping)
++         source_path = Path(args.file) if args.file else None
++         output_path = resolve_single_output_path(args.output, input_path=source_path)
++         if output_path is not None and output_path.resolve(strict=False) == mapping_path.resolve(strict=False):
++                 "restore output must be different from the mapping file.",
++         text = read_text(args)
++         restored = restore_without_model(text, mapping)
++         if restored is not None:
++             result = {"text": restored}
++                 request_count = estimate_seek_model_request_count(
++                     text,
++                     text,
++                     mapping,
++                     mapping,
++                     max_chunk_tokens=args.max_chunk_tokens,
++                     max_chunk_tokens=args.max_chunk_tokens,
++                     count_tokens=estimate_tokens_for_planning,
++             except RuntimeError:
++                 request_count = 1
++                 required_slots=required_slots(request_count, args.max_parallel_requests),
++                 result = run_seek(
++                     client,
++                     max_parallel_requests=args.max_parallel_requests,
++         if output_path is not None:
++             write_text_output(output_path, str(result["text"]))
++             single_result: Dict[str, Any] = {"output": absolute_path(output_path)}
++             if "chunks" in result:
++                 single_result["chunks"] = result["chunks"]
++             result = single_result
++     elapsed_ms = round((time.time() - t0) * 1000)
++     output(
++         "restore",
++         result,
++         timing=args.timing,
++         elapsed_ms=elapsed_ms,
+
+### scripts/has_text/has_text.py  [code]
+- """has_text — CLI tool for text anonymization and restoration.
+-     has_text hide  --types '["人名","地址"]' --text "..."
+-     has_text seek  --mapping mapping.json --text "..."
+-     has_text scan  --types '["人名","地址"]' --text "..."
+- See `has_text <command> --help` for details.
+- import json
+- from pathlib import Path
+- import time
+- from typing import Any, Dict, List, Optional, Tuple
+- from .client import DEFAULT_SERVER
+- from .mapping import has_tags, load_mapping, save_mapping
+- from .parallel import DEFAULT_MAX_PARALLEL_REQUESTS, resolve_parallel_workers
+- from .server_runtime import acquire_server
+- def _fatal(message: str) -> None:
+-     """Print a user-facing error and exit."""
+-     print(f"Error: {message}", file=sys.stderr)
+-     sys.exit(1)
+- def _read_text(args: argparse.Namespace) -> str:
+-     """Read input text from --text, --file, or stdin."""
+-     if hasattr(args, "text") and args.text:
+-         return args.text
+-     if hasattr(args, "file") and args.file:
+-         with open(args.file, "r", encoding="utf-8") as f:
+-             return f.read()
+-     # Try stdin
+-     if not sys.stdin.isatty():
+-         return sys.stdin.read()
+-     _fatal("No input text. Use --text, --file, or pipe via stdin.")
+- def _parse_types(types_str: str) -> List[str]:
+-     """Parse entity types from JSON array string."""
+-     try:
+-     try:
+-     try:
+-     try:
+-     try:
+-         types = json.loads(types_str)
+-         if not isinstance(types, list):
+-             raise ValueError
+-         return [str(t) for t in types]
+-     except (json.JSONDecodeError, ValueError):
+-         _fatal('--types must be a JSON array, e.g. \'["人名","地址","电话"]\'')
+- def _output(
+-     result: dict,
+-     pretty: bool = False,
+-     quiet: bool = False,
+-     text_key: Optional[str] = None,
+- ) -> None:
+-     """Output result as JSON, or just the text value in quiet mode.
+-     Args:
+-         result: The result dict to output.
+-         pretty: Pretty-print JSON.
+-         quiet: If True and *text_key* names a key present in *result*,
+-                print only that value instead of the full JSON envelope.
+-         text_key: Explicit field name for quiet-mode extraction (e.g. ``"text"``).
+-                   Callers that produce non-text results (like ``scan``) should
+-                   leave this as ``None`` so quiet is a safe no-op.
+-     """
+-     if quiet and text_key and text_key in result:
+-         print(result[text_key])
+-     elif pretty:
+-         print(json.dumps(result, ensure_ascii=False, indent=2))
+-     else:
+-     else:
+-     else:
+-     else:
+-         print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
+- def _parallel_default() -> int:
+-     """Read the shared parallel request budget from the environment."""
+-     raw = os.environ.get("HAS_TEXT_MAX_PARALLEL_REQUESTS")
+-     if raw is None:
+-         return DEFAULT_MAX_PARALLEL_REQUESTS
+-         value = int(raw)
+-     except ValueError:
+-     except ValueError:
+-         _fatal("HAS_TEXT_MAX_PARALLEL_REQUESTS must be an integer >= 1")
+-     if value < 1:
+-         _fatal("HAS_TEXT_MAX_PARALLEL_REQUESTS must be >= 1")
+-     return value
+- def _required_slots(total_requests: int, max_parallel_requests: int) -> int:
+-     """Clamp server slots to the actual model work for this command."""
+-     if total_requests <= 0:
+-         return 0
+-     return resolve_parallel_workers(total_requests, max_parallel_requests)
+- def _read_utf8_text_file(path: Path) -> Tuple[Optional[str], Optional[str]]:
+-     """Read a plaintext file, rejecting binary and non-UTF-8 content."""
+-         with path.open("rb") as fh:
+-             sample = fh.read(8192)
+-     except OSError as exc:
+-     except OSError as exc:
+-         return None, str(exc)
+-         return None, str(exc)
+-     if b"\x00" in sample:
+-         return None, "binary"
+-         return path.read_text(encoding="utf-8"), None
+-     except UnicodeDecodeError:
+-         return None, "non_utf8"
+- def _is_within_directory(path: Path, directory: Path) -> bool:
+-     """Return whether `path` resolves within `directory`."""
+-         path.relative_to(directory)
+-         return True
+-         return False
+- def _collect_text_documents(dir_path: str) -> Tuple[List[Dict[str, str]], List[Dict[str, str]]]:
+-     """Collect immediate plaintext files from a directory."""
+-     directory = Path(dir_path)
+-     if not directory.is_dir():
+-         _fatal(f"Not a directory: {dir_path}")
+-     directory_root = directory.resolve()
+-     documents: List[Dict[str, str]] = []
+-     skipped: List[Dict[str, str]] = []
+-     for entry in sorted(directory.iterdir()):
+-         if not entry.is_file():
+-             continue
+-             continue
+-             continue
+-             continue
+-         try:
+-             resolved_entry = entry.resolve()
+-         except OSError as exc:
+-             skipped.append({"file": str(entry), "reason": str(exc)})
+-         if not _is_within_directory(resolved_entry, directory_root):
+-             skipped.append({"file": str(entry), "reason": "symlink_escape"})
+-         text, skip_reason = _read_utf8_text_file(entry)
+-         if text is None:
+-             skipped.append({"file": str(entry), "reason": skip_reason or "unreadable"})
+-         documents.append({"file": str(entry), "text": text})
+-     return documents, skipped
+- def _write_text_output(path: Path, text: str) -> None:
+-     """Write UTF-8 text, creating parent directories if needed."""
+-     path.parent.mkdir(parents=True, exist_ok=True)
+-     path.write_text(text, encoding="utf-8")
+- def _default_seek_mapping_dir(dir_path: str) -> Path:
+-     """Return the default per-file mapping directory for batch seek."""
+-     return Path(dir_path) / "mappings"
+- def _seek_mapping_path(mapping_dir: Path, source_path: Path) -> Path:
+-     """Return the per-file mapping path generated by `hide --dir`."""
+-     return mapping_dir / f"{source_path.name}.mapping.json"
+- # ======================================================================
+- # ======================================================================
+- # ======================================================================
+- # ======================================================================
+- # ======================================================================
+- # ======================================================================
+- # Subcommand: hide
+- def cmd_hide(args: argparse.Namespace) -> None:
+-     """Execute the hide (anonymize) command."""
+-     from .commands.hide import (
+-         HideDocument,
+-         estimate_hide_batch_request_count,
+-         run_hide,
+-         run_hide_batch,
+-     types = _parse_types(args.types)
+-     types = _parse_types(args.types)
+-     dir_path = getattr(args, "dir", None)
+-     dir_path = getattr(args, "dir", None)
+-     dir_path = getattr(args, "dir", None)
+-     if dir_path and args.mapping:
+-         _fatal("hide --dir does not support --mapping; batch hide always writes per-file mappings.")
+-     existing_mapping = None
+-     if args.mapping:
+-         existing_mapping = load_mapping(args.mapping)
+-     t0 = time.time()
+-     t0 = time.time()
+-     t0 = time.time()
+-     if dir_path:
+-     if dir_path:
+-     if dir_path:
+-         raw_documents, skipped = _collect_text_documents(dir_path)
+-         raw_documents, skipped = _collect_text_documents(dir_path)
+-         raw_documents, skipped = _collect_text_documents(dir_path)
+-         documents = [
+-         documents = [
+-         documents = [
+-             HideDocument(source=item["file"], text=item["text"])
+-             for item in raw_documents
+-             for item in raw_documents
+-             for item in raw_documents
+-         ]
+-         ]
+-         ]
+-         required_slots = _required_slots(
+-             estimate_hide_batch_request_count(documents),
+-             args.max_parallel_requests,
+-         )
+-         )
+-         )
+-         if documents and required_slots > 0:
+-             with acquire_server(
+-             with acquire_server(
+-             with acquire_server(
+-             with acquire_server(
+-             with acquire_server(
+-                 DEFAULT_SERVER,
+-                 DEFAULT_SERVER,
+-                 DEFAULT_SERVER,
+-                 DEFAULT_SERVER,
+-                 DEFAULT_SERVER,
+-                 required_slots=required_slots,
+-             ) as lease:
+-             ) as lease:
+-             ) as lease:
+-             ) as lease:
+-             ) as lease:
+-                 client = lease.create_client()
+-                 client = lease.create_client()
+-                 client = lease.create_client()
+-                 client = lease.create_client()
+-                 client = lease.create_client()
+-                 client = lease.create_client()
+-                 batch_result = run_hide_batch(
+-                     client,
+-                     client,
+-                     client,
+-                     client,
+-                     client,
+-                     documents,
+-                     documents,
+-                     types,
+-                     types,
+-                     types,
+-                     types,
+-                     existing_mapping=existing_mapping,
+-                     existing_mapping=existing_mapping,
+-                     max_chunk_tokens=args.max_chunk_tokens,
+-                     max_chunk_tokens=args.max_chunk_tokens,
+-                     max_chunk_tokens=args.max_chunk_tokens,
+-                     max_chunk_tokens=args.max_chunk_tokens,
+-                     max_chunk_tokens=args.max_chunk_tokens,
+-                     max_chunk_tokens=args.max_chunk_tokens,
+-                     max_parallel_requests=args.max_parallel_requests,
+-                     max_parallel_requests=args.max_parallel_requests,
+-                     max_parallel_requests=args.max_parallel_requests,
+-                     max_parallel_requests=args.max_parallel_requests,
+-                 )
+-                 )
+-                 )
+-                 )
+-                 )
+-                 )
+-         elif documents:
+-         elif documents:
+-             batch_result = {
+-                 "results": [
+-                 "results": [
+-                     {
+-                         "file": document.source,
+-                         "text": document.text,
+-                         "mapping": dict(existing_mapping) if existing_mapping else {},
+-                     }
+-                     for document in documents
+-                     for document in documents
+-                 ],
+-                 ],
+-                 "count": len(documents),
+-                 "count": len(documents),
+-             }
+-             }
+-             }
+-             }
+-         else:
+-         else:
+-         else:
+-         else:
+-             batch_result = {"results": [], "count": 0}
+-         output_dir = Path(args.output_dir or str(Path(dir_path) / "anonymized"))
+-         mapping_dir = Path(args.mapping_dir or str(output_dir / "mappings"))
+-         manifest_results: List[Dict[str, Any]] = []
+-         manifest_results: List[Dict[str, Any]] = []
+-         for item in batch_result["results"]:
+-             source_path = Path(str(item["file"]))
+-             output_path = output_dir / source_path.name
+-             output_path = output_dir / source_path.name
+-             mapping_path = mapping_dir / f"{source_path.name}.mapping.json"
+-             if output_path.resolve() == source_path.resolve():
+-             if output_path.resolve() == source_path.resolve():
+-                 _fatal(f"Refusing to overwrite source file: {source_path}")
+-                 _fatal(f"Refusing to overwrite source file: {source_path}")
+-             _write_text_output(output_path, str(item["text"]))
+-             _write_text_output(output_path, str(item["text"]))
+-             mapping_path.parent.mkdir(parents=True, exist_ok=True)
+-             save_mapping(item["mapping"], str(mapping_path))
+-             manifest_item: Dict[str, Any] = {
+-             manifest_item: Dict[str, Any] = {
+-                 "file": str(source_path),
+-                 "file": str(source_path),
+-                 "output": str(output_path),
+-                 "output": str(output_path),
+-                 "mapping": str(mapping_path),
+-             if "chunks" in item:
+-             if "chunks" in item:
+-                 manifest_item["chunks"] = item["chunks"]
+-                 manifest_item["chunks"] = item["chunks"]
+-             manifest_results.append(manifest_item)
+-             manifest_results.append(manifest_item)
+-         result = {"results": manifest_results, "count": len(manifest_results)}
+-         result = {"results": manifest_results, "count": len(manifest_results)}
+-         if skipped:
+-         if skipped:
+-         if skipped:
+-             result["skipped"] = skipped
+-             result["skipped"] = skipped
++ """has-text — CLI tool for text anonymization and restoration.
++     has-text hide --type "person name" --type "address" --text "..." --mapping-output mapping.json
++     has-text restore --mapping mapping.json --text "..."
++     has-text scan --type "person name" --type "address" --text "..."
++ See `has-text <command> --help` for details.
++ from typing import List, Optional
++ from .cli_utils import (
++     CLIError,
++     StructuredArgumentParser,
++     emit_json,
++     error_payload,
++     parallel_default,
++ )
++     prog_name = os.environ.get("HAS_CLI_PROG", "has-text")
++     global_options = argparse.ArgumentParser(add_help=False)
++     global_options.add_argument(
++     global_options.add_argument(
++         "--timing",
++         default=argparse.SUPPRESS,
++         default=argparse.SUPPRESS,
++         help="Include elapsed_ms in the JSON output",
++         "--verbose",
++         help="Emit runtime status and progress messages to stderr",
++     parser = StructuredArgumentParser(
++         parents=[global_options],
++         parents=[global_options],
++         parents=[global_options],
++         parents=[global_options],
++         prog=prog_name,
++         description="HaS Text — Text anonymization and restoration CLI",
++             f'  {prog_name} hide --type "person name" --type "address" --text "张三住在北京市朝阳区" --mapping-output mapping.json\n'
++             f'  {prog_name} hide --type "person name" --file document.txt --mapping-output mapping.json\n'
++             f'  {prog_name} hide --type "person name" --dir docs/ --output-dir .has/anonymized/\n'
++             f'  {prog_name} restore --mapping mapping.json --text "<person name[1].personal.name> lives in ..."\n'
++             f"  {prog_name} restore --dir .has/anonymized/ --output-dir .has/restored/\n"
++             f"  {prog_name} restore --dir .has/anonymized/ --mapping-dir exported-mappings/ --output-dir .has/restored/\n"
++             f'  {prog_name} scan --type "person name" --type "phone number" --file report.txt\n'
++             f'  {prog_name} scan --type "person name" --type "phone number" --dir reports/\n'
++             f'  cat doc.txt | {prog_name} hide --type "person name" --mapping-output mapping.json\n'
++     env_parallel = parallel_default()
++     subparsers = parser.add_subparsers(
++         dest="command",
++         help="Available commands",
++         parser_class=StructuredArgumentParser,
++     hide_parser.add_argument(
++     hide_parser.add_argument(
++         "--type",
++         "--type",
++         action="append",
++         action="append",
++         help="Entity type to anonymize; repeat the flag to add more types",
++     hide_input_group = hide_parser.add_mutually_exclusive_group()
++     hide_input_group.add_argument("--text", help="Text to anonymize")
++     hide_input_group.add_argument("--file", help="Read text from file")
++     hide_input_group.add_argument(
++         help="Batch output directory for anonymized files (default: .has/anonymized/ under the input directory)",
++         "--output",
++         "--output",
++         help="Single-file output path for anonymized text",
++         "--mapping-output",
++         help="Single-file output path for the generated mapping JSON",
++         help="Single-file only: existing mapping JSON file path (for incremental anonymization)",
++         default=env_parallel,
++         default=env_parallel,
++         default=env_parallel,
++             f"(env: HAS_TEXT_MAX_PARALLEL_REQUESTS, default: {env_parallel})"
++             f"(env: HAS_TEXT_MAX_PARALLEL_REQUESTS, default: {env_parallel})"
++             f"(env: HAS_TEXT_MAX_PARALLEL_REQUESTS, default: {env_parallel})"
++         "--no-tool-pair",
++         action="store_false",
++         dest="tool_pair",
++         default=True,
++         help="Disable diff-based pair extraction; always use Model-Pair (slower but more robust)",
++     from .commands.hide import cmd_hide
++     # --- restore ---
++     restore_parser = subparsers.add_parser(
++         "restore",
++     restore_parser.add_argument(
++     restore_parser.add_argument(
++     restore_parser.add_argument(
++     restore_parser.add_argument(
++     restore_parser.add_argument(
++     restore_parser.add_argument(
++             "Single-file only: mapping JSON file path. "
++             "restore --dir always uses per-file mappings from <dir>/mappings/ or --mapping-dir."
++     restore_input_group = restore_parser.add_mutually_exclusive_group()
++     restore_input_group.add_argument("--text", help="Anonymized text to restore")
++     restore_input_group.add_argument("--file", help="Read anonymized text from file")
++     restore_input_group.add_argument(
++         help="Batch output directory for restored files (default: sibling of input under .has/, or .has/restored/)",
++         help="Single-file output path for restored text",
++         help=f"Max tokens per chunk when restore uses the model (default: {DEFAULT_MAX_CHUNK_TOKENS})",
++             "Max model-backed restore chunks to run in parallel "
++     from .commands.seek import cmd_restore
++     restore_parser.set_defaults(func=cmd_restore)
++         help="Entity type to scan for; repeat the flag to add more types",
++     scan_input_group = scan_parser.add_mutually_exclusive_group()
++     scan_input_group.add_argument("--text", help="Text to scan")
++     scan_input_group.add_argument("--file", help="Read text from file")
++     scan_input_group.add_argument(
++     from .commands.scan import DEFAULT_SCAN_MAX_CHUNK_TOKENS
++         default=DEFAULT_SCAN_MAX_CHUNK_TOKENS,
++         help=f"Max tokens per chunk (default: {DEFAULT_SCAN_MAX_CHUNK_TOKENS})",
++     from .commands.scan import cmd_scan
++     args: Optional[argparse.Namespace] = None
++         args = parser.parse_args(argv)
++         args.timing = getattr(args, "timing", False)
++         args.verbose = getattr(args, "verbose", False)
++         if not args.command:
++             from .cli_utils import fatal
++             fatal("missing_command", "Choose a subcommand: scan, hide, or restore.")
++         if args.verbose:
++             os.environ["HAS_TEXT_VERBOSE"] = "1"
++             os.environ.pop("HAS_TEXT_VERBOSE", None)
++     except CLIError as exc:
++         emit_json(error_payload(exc.code, exc.message))
++         sys.exit(1)
++         emit_json(error_payload("runtime_error", str(exc)))
+
+### scripts/has_text/server_runtime.py  [code]
+- def _target_context_tokens(required_slots: int) -> int:
+-     """Keep each local auto-managed slot at the full 8K context budget."""
+-     return DEFAULT_CONTEXT_PER_SLOT * _target_slots(required_slots)
+-     return observed_context_tokens >= observed_slots * DEFAULT_CONTEXT_PER_SLOT
+-         )
+-                 f"Started HaS llama-server at {server_url} with {required_slots} slot(s) "
+-                 f"and context {context_tokens}.",
+-     target_context_tokens = _target_context_tokens(required_slots)
+-         and _supports_required_context(observed.parallel_slots, observed.context_tokens)
+-         print(
+-             f"Reusing HaS llama-server at {target_url}.",
+-             file=sys.stderr,
++ def _verbose_enabled() -> bool:
++     return os.environ.get("HAS_TEXT_VERBOSE") == "1"
++ def _target_context_tokens(required_slots: int, context_per_slot: int = DEFAULT_CONTEXT_PER_SLOT) -> int:
++     """Keep each local auto-managed slot at the requested context budget."""
++     return context_per_slot * _target_slots(required_slots)
++     context_per_slot: int = DEFAULT_CONTEXT_PER_SLOT,
++     context_per_slot: int = DEFAULT_CONTEXT_PER_SLOT,
++     return observed_context_tokens >= observed_slots * context_per_slot
++             if _verbose_enabled():
++                 print(
++                     f"Started HaS llama-server at {server_url} with {required_slots} slot(s) "
++                     f"and context {context_tokens}.",
++                     file=sys.stderr,
++                 )
++     target_context_tokens = _target_context_tokens(required_slots, context_per_slot)
++         and _supports_required_context(observed.parallel_slots, observed.context_tokens, context_per_slot)
++         if _verbose_enabled():
++                 f"Reusing HaS llama-server at {target_url}.",
+
+### scripts/has_text/tests/__init__.py  [code]
++ # has_text test suite
+
+### scripts/has_text/tests/test_chunker.py  [code]
++ #!/usr/bin/env python3
++ # -*- coding: utf-8 -*-
++ """Tests for chunker.py — sentence-boundary-aware text splitting."""
++ from __future__ import annotations
++ import pytest
++ from ..chunker import TextChunk, chunk_text, take_chunk
++ # ---------------------------------------------------------------------------
++ # ---------------------------------------------------------------------------
++ # ---------------------------------------------------------------------------
++ # ---------------------------------------------------------------------------
++ # ---------------------------------------------------------------------------
++ # ---------------------------------------------------------------------------
++ # Helpers
++ def _count_tokens_by_chars(text: str) -> int:
++     """Simple token counter: 1 token per character (for deterministic testing)."""
++     return len(text)
++ def _count_tokens_by_words(text: str) -> int:
++     """Token counter that approximates word-level tokenization."""
++     return max(1, len(text.split()))
++ # take_chunk
++ class TestTakeChunk:
++     def test_empty_text_returns_none(self):
++         assert take_chunk("", _count_tokens_by_chars, max_tokens=100) is None
++     def test_short_text_fits_in_one_chunk(self):
++         text = "Hello, world!"
++         text = "Hello, world!"
++         chunk = take_chunk(text, _count_tokens_by_chars, max_tokens=100)
++         assert chunk is not None
++         assert chunk is not None
++         assert chunk is not None
++         assert chunk is not None
++         assert chunk is not None
++         assert chunk.text == text
++         assert chunk.text == text
++         assert chunk.index == 0
++         assert chunk.start_char == 0
++         assert chunk.end_char == len(text)
++         assert chunk.token_count == len(text)
++     def test_exact_fit_returns_full_text(self):
++         text = "12345"
++         chunk = take_chunk(text, _count_tokens_by_chars, max_tokens=5)
++     def test_split_at_sentence_boundary(self):
++         text = "First sentence。Second sentence。Third sentence。"
++         chunk = take_chunk(text, _count_tokens_by_chars, max_tokens=20)
++         # Should cut at the first sentence boundary that fits
++         assert chunk.text.endswith("。")
++         assert len(chunk.text) <= 20
++     def test_start_char_offset(self):
++         chunk = take_chunk(text, _count_tokens_by_chars, max_tokens=100, start_char=50)
++         assert chunk.start_char == 50
++         assert chunk.end_char == 50 + len(text)
++     def test_custom_index(self):
++         text = "Hello"
++         chunk = take_chunk(text, _count_tokens_by_chars, max_tokens=100, index=3)
++         assert chunk.index == 3
++ # chunk_text
++ class TestChunkText:
++     def test_empty_text(self):
++         assert chunk_text("", _count_tokens_by_chars) == []
++     def test_whitespace_only(self):
++         assert chunk_text("   ", _count_tokens_by_chars) == []
++     def test_single_chunk(self):
++         text = "Short text."
++         chunks = chunk_text(text, _count_tokens_by_chars, max_tokens=100)
++         assert len(chunks) == 1
++         assert chunks[0].text == text
++         assert chunks[0].index == 0
++     def test_multiple_chunks_chinese(self):
++         # 3 Chinese sentences, each ~10 chars, with max_tokens=15
++         text = "第一句话结束。第二句话结束。第三句话结束。"
++         chunks = chunk_text(text, _count_tokens_by_chars, max_tokens=10)
++         chunks = chunk_text(text, _count_tokens_by_chars, max_tokens=10)
++         chunks = chunk_text(text, _count_tokens_by_chars, max_tokens=10)
++         assert len(chunks) >= 2
++         assert len(chunks) >= 2
++         assert len(chunks) >= 2
++         # All chunks concatenated should equal original text
++         reconstructed = "".join(c.text for c in chunks)
++         reconstructed = "".join(c.text for c in chunks)
++         reconstructed = "".join(c.text for c in chunks)
++         reconstructed = "".join(c.text for c in chunks)
++         assert reconstructed == text
++         assert reconstructed == text
++         assert reconstructed == text
++         assert reconstructed == text
++     def test_chunk_indices_are_sequential(self):
++         text = "A。B。C。D。E。F。G。H。"
++         chunks = chunk_text(text, _count_tokens_by_chars, max_tokens=5)
++         for i, chunk in enumerate(chunks):
++             assert chunk.index == i
++     def test_chunk_offsets_are_contiguous(self):
++         text = "First sentence。Second sentence。Third sentence。Fourth sentence。"
++         chunks = chunk_text(text, _count_tokens_by_chars, max_tokens=20)
++         chunks = chunk_text(text, _count_tokens_by_chars, max_tokens=20)
++         for i in range(1, len(chunks)):
++             assert chunks[i].start_char == chunks[i - 1].end_char
++     def test_reconstructed_text_matches_original(self):
++         text = "这是第一段。\n这是第二段，比较长一些。\n这是第三段！\n第四段也有内容？"
++         chunks = chunk_text(text, _count_tokens_by_chars, max_tokens=12)
++     def test_newline_boundary_preferred(self):
++         text = "First paragraph.\nSecond paragraph.\nThird paragraph."
++         # Should prefer newline as split point
++         if len(chunks) >= 2:
++             assert chunks[0].text.endswith("\n") or chunks[0].text.endswith(".")
++     def test_fallback_to_comma_boundary(self):
++         # Long text with only commas as boundaries
++         text = "词一，词二，词三，词四，词五，词六，词七，词八"
++     def test_hard_cut_when_no_boundaries(self):
++         # Continuous text with no punctuation
++         text = "a" * 30
++         assert len(chunks) >= 3
+
+### scripts/has_text/tests/test_lang.py  [code]
++ #!/usr/bin/env python3
++ # -*- coding: utf-8 -*-
++ """Tests for lang.py — language detection and same-language comparison."""
++ from __future__ import annotations
++ import pytest
++ from ..lang import detect_script_lang, is_same_language, strip_tags
++ # ---------------------------------------------------------------------------
++ # ---------------------------------------------------------------------------
++ # ---------------------------------------------------------------------------
++ # ---------------------------------------------------------------------------
++ # ---------------------------------------------------------------------------
++ # ---------------------------------------------------------------------------
++ # strip_tags
++ class TestStripTags:
++     def test_removes_tags(self):
++         assert strip_tags("<人名[1].个人.姓名>住在北京") == "住在北京"
++     def test_no_tags(self):
++         assert strip_tags("Hello, world!") == "Hello, world!"
++     def test_empty(self):
++     def test_empty(self):
++         assert strip_tags("") == ""
++     def test_none(self):
++         assert strip_tags(None) == ""
++ # detect_script_lang
++ class TestDetectScriptLang:
++     def test_chinese(self):
++         lang, conf = detect_script_lang("这是一段中文文本，用于测试语言检测。")
++         assert lang == "zh"
++         assert lang == "zh"
++         assert conf > 0.5
++         assert conf > 0.5
++         assert conf > 0.5
++         assert conf > 0.5
++     def test_english(self):
++         lang, conf = detect_script_lang("This is an English text for testing language detection.")
++         assert lang == "en"
++     def test_japanese(self):
++         lang, conf = detect_script_lang("これはテスト用の日本語テキストです。")
++         assert lang == "ja"
++     def test_korean(self):
++         lang, conf = detect_script_lang("이것은 한국어 테스트 텍스트입니다.")
++         assert lang == "ko"
++         lang, conf = detect_script_lang("")
++         assert lang is None
++         assert conf == 0.0
++     def test_tags_stripped_before_detection(self):
++         # Only tags, no real text
++         lang, conf = detect_script_lang("<人名[1].个人.姓名><地址[1].城市.区域>")
++         assert lang is None  # all content is tags
++     def test_mixed_with_tags(self):
++         lang, conf = detect_script_lang("这是<人名[1].个人.姓名>的测试文本。")
++ # is_same_language
++ class TestIsSameLanguage:
++     def test_same_chinese(self):
++         assert is_same_language("这是中文", "这也是中文") is True
++     def test_same_english(self):
++         assert is_same_language("This is English", "This is also English") is True
++     def test_different_languages(self):
++         assert is_same_language("这是中文文本", "This is English text") is False
++     def test_translation_hint_detected(self):
++         # Source says "translate to English", output is in English
++         source = "请将以下内容翻译为英文：这是一段中文。"
++         translated = "This is a paragraph in Chinese."
++         assert is_same_language(source, translated) is False
++     def test_short_but_detectable_texts(self):
++         # Even short text can be detected if script ratio is clear
++         # "hi" → 100% Latin → en (0.6 conf), "你" → 100% Han → zh (0.7 conf)
++         assert is_same_language("hi", "你") is False
++     def test_ambiguous_defaults_to_same(self):
++         # Punctuation-only → no script detected → None → defaults to True
++         assert is_same_language("...", "!!!") is True
++     def test_empty_text_defaults_to_same(self):
++         assert is_same_language("", "hello") is True
+
+### scripts/has_text/tests/test_mapping.py  [code]
++ #!/usr/bin/env python3
++ # -*- coding: utf-8 -*-
++ """Tests for mapping.py — tag parsing, mapping merge, normalization, and I/O."""
++ from __future__ import annotations
++ import json
++ import os
++ import stat
++ import tempfile
++ from collections import OrderedDict
++ import pytest
++ from ..mapping import (
++     find_composite_entries,
++     find_tags,
++     has_tags,
++     is_composite_tag,
++     load_mapping,
++     merge_mappings,
++     normalize_mapping_dict,
++     parse_json_tolerant,
++     save_mapping,
++ )
++ # ---------------------------------------------------------------------------
++ # ---------------------------------------------------------------------------
++ # ---------------------------------------------------------------------------
++ # ---------------------------------------------------------------------------
++ # ---------------------------------------------------------------------------
++ # ---------------------------------------------------------------------------
++ # ---------------------------------------------------------------------------
++ # ---------------------------------------------------------------------------
++ # ---------------------------------------------------------------------------
++ # ---------------------------------------------------------------------------
++ # ---------------------------------------------------------------------------
++ # ---------------------------------------------------------------------------
++ # find_tags / has_tags
++ class TestFindTags:
++     def test_no_tags(self):
++         assert find_tags("Hello, world!") == []
++     def test_single_tag(self):
++         tags = find_tags("我是<人名[1].个人.姓名>，住在北京。")
++         assert tags == ["<人名[1].个人.姓名>"]
++     def test_multiple_tags(self):
++         text = "<人名[1].个人.姓名>和<人名[2].个人.姓名>在<地址[1].城市.区域>见面。"
++         tags = find_tags(text)
++         assert len(tags) == 3
++         assert "<人名[1].个人.姓名>" in tags
++         assert "<人名[2].个人.姓名>" in tags
++         assert "<地址[1].城市.区域>" in tags
++     def test_english_tags(self):
++         tags = find_tags("Contact <person[1].personal.name> at <phone[1].contact.mobile>.")
++         assert len(tags) == 2
++     def test_no_match_for_malformed(self):
++         assert find_tags("<incomplete") == []
++         assert find_tags("<no_bracket.a.b>") == []
++         assert find_tags("<typ[x].a.b>") == []  # non-numeric index
++ class TestHasTags:
++     def test_true_when_present(self):
++         assert has_tags("<人名[1].个人.姓名>") is True
++     def test_false_when_absent(self):
++         assert has_tags("No tags here.") is False
++     def test_false_for_empty(self):
++         assert has_tags("") is False
++ # is_composite_tag / find_composite_entries
++ class TestCompositeTag:
++     def test_atomic(self):
++         assert is_composite_tag("<人名[1].个人.姓名>") is False
++     def test_composite(self):
++         assert is_composite_tag("<职务[3].职务.职务名称><人名[1].中文姓名.姓名>") is True
++     def test_find_composite_entries(self):
++         mapping = {
++             "<人名[1].个人.姓名>": ["张三"],
++             "<职务[3].职务.职务名称><人名[1].中文姓名.姓名>": ["总经理张三"],
++             "<地址[1].城市.区域>": ["北京朝阳"],
++         }
++         }
++         atomic, composite = find_composite_entries(mapping)
++         assert len(atomic) == 2
++         assert len(composite) == 1
++         assert "<职务[3].职务.职务名称><人名[1].中文姓名.姓名>" in composite
++ # merge_mappings
++ class TestMergeMappings:
++     def test_disjoint_merge(self):
++         base = {"<人名[1].a.b>": ["张三"]}
++         base = {"<人名[1].a.b>": ["张三"]}
++         base = {"<人名[1].a.b>": ["张三"]}
++         base = {"<人名[1].a.b>": ["张三"]}
++         new = {"<地址[1].c.d>": ["北京"]}
++         merged = merge_mappings(base, new)
++         merged = merge_mappings(base, new)
++         assert len(merged) == 2
++         assert merged["<人名[1].a.b>"] == ["张三"]
++         assert merged["<地址[1].c.d>"] == ["北京"]
++     def test_overlapping_merge_deduplicates(self):
++         new = {"<人名[1].a.b>": ["张三", "三张"]}
++         assert merged["<人名[1].a.b>"] == ["张三", "三张"]
++     def test_base_not_mutated(self):
++         original = dict(base)
++         merge_mappings(base, {"<人名[1].a.b>": ["李四"]})
++         assert base == original
++     def test_empty_base(self):
++         merged = merge_mappings({}, {"<人名[1].a.b>": ["张三"]})
++         assert merged == {"<人名[1].a.b>": ["张三"]}
++     def test_empty_new(self):
++         merged = merge_mappings(base, {})
++         assert merged == base
++ # normalize_mapping_dict
++ class TestNormalizeMappingDict:
++     def test_string_value_becomes_list(self):
++         result = normalize_mapping_dict({"<人名[1].a.b>": "张三"})
++         assert result == {"<人名[1].a.b>": ["张三"]}
++         assert result == {"<人名[1].a.b>": ["张三"]}
++     def test_list_value_preserved(self):
++         result = normalize_mapping_dict({"<人名[1].a.b>": ["张三", "李四"]})
++         assert result == {"<人名[1].a.b>": ["张三", "李四"]}
++     def test_deduplicates_values(self):
++         result = normalize_mapping_dict({"<人名[1].a.b>": ["张三", "张三"]})
++     def test_rejects_non_dict(self):
++         with pytest.raises(ValueError, match="must be a JSON object"):
++             normalize_mapping_dict([1, 2, 3])
++     def test_rejects_invalid_tag_key(self):
++         with pytest.raises(ValueError, match="not a valid anonymized tag"):
++             normalize_mapping_dict({"not_a_tag": ["value"]})
++     def test_rejects_empty_key(self):
++         with pytest.raises(ValueError, match="non-empty"):
++             normalize_mapping_dict({"": ["value"]})
++     def test_rejects_empty_value(self):
++         with pytest.raises(ValueError, match="empty value"):
++             normalize_mapping_dict({"<人名[1].a.b>": [""]})
++     def test_strips_whitespace(self):
++         result = normalize_mapping_dict({"  <人名[1].a.b>  ": "  张三  "})
++         assert "<人名[1].a.b>" in result
++         assert result["<人名[1].a.b>"] == ["张三"]
++ # load_mapping / save_mapping
++ class TestLoadSaveMapping:
++     def test_roundtrip_file(self, tmp_path):
++         mapping = {"<人名[1].a.b>": ["张三"], "<地址[1].c.d>": ["北京"]}
++         path = str(tmp_path / "mapping.json")
++         path = str(tmp_path / "mapping.json")
++         path = str(tmp_path / "mapping.json")
++         save_mapping(mapping, path)
++         save_mapping(mapping, path)
++         loaded = load_mapping(path)
++         loaded = load_mapping(path)
++         loaded = load_mapping(path)
++         assert loaded == mapping
++     def test_save_creates_restrictive_permissions(self, tmp_path):
++         mapping = {"<人名[1].a.b>": ["张三"]}
++         mode = stat.S_IMODE(os.stat(path).st_mode)
++         assert mode == 0o600
++     def test_load_inline_json(self):
++         inline = '{"<人名[1].a.b>": ["张三"]}'
++         loaded = load_mapping(inline)
++         assert loaded == {"<人名[1].a.b>": ["张三"]}
++         assert loaded == {"<人名[1].a.b>": ["张三"]}
++     def test_load_wrapped_format(self, tmp_path):
++         """Load from the {text:..., mapping:...} format produced by hide."""
++         wrapped = {
++             "text": "anonymized text",
++             "mapping": {"<人名[1].a.b>": ["张三"]},
++         path = str(tmp_path / "wrapped.json")
++         with open(path, "w") as f:
++             json.dump(wrapped, f)
++     def test_load_invalid_path_and_json(self):
++         with pytest.raises(ValueError, match="neither a valid file path nor a valid JSON"):
++             load_mapping("/nonexistent/path/to/file.json")
++     def test_save_overwrites_existing(self, tmp_path):
++         save_mapping({"<人名[1].a.b>": ["张三"]}, path)
++         save_mapping({"<人名[2].a.b>": ["李四"]}, path)
++         assert "<人名[2].a.b>" in loaded
++         assert "<人名[1].a.b>" not in loaded
++ # parse_json_tolerant
++ class TestParseJsonTolerant:
++     def test_plain_json(self):
++         assert parse_json_tolerant('{"key": "value"}') == {"key": "value"}
++     def test_json_array(self):
++         assert parse_json_tolerant("[1, 2, 3]") == [1, 2, 3]
++     def test_markdown_fenced_json(self):
++         text = '```json\n{"key": "value"}\n```'
++         assert parse_json_tolerant(text) == {"key": "value"}
++         assert parse_json_tolerant(text) == {"key": "value"}
++         assert parse_json_tolerant(text) == {"key": "value"}
++     def test_markdown_fenced_no_lang(self):
++         text = '```\n{"key": "value"}\n```'
++     def test_trailing_text_after_json(self):
++         text = 'Some intro {"key": "value"} some trailing'
++     def test_returns_none_for_garbage(self):
++         assert parse_json_tolerant("not json at all") is None
++     def test_empty_string(self):
++         assert parse_json_tolerant("") is None
++     def test_whitespace_padded(self):
++         assert parse_json_tolerant('  {"a": 1}  ') == {"a": 1}

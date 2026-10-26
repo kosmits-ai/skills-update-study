@@ -1,0 +1,459 @@
+anatoli-iliev/web-observer  0.2.0 -> 0.2.1
+change_type: instructions+docs+code   changelog: Quiet Vercel polls no longer leak their notes into the chat: OpenClaw delivers stderr alongside NO_REPLY, so a successful scheduled run now writes its notes to web-observer.log beside the state file. Error alerts name the project and its domain and list each distinct error once, with count, routes, status, whether it was an HTTP failure, and a sample request id. Opted-in log messages are cut to one line, capped, and have common secret shapes redacted.
+
+### CHANGELOG.md  [docs]
++ ## [0.2.1] - 2026-10-14
++ ### Fixed
++ - **A quiet Vercel poll no longer sends its notes to the chat.** OpenClaw stays
++   silent only when a cron command prints exactly `NO_REPLY`; anything on stderr
++   is delivered with it. A poll that found errors below the threshold therefore
++   sent `stdout: NO_REPLY / stderr: note: ...` with no project named, eleven
++   times in two days on one install. `watch`, `vercel-watch` and `digest` now
++   append a successful run's notes to `web-observer.log` beside the state file;
++   a failed run still writes them to stderr.
++ ### Changed
++ - **Error alerts list distinct errors.** An alert names the project and its
++   domain, then each distinct error once with its count, routes, status,
++   whether it was an HTTP failure or only logged an error line, and a sample
++   request id.
++   With `includeMessages` on, errors are grouped by message and quoted.
++ - **Opted-in messages are redacted.** Only the first line is sent, capped at
++   200 characters, with common secret shapes replaced by `[redacted]`.
+
+### README.md  [docs]
+- ### Your application's log text is not forwarded
+- Alerts carry counts, statuses and affected routes. They do not carry the log
+- Turn it on only having decided that is fine for your logs.
+- - **Anything on stdout during a scheduled run is sent to you.** Diagnostics go to
+-   stderr, where the cron run log keeps them without delivering them.
++ ```
++ ```
++ ### What an error alert says
++ An alert names the project and its domain, then lists each **distinct** error
++ once: how many times it happened, on which routes, with what status, whether it was an
++ HTTP failure or only counts because it logged an error line,
++ and one request id to look up in the Vercel dashboard. Twenty-four copies of one
++ warning read as one line with a count.
++ 🟠 my-project (example.com): 25 new errors on Vercel in the last 20 minutes, 2 distinct:
++ 1. 24 x "(node:6) [DEP0005] DeprecationWarning: Buffer() is deprecated…"
++    on GET / (13), /api/cron/cleanup (5), /products/[slug] (5) and 1 more; status 200; not an HTTP failure; counted because it logged at error level
++    e.g. request fra1::abcde-1791…
++ 2. 1 x "order sync failed: 503 upstream timeout"
++    on POST /api/orders; status 303; not an HTTP failure; counted because it logged at error level
++    e.g. request fra1::fghij-1791…
++ At: 2026-10-14 18:25:45 +03:00
++ The quoted messages appear only with `includeMessages` on. Without it, errors
++ are told apart by method, route and status instead.
++ ### Your application's log text is not forwarded by default
++ By default, alerts carry counts, statuses and affected routes, not the log
++ Turn it on only having decided that is fine for your logs. When it is on, only
++ the first line of each message is sent, capped at 200 characters, with the usual
++ shapes of secrets replaced by `[redacted]`: `key=value` pairs whose key names a
++ secret, bearer and basic credentials, email addresses, JWTs, credentials in a
++ URL, and long runs of letters and digits such as API keys. That is pattern
++ matching, not a guarantee, which is why it stays opt-in.
++ - **Anything a scheduled run prints is sent to you, stderr included.** OpenClaw
++   stays silent only when the whole output is exactly `NO_REPLY`; any stderr is
++   delivered with it under a `stderr:` heading. So `watch`, `vercel-watch` and
++   `digest` hold their notes back and, when the run succeeds, append them to
++   `web-observer.log` beside the state file instead. A failed run still writes
++   them to stderr, because then they explain the failure.
+
+### SKILL.md  [instructions]
+- version: 0.2.0
+- - On a scheduled run, **anything printed to stdout is sent to the user.**
+-   Diagnostics go to stderr, where cron records them in the run log instead.
+- thought about it: see the rule above about raw log text.
++ version: 0.2.1
++ - On a scheduled run, **anything printed is sent to the user, stderr included**:
++   OpenClaw stays silent only when the whole output is exactly `NO_REPLY`. So a
++   successful `watch`, `vercel-watch` or `digest` appends its notes to
++   `web-observer.log` beside the state file instead of stderr; a failed one
++   still writes them to stderr.
++ thought about it: see the rule above about raw log text. When on, each message is
++ cut to its first line, capped at 200 characters, and common secret shapes are
++ replaced by `[redacted]`; alerts then quote each distinct error once with its
++ count and routes.
+
+### lib/bridge/vercel.d.ts  [code]
+-     /** Present only when `vercel.errors.includeMessages` is true. */
++ /**
++ /**
++  *
++  *
++  *
++  */
++  */
++ };
++     method: string;
++     level: string | null;
++     /**
++     /**
++      * The site's hostname, or "" when absent or not a plain hostname. Vercel only
++      * routes a request to a project through that project's own domains, so this
++      * names the site rather than repeating what a visitor typed.
++      */
++      */
++     domain: string;
++      * Present only when `vercel.errors.includeMessages` is true, and even then
++      * only as {@link redactMessage} leaves it.
++ /** The longest message an alert carries, after redaction. */
++ export declare const MESSAGE_LIMIT = 200;
++  * Reduce an application's log message to a line that is reasonable to send to
++  * a chat the user opted into.
++  * The underlying skill scrubs only its own Vercel token, so this is the second
++  * line of defence for the user who turned `includeMessages` on: the first line
++  * of the message only, with the shapes secrets usually take replaced. It is
++  * pattern-based and cannot catch everything, which is why the opt-in exists.
++  * - `key=value` and `key: value` pairs whose key names a secret
++  * - `Bearer ...` and `Basic ...` credentials
++  * - email addresses
++  * - JWTs, and any unbroken run of 24 or more letters, digits, `_` or `-`
++  *   containing a digit, which is what API keys and session ids look like
++  * - credentials embedded in a URL
++ export declare function redactMessage(message: string): string;
++ /** One distinct error in a poll: every entry that shares its cause. */
++ export type ErrorGroup = {
++     count: number;
++     /** The redacted message, or null when messages are not included. */
++     message: string | null;
++     /** Statuses seen, most frequent first. */
++     statuses: Array<[string, number]>;
++     /** Route patterns seen, most frequent first. Never concrete paths. */
++     routes: Array<[string, number]>;
++     crashed: number;
++     /** Entries that responded below 500 without crashing. */
++     loggedOnly: number;
++     /** A request id to look up in the Vercel dashboard. */
++     sampleRequestId: string;
++  * Group a poll's errors into distinct ones, most frequent first.
++  * With messages included, entries sharing a message are one error wherever it
++  * was raised, because one bug often fails several routes. Without them, the
++  * best available identity is the method, route, status and whether it crashed.
++ export declare function groupErrors(entries: readonly SafeErrorEntry[]): ErrorGroup[];
++ /** The hostname most of a poll's errors were served on, or "" when none is known. */
++ export declare function mainDomain(entries: readonly SafeErrorEntry[]): string;
+
+### lib/bridge/vercel.js  [code]
+-             entry.message = asString(row["message"]);
++ /**
++ /**
++  *
++  *
++  *
++  */
++  */
++ }
++ }
++ }
++ }
++     }
++     }
++ const HOSTNAME = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/i;
++ function asHostname(value) {
++     const text = asString(value);
++     return text.length <= 253 && HOSTNAME.test(text) ? text.toLowerCase() : "";
++ /** The longest message an alert carries, after redaction. */
++ export const MESSAGE_LIMIT = 200;
++  * Reduce an application's log message to a line that is reasonable to send to
++  * a chat the user opted into.
++  * The underlying skill scrubs only its own Vercel token, so this is the second
++  * line of defence for the user who turned `includeMessages` on: the first line
++  * of the message only, with the shapes secrets usually take replaced. It is
++  * pattern-based and cannot catch everything, which is why the opt-in exists.
++  * - `key=value` and `key: value` pairs whose key names a secret
++  * - `Bearer ...` and `Basic ...` credentials
++  * - email addresses
++  * - JWTs, and any unbroken run of 24 or more letters, digits, `_` or `-`
++  *   containing a digit, which is what API keys and session ids look like
++  * - credentials embedded in a URL
++ export function redactMessage(message) {
++     const first = (message.split(/\r?\n/).find((line) => line.trim() !== "") ?? "").trim();
++     const redacted = first
++         .replace(/\b([a-z][a-z0-9+.-]*:\/\/)[^\s/:@]+:[^\s/@]+@/gi, "$1[redacted]@")
++         .replace(/\b((?:api[_-]?key|apikey|token|secret|password|passwd|pwd|auth|authorization|session|cookie|signature|sig|key)["']?\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;&]+)/gi, "$1[redacted]")
++         .replace(/\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]+/gi, "$1 [redacted]")
++         .replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, "[email]")
++         .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, "[redacted]")
++         .replace(/[A-Za-z0-9_-]{24,}/g, (run) => (/\d/.test(run) ? "[redacted]" : run))
++         .replace(/\s+/g, " ");
++     return redacted.length > MESSAGE_LIMIT ? `${redacted.slice(0, MESSAGE_LIMIT)}…` : redacted;
++             domain: asHostname(row["domain"]),
++             entry.message = redactMessage(asString(row["message"]));
++         }
++     for (const entry of entries) {
++     for (const entry of entries) {
++         const status = entry.status === null ? "(none)" : String(entry.status);
++         const route = entry.route !== "" ? entry.route : "(unrouted)";
++     const order = (map) => [...map.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
++  * Group a poll's errors into distinct ones, most frequent first.
++  * With messages included, entries sharing a message are one error wherever it
++  * was raised, because one bug often fails several routes. Without them, the
++  * best available identity is the method, route, status and whether it crashed.
++ export function groupErrors(entries) {
++     const groups = new Map();
++         const message = entry.message !== undefined && entry.message !== "" ? entry.message : null;
++         const key = message !== null
++             ? `m\u0000${message}`
++             : `r\u0000${entry.method}\u0000${route}\u0000${status}\u0000${entry.crashed}`;
++         let slot = groups.get(key);
++         if (slot === undefined) {
++             slot = {
++                 group: {
++                     count: 0,
++                     message,
++                     method: entry.method,
++                     statuses: [],
++                     routes: [],
++                     level: entry.level,
++                     crashed: 0,
++                     loggedOnly: 0,
++                     sampleRequestId: entry.requestId,
++                 },
++                 statuses: new Map(),
++                 routes: new Map(),
++             };
++             groups.set(key, slot);
++         const { group } = slot;
++         group.count += 1;
++         if (entry.crashed)
++             group.crashed += 1;
++         if (!entry.crashed && entry.status !== null && entry.status < 500)
++             group.loggedOnly += 1;
++         if (group.sampleRequestId === "")
++             group.sampleRequestId = entry.requestId;
++         slot.statuses.set(status, (slot.statuses.get(status) ?? 0) + 1);
++         slot.routes.set(route, (slot.routes.get(route) ?? 0) + 1);
++     return [...groups.values()]
++         .map(({ group, statuses, routes }) => ({ ...group, statuses: order(statuses), routes: order(routes) }))
++         .sort((a, b) => b.count - a.count);
++ /** The hostname most of a poll's errors were served on, or "" when none is known. */
++ export function mainDomain(entries) {
++     const counts = new Map();
++         if (entry.domain !== "")
++             counts.set(entry.domain, (counts.get(entry.domain) ?? 0) + 1);
++     return [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0]?.[0] ?? "";
+
+### lib/cli/main.js  [code]
++ import { deferErr, releaseErr, runLogPath } from "./runlog.js";
++ }
++     // A scheduled run's stderr is delivered to the chat alongside its stdout, so
++     // a successful one keeps its notes for the run log instead. See runlog.ts.
++     const scheduled = (args.command === "watch" || args.command === "vercel-watch" || args.command === "digest") &&
++         !args.dryRun;
++     // Spread so the command keeps the narrowing the checks above gave it.
++     const configured = { ...args, command: args.command };
++     if (!scheduled)
++         return await runConfigured(configured, config, configFile, stateFile, env, streams);
++     const quiet = deferErr(streams);
++     const code = await runConfigured(configured, config, configFile, stateFile, env, quiet);
++     releaseErr(streams, quiet.held(), code, runLogPath(stateFile), args.command, Date.now());
++     return code;
++ /** Run a command that needs a valid configuration. */
++ async function runConfigured(args, config, configFile, stateFile, env, streams) {
+
+### lib/cli/render.d.ts  [code]
+-  * when it is the answer. Diagnostics, warnings and progress go to stderr, where
+-  * cron records them in the run log without delivering them.
++  * when it is the answer. Diagnostics, warnings and progress go to stderr. A
++  * scheduled run holds them back and, when it succeeds, writes them to the run log
++  * instead (see runlog.ts), because OpenClaw delivers stderr alongside stdout.
+
+### lib/cli/render.js  [code]
+-  * when it is the answer. Diagnostics, warnings and progress go to stderr, where
+-  * cron records them in the run log without delivering them.
++  * when it is the answer. Diagnostics, warnings and progress go to stderr. A
++  * scheduled run holds them back and, when it succeeds, writes them to the run log
++  * instead (see runlog.ts), because OpenClaw delivers stderr alongside stdout.
+
+### lib/cli/runlog.d.ts  [code]
++ /**
++ /**
++  * The run log: where a scheduled run's diagnostics go when the run succeeded.
++  *
++  *
++  *
++  * OpenClaw stays silent for a cron command only when its output is exactly
++  * NO_REPLY. If anything was written to stderr as well, it delivers both, headed
++  * "stdout:" and "stderr:", so a routine note becomes a chat message. Measured on
++  * OpenClaw 2026.7.1-2: eleven such messages in two days from notes alone.
++  * So a successful scheduled run writes nothing to stderr. Its notes are
++  * appended here instead, next to the state file, where they can still be read.
++  * A failed run keeps them on stderr, because then they are the explanation.
++  */
++  */
++ import type { Streams } from "./render.js";
++ /** Rotate the log past this size, keeping one previous file. */
++ export declare const RUN_LOG_LIMIT = 1000000;
++ /** The run log's location: beside the state file. */
++ export declare function runLogPath(stateFile: string): string;
++ /** Streams whose stderr is held back until the outcome is known. */
++ export declare function deferErr(streams: Streams): Streams & {
++     held: () => string;
++ };
++  * Send held diagnostics where they belong for this outcome.
++  * @param code The run's exit code. Zero sends them to the run log, anything
++  *   else to stderr.
++ export declare function releaseErr(streams: Streams, held: string, code: number, logFile: string, label: string, atMs: number): void;
+
+### lib/cli/runlog.js  [code]
++ /**
++ /**
++  * The run log: where a scheduled run's diagnostics go when the run succeeded.
++  *
++  *
++  *
++  * OpenClaw stays silent for a cron command only when its output is exactly
++  * NO_REPLY. If anything was written to stderr as well, it delivers both, headed
++  * "stdout:" and "stderr:", so a routine note becomes a chat message. Measured on
++  * OpenClaw 2026.7.1-2: eleven such messages in two days from notes alone.
++  * So a successful scheduled run writes nothing to stderr. Its notes are
++  * appended here instead, next to the state file, where they can still be read.
++  * A failed run keeps them on stderr, because then they are the explanation.
++  */
++  */
++ import { appendFileSync, mkdirSync, renameSync, statSync } from "node:fs";
++ import path from "node:path";
++ /** Rotate the log past this size, keeping one previous file. */
++ export const RUN_LOG_LIMIT = 1_000_000;
++ /** The run log's location: beside the state file. */
++ export function runLogPath(stateFile) {
++     return path.join(path.dirname(stateFile), "web-observer.log");
++ }
++ }
++ }
++ /** Streams whose stderr is held back until the outcome is known. */
++ export function deferErr(streams) {
++     const held = [];
++     return { out: streams.out, err: (text) => held.push(text), held: () => held.join("") };
++  * Send held diagnostics where they belong for this outcome.
++  * @param code The run's exit code. Zero sends them to the run log, anything
++  *   else to stderr.
++ export function releaseErr(streams, held, code, logFile, label, atMs) {
++     if (held === "")
++         return;
++         return;
++     if (code !== 0) {
++         streams.err(held);
++     }
++     }
++     }
++     try {
++         mkdirSync(path.dirname(logFile), { recursive: true });
++         try {
++             if (statSync(logFile).size > RUN_LOG_LIMIT)
++                 renameSync(logFile, `${logFile}.1`);
++         }
++         }
++         catch {
++             // Absent is the usual case on a first run.
++         const stamp = new Date(atMs).toISOString();
++         const body = held
++             .trimEnd()
++             .split("\n")
++             .map((line) => `${stamp} ${label} ${line}`)
++             .join("\n");
++         appendFileSync(logFile, `${body}\n`, { mode: 0o600 });
++     catch {
++         // Losing a note is better than turning a quiet run into a chat message.
+
+### lib/commands/vercelWatch.d.ts  [code]
+- /** The alert text for a batch of new errors. */
++ /**
++  *
++  */
++ /** How many distinct errors an alert lists before summarising the rest. */
++ export declare const MAX_GROUPS = 5;
++  * The alert text for a batch of new errors.
++  * Leads with the project and its domain, so the reader knows which site it is
++  * before anything else, then lists each distinct error once with how often it
++  * happened, where, and with what outcome. A flood of one error therefore reads
++  * as one line with a count, not as a pile of routes.
+
+### lib/commands/vercelWatch.js  [code]
+- import { budgetArgv, errorsArgv, tally, toSafeEntries, } from "../bridge/vercel.js";
+-     }
+- /** The alert text for a batch of new errors. */
+-     const counts = tally(fresh);
+-     const statuses = counts.byStatus.map(([status, count]) => `${count} x ${status}`).join(", ");
+-         `🟠 ${project}: ${counts.total} new error${counts.total === 1 ? "" : "s"} on Vercel ` +
+-             `in the last ${windowMinutes} minutes`,
+-         `- By status: ${statuses}`,
+-     const routes = counts.byRoute.slice(0, 5);
+-     if (routes.length > 0) {
+-         lines.push(`- Routes: ${routes.map(([route, count]) => `${route} (${count})`).join(", ")}` +
+-             (counts.byRoute.length > routes.length
+-                 ? ` and ${counts.byRoute.length - routes.length} more`
+-                 : ""));
+-     const crashed = fresh.filter((entry) => entry.crashed).length;
+-     if (crashed > 0) {
+-         lines.push(`- ${crashed} of them crashed the function`);
+-     if (includeMessages) {
+-         // Only reachable when the user set includeMessages, and even then only the
+-         // distinct leading lines, capped. The underlying skill does not redact log
+-         // content, so this is application output verbatim.
+-         const messages = [...new Set(fresh.map((entry) => entry.message ?? "").filter((m) => m !== ""))];
+-         for (const message of messages.slice(0, 3)) {
+-             lines.push(`- Logged: ${message.length > 300 ? `${message.slice(0, 300)}…` : message}`);
+-         if (messages.length > 3)
+-             lines.push(`- and ${messages.length - 3} other messages`);
+-         lines.push("- More errors matched than were fetched, so this is a sample rather than a full count");
+-     lines.push(`- At: ${stamp(atMs)}`);
+-         lines.push(`- Run: web-observer vercel errors --project ${project} --since ${windowMinutes}m`);
++ /**
++  *
++  */
++ import { budgetArgv, errorsArgv, groupErrors, mainDomain, toSafeEntries, } from "../bridge/vercel.js";
++ }
++ }
++ /** How many distinct errors an alert lists before summarising the rest. */
++ export const MAX_GROUPS = 5;
++ function plural(count, word) {
++     return `${count} ${word}${count === 1 ? "" : "s"}`;
++ function listed(pairs, limit) {
++     const shown = pairs.slice(0, limit).map(([name, count]) => (pairs.length > 1 ? `${name} (${count})` : name));
++     return shown.join(", ") + (pairs.length > limit ? ` and ${pairs.length - limit} more` : "");
++  * The alert text for a batch of new errors.
++  * Leads with the project and its domain, so the reader knows which site it is
++  * before anything else, then lists each distinct error once with how often it
++  * happened, where, and with what outcome. A flood of one error therefore reads
++  * as one line with a count, not as a pile of routes.
++     const domain = mainDomain(fresh);
++     const site = domain !== "" && domain !== project ? `${project} (${domain})` : project;
++     const groups = groupErrors(fresh);
++         `🟠 ${site}: ${plural(fresh.length, "new error")} on Vercel in the last ${windowMinutes} minutes, ` +
++             `${groups.length === 1 ? "1 distinct" : `${groups.length} distinct`}:`,
++     for (const [index, group] of groups.slice(0, MAX_GROUPS).entries()) {
++         const where = `${group.method !== "" ? `${group.method} ` : ""}${listed(group.routes, 3)}`;
++         const outcome = group.crashed > 0
++             ? `crashed the function${group.crashed < group.count ? ` ${group.crashed} times` : ""}`
++             : `status ${listed(group.statuses, 3)}`;
++         const head = group.message !== null
++             ? `${index + 1}. ${group.count} x "${group.message}"`
++             : `${index + 1}. ${group.count} x ${where}`;
++         lines.push(head);
++         const detail = [group.message !== null ? `on ${where}` : null, outcome];
++         if (group.loggedOnly === group.count) {
++             detail.push(`not an HTTP failure; counted because it logged at ${group.level ?? "error"} level`);
++         lines.push(`   ${detail.filter((part) => part !== null).join("; ")}`);
++         if (group.sampleRequestId !== "")
++             lines.push(`   e.g. request ${group.sampleRequestId}`);
++     if (groups.length > MAX_GROUPS) {
++         const rest = groups.slice(MAX_GROUPS).reduce((sum, group) => sum + group.count, 0);
++         lines.push(`… and ${plural(groups.length - MAX_GROUPS, "more distinct error")} (${rest} in all)`);
++         lines.push("More errors matched than were fetched, so this is a sample rather than a full count.");
++     lines.push(`At: ${stamp(atMs)}`);
++         lines.push("Log messages are not included (vercel.errors.includeMessages is off). " +
++             `See them with: web-observer vercel errors --project ${project} --since ${windowMinutes}m`);
+
+### lib/version.d.ts  [code]
+- export declare const VERSION = "0.2.0";
++ export declare const VERSION = "0.2.1";
+
+### lib/version.js  [code]
+- export const VERSION = "0.2.0";
++ export const VERSION = "0.2.1";
+
+### package.json  [code]
+-   "version": "0.2.0",
++   "version": "0.2.1",

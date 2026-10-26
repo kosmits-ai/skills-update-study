@@ -1,0 +1,217 @@
+zw008/vmware-policy  1.8.5 -> 1.8.7
+change_type: instructions+docs   changelog: Remove read-only switch and approval tiers; read/write authz delegated to RBAC. New guard()/audit_call() core.
+
+### SKILL.md  [instructions]
+- ```
+- ```python
+- ## Read-Only Gate
+- This package *implements* the family's read-only mode; the skills only call it. A prompt instruction ("never modify anything") is advisory and a weak model can ignore it, so `apply_read_only_gate()` makes the guarantee structural: with the mode on, every write tool is removed from the FastMCP registry before the server serves, and `list_tools()` never offers it. The model cannot call what it cannot see.
+- from vmware_policy import apply_read_only_gate
+- # Call once, after every tool module has registered and before the server runs.
+- WITHHELD_WRITE_TOOLS: list[str] = apply_read_only_gate(
+-     mcp, "vmware-aria", config_flag=_config_read_only()
+- )
+- It returns the sorted names of the tools it removed (empty when the mode is off) so the caller can log what was withheld, and it is idempotent. `skill` is the hyphenated skill name, normalised to a per-skill env var (`vmware-nsx-security` -> `VMWARE_NSX_SECURITY_READ_ONLY`). `config_flag` carries the skill's own `read_only:` setting and is consulted only when neither env var is set -- pass `None` for skills with no config file (vmware-pilot, vmware-debug, vmware-harden). Resolution order: per-skill env -> family `VMWARE_READ_ONLY` -> `config_flag` -> off, default off.
+- Two helpers answer the same question without touching a registry: `read_only_enabled(skill, config_flag) -> bool`, and `read_only_status(skill, config_flag) -> ReadOnlyStatus(enabled, source, raw, recognised)`, which adds *where* the answer came from so a skill's `doctor` can report it. Doctors should call `read_only_status` rather than walking the chain themselves -- one implementation means a doctor cannot disagree with the gate that enforces it.
+- **Classification.** A tool is withheld unless it is provably read-only. Signals, highest priority first: `FORCE_WRITE` membership, `[WRITE]` docstring prefix, `readOnlyHint=False` annotation, `[READ]` docstring prefix, `readOnlyHint=True` annotation, and anything inconclusive counts as a write. The docstring marker outranks the MCP annotation because it has full family coverage, while vmware-harden and vmware-debug register tools through a `build_server()` factory that passes no annotations at all.
+- **`FORCE_WRITE`** overrides three tools whose `[READ]` marker under-reports their real effect:
+- | Tool | Skill | Why |
+- |------|-------|-----|
+- | `vm_guest_download` | vmware-aiops | Reads from the guest OS, but writes to an operator-supplied `local_path` and takes guest credentials |
+- | `get_supervisor_kubeconfig` | vmware-vks | Materialises a session-token credential file at a model-supplied local path |
+- | `get_tkc_kubeconfig` | vmware-vks | Same shape as above |
+- All three are read-only against the managed infrastructure but write a file to a caller-supplied local path with credentials involved -- side effects a locked-down deployment should opt into explicitly rather than receive by default. Tools that write only to a skill's own local store (vmware-harden's DuckDB twin) stay exposed: that store is a cache of observations, not managed infrastructure.
+- **Fail-closed, precisely.** Exactly two conditions abort start-up with `ReadOnlyGateError`: the FastMCP tool registry cannot be enumerated (typically an incompatible `mcp` version), or a removal did not take effect and a write tool survived the sweep. A switch value that cannot be parsed (`VMWARE_READ_ONLY=ture`) does **not** abort -- it resolves to *on*, with a warning naming the accepted values, because a typo must never leave write tools exposed. A read-only mode that silently degrades to read-write is worse than none, since operators stop checking. Skill authors shipping to operators who run local or small models: see [`references/agent-guardrails.md`](references/agent-guardrails.md) for what the gate, the list envelope and the policy engine each remove from the prompt those operators would otherwise hand-write.
+- | `apply_read_only_gate()` | Function | Removes write tools from a skill's MCP registry when read-only mode is on (see above) |
+- | `read_only_status()` | Function | Resolves read-only state + its source, for a skill's `doctor` to report |
+
+### references/agent-guardrails.md  [docs]
+- ---
+- | "Work exclusively in read-only mode and never modify anything" | `apply_read_only_gate()` — write tools are removed from the FastMCP registry before the server serves. `list_tools()` never offers them, so the model cannot call what it cannot see. |
+- | "Never call a tool that would change production without asking a human first" | `PolicyEngine` — deny rules and maintenance windows are evaluated *before* execution, and a target declared `environment: production` requires a named approver for irreversible work. |
+- - **`[READ]` / `[WRITE]` docstring markers.** They document intent for a
+-   reader, and they are the highest-coverage signal the gate classifies on.
+- ## The read-only gate, precisely
+- ```python
+- from vmware_policy import apply_read_only_gate
+- # Call once, after every tool module has registered and before the server runs.
+- WITHHELD_WRITE_TOOLS: list[str] = apply_read_only_gate(
+-     mcp, "vmware-aria", config_flag=_config_read_only()
+- )
+- ```
+- It returns the sorted names of the tools it removed — empty when the mode is
+- off — so the caller can log exactly what was withheld, and it is idempotent.
+- **Resolution order** is per-skill env → family `VMWARE_READ_ONLY` →
+- `config_flag` → off. `skill` is the hyphenated skill name, normalised to a
+- per-skill variable (`vmware-nsx-security` → `VMWARE_NSX_SECURITY_READ_ONLY`).
+- Pass `config_flag=None` for skills with no config file — vmware-pilot,
+- vmware-debug and vmware-harden. Those three have **only** the environment
+- variables; their guardrail pages must not promise a `read_only:` setting that
+- does not exist.
+- **Classification.** A tool is withheld unless it is provably read-only.
+- Signals, highest priority first: `FORCE_WRITE` membership, `[WRITE]` docstring
+- prefix, `readOnlyHint=False`, `[READ]` docstring prefix, `readOnlyHint=True`,
+- and anything inconclusive counts as a write. The docstring marker outranks the
+- MCP annotation because it has full family coverage, while vmware-harden and
+- vmware-debug register tools through a `build_server()` factory that passes no
+- annotations.
+- **`FORCE_WRITE`** covers three tools whose `[READ]` marker under-reports their
+- real effect — `vm_guest_download` (vmware-aiops), `get_supervisor_kubeconfig`
+- and `get_tkc_kubeconfig` (vmware-vks). All three are read-only against the
+- managed infrastructure but write a file to a caller-supplied local path with
+- credentials involved. This is why vmware-vks withholds 9 tools where only 7 are
+- marked Write, and vmware-aiops withholds 36 where 35 are. A guardrail page that
+- quotes the marker count instead of the withheld count is wrong.
+- **Fail-closed, precisely.** Exactly two conditions abort start-up with
+- `ReadOnlyGateError`: the registry cannot be enumerated, or a removal did not
+- take effect and a write tool survived the sweep. A switch value that cannot be
+- parsed (`VMWARE_READ_ONLY=ture`) does **not** abort — it resolves to *on*, with
+- a warning naming the accepted values, because a typo must never leave write
+- tools exposed. A read-only mode that silently degrades to read-write is worse
+- than none, since operators stop checking.
+- **Report state from one place.** `read_only_status(skill, config_flag)` returns
+- `ReadOnlyStatus(enabled, source, raw, recognised)`. A skill's `doctor` should
+- call it rather than walking the chain itself — one implementation means a
+- doctor cannot disagree with the gate that enforces it.
+- ## Blocked tools
+- - A tool missing from the tool list means read-only mode is on. That is a
+-   deliberate lockdown, not a fault. Name the operation that is blocked and say
+-   an operator must clear the switch and restart the server. Do not retry, and
+-   do not look for another tool or another route to the same change.
+- - [ ] Every tool's docstring opens with `[READ]` or `[WRITE]`. The gate
+-       classifies on this, and anything inconclusive is treated as a write.
+- - [ ] A tool that reads remote state but writes a local file with credentials
+-       belongs in `FORCE_WRITE`, not in the `[READ]` set.
+- - [ ] `apply_read_only_gate()` called once, after registration, before serving,
+-       with `config_flag=None` when the skill has no config file.
+- - [ ] The withheld list logged at start-up.
+- - [ ] `doctor` reports read-only state via `read_only_status()`.
+- - [ ] `references/agent-guardrails.md` written, quoting the **withheld** count
+-       rather than the `[WRITE]` count, and linked from the SKILL.md read-only
+-       section.
+- | Calls a write tool it was told not to call | `apply_read_only_gate()`. This is the failure the package exists for: the instruction was ignored, so the tool is removed instead. |
++ | "Never call a tool that would change production without asking a human first" | `PolicyEngine` — deny rules (optionally scoped to an `environment` label) and maintenance windows are evaluated *before* execution. For an enforced human-approval step, route the change through **vmware-pilot**. |
++ - **`[READ]` / `[WRITE]` docstring markers.** They document each tool's intent —
++   read versus write — for anyone reading the code or the audit trail.
++ - [ ] Every tool's docstring opens with `[READ]` or `[WRITE]`, documenting
++       whether it changes managed state.
++ - [ ] `references/agent-guardrails.md` written and linked from the SKILL.md.
+
+### references/capabilities.md  [docs]
+- ```
+- ```python
+- ## Read-Only Gate
+- Structural enforcement of read-only mode: write tools are removed from a skill's MCP
+- registry before it serves, so `list_tools()` never offers them. `@vmware_tool` is the
+- per-call gate; this is the per-server one.
+- ### Signatures
+- def apply_read_only_gate(mcp, skill: str, config_flag: bool | None = None) -> list[str]:
+-     """Remove every write tool from ``mcp`` when read-only mode is on.
+-     Returns the sorted names removed (empty when off). Idempotent. Call once,
+-     after all tool modules have registered and before the server runs.
+-     """
+- def read_only_enabled(skill: str, config_flag: bool | None = None) -> bool:
+-     """The same decision, without touching a registry."""
+- def read_only_status(skill: str, config_flag: bool | None = None) -> ReadOnlyStatus:
+-     """The decision plus its provenance, for a skill's ``doctor`` to report."""
+- `ReadOnlyStatus` is a NamedTuple: `enabled` (bool), `source` (env var name, `"config"`, or
+- `"default"`), `raw` (the value as written, `""` when unset), `recognised` (False when a
+- typo fell through to on). Tests pin `read_only_status` and `read_only_enabled` to identical
+- conclusions case by case, so a doctor built on the former cannot disagree with the gate.
+- ### Precedence
+- `VMWARE_<SKILL>_READ_ONLY` -> `VMWARE_READ_ONLY` -> `config_flag` -> off. `skill` is the
+- hyphenated name and is normalised to the env var (`vmware-nsx-security` ->
+- `VMWARE_NSX_SECURITY_READ_ONLY`). Skills without a config file pass `config_flag=None`.
+- ### Tool Classification
+- | Priority | Signal | Verdict |
+- |:--:|--------|---------|
+- | 1 | Name in `FORCE_WRITE` | write |
+- | 2 | `[WRITE]` docstring prefix | write |
+- | 3 | `readOnlyHint=False` annotation | write |
+- | 4 | `[READ]` docstring prefix | read |
+- | 5 | `readOnlyHint=True` annotation | read |
+- | 6 | Nothing conclusive | write |
+- The docstring marker outranks the annotation because it has full family coverage, while
+- vmware-harden and vmware-debug build tools through a `build_server()` factory that passes
+- no annotations. `FORCE_WRITE` currently holds `vm_guest_download` (aiops),
+- `get_supervisor_kubeconfig` and `get_tkc_kubeconfig` (vks) -- all read-only upstream but
+- writing a credential-bearing file to a caller-supplied local path.
+- ### Failure Modes
+- | Condition | Behaviour |
+- |-----------|-----------|
+- | Registry cannot be enumerated | `ReadOnlyGateError` -- start-up aborts |
+- | A removed tool survives the sweep | `ReadOnlyGateError` -- start-up aborts |
+- | Switch value unparseable (`ture`) | Resolves to **on** + warning; does *not* abort |
+- | Mode off | Returns `[]`, nothing removed |
+- | Level | Confirmation Required | Examples |
+- |-------|:---------------------:|---------|
+- | `low` | No | list, get, info, status |
+- | `medium` | No | reconfigure, update settings |
+- | `high` | Yes | power off, migrate, snapshot revert |
+- | `critical` | Yes + production approval | delete VM, delete cluster, delete security policy |
++ Each operation is classified by risk level. The level is recorded in the audit
++ row and can be matched by a `deny` rule's `min_risk_level`; it does not by
++ itself gate execution.
++ | Level | Examples |
++ |-------|---------|
++ | `low` | list, get, info, status |
++ | `medium` | reconfigure, update settings |
++ | `high` | power off, migrate, snapshot revert |
++ | `critical` | delete VM, delete cluster, delete security policy |
+
+### references/setup-guide.md  [docs]
+- ```
+- ```
+- | `VMWARE_READ_ONLY` | No | Set to `true` to put **every** installed VMware skill into read-only mode |
+- | `VMWARE_<SKILL>_READ_ONLY` | No | Per-skill override, wins over the family variable (e.g. `VMWARE_NSX_SECURITY_READ_ONLY`) |
+- ### Read-Only Mode (Operators)
+- Off by default. When on, each skill's MCP server removes every write tool from its registry
+- before serving, so `list_tools()` never offers them -- structural, not a prompt instruction
+- the model may ignore. Resolution order, highest first:
+- | Priority | Signal | Scope |
+- |---|---|---|
+- | 1 | `VMWARE_<SKILL>_READ_ONLY` | One skill |
+- | 2 | `VMWARE_READ_ONLY` | Every installed VMware skill |
+- | 3 | `read_only: true` in that skill's `config.yaml` | One skill (skills that have a config file) |
+- | 4 | (nothing set) | Off |
+- The env vars come first so a deployment can be locked down from the MCP client's `env`
+- block without editing any config file. The combination `{"VMWARE_READ_ONLY": "true",
+- "VMWARE_<SKILL>_READ_ONLY": "false"}` locks the estate while leaving one skill writable --
+- the documented use is keeping vmware-pilot able to orchestrate while every downstream skill
+- enforces the lock on its own tools.
+- **Fail-closed.** Two conditions abort a server's start-up with `ReadOnlyGateError`: the
+- FastMCP tool registry cannot be enumerated (usually an incompatible `mcp` version), or a
+- removal did not take effect and a write tool survived. An unparseable value
+- (`VMWARE_READ_ONLY=ture`) does *not* abort -- it resolves to **on** with a warning naming
+- the accepted values, so a typo locks the deployment down rather than leaving it open.
+- **Verifying.** Each server logs a warning naming every tool it withheld at start-up. Skills
+- that ship a `doctor` (e.g. `vmware-log-insight doctor`) report the resolved state and its
+- source via `read_only_status()` -- the same resolver the gate uses, so the two cannot
+- disagree.
+- ```python
+- ```python
+- ### 5. Apply the Read-Only Gate
+- Call it once, after every tool module has registered and before the server runs:
+- from vmware_policy import apply_read_only_gate
+- WITHHELD_WRITE_TOOLS: list[str] = apply_read_only_gate(
+-     mcp, "vmware-myskill", config_flag=_config_read_only()
+- )
+- Pass `config_flag=None` if the skill has no config file -- the env vars then become the
+- only switch. Keep the module-level name so the server can log what was withheld. The gate
+- classifies by the `[READ]`/`[WRITE]` docstring marker your tool descriptions already carry,
+- so a new write tool is withheld correctly with no extra registration.
+- ### 6. Report the State in `doctor`
+- If the skill ships a `doctor`, add a check that calls `read_only_status()` rather than
+- re-walking the precedence chain -- ten hand-rolled copies is ten chances to drift from the
+- gate, and a doctor that disagrees with the gate is worse than no doctor. It must never
+- fail: read-only being on is a posture, not a fault.
+- from vmware_policy.readonly import read_only_status
+- def _check_read_only() -> tuple[bool, str]:
+-     status = read_only_status("vmware-myskill", _config_read_only())
+-     if not status.recognised:
+-         return True, f"{status.source}={status.raw!r} unrecognised -> resolves to ON"
+-     if status.enabled:
+-         return True, f"ON (from {status.source}) -- write tools are withheld"
+-     return True, f"off (from {status.source}) -- write tools are exposed"
+- Pass the **same** `config_flag` the MCP server passes `apply_read_only_gate`, or the two
+- will report different states for the same deployment.

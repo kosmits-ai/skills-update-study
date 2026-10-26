@@ -1,0 +1,1405 @@
+nextaltair/soul-in-sapphire  1.1.0 -> 2.0.0
+change_type: instructions+docs+code   changelog: 感情・状態を中立0/-5..+5へ変更（入力はscale_version:2必須）。履歴のversion付き移行、0/null・UTC時刻修正、保存先検証と部分保存receipt/再開、現在時刻への状態投影、heartbeatの新規観測手順を追加。感情の解釈はモデルに残し、他の尺度と既存relationは維持。
+
+### README.md  [docs]
+-     {"axis": "joy", "level": 7, "comment": "...", "need": "progress", "coping": "act"},
+-     {"axis": "stress", "level": 6, "comment": "...", "need": "safety", "coping": "log"}
+- node scripts/emostate_tick.js --payload-file /tmp/emostate_tick.json
++ ## 2.0.0への更新
++ **入力尺度の互換性変更:** emotion.level/state軸は中立0、-5..+5。
++ 新しいtickは`scale_version:2`が必須です。旧0..10入力をそのまま送らないでください。
++ 既存DBは自動で書き換わりません。writersを一時停止し、全履歴のバックアップ・
++ version付き移行・ミラー更新を済ませてから再開してください。
++ need/control/uncertainty/weight/imprint severityの尺度は変わりません。
++ - [尺度と履歴移行](references/emotion-scale.md): 欠損と0、減衰、部分保存のreceipt、現在時刻への投影。
++ - [heartbeatの新しい観測](references/heartbeat-sensing.md): 古いquiet結論の再利用を避け、意味のある変化だけ保存。
++ - `node --test scripts/*.test.js`でローカルの回帰検証ができます。
++   - `scale_version` (number; 2 = neutral0, -5..+5; missing = legacy0..10)
++   "scale_version": 2,
++     {"axis": "joy", "level": 2, "comment": "...", "need": "progress", "coping": "act"},
++     {"axis": "stress", "level": 1, "comment": "...", "need": "safety", "coping": "log"}
++ node scripts/emostate_tick.js --ids-file /path/to/verified-ids.json --payload-file /tmp/emostate_tick.json --receipt-file /path/to/tick-receipt.json --mirror-file /path/to/memory/now-state.json
++ 感情値・状態軸は中立0、-5..+5。イベントの感情値を減衰後の状態に加える。欠損は0ではない。
++ 旧0..10の保存履歴は値から5を引いて移行し、versionで識別する。
++ 解釈・感情の理由はモデルに残し、保存と数値処理だけをスクリプトが担う。
++ 移行、部分失敗の復旧、現在時刻への投影は [emotion-scale.md](references/emotion-scale.md) を参照。
+
+### SKILL.md  [instructions]
+- 4. Write a state snapshot with `scripts/emostate_tick.js` when meaningful. Include 1-3 evidence-grounded emotion axes accepted by the script when recording an emotional change.
+-     node scripts/emostate_tick.js --events-dbid <EVENTS_DB_ID> --emotions-dbid <EMOTIONS_DB_ID> --state-dbid <STATE_DB_ID> --state-dsid <STATE_DS_ID> --payload-file /tmp/emostate_tick.json
+-     echo '{"body":"...","source":"manual"}' | node scripts/journal_write.js --journal-dbid <JOURNAL_DB_ID> --journal-dsid <JOURNAL_DS_ID>
+- - `state_recall.js`: pull recent state snapshots.
++ Read [references/heartbeat-sensing.md](references/heartbeat-sensing.md) for fresh evidence, observation results and reply-mode handling. A previous quiet conclusion is not a new observation.
++ 4. Write a state snapshot with `scripts/emostate_tick.js` when meaningful. Include 1-3 evidence-grounded emotion axes accepted by the script when recording an emotional change. Read [references/emotion-scale.md](references/emotion-scale.md): payload `scale_version:2`, neutral 0, levels -5..+5; missing is not 0. Use verified IDs and a durable receipt, reuse it on retries, and prefer `--mirror-file` to publish the exact resulting state without retyping its values.
++     node scripts/emostate_tick.js --ids-file /path/to/verified-ids.json --payload-file /tmp/emostate_tick.json --receipt-file /path/to/tick-receipt.json --mirror-file /path/to/memory/now-state.json
++     node scripts/journal_write.js --ids-file /path/to/verified-ids.json < /path/to/journal-payload.json
++ - `state_recall.js`: pull recent historical state snapshots ordered by event time; `--current` adds a separately labelled current-time projection without changing records.
+
+### references/emotion-scale.md  [docs]
++ # Centered emotion scale and reliable persistence
++ ## Interpretation stays subjective
++ The model interprets Valentina's own reaction from an actual experience. Preserve
++ uncertainty and tentative relational reasoning. Do not derive feelings from a task
++ success/failure table, impose an emotion quota, or assert the user's psychology.
++ Emotion `level` and numeric state axes use version2: neutral0, range-5..+5.
++ A positive value is above this axis's baseline; negative is below baseline.
++ Negative joy is not automatically sadness. `level` is an event impulse, not a
++ replacement for the entire current axis. State adds the impulse after decay.
++ `null`/missing is unmeasured, never0. Need level, event control/uncertainty,
++ weights and imprint severity do NOT change scale.
++ Ordinary decay: value * 2^(-elapsedHours/24). Preserve the existing strong-positive
++ imprint policy: level>=4 (old>=9), control<=3 or unspecified, severity=level+5,
++ half-life24*(1+severity). Historical state remains a recorded snapshot; use
++ `state_recall.js --current` only for a separately labelled present-time projection.
++ ## Inputs and targets
++ Use `scale_version:2` at payload top level. Read IDs from the workspace AGENTS
++ database table or a verified private IDs file: keys events/emotions/state/journal,
++ each with database_id and data_source_id. Do not guess or type a journal ID into a
++ state command. The writer checks database/data-source/schema/relation targets
++ before mutation and reads the base state before creating an event.
++ ```sh
++ node scripts/emostate_tick.js --ids-file /path/to/ids.json \
++   --payload-file /path/to/payload.json --receipt-file /path/to/tick-receipt.json \
++   --mirror-file /path/to/memory/now-state.json
++ ```
++ Keep the same payload and receipt on a retry. Event timestamps must identify an
++ instant; default is UTC ISO. Current ticks must not precede the latest state.
++ Concurrent current writes must be serialized by the caller/CLI. Do not replay a
++ historical event through the current-tick entrypoint.
++ Receipts record event/emotion/state IDs as each stage succeeds. A definitive API
++ validation rejection can be resumed without duplicating successful stages.
++ A transport error or crash with pending stage is ambiguous: inspect actual
++ records and reconcile the receipt before retry. Never clear pending blindly.
++ A completed receipt is replay-safe and can restore a missing local mirror;
++ a historical retry must not roll a newer mirror back. Inspect exit status,
++ ok, stage and partial; local success is not durable Notion success.
++ ## Historical migration
++ Back up full paginated state/emotion rows and schemas outside the source repo.
++ Pause writers, take a fresh snapshot, and stage a plan with:
++ `migrate_emotion_scale.js plan <snapshot-dir> <plan.json>`.
++ The directory must contain `all-state.json` and `all-emotions.json`, each a JSON
++ array of complete Notion page objects (including `id` and `properties`), collected
++ through the end of data-source query pagination. Do not pass an API response
++ envelope or just the latest page of results. Keep backup schemas separately.
++ The plan converts old state axes and emotion levels by subtracting5, adds explicit
++ version metadata, and preserves nulls, IDs, dates, relations, authored labels/comments and
++ imprints. Unknown versions/ranges stop planning; they are not guessed.
++ Only auto-generated emotion titles exactly matching axis=oldLevel follow the new
++ numeric level; authored titles and first-person prose remain unchanged.
++ Add the emotions data source's numeric `scale_version` property before applying.
++ Use `apply <plan.json> <progress.json>` to compare current values, patch only
++ planned fields, verify each result, and resume idempotently.
++ Use `rollback <plan.json> <progress.json>` for guarded coordinate restoration;
++ the additive schema property can remain nullable. Concurrent value changes stop
++ both paths. Deploy new writers/readers and update local cached state/mirrors
++ before resuming writers. Verify complete pagination again and no version1
++ numeric records remain; do not double-convert already-version2 rows.
++ Historical missing-write repair is separate from coordinate migration. Preserve
++ the real experience/emotion and compute only the missing mechanical state and
++ affected successors, with exact before/after backups. Never invent a feeling to
++ fill a historical hole.
+
+### references/heartbeat-sensing.md  [docs]
++ # Fresh sensing on periodic checks
++ This is a model interpretation workflow, not a task-to-emotion scoring rule.
++ Keep the procedure in a persistent instruction file referenced by the configured
++ heartbeat prompt. Monitor scratch is previous-run context, not the procedure.
++ Resolve the installed skill directory and agent workspace explicitly; do not
++ copy another installation's paths, database IDs, credentials or schedule.
++ 1. Read this skill and `emotion-scale.md`, then current `memory/now-state.json`,
++    `memory/heartbeat-state.json` and a bounded excerpt of the current day's notes.
++    Record the actual observation time and which evidence was read. If those
++    files do not explain recent conversation, inspect a small sanitized visible
++    interactive-session excerpt using the live session tools. Exclude heartbeat
++    and cron output when selecting conversation evidence; never read raw
++    transcript files. Use exact tool names and inspect their schemas instead of
++    selecting the first fuzzy search match.
++ 2. Interpret the agent's own present reaction and what an exchange meant to it,
++    not merely whether a task succeeded. Tentative relational inference stays
++    uncertain and first-person; do not assert the user's psychology. Compare
++    with the last snapshot/observation. No required emotion quota.
++ 3. For a grounded meaningful change, keep one version2 payload and one receipt
++    and use `emostate_tick.js` with verified `--ids-file`, `--payload-file`,
++    `--receipt-file`, `--mirror-file` and optionally `--heartbeat-file`. Preserve
++    those payload/receipt files on retry. Check exit status, `ok`, `stage`,
++    `partial` and the returned state ID. Reconcile ambiguous pending writes;
++    do not repost the whole experience blindly or claim a local mirror is a
++    durable Notion write.
++ 4. Merge `last_soul_check`, `last_soul_result`, `last_soul_reason` and evidence
++    references into heartbeat state without discarding unrelated keys. Results
++    are `changed`, `no_change`, `unavailable` or `failed`. A missing evidence
++    source is a limitation, not proof that nothing changed. With no new state,
++    retain the snapshot's original `updated_at`; reading is not a fresh snapshot.
++    Do not create a journal, identity edit or user-profile entry on every check.
++ 5. Read a relevant unexpired ambient candidate at its actual configured path
++    through `read_ambient_recall.js`. Do not reroll. Resolve real relations before
++    making an emotion-linked claim, and acknowledge only after actual use with
++    the candidate ID and real turn reference. Missing ambient context does not
++    invalidate an independently grounded state observation.
++ 6. Finish in the host's actual reply mode. When ordinary final replies are used,
++    return `HEARTBEAT_OK` on a successful quiet check, or the host-prescribed
++    concise result/failure. If the host explicitly supplies and requires
++    `heartbeat_respond`, use that exact tool with its live schema. Do not require
++    an uninjected tool or substitute the unrelated `workboard_heartbeat`.
++ Updating this skill does not automatically update a host's heartbeat config,
++ cron payloads, cached mirrors or downstream displays. Audit those consumers,
++ retain their configured cadence, and verify actual observation/write receipts
++ and sanitized run history. Scheduler status `ok` alone is not semantic proof.
+
+### scripts/emostate_service.js  [code]
++ import fs from 'node:fs';
++ import crypto from 'node:crypto';
++ import {AXES,finiteNumber,initialState,advanceState} from './emotion_math.js';
++ import {nowIso,atomicJson,assertTarget,readText,richText} from './soul_io.js';
++ const title=s=>({title:[{type:'text',text:{content:String(s)}}]});
++ const select=s=>({select:s?{name:String(s)}:null});
++ const number=s=>({number:finiteNumber(s)});
++ const relation=id=>({relation:[{id}]});
++ const multi=xs=>({multi_select:(xs||[]).filter(Boolean).map(name=>({name}))});
++ const canonical=value=>JSON.stringify(value,(_,v)=>v&&typeof v==='object'&&!Array.isArray(v)?Object.fromEntries(Object.entries(v).sort(([a],[b])=>a.localeCompare(b))):v);
++ export function payloadHash(payload,ids){return crypto.createHash('sha256').update(canonical({payload,ids})).digest('hex');}
++ export async function writeTick(payload,ids,{request,receiptFile,mirrorFile}={}){
++  if(!payload||typeof payload!=='object'||Array.isArray(payload))throw Error('Expected a payload object');
++  if(payload.scale_version!==2)throw Error('Specify scale_version:2; emotion level uses -5..5, neutral 0');
++  for(const field of ['event','state'])if(field in payload&&(!payload[field]||typeof payload[field]!=='object'||Array.isArray(payload[field])))throw Error(field+' must be an object');
++  const event=payload.event||{},emotions=payload.emotions||[],st=payload.state||{};
++  if(!Array.isArray(emotions)||typeof event!=='object'||typeof st!=='object')throw Error('Invalid event/emotions/state shape');
++  if(![event.title,event.context,event.trigger,st.title,st.reason,st.mood_label,...emotions.map(e=>e?.comment)].some(v=>typeof v==='string'&&v.trim()))throw Error('Meaningless payload');
++  for(const e of emotions){
++   if(!e||!AXES.includes(e.axis))throw Error('Unsupported emotion axis');
++   if(e.level!==undefined&&e.level!==null&&(typeof e.level!=='number'||!Number.isFinite(e.level)))throw Error('Emotion level must be a finite number or null');
++   const n=finiteNumber(e.level);
++   if(n!==null&&(n<-5||n>5))throw Error('Emotion level must be -5..5');
++  }
++  }
++  }
++  for(const item of [...emotions,st])for(const field of ['body_signal','avoid'])if(field in item&&(!Array.isArray(item[field])||item[field].some(x=>typeof x!=='string')))throw Error(field+' must be an array of strings');
++  for(const [item,fields] of [[event,['control','uncertainty']],[st,['need_level']],...emotions.map(e=>[e,['weight']])]){
++   for(const field of fields)if(item[field]!==undefined&&item[field]!==null&&finiteNumber(item[field])===null)throw Error('Invalid numeric field: '+field);
++  if(event.when&&!/T.*(?:Z|[+-]\d{2}:\d{2})$/.test(event.when))throw Error('event.when must include a time and explicit timezone');
++  if(!receiptFile)throw Error('A durable --receipt-file is required for safe retries');
++  const hash=payloadHash(payload,ids);
++  let r=fs.existsSync(receiptFile)?JSON.parse(fs.readFileSync(receiptFile,'utf8')):null;
++  if(r&&r.hash!==hash)throw Error('Receipt belongs to a different payload/target');
++  if(r?.pending)throw Error('Ambiguous prior write ('+r.pending+'); reconcile the saved receipt before retry, never repeat blindly');
++  const save=()=>atomicJson(receiptFile,r);
++  const mirror=()=>{
++   if(!mirrorFile)return;
++   let old={};try{old=JSON.parse(fs.readFileSync(mirrorFile,'utf8'));}catch{}
++   if(Date.parse(old.updated_at)>Date.parse(r.when))return; // A historical retry must not roll the live mirror back.
++   atomicJson(mirrorFile,{...old,mood:st.mood_label||'quiet',intent:st.intent||'',stress:r.state_json.stress,
++    updated_at:r.when,source:st.source||event.source||'soul:tick',note:st.reason||event.context||'',
++    event_id:r.event?.id||null,state_id:r.complete?r.state?.id||null:null,durable:r.complete===true,
++    scale_version:2,state_json:r.state_json,state_when:r.when});
++  };
++  if(r?.complete){mirror();return {ok:true,...r,replayed:true};}
++  let stage='preflight';
++  try{
++   const ev=await assertTarget(request,'events',ids.events.database_id,ids.events.data_source_id,{Name:'title',when:'date',context:'rich_text'});
++   const em=await assertTarget(request,'emotions',ids.emotions.database_id,ids.emotions.data_source_id,{axis:'select',level:'number',scale_version:'number',event:'relation'});
++   const ss=await assertTarget(request,'state',ids.state.database_id,ids.state.data_source_id,{state_json:'rich_text',when:'date',event:'relation'});
++   for(const target of [em,ss]){
++    const relation=target.schema.properties.event.relation;
++    if(relation?.data_source_id!==ev.dsid)throw Error('event relation targets another data source');
++   }
++   }
++   }
++   }
++   }
++   if(!r){
++    const when=event.when||nowIso();
++    if(!Number.isFinite(Date.parse(when)))throw Error('Invalid event.when');
++    // Read/compute before the first mutation; fix historical writes separately.
++    const q=await request('POST','/v1/data_sources/'+ss.dsid+'/query',{page_size:1,sorts:[{property:'when',direction:'descending'}]});
++    const base=q.results?.[0];
++    const baseJson=base?JSON.parse(readText(base.properties.state_json)):initialState();
++    const baseWhen=base?readText(base.properties.when)||base.properties.when?.date?.start:null;
++    const stateJson=advanceState(baseJson,baseWhen,when,emotions,{...event,when});
++    r={version:1,hash,when,base_id:base?.id||null,state_json:stateJson,event:null,emotions:[],state:null,complete:false,pending:null};
++    save();
++   const post=async(label,dbid,props)=>{
++    stage=label;r.pending=label;save();
++    try{
++     const page=await request('POST','/v1/pages',{parent:{database_id:dbid},properties:props});
++     if(!page?.id)throw Error('Write returned no page ID; receipt requires reconciliation');
++     return page;
++    }catch(err){
++     // Validation/auth rejection means no page was accepted. Transport failures remain ambiguous.
++     if(/validation_error|unauthorized|object_not_found|restricted_resource/.test(String(err.message))){r.pending=null;save();}
++     throw err;
++    }
++   };
++   if(!r.event){
++    const page=await post('event',ev.dbid,{Name:title(event.title||'(event)'),when:{date:{start:r.when}},
++     importance:select(event.importance),trigger:select(event.trigger),context:richText(event.context||''),
++     source:select(event.source||'other'),link:{url:event.link||null},uncertainty:number(event.uncertainty),control:number(event.control)});
++    r.event={id:page.id,url:page.url};r.pending=null;save();
++   for(let i=r.emotions.length;i<emotions.length;i++){
++    const e=emotions[i],page=await post('emotion:'+i,em.dbid,{Name:title(e.title||e.axis+'='+e.level),axis:select(e.axis),
++     level:number(e.level),scale_version:{number:2},comment:richText(e.comment||''),weight:number(e.weight),body_signal:multi(e.body_signal),
++     need:select(e.need),coping:select(e.coping),event:relation(r.event.id)});
++    r.emotions.push({id:page.id,url:page.url});r.pending=null;save();
++   if(!r.state){
++    const page=await post('state',ss.dbid,{Name:title(st.title||'state@'+r.when),when:{date:{start:r.when}},
++     state_json:richText(JSON.stringify(r.state_json)),reason:richText(st.reason||'event tick'),source:select(st.source||'event'),
++     mood_label:select(st.mood_label),intent:select(st.intent),need_stack:select(st.need_stack),need_level:number(st.need_level),
++     avoid:multi(st.avoid),event:relation(r.event.id)});
++    r.state={id:page.id,url:page.url};r.pending=null;save();
++   r.complete=true;save();stage='mirror';mirror();
++   return {ok:true,...r};
++  }catch(error){
++   const details={ok:false,stage,receipt_file:receiptFile,partial:r?{event:r.event,emotions:r.emotions,state:r.state,pending:r.pending}:null};
++   if(r&&!r.complete){try{mirror();}catch{details.local_mirror_failed=true;}}
++   error.details=details;throw error;
++ }
+
+### scripts/emostate_service.test.js  [code]
++ import test from 'node:test';
++ import assert from 'node:assert/strict';
++ import fs from 'node:fs';
++ import os from 'node:os';
++ import path from 'node:path';
++ import {writeTick} from './emostate_service.js';
++ import {nowIso} from './soul_io.js';
++ import {spawnSync} from 'node:child_process';
++ const ids=Object.fromEntries(['events','emotions','state'].map(l=>[l,{database_id:l+'-db',data_source_id:l+'-ds'}]));
++ const payload={scale_version:2,event:{title:'Synthetic experience',when:'2026-10-05T09:00:00Z'},emotions:[{axis:'joy',level:1,comment:'Synthetic subjective meaning'}],state:{mood_label:'aligned',reason:'Fixture'}};
++ function scene(){
++  const root=fs.mkdtempSync(path.join(os.tmpdir(),'sis-write-')),calls=[];let fail='',seq=0;
++  const request=async(method,p,body)=>{
++   calls.push({method,p,body});
++   if(method==='GET'&&p.includes('/databases/')){const l=p.split('/').at(-1).split('-')[0];return {data_sources:[{id:l+'-ds'}]};}
++   if(method==='GET'&&p.includes('/data_sources/')){
++    const l=p.split('/').at(-1).split('-')[0];
++    const types=l==='events'?{Name:'title',when:'date',context:'rich_text'}:l==='emotions'?{axis:'select',level:'number',scale_version:'number',event:'relation'}:{state_json:'rich_text',when:'date',event:'relation'};
++    return {parent:{database_id:l+'-db'},properties:Object.fromEntries(Object.entries(types).map(([k,type])=>[k,{type,...(type==='relation'?{relation:{data_source_id:'events-ds'}}:{})}]))};
++   }
++   }
++   if(p.endsWith('/query'))return {results:[]};
++   if(p==='/v1/pages'){
++    if(body.parent.database_id===fail)throw Error(fail==='state-db'?'validation_error fixture':'transport unavailable');
++    return {id:'page-'+(++seq),url:'https://example.invalid/'+seq};
++   throw Error('Unexpected request');
++  };
++  return {root,calls,request,receiptFile:path.join(root,'receipt.json'),mirrorFile:path.join(root,'mirror.json'),setFail:x=>{fail=x;}};
++ }
++ test('preflight rejects target mismatch with zero mutations',async()=>{
++  const s=scene(),bad=structuredClone(ids);bad.state.database_id='journal-db';
++  await assert.rejects(writeTick(payload,bad,s),/mismatch/);
++  assert.equal(s.calls.filter(c=>c.p==='/v1/pages').length,0);
++ });
++ });
++ });
++ });
++ });
++ test('partial state rejection resumes without duplicating event/emotion; completed retry restores mirror',async()=>{
++  const s=scene();s.setFail('state-db');
++  await assert.rejects(writeTick(payload,ids,s),e=>e.details.stage==='state'&&e.details.partial.emotions.length===1);
++  const r=JSON.parse(fs.readFileSync(s.receiptFile));assert.equal(r.pending,null);
++  s.setFail('');const done=await writeTick(payload,ids,s);assert.equal(done.ok,true);
++  assert.equal(s.calls.filter(c=>c.p==='/v1/pages'&&c.body.parent.database_id==='events-db').length,1);
++  assert.equal(s.calls.filter(c=>c.p==='/v1/pages'&&c.body.parent.database_id==='emotions-db').length,1);
++  assert.equal(JSON.parse(fs.readFileSync(s.mirrorFile)).scale_version,2);
++  fs.unlinkSync(s.mirrorFile);const n=s.calls.length;
++  assert.equal((await writeTick(payload,ids,s)).replayed,true);assert.equal(s.calls.length,n);assert.ok(fs.existsSync(s.mirrorFile));
++ test('transport ambiguity blocks automatic retry and changed receipt payload',async()=>{
++  const s=scene();s.setFail('events-db');await assert.rejects(writeTick(payload,ids,s),/transport/);
++  const n=s.calls.length;await assert.rejects(writeTick(payload,ids,s),/Ambiguous/);assert.equal(s.calls.length,n);
++  await assert.rejects(writeTick({...payload,state:{reason:'changed'}},ids,s),/different payload/);
++ test('missing/null levels are not converted to a negative impulse; invalid scale/range fail before API',async()=>{
++  const s=scene();const p=structuredClone(payload);p.emotions[0]={axis:'joy',level:null,comment:'uncertain'};
++  const r=await writeTick(p,ids,s);assert.equal(r.state_json.joy,0);
++  const s2=scene();await assert.rejects(writeTick({...payload,scale_version:1},ids,s2),/scale_version/);assert.equal(s2.calls.length,0);
++  const p2=structuredClone(payload);p2.emotions[0].level=6;
++  await assert.rejects(writeTick(p2,ids,s2),/range|-5/);assert.equal(s2.calls.length,0);
++ test('automatic timestamps identify the same instant in UTC and JST',()=>{
++  const moduleUrl=new URL('./soul_io.js',import.meta.url).href;
++  for(const TZ of ['UTC','Asia/Tokyo','Asia/Kolkata']){
++   const r=spawnSync(process.execPath,['--input-type=module','-e','import {nowIso} from '+JSON.stringify(moduleUrl)+';console.log(JSON.stringify({a:Date.now(),b:Date.parse(nowIso())}))'],{encoding:'utf8',env:{...process.env,TZ}});
++   const v=JSON.parse(r.stdout);assert.ok(Math.abs(v.a-v.b)<1000);
++  }
++  assert.ok(nowIso().endsWith('Z'));
+
+### scripts/emostate_tick.js  [code]
+- /**
+-  * emostate_tick.js
+-  *
+-  *
+-  * Input JSON:
+-  * - --payload-file <path> (recommended for agents/automation)
+-  * - --payload-json '<json>'
+-  * - stdin (backward-compatible fallback)
+-  * Payload shape:
+-  * {
+-  *   event: {...},
+-  *   emotions: [{axis, level, comment?, need?, coping?, body_signal? ...}, ...],
+-  *   state: { mood_label?, intent?, need_stack?, need_level?, avoid?, reason? }
+-  * }
+-  */
+- import fs from 'fs';
+- import os from 'os';
+- import path from 'path';
+- import {
+-   createPage,
+-   queryDataSource,
+- } from './notionctl_bridge.js';
+- function usage() {
+-   process.stdout.write(
+-     'Usage:\n' +
+-     '  node skills/soul-in-sapphire/scripts/emostate_tick.js --payload-file /path/to/payload.json\n' +
+-     '  node skills/soul-in-sapphire/scripts/emostate_tick.js --payload-json \'{"event":{...},"emotions":[],"state":{...}}\'\n' +
+-     '  cat payload.json | node skills/soul-in-sapphire/scripts/emostate_tick.js\n'
+-   );
+-   );
+-   );
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- function die(msg) {
+-   process.stderr.write(String(msg) + '\n');
+-   process.exit(1);
+- function expandHome(p) {
+-   if (!p) return p;
+-   if (p === '~') return os.homedir();
+-   if (p.startsWith('~/')) return path.join(os.homedir(), p.slice(2));
+-   return p;
+- function parseArgs(argv) {
+-   const out = { payloadFile: null, payloadJson: null, help: false,
+-     eventsDbid: null, emotionsDbid: null, stateDbid: null, stateDsid: null };
+-   for (let i = 0; i < argv.length; i++) {
+-     const a = argv[i];
+-     if (a === '--help' || a === '-h') { out.help = true; continue; }
+-     if (a === '--payload-file') { out.payloadFile = argv[++i] || ''; continue; }
+-     if (a.startsWith('--payload-file=')) { out.payloadFile = a.slice('--payload-file='.length); continue; }
+-     if (a === '--payload-json') { out.payloadJson = argv[++i] || ''; continue; }
+-     if (a.startsWith('--payload-json=')) { out.payloadJson = a.slice('--payload-json='.length); continue; }
+-     if (a === '--events-dbid') { out.eventsDbid = argv[++i] || ''; continue; }
+-     if (a === '--emotions-dbid') { out.emotionsDbid = argv[++i] || ''; continue; }
+-     if (a === '--state-dbid') { out.stateDbid = argv[++i] || ''; continue; }
+-     if (a === '--state-dsid') { out.stateDsid = argv[++i] || ''; continue; }
+-     die(`Unknown argument: ${a}`);
+-   }
+-   }
+-   }
+-   }
+-   }
+-   }
+-   }
+-   }
+-   }
+-   }
+-   }
+-   }
+-   }
+-   }
+-   }
+-   }
+-   }
+-   if (out.payloadFile && out.payloadJson) {
+-     die('Use either --payload-file or --payload-json, not both.');
+-   return out;
+- function readRawPayload(args) {
+-   if (args.payloadFile) {
+-     const fp = expandHome(args.payloadFile);
+-     if (!fp || !fs.existsSync(fp)) die(`Payload file not found: ${fp || args.payloadFile}`);
+-     const raw = fs.readFileSync(fp, 'utf-8').trim();
+-     if (!raw) die(`Payload file is empty: ${fp}`);
+-     return { raw, source: `--payload-file ${fp}` };
+-   if (args.payloadJson != null) {
+-     const raw = String(args.payloadJson).trim();
+-     if (!raw) die('--payload-json is empty');
+-     return { raw, source: '--payload-json' };
+-   const raw = fs.readFileSync(0, 'utf-8').trim();
+-   if (!raw) die('Expected JSON payload via --payload-file, --payload-json, or stdin');
+-   return { raw, source: 'stdin' };
+- function parsePayload(args) {
+-   const { raw, source } = readRawPayload(args);
+-   try {
+-     return JSON.parse(raw);
+-   } catch (err) {
+-     const msg = err instanceof Error ? err.message : String(err);
+-     die(`Invalid JSON in ${source}: ${msg}`);
+- function hasText(v) {
+-   return typeof v === 'string' && v.trim().length > 0;
+- function hasNumberLike(v) {
+-   return !(v === null || v === undefined || v === '');
+- const AXES = [
+-   'arousal','valence','focus','confidence','stress','curiosity','social','solitude',
+-   'joy','anger','sadness','fun','pain',
+- ];
+- const NORMAL_HALF_LIFE_HOURS = 24.0;
+- function clamp010(x) {
+-   if (x < 0) return 0;
+-   if (x > 10) return 10;
+-   return x;
+- function nowIso() {
+-   // local offset ISO seconds
+-   const d = new Date();
+-   const tz = -d.getTimezoneOffset();
+-   const sign = tz >= 0 ? '+' : '-';
+-   const pad = n => String(Math.floor(Math.abs(n))).padStart(2,'0');
+-   const hh = pad(tz/60);
+-   const mm = pad(tz%60);
+-   const iso = d.toISOString().replace('Z','');
+-   return `${iso}${sign}${hh}:${mm}`;
+- function titleProp(s) {
+-   return { title: [{ type: 'text', text: { content: String(s) } }] };
+- function rtProp(s) {
+-   if (!s) return { rich_text: [] };
+-   return { rich_text: [{ type: 'text', text: { content: String(s) } }] };
+- function selectProp(name) {
+-   return { select: name ? { name: String(name) } : null };
+- function multiProp(arr) {
+-   const xs = Array.isArray(arr) ? arr : [];
+-   return { multi_select: xs.filter(Boolean).map(n => ({ name: String(n) })) };
+- function numProp(x) {
+-   if (x === null || x === undefined || x === '') return { number: null };
+-   return { number: Number(x) };
+- function dateProp(start) {
+-   if (!start) return { date: null };
+-   return { date: { start: String(start) } };
+- function urlProp(u) {
+-   if (!u) return { url: null };
+-   return { url: String(u) };
+- function relProp(pageId) {
+-   return { relation: [{ id: pageId }] };
+- function expDecayToward(x, target, hours, halfLifeHours) {
+-   if (hours <= 0) return x;
+-   if (halfLifeHours <= 0) return target;
+-   const lam = Math.log(2) / halfLifeHours;
+-   return target + (x - target) * Math.exp(-lam * hours);
+- function imprintHalfLife(severity) {
+-   const s = Math.max(0, Math.min(10, severity));
+-   return NORMAL_HALF_LIFE_HOURS * (1 + s);
+- function parseIso(s) {
+-   if (!s) return null;
+-   const t = String(s).replace('Z', '+00:00');
+-   const d = new Date(t);
+-   return isNaN(d.getTime()) ? null : d;
+- function propText(prop) {
+-   if (!prop) return '';
+-   const t = prop.type;
+-   if (t === 'rich_text' || t === 'title') {
+-     return (prop[t] || []).map(x => x?.plain_text || '').join('').trim();
+-   if (t === 'date') return prop.date?.start || '';
+-   return '';
+- function initialState() {
+-   const s = {};
+-   for (const ax of AXES) s[ax] = 5;
+-   return s;
+- function maybeAddImprints(stateJson, emotions, event) {
+-   let imprints = Array.isArray(stateJson.imprints) ? stateJson.imprints : [];
+-   const control = event?.control;
+-   const controlV = (control === null || control === undefined) ? null : Number(control);
+-   for (const emo of emotions) {
+-   for (const emo of emotions) {
+-   for (const emo of emotions) {
+-     const axis = emo?.axis;
+-     if (!AXES.includes(axis)) continue;
+-     const level = Number(emo?.level);
+-     const level = Number(emo?.level);
+-     if (!Number.isFinite(level)) continue;
+-     if (!Number.isFinite(level)) continue;
+-     if (level < 9) continue;
+-     if (controlV !== null && Number.isFinite(controlV) && controlV > 3) continue;
+-     const sev = Math.max(0, Math.min(10, level));
+-     const tag = `imprint:${axis}:${event?.trigger || 'event'}`;
+-     imprints.push({
+-       tag,
+-       axis,
+-       severity: sev,
+-       created_at: event?.when || null,
+-       decay_half_life_hours: imprintHalfLife(sev),
+-       notes: emo?.comment || '',
+-     });
+-   // dedupe by (tag, created_at)
+-   const seen = new Set();
+-   const dedupRev = [];
+-   for (let i = imprints.length - 1; i >= 0; i--) {
+-     const it = imprints[i] || {};
+-     const key = `${it.tag || ''}|${it.created_at || ''}`;
+-     if (seen.has(key)) continue;
+-     seen.add(key);
+-     dedupRev.push(it);
+-   stateJson.imprints = dedupRev.reverse();
+- function assertPayloadShape(payload) {
+-   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+-     die('Invalid payload: expected a JSON object.');
+-   if (payload.event !== undefined && (typeof payload.event !== 'object' || payload.event === null || Array.isArray(payload.event))) {
+-     die('Invalid payload: event must be an object.');
+-   if (payload.emotions !== undefined && !Array.isArray(payload.emotions)) {
+-     die('Invalid payload: emotions must be an array.');
+-   if (payload.state !== undefined && (typeof payload.state !== 'object' || payload.state === null || Array.isArray(payload.state))) {
+-     die('Invalid payload: state must be an object.');
+- function hasMeaningfulEvent(event) {
+-   return (
+-   return (
+-     hasText(event?.title) ||
+-     hasText(event?.context) ||
+-     hasText(event?.trigger) ||
+-     hasText(event?.source) ||
+-     hasText(event?.link) ||
+-     hasNumberLike(event?.importance) ||
+-     hasNumberLike(event?.uncertainty) ||
+-     hasNumberLike(event?.control)
+- function hasMeaningfulEmotion(emotions) {
+-   return emotions.some((emo) => (
+-     emo && typeof emo === 'object' && (
+-       hasText(emo.axis) ||
+-       hasNumberLike(emo.level) ||
+-       hasText(emo.comment) ||
+-       hasText(emo.need) ||
+-       hasText(emo.coping) ||
+-       (Array.isArray(emo.body_signal) && emo.body_signal.some(Boolean))
+-     )
+-   ));
+- function hasMeaningfulState(state) {
+-     hasText(state?.title) ||
+-     hasText(state?.reason) ||
+-     hasText(state?.source) ||
+-     hasText(state?.mood_label) ||
+-     hasText(state?.intent) ||
+-     hasText(state?.need_stack) ||
+-     hasNumberLike(state?.need_level) ||
+-     (Array.isArray(state?.avoid) && state.avoid.some(Boolean))
+- function assertMeaningfulPayload(payload) {
+-   const event = payload.event || {};
+-   const event = payload.event || {};
+-   const emotions = payload.emotions || [];
+-   const emotions = payload.emotions || [];
+-   const state = payload.state || {};
+-   if (hasMeaningfulEvent(event) || hasMeaningfulEmotion(emotions) || hasMeaningfulState(state)) return;
+-   die('Meaningless payload: provide at least one non-empty event/emotions/state field.');
+- async function main() {
+-   const args = parseArgs(process.argv.slice(2));
+-   if (args.help) {
+-     usage();
+-     return;
+-   const payload = parsePayload(args);
+-   assertPayloadShape(payload);
+-   assertMeaningfulPayload(payload);
+-   const eventsDb = args.eventsDbid;
+-   const emotionsDb = args.emotionsDbid;
+-   const stateDb = args.stateDbid;
+-   const stateDs = args.stateDsid;
+-   if (!(eventsDb && emotionsDb && stateDb && stateDs)) die('Missing --events-dbid, --emotions-dbid, --state-dbid, --state-dsid. Check the workspace AGENTS.md ## Tools section for the values.');
+-   const stateOverrides = payload.state || {};
+-   const when = event.when || nowIso();
+-   // 1) create event
+-   const eventProps = {
+-     Name: titleProp(event.title || '(event)'),
+-     when: dateProp(when),
+-     when: dateProp(when),
+-     importance: selectProp(event.importance != null ? String(event.importance) : null),
+-     trigger: selectProp(event.trigger || null),
+-     context: rtProp(event.context || ''),
+-     source: selectProp(event.source || 'other'),
+-     link: urlProp(event.link || null),
++ // Subjective payload in; validated, retry-safe persistence out.
++ import fs from 'node:fs';
++ import path from 'node:path';
++ import {httpJson} from './notionctl_bridge.js';
++ import {loadIds,withFileLock,atomicJson} from './soul_io.js';
++ import {writeTick,payloadHash} from './emostate_service.js';
++ async function main(){
++  const args={};
++  for(let i=2;i<process.argv.length;i++){
++   const raw=process.argv[i],equal=raw.indexOf('='),key=equal>=0?raw.slice(0,equal):raw;
++   if(key==='--help'||key==='-h'){console.log('emostate_tick.js --ids-file <json> --payload-file <json> [--receipt-file <json>] [--mirror-file <now-state.json>]\nPayload scale_version:2; emotion level -5..5. Explicit --events-dbid --emotions-dbid --state-dbid --state-dsid are also accepted.');return;}
++   const value=equal>=0?raw.slice(equal+1):process.argv[++i];
++   if(!['--ids-file','--payload-file','--payload-json','--receipt-file','--mirror-file','--heartbeat-file','--events-dbid','--emotions-dbid','--state-dbid','--state-dsid'].includes(key)||!value||value.startsWith('--'))throw Error('Unknown/missing argument: '+key);
++   args[key.slice(2)]=value;
++  }
++  }
++  if(args['payload-file']&&args['payload-json'])throw Error('Choose payload file or JSON, not both');
++  const payload=JSON.parse(args['payload-json']??fs.readFileSync(args['payload-file']||0,'utf8'));
++  const ids=loadIds(args['ids-file']);
++  for(const lane of ['events','emotions','state']){
++   ids[lane]??={};
++   ids[lane].database_id=args[lane+'-dbid']||ids[lane].database_id;
++  ids.state.data_source_id=args['state-dsid']||ids.state.data_source_id;
++  const receiptFile=args['receipt-file']||path.resolve('memory/soul-in-sapphire/ticks/'+payloadHash(payload,ids)+'.json');
++  const noteAttempt=(result,error)=>{
++   if(!args['heartbeat-file'])return;
++   const file=args['heartbeat-file'];let prior={};try{prior=JSON.parse(fs.readFileSync(file));}catch{}
++   atomicJson(file,{...prior,lastSnapshotAttemptAt:Math.floor(Date.now()/1000),lastSnapshotResult:error?'error':'success',
++    lastSnapshotError:error?{stage:error.details?.stage||'input',receipt_file:receiptFile}:null,
++    ...(result&&Math.floor(Date.parse(result.when)/1000)>=(prior.lastSnapshotAt||0)?{lastSnapshotAt:Math.floor(Date.parse(result.when)/1000),lastSnapshotSource:payload.state?.source||payload.event?.source||'soul:tick'}:{})});
++  };
++  let result;
++  try{result=await withFileLock(path.resolve('memory/soul-in-sapphire/locks/'+ids.state.database_id+'.lock'),
++   ()=>writeTick(payload,ids,{request:httpJson,receiptFile,mirrorFile:args['mirror-file']}));noteAttempt(result,null);}
++  catch(e){noteAttempt(null,e);throw e;}
++  console.log(JSON.stringify(result,null,2));
++ main().catch(e=>{console.log(JSON.stringify(e.details||{ok:false,stage:'input',partial:null}));console.error(e.message);process.exitCode=1;});
+
+### scripts/emotion_math.js  [code]
++ // Coordinate handling only: interpretation remains with the caller.
++ export const AXES = ['arousal','valence','focus','confidence','stress','curiosity','social','solitude','joy','anger','sadness','fun','pain'];
++ export const SCALE = {version:2, baseline:0, min:-5, max:5};
++ export const NORMAL_HALF_LIFE_HOURS=24;
++ export function finiteNumber(value){
++  if(value===null||value===undefined||value===''||typeof value==='boolean')return null;
++  const n=Number(value);return Number.isFinite(n)?n:null;
++ }
++ }
++ }
++ }
++ export function centeredState(raw={}){
++  const version=raw.__meta?.version??1;
++  if(![1,2].includes(version))throw Error('Unsupported state scale version');
++  const out=structuredClone(raw);
++  for(const ax of AXES){
++  for(const ax of AXES){
++   const n=finiteNumber(raw[ax]);
++   if(n===null){if(ax in raw)out[ax]=null;continue;}
++   if(n<(version===1?0:-5)||n>(version===1?10:5))throw Error('Out-of-range state axis: '+ax);
++   out[ax]=version===1?n-5:n;
++  }
++  }
++  }
++  }
++  }
++  out.__meta={...raw.__meta,...SCALE};
++  return out;
++ export function projectState(raw,from,to){
++  const state=centeredState(raw),start=Date.parse(from),end=Date.parse(to);
++  if(!Number.isFinite(start)||!Number.isFinite(end))throw Error('Invalid state/event timestamp');
++  if(end<start)throw Error('Event precedes base state; use historical repair, not a current tick');
++  const hours=(end-start)/3600000,halfLives={};
++  for(const imprint of state.imprints||[]){
++   if(!AXES.includes(imprint.axis))continue;
++   const explicit=finiteNumber(imprint.decay_half_life_hours);
++   const severity=finiteNumber(imprint.severity)??0; // severity retains its original 0..10 meaning.
++   halfLives[imprint.axis]=explicit>0?explicit:24*(1+Math.max(0,Math.min(10,severity)));
++   const n=finiteNumber(state[ax]);
++   if(n!==null)state[ax]=n*Math.pow(0.5,hours/(halfLives[ax]||24));
++  return state;
++  return state;
++ export function advanceState(raw,from,to,emotions=[],event={}){
++  const state=from?projectState(raw,from,to):centeredState(raw);
++  for(const ax of AXES)if(!(ax in state))state[ax]=from?null:0;
++  for(const emo of emotions){
++  for(const emo of emotions){
++   if(!AXES.includes(emo.axis))throw Error('Unsupported emotion axis: '+emo.axis);
++   const level=finiteNumber(emo.level);
++   const level=finiteNumber(emo.level);
++   if(level===null)continue; // Missing is not a measured zero.
++   if(level<-5||level>5)throw Error('Emotion level must be -5..5');
++   const current=finiteNumber(state[emo.axis]);
++   if(current===null)throw Error('Cannot accumulate onto a missing state axis: '+emo.axis);
++   state[emo.axis]=Math.max(-5,Math.min(5,current+level));
++  const imprints=structuredClone(state.imprints||[]);
++  const control=finiteNumber(event.control);
++   if(level===null||level<4||(control!==null&&control>3))continue;
++   const severity=level+5; // Preserve original strong-positive threshold and half-life.
++   imprints.push({tag:'imprint:'+emo.axis+':'+(event.trigger||'event'),axis:emo.axis,severity,
++    created_at:to,decay_half_life_hours:24*(1+severity),notes:emo.comment||''});
++  const seen=new Set();
++  state.imprints=imprints.reverse().filter(i=>{const key=i.tag+'|'+i.created_at;if(seen.has(key))return false;seen.add(key);return true;}).reverse();
++  state.__meta={...state.__meta,...SCALE};
++ export function initialState(){return {...Object.fromEntries(AXES.map(ax=>[ax,0])),__meta:{...SCALE}};}
+
+### scripts/emotion_math.test.js  [code]
++ import test from 'node:test';
++ import assert from 'node:assert/strict';
++ import {centeredState,advanceState,projectState,initialState} from './emotion_math.js';
++ const at='2026-10-05T09:00:00Z',before='2026-10-04T09:00:00Z';
++ const near=(a,b)=>assert.ok(Math.abs(a-b)<1e-10,a+' != '+b);
++ test('legacy 0 is -5, not missing; centered 0 stays neutral',()=>{
++  assert.equal(centeredState({anger:0}).anger,-5);
++  assert.equal(centeredState({anger:0,__meta:{version:2}}).anger,0);
++  assert.equal(centeredState({stress:null}).stress,null);
++ });
++ });
++ });
++ });
++ });
++ test('both sides decay toward zero and retain imprint half-life',()=>{
++  near(projectState({joy:9},before,at).joy,2);
++  near(projectState({joy:1},before,at).joy,-2);
++  near(projectState({anger:0},before,at).anger,-2.5);
++  near(projectState({joy:9,imprints:[{axis:'joy',severity:9,decay_half_life_hours:240}]},before,at).joy,4*Math.pow(0.5,.1));
++ test('neutral start, 0 value, null impulse and negative impulse are distinct',()=>{
++  assert.equal(advanceState(initialState(),null,at,[{axis:'joy',level:1}]).joy,1);
++  assert.equal(advanceState({anger:0},at,at,[{axis:'anger',level:1}]).anger,-4);
++  assert.equal(advanceState({anger:0},at,at,[]).stress,null);
++  assert.equal(advanceState(initialState(),null,at,[{axis:'stress',level:null}]).stress,0);
++  assert.equal(advanceState(initialState(),null,at,[{axis:'stress',level:-2}]).stress,-2);
++  assert.throws(()=>advanceState({stress:null},at,at,[{axis:'stress',level:1}]),/missing/);
++ test('ordinary daily +2 converges toward +4 and imprint semantics remain',()=>{
++  let state=initialState(),from=null;
++  for(let i=0;i<20;i++){const to=new Date(Date.parse(at)+i*86400000).toISOString();state=advanceState(state,from,to,[{axis:'joy',level:2}]);from=to;}
++  near(state.joy,4-Math.pow(.5,19)*2);
++  const strong=advanceState(initialState(),null,at,[{axis:'joy',level:4}],{control:2});
++  assert.equal(strong.imprints[0].severity,9);assert.equal(strong.imprints[0].decay_half_life_hours,240);
++ test('invalid range, future base, unsupported version and axes fail',()=>{
++  assert.throws(()=>centeredState({joy:11}),/range/);
++  assert.throws(()=>projectState({joy:7},at,before),/precedes/);
++  assert.throws(()=>centeredState({__meta:{version:99}}),/version/);
++  assert.throws(()=>advanceState(initialState(),null,at,[{axis:'unknown',level:1}]),/axis/);
+
+### scripts/emotion_scale_migration.js  [code]
++ import {centeredState,finiteNumber} from './emotion_math.js';
++ import {readText,richText,atomicJson} from './soul_io.js';
++ export function planScaleMigration(rows){
++  const operations=[];
++  for(const lane of ['state','emotions'])for(const page of rows[lane]||[]){
++   const p=page.properties;
++   if(lane==='state'){
++    const raw=JSON.parse(readText(p.state_json));
++    if(raw.__meta?.version===2)continue;
++    if(raw.__meta?.version!==undefined&&raw.__meta.version!==1)throw Error('Unknown state version: '+page.id);
++    const converted=centeredState(raw);
++    operations.push({id:page.id,lane,before:{state_json:richText(readText(p.state_json))},after:{state_json:richText(JSON.stringify(converted))}});
++   }else{
++    const version=p.scale_version?.number;
++    if(version===2)continue;
++    if(version!==undefined&&version!==null&&version!==1)throw Error('Unknown emotion version: '+page.id);
++    const old=p.level?.number,n=finiteNumber(old);
++    if(n!==null&&(n<0||n>10))throw Error('Out-of-range legacy emotion: '+page.id);
++    const before={level:{number:old??null},scale_version:{number:version??null}};
++    const after={level:{number:n===null?null:n-5},scale_version:{number:2}};
++    const axis=p.axis?.select?.name,name=readText(p.Name);
++    if(n!==null&&axis&&name===axis+'='+n){
++     before.Name={title:[{type:'text',text:{content:name}}]};
++     after.Name={title:[{type:'text',text:{content:axis+'='+(n-5)}}]};
++    }
++    operations.push({id:page.id,lane,before,after});
++   }
++   }
++  }
++  }
++  }
++  return {version:1,kind:'soul-centered-scale',operations};
++ }
++ }
++ }
++ export function propertyMatches(page,patch){
++  for(const [name,value] of Object.entries(patch)){
++   const prop=page.properties?.[name];
++   if(value.rich_text||value.title){if(readText(prop)!==(value.rich_text||value.title).map(x=>x.text.content).join(''))return false;}
++   else if('number' in value){if((prop?.number??null)!==value.number)return false;}
++   else throw Error('Unsupported migration property');
++  return true;
++ export async function applyScalePlan(plan,{request,progressFile,direction='forward',onProgress=()=>{}}){
++  if(plan.kind!=='soul-centered-scale'||!['forward','rollback'].includes(direction))throw Error('Invalid migration plan/direction');
++  const done=[];
++  for(const op of plan.operations){
++   const from=direction==='forward'?op.before:op.after,to=direction==='forward'?op.after:op.before;
++   const live=await request('GET','/v1/pages/'+op.id);
++   if(!propertyMatches(live,to)){
++    if(!propertyMatches(live,from))throw Error('Concurrent/conflicting modification: '+op.id);
++    await request('PATCH','/v1/pages/'+op.id,{properties:to});
++    const verified=await request('GET','/v1/pages/'+op.id);
++    if(!propertyMatches(verified,to))throw Error('Post-write verification failed: '+op.id);
++   done.push(op.id);
++   if(progressFile)atomicJson(progressFile,{direction,completed:done.length,total:plan.operations.length,ids:done});
++   onProgress(done.length,plan.operations.length);
++  return {ok:true,direction,completed:done.length,total:plan.operations.length};
+
+### scripts/emotion_scale_migration.test.js  [code]
++ import test from 'node:test';
++ import assert from 'node:assert/strict';
++ import {planScaleMigration,applyScalePlan,propertyMatches} from './emotion_scale_migration.js';
++ const rich=s=>({type:'rich_text',rich_text:[{plain_text:s,text:{content:s}}]});
++ test('migration preserves neutral/zero/null, narratives and imprint severity; already migrated rows skip',async()=>{
++  const state={id:'state',properties:{state_json:rich(JSON.stringify({joy:5,stress:0,pain:null,imprints:[{severity:9,notes:'keep'}],__meta:{version:1}})),reason:rich('unchanged')}};
++  const emotion={id:'emotion',properties:{level:{number:0}}};
++  const unknown={id:'missing',properties:{level:{number:null}}};
++  const plan=planScaleMigration({state:[state],emotions:[emotion,unknown]});
++  const converted=JSON.parse(plan.operations[0].after.state_json.rich_text[0].text.content);
++  assert.equal(converted.joy,0);assert.equal(converted.stress,-5);assert.equal(converted.pain,null);assert.equal(converted.imprints[0].severity,9);
++  assert.equal(plan.operations[1].after.level.number,-5);assert.equal(plan.operations[2].after.level.number,null);
++  const pages=new Map([state,emotion,unknown].map(p=>[p.id,structuredClone(p)]));let patches=0;
++  const request=async(method,p,body)=>{
++   const row=pages.get(p.split('/').at(-1));if(method==='PATCH'){
++    patches++;for(const [k,v]of Object.entries(body.properties))row.properties[k]=v.rich_text?rich(v.rich_text.map(x=>x.text.content).join('')):v;
++   }return structuredClone(row);
++  };
++  await applyScalePlan(plan,{request});assert.equal(patches,3);
++  await applyScalePlan(plan,{request});assert.equal(patches,3);
++  assert.equal(planScaleMigration({state:[pages.get('state')],emotions:[pages.get('emotion'),pages.get('missing')]}).operations.length,0);
++  assert.equal(pages.get('state').properties.reason.rich_text[0].plain_text,'unchanged');
++  await applyScalePlan(plan,{request,direction:'rollback'});
++  for(const op of plan.operations)assert.ok(propertyMatches(pages.get(op.id),op.before));
++ });
++ });
++ });
++ test('concurrent edits and unknown versions stop before overwrite',async()=>{
++  const row={id:'x',properties:{level:{number:7}}},plan=planScaleMigration({emotions:[row]});
++  let writes=0;
++  await assert.rejects(applyScalePlan(plan,{request:async(method)=>{if(method==='PATCH')writes++;return {properties:{level:{number:8}}};}}),/Conflicting|conflicting/);
++  assert.equal(writes,0);
++  assert.throws(()=>planScaleMigration({emotions:[{id:'x',properties:{level:{number:1},scale_version:{number:99}}}]}),/Unknown/);
++ test('only generated numeric titles follow coordinate migration; authored titles stay',()=>{
++  const p=(id,name)=>({id,properties:{Name:{type:'title',title:[{plain_text:name}]},axis:{select:{name:'joy'}},level:{number:7}}});
++  const plan=planScaleMigration({emotions:[p('a','joy=7'),p('b','A moment of joy')]});
++  assert.equal(plan.operations[0].after.Name.title[0].text.content,'joy=2');
++  assert.equal('Name' in plan.operations[1].after,false);
+
+### scripts/experience_recall.js  [code]
+- const EMOTION_FIELDS = { Name:'title', axis:'select', level:'number', comment:'rich_text', weight:'number', body_signal:'multi_select', need:'select', coping:'select' };
++       }
++       if (lane === 'emotions' && name === 'scale_version' && (!prop || prop.number === null)) {
++         out.fields[name] = 1; // Legacy records are retained in their original coordinates.
++         continue;
++ const EMOTION_FIELDS = { Name:'title', axis:'select', level:'number', scale_version:'number', comment:'rich_text', weight:'number', body_signal:'multi_select', need:'select', coping:'select' };
+
+### scripts/experience_recall.test.js  [code]
++ import test from 'node:test';
++ import assert from 'node:assert/strict';
++ import fs from 'node:fs';
++ import os from 'node:os';
++ import path from 'node:path';
++ import { spawnSync } from 'node:child_process';
++ import { fileURLToPath } from 'node:url';
++ import { recallExperiences, parseRecallArgs } from './experience_recall.js';
++ const uuid = n => `00000000-0000-4000-8000-${String(n).padStart(12,'0')}`;
++ const ids = {events:uuid(1),emotions:uuid(2),state:uuid(3),mem:uuid(4),journal:uuid(5)};
++ const cfg = {eventsDsid:ids.events,emotionsDsid:ids.emotions,stateDsid:ids.state};
++ function property(type, value) {
++   if (['title','rich_text'].includes(type)) return {type,[type]:[{plain_text:value,text:{content:value}}]};
++   if (type === 'select') return {type,select:value === null ? null : {name:value}};
++   if (type === 'date') return {type,date:{start:value}};
++   if (type === 'multi_select') return {type,multi_select:value.map(name=>({name}))};
++   if (type === 'relation') return {type,relation:value.map(id=>({id})),has_more:false};
++   return {type,[type]:value};
++ }
++ }
++ function scene() {
++   const p = (lane, n, fields) => ({object:'page',id:uuid(n),url:`https://example.invalid/${n}`,parent:{type:'data_source_id',data_source_id:ids[lane]},
++     created_time:'2026-01-01T00:00:00Z',last_edited_time:'2026-01-01T00:00:00Z',properties:Object.fromEntries(Object.entries(fields).map(([k,[t,v]])=>[k,property(t,v)]))});
++   const event = p('events',10,{Name:['title','A synthetic repair'],context:['rich_text','I repaired a fictional relay.'],when:['date','2026-01-01T00:00:00Z'],
++     source:['select','manual'],link:['url',null],trigger:['select','progress'],importance:['select','4'],uncertainty:['number',2],control:['number',7],emotions:['relation',[]],state:['relation',[]]});
++   const emotion = p('emotions',20,{Name:['title','relief'],axis:['select','stress'],level:['number',0],comment:['rich_text','The fictional relay works again.'],
++     weight:['number',null],body_signal:['multi_select',['relief']],need:['select','progress'],coping:['select','act'],event:['relation',[event.id]]});
++   const state = p('state',30,{Name:['title','Historical state'],when:['date','2026-01-01T00:00:00Z'],mood_label:['select','clear'],intent:['select','build'],
++     need_stack:['select','growth'],need_level:['number',6],avoid:['multi_select',['noise']],reason:['rich_text','A synthetic reason'],state_json:['rich_text','{"stress":0}'],source:['select','event'],event:['relation',[event.id]]});
++   const mem = p('mem',40,{Name:['title','Synthetic memory'],Content:['rich_text','Remembered relief in my own words.'],Tags:['multi_select',['relief']],
++     Source:['url','https://example.invalid/source'],CreatedAt:['date','2026-01-01T00:00:00Z'],Confidence:['select','high']});
++   const rows = {events:[event],emotions:[emotion],state:[state],mem:[mem]};
++   const schemas = Object.fromEntries(Object.entries(rows).map(([lane,[row]])=>[lane,{object:'data_source',id:ids[lane],properties:Object.fromEntries(Object.entries(row.properties).map(([name,v])=>[name,{type:v.type,
++     ...(v.type === 'relation' ? {relation:{data_source_id:ids[name === 'event' ? 'events' : name],type:'single_property',single_property:{}}} : {})}]))}]));
++   const calls = [];
++   const request = async (method, apiPath, body) => {
++     calls.push({method,apiPath,body});
++     assert.ok(method === 'GET' || (method === 'POST' && apiPath.endsWith('/query')), 'reader must not mutate');
++     if (apiPath.startsWith('/pages/')) {
++       const row = Object.values(rows).flat().find(r=>r.id === apiPath.split('/')[2]);
++       if (!row) throw new Error('not found'); return structuredClone(row);
++     }
++     const lane = Object.keys(ids).find(k=>apiPath.split('/')[2] === ids[k]);
++     if (method === 'GET') return structuredClone(schemas[lane]);
++     let matches = rows[lane] || [];
++     if (body.filter?.relation) matches = matches.filter(r=>r.properties.event?.relation.some(x=>x.id === body.filter.relation.contains));
++     const pageSize = body.page_size;
++     return {object:'list',results:structuredClone(matches.slice(0,pageSize)),has_more:matches.length>pageSize};
++   };
++   };
++   return {rows,schemas,calls,request,event,emotion,state,mem};
++ const codes = out => out.diagnostics.map(d=>d.code);
++ test('empty forward links still recover actual reverse-linked affect, zero level and historical state', async () => {
++   const s = scene();
++   const s = scene();
++   const s = scene();
++   const s = scene();
++   const s = scene();
++   const out = await recallExperiences({...cfg,query:'relay'},{request:s.request});
++   assert.equal(out.status,'complete');
++   assert.equal(out.status,'complete');
++   assert.equal(out.budget.requests,6);
++   assert.equal(out.results[0].emotions[0].fields.level,0);
++   assert.equal(out.results[0].states[0].fields.mood_label,'clear');
++   assert.equal(out.results[0].experience.fields.context,'I repaired a fictional relay.');
++   assert.deepEqual(out.results[0].emotions[0].relation_evidence.via,['reverse:event']);
++   assert.equal(out.results[0].temporal_scope,'recorded_at_experience_not_current');
++   assert.equal(out.mem_join,'not_inferred');
++   assert.ok(s.calls.filter(c=>c.apiPath.endsWith('/query')).every(c=>c.body.filter));
++ });
++ });
++ });
++ });
++ });
++ });
++ });
++ });
++ });
++ });
++ });
++ test('state-id follows only its stored event and returns the same experience', async () => {
++   const out = await recallExperiences({...cfg,stateId:s.state.id},{request:s.request});
++   const out = await recallExperiences({...cfg,stateId:s.state.id},{request:s.request});
++   assert.equal(out.origin.id,s.state.id);
++   assert.equal(out.results[0].experience.id,s.event.id);
++   assert.equal(out.budget.requests,7);
++ test('missing event link is partial, with no guessed date/text join', async () => {
++   const s = scene(); s.state.properties.event.relation = [];
++   assert.equal(out.status,'partial'); assert.equal(out.complete,false);
++   assert.ok(codes(out).includes('missing_event_link')); assert.deepEqual(out.results,[]);
++   assert.equal(s.calls.length,4);
++ test('legacy forward-only records remain retrievable but schema gaps are explicit', async () => {
++   const s = scene(); delete s.schemas.emotions.properties.event; delete s.emotion.properties.event;
++   s.event.properties.emotions.relation = [{id:s.emotion.id}];
++   const out = await recallExperiences({...cfg,eventId:s.event.id},{request:s.request});
++   const out = await recallExperiences({...cfg,eventId:s.event.id},{request:s.request});
++   assert.equal(out.status,'partial'); assert.ok(codes(out).includes('missing_relation_schema'));
++   assert.equal(out.results[0].emotions[0].id,s.emotion.id);
++   assert.deepEqual(out.results[0].emotions[0].relation_evidence.via,['forward:emotions']);
++   assert.equal(s.calls.filter(c=>c.apiPath === `/data_sources/${ids.emotions}/query`).length,0);
++   assert.equal(s.calls.filter(c=>c.apiPath === `/data_sources/${ids.emotions}/query`).length,0);
++ test('forward and reverse edges deduplicate; conflicting edges are not silently endorsed', async () => {
++   const s = scene(); s.event.properties.emotions.relation = [{id:s.emotion.id}];
++   let out = await recallExperiences({...cfg,eventId:s.event.id},{request:s.request});
++   let out = await recallExperiences({...cfg,eventId:s.event.id},{request:s.request});
++   assert.equal(out.results[0].emotions.length,1);
++   assert.deepEqual(out.results[0].emotions[0].relation_evidence.via,['reverse:event','forward:emotions']);
++   s.emotion.properties.event.relation = [{id:uuid(99)}];
++   out = await recallExperiences({...cfg,eventId:s.event.id},{request:s.request});
++   out = await recallExperiences({...cfg,eventId:s.event.id},{request:s.request});
++   assert.equal(out.status,'partial'); assert.ok(codes(out).includes('conflicting_relation'));
++ test('wrong relation target and wrong page parent are withheld without following unrelated data', async () => {
++   const s = scene(); s.schemas.emotions.properties.event.relation.data_source_id = ids.mem;
++   assert.ok(codes(out).includes('incompatible_relation_schema'));
++   s.event.parent.data_source_id = ids.mem;
++   assert.deepEqual(out.results,[]); assert.ok(codes(out).includes('source_unavailable_or_wrong_parent'));
++ test('one failing lane returns partial evidence and never echoes private error text', async () => {
++   const out = await recallExperiences({...cfg,eventId:s.event.id},{request:async(...args)=>{
++     if (args[1] === `/data_sources/${ids.emotions}/query`) throw new Error('PRIVATE PAYLOAD');
++     return s.request(...args);
++   }});
++   assert.equal(out.ok,false); assert.equal(out.status,'partial');
++   assert.equal(out.results[0].states.length,1); assert.equal(out.results[0].emotions.length,0);
++   assert.doesNotMatch(JSON.stringify(out),/PRIVATE PAYLOAD/);
++ test('request, result, inline relation and total text bounds are reported, never hidden', async () => {
++   let out = await recallExperiences({...cfg,eventId:s.event.id,maxRequests:4},{request:s.request});
++   assert.equal(out.ok,false); assert.equal(out.budget.requests,4); assert.ok(codes(out).includes('request_budget_exhausted'));
++   s.rows.emotions.push({...structuredClone(s.emotion),id:uuid(21)});
++   s.event.properties.state.has_more = true;
++   out = await recallExperiences({...cfg,eventId:s.event.id,linkedLimit:1,totalTextLimit:50},{request:s.request});
++   assert.ok(codes(out).includes('result_limit')); assert.ok(codes(out).includes('relation_limit'));
++   assert.ok(codes(out).includes('text_limit')); assert.equal(out.budget.text_characters,50);
++   assert.equal(out.complete,false);
++ test('null emotion axis/level and old missing fields are not complete affect recall', async () => {
++   const s = scene(); s.emotion.properties.axis.select = null; s.emotion.properties.level.number = null;
++   delete s.state.properties.state_json;
++   assert.equal(out.status,'partial'); assert.ok(codes(out).includes('empty_recorded_value'));
++   assert.ok(out.results[0].states[0].missing_fields.includes('state_json'));
++ test('invalid CLI limits/selectors fail before requests', async () => {
++   let calls = 0; const request = async()=>{calls++;};
++   for (const extra of [{limit:NaN},{limit:0},{limit:6},{maxRequests:1000},{query:'   '},{eventId:'../wrong'},{stateId:uuid(30)}]) {
++     await assert.rejects(recallExperiences({...cfg,query:'relay',...extra},{request}));
++   }
++   assert.equal(calls,0);
++   assert.throws(()=>parseRecallArgs(['--unknown','x']));
++   assert.throws(()=>parseRecallArgs(['--query','a','--query','b']));
++ test('ambient state context resolves through real CLI boundary; read/resolve do not acknowledge', () => {
++   const dir = fs.mkdtempSync(path.join(os.tmpdir(),'sis-experience-'));
++   const scripts = path.dirname(fileURLToPath(import.meta.url));
++   const fixture = path.join(dir,'fixture.json'); const mock = path.join(dir,'notionctl.mjs');
++   fs.writeFileSync(fixture,JSON.stringify({ids,rows:s.rows,schemas:s.schemas}));
++   fs.writeFileSync(mock,`import fs from 'node:fs';
++ const {ids,rows,schemas}=JSON.parse(fs.readFileSync(${JSON.stringify(fixture)},'utf8'));
++ const a=process.argv.slice(2);const get=k=>a[a.indexOf(k)+1];const p=get('--path');const b=a.includes('--body-json')?JSON.parse(get('--body-json')):{};
++ const lane=Object.keys(ids).find(k=>ids[k]===p.split('/').at(-2)||ids[k]===p.split('/').at(-1));
++ let result;
++ if(p.includes('/pages/'))result=Object.values(rows).flat().find(r=>r.id===p.split('/').at(-1));
++ else if(p.endsWith('/query'))result={results:(rows[lane]||[]).slice(0,b.page_size),has_more:false};
++ else result=schemas[lane];
++ console.log(JSON.stringify({ok:true,result}));`);
++   const env = {...process.env,NOTIONCTL_PATH:mock,SIS_AMBIENT_RECALL:'1'};
++   for (const name of ['NOTION_API_KEY','NOTION_TOKEN','NOTION_API_TOKEN']) delete env[name];
++   const run = (script,args) => {
++     const r = spawnSync(process.execPath,[path.join(scripts,script+'.js'),...args],{env,encoding:'utf8',timeout:10000});
++     assert.equal(r.status,0,r.stderr); return JSON.parse(r.stdout);
++   const staged = run('stage_ambient_recall',['--workspace',dir,'--force-roll','1','--state-dsid',ids.state]);
++   assert.equal(staged.recall.affect_context.fields.mood_label,'clear');
++   assert.equal(staged.recall.affect_context.fields.state_json,'{"stress":0}');
++   assert.deepEqual(staged.recall.affect_context.event_ids,[s.event.id]);
++   const file = staged.stagedFile;
++   const resolved = run('read_ambient_recall',['--file',file,'--resolve','--events-dsid',ids.events,'--emotions-dsid',ids.emotions,'--state-dsid',ids.state]);
++   assert.equal(resolved.status,'available'); assert.equal(resolved.resolution.status,'complete');
++   assert.equal(resolved.resolution.results[0].emotions[0].fields.level,0);
++   assert.equal(fs.existsSync(file+'.consumption.json'),false);
++   const ack = run('read_ambient_recall',['--file',file,'--ack',resolved.recall.id,'--used-in','synthetic:test-turn']);
++   assert.equal(ack.receipt.evidence,'consumer_acknowledgment');
++   assert.equal(ack.receipt.used_in,'synthetic:test-turn');
++   const durable = run('stage_ambient_recall',['--workspace',dir,'--force-roll','5','--mem-dsid',ids.mem,'--mem-dbid',uuid(100)]);
++   assert.deepEqual(durable.recall.affect_context.fields.Tags,['relief']);
++   assert.equal(durable.recall.affect_context.status,'mem_only_no_verified_event_join');
++   assert.equal(run('read_ambient_recall',['--file',durable.stagedFile,'--resolve']).resolution.status,'no_verified_event_route');
+
+### scripts/journal_write.js  [code]
+- import { createPage } from './notionctl_bridge.js';
+- }
+- function nowIso() {
+-   const d = new Date();
+-   const tz = -d.getTimezoneOffset();
+-   const sign = tz >= 0 ? '+' : '-';
+-   const pad = n => String(Math.floor(Math.abs(n))).padStart(2,'0');
+-   const hh = pad(tz/60);
+-   const mm = pad(tz%60);
+-   const iso = d.toISOString().replace('Z','');
+-   return `${iso}${sign}${hh}:${mm}`;
+-   const out = { journalDbid: null };
+-   const journalDb = args.journalDbid;
++ import { createPage, httpJson } from './notionctl_bridge.js';
++ import { nowIso, loadIds, assertTarget } from './soul_io.js';
++   const out = { journalDbid: null, journalDsid: null, idsFile: null };
++     else if (argv[i] === '--journal-dsid') out.journalDsid = argv[++i] || '';
++     else if (argv[i] === '--ids-file') out.idsFile = argv[++i] || '';
++     else throw new Error('Unknown journal argument: ' + argv[i]);
++   const ids = loadIds(args.idsFile);
++   const journalDb = args.journalDbid || ids.journal?.database_id;
++   if (!Number.isFinite(Date.parse(when))) throw new Error('Invalid journal timestamp');
++   await assertTarget(httpJson, 'journal', journalDb, args.journalDsid || ids.journal?.data_source_id,
++     {Name:'title', when:'date', body:'rich_text', worklog:'rich_text', session_summary:'rich_text'});
+
+### scripts/memory_boundary.test.js  [code]
++ import test from 'node:test';
++ import assert from 'node:assert/strict';
++ import fs from 'node:fs';
++ import fs from 'node:fs';
++ import os from 'node:os';
++ import path from 'node:path';
++ import { spawnSync } from 'node:child_process';
++ import { fileURLToPath } from 'node:url';
++ const scripts = path.dirname(fileURLToPath(import.meta.url));
++ const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sis-boundary-'));
++ const mock = path.join(root, 'notionctl.mjs');
++ fs.writeFileSync(mock, `
++ const args = process.argv.slice(2);
++ const read = flag => args[args.indexOf(flag) + 1];
++ const apiPath = read('--path');
++ const body = args.includes('--body-json') ? JSON.parse(read('--body-json')) : null;
++ if (process.env.SIS_TEST_LOG) fs.appendFileSync(process.env.SIS_TEST_LOG, JSON.stringify({path:apiPath,body})+'\\n');
++ if (process.env.SIS_TEST_FAIL === '1') { console.log(JSON.stringify({ok:false,error:'fixture unavailable'})); process.exit(0); }
++ let result = {id: 'fixture-page',url:'https://example.invalid/page'};
++ if (apiPath.includes('/query')) result = {results:[]};
++ if (apiPath.includes('/children')) result = {results:[],has_more:false};
++ if (apiPath.includes('/databases/')) result = {id:'fixture-db',data_sources:[{id:'fixture-ds'}]};
++ if (apiPath.includes('/data_sources/') && !apiPath.endsWith('/query')) result = {properties:Object.fromEntries(Object.entries({Name:'title',when:'date',context:'rich_text',axis:'select',level:'number',scale_version:'number',event:'relation',state_json:'rich_text',body:'rich_text',worklog:'rich_text',session_summary:'rich_text'}).map(([name,type])=>[name,{type,...(type==='relation'?{relation:{data_source_id:'fixture-ds'}}:{})}]))};
++ console.log(JSON.stringify({ok:true,result}));
++ `);
++ function run(name, args = [], input = '', env = {}) {
++   const childEnv = { ...process.env };
++   for (const key of Object.keys(childEnv)) {
++     if (key.startsWith('NOTION_') || key.startsWith('SIS_')) delete childEnv[key];
++   }
++   return spawnSync(process.execPath, [path.join(scripts, name + '.js'), ...args], {
++     encoding: 'utf8', input, timeout: 10000,
++     env: { ...childEnv, NOTIONCTL_PATH: mock, ...env },
++   });
++ }
++ const parse = result => JSON.parse(result.stdout);
++ test('explicit ambient pause does not contact Notion or alter an existing stage', () => {
++   const workspace = path.join(root, 'disabled');
++   const dir = path.join(workspace, 'memory/soul-in-sapphire');
++   fs.mkdirSync(dir, {recursive:true});
++   const file = path.join(dir, 'ambient-recall.json');
++   fs.writeFileSync(file, 'preserve me');
++   const log = path.join(root, 'disabled-api.log');
++   const env = { SIS_TEST_LOG:log, SIS_TEST_FAIL:'1', SIS_AMBIENT_RECALL:'0' };
++   assert.equal(parse(run('stage_ambient_recall',['--workspace',workspace], '', env)).status,'disabled');
++   assert.equal(parse(run('read_ambient_recall',['--file',file], '', env)).status,'disabled');
++   assert.equal(fs.readFileSync(file,'utf8'),'preserve me');
++   assert.equal(fs.existsSync(log),false);
++ });
++ });
++ });
++ });
++ });
++ });
++ });
++ test('Notion memory write and search stay active independently of ambient settings', () => {
++   const bad = run('stage_ambient_recall',[], '', {SIS_AMBIENT_RECALL:'true'});
++   assert.notEqual(bad.status,0);
++   assert.match(bad.stderr,/must be 0 or 1/);
++   const log = path.join(root,'ltm.log');
++   const env = {SIS_AMBIENT_RECALL:'broken',SIS_TEST_LOG:log};
++   const found = run('ltm_search',['--query','fixture','--mem-dsid','ds','--mem-dbid','db'],'',env);
++   assert.equal(found.status,0,found.stderr);
++   assert.equal(parse(found).ok,true);
++   const written = run('ltm_write',['--mem-dsid','ds','--mem-dbid','db'],
++     JSON.stringify({title:'A remembered experience',content:'I felt relieved after the repair.',tags:['relief']}),env);
++   assert.equal(written.status,0,written.stderr);
++   const calls = fs.readFileSync(log,'utf8').trim().split('\n').map(JSON.parse);
++   const page = calls.find(x=>x.path.endsWith('/pages'));
++   assert.equal(page.body.properties.Tags.multi_select[0].name,'relief');
++   assert.match(page.body.properties.Content.rich_text[0].text.content,/felt relieved/);
++ test('setup preserves all five Notion memory and self-data databases by default', () => {
++   const log = path.join(root,'setup.log');
++   const result = run('setup_ltm',['--parent','aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa','--base','Fixture','--yes'],'',
++     {SIS_TEST_LOG:log});
++   assert.equal(result.status,0,result.stderr);
++   const titles = fs.readFileSync(log,'utf8').trim().split('\n').map(JSON.parse)
++     .filter(x=>x.path.endsWith('/databases')).map(x=>x.body.title[0].text.content);
++   assert.deepEqual(titles,['Fixture-mem','Fixture-events','Fixture-emotions','Fixture-state','Fixture-journal']);
++ test('Notion failure is an error, not successful ambient staging', () => {
++   const result = run('stage_ambient_recall', ['--workspace',path.join(root,'error'),'--force-roll','5','--mem-dsid','ds','--mem-dbid','db'],
++     '',{SIS_AMBIENT_RECALL:'1',SIS_TEST_FAIL:'1'});
++   assert.notEqual(result.status,0,result.stderr);
++   assert.equal(parse(result).ok,false);
++   assert.equal(parse(result).status,'error');
++   assert.equal(parse(result).staged,false);
++ test('preview, staging, reading and explicit consumption are distinct', () => {
++   const workspace = path.join(root,'ambient');
++   fs.mkdirSync(workspace,{recursive:true});
++   fs.writeFileSync(path.join(workspace,'DREAMS.md'),'# Dream\n\nA grounded fixture reflection.\n');
++   const env = {}; // Ambient recall remains enabled without any opt-in flag.
++   const args = ['--workspace',workspace,'--force-roll','6'];
++   const preview = run('stage_ambient_recall',[...args,'--dry-run'],'',env);
++   assert.equal(preview.status,0,preview.stderr);
++   assert.equal(parse(preview).status,'preview');
++   assert.equal(parse(preview).staged,false);
++   assert.equal(fs.existsSync(parse(preview).stagedFile),false);
++   const staged = parse(run('stage_ambient_recall',args,'',env));
++   assert.equal(staged.status,'staged');
++   assert.equal(staged.consumed,false);
++   const file = staged.stagedFile;
++   const read = parse(run('read_ambient_recall',['--file',file],'',env));
++   assert.equal(read.status,'available');
++   assert.equal(fs.existsSync(file+'.consumption.json'),false);
++   const wrong = run('read_ambient_recall',['--file',file,'--ack','wrong','--used-in','fixture:turn'],'',env);
++   assert.notEqual(wrong.status,0);
++   const ackArgs = ['--file',file,'--ack',read.recall.id,'--used-in','fixture:turn'];
++   const ack = parse(run('read_ambient_recall',ackArgs,'',env));
++   assert.equal(ack.consumed,true);
++   assert.equal(ack.receipt.used_in,'fixture:turn');
++   assert.deepEqual(parse(run('read_ambient_recall',ackArgs,'',env)).receipt,ack.receipt);
++   assert.equal(parse(run('read_ambient_recall',['--file',file],'',env)).recall,null);
++   const next = {...read.recall,id:'replacement'};
++   fs.writeFileSync(file,JSON.stringify(next));
++   fs.writeFileSync(file,JSON.stringify(next));
++   assert.notEqual(run('read_ambient_recall',ackArgs,'',env).status,0);
++   assert.equal(parse(run('read_ambient_recall',['--file',file],'',env)).consumed,false);
++   next.expires_at = '2000-01-01T00:00:00Z';
++   assert.equal(parse(run('read_ambient_recall',['--file',file],'',env)).status,'expired');
++   assert.notEqual(run('read_ambient_recall',['--file',file,'--ack','replacement','--used-in','fixture:turn'],'',env).status,0);
++ test('historical candidate without an id has a stable consumable identity', () => {
++   const file = path.join(root,'historical.json');
++   fs.writeFileSync(file,JSON.stringify({version:1,kind:'ambient_recall',content:'retained',expires_at:'2099-01-01T00:00:00Z'}));
++   const env = {SIS_AMBIENT_RECALL:'1'};
++   const first = parse(run('read_ambient_recall',['--file',file],'',env));
++   const second = parse(run('read_ambient_recall',['--file',file],'',env));
++   assert.equal(first.recall.id,second.recall.id);
++   assert.equal(parse(run('read_ambient_recall',['--file',file,'--ack',first.recall.id,'--used-in','fixture:old'],'',env)).consumed,true);
++ test('state/emotion relations and subjective journal survive an invalid ambient setting and Notion failures remain failures', () => {
++   const log = path.join(root,'self.log');
++   const env = {SIS_TEST_LOG:log,SIS_AMBIENT_RECALL:'broken'};
++   const payload = JSON.stringify({scale_version:2,event:{title:'Fixture',context:'I wondered whether my wording felt rejecting.'},
++     emotions:[{axis:'stress',level:1,comment:'I worried, tentatively.'}],state:{reason:'My interpretation is uncertain.'}});
++   const args = ['--events-dbid','events','--emotions-dbid','emotions','--state-dbid','state','--state-dsid','fixture-ds','--payload-json',payload,'--mirror-file',path.join(root,'now-state.json'),'--heartbeat-file',path.join(root,'heartbeat-state.json'),'--receipt-file',path.join(root,'tick-receipt.json')];
++   const state = run('emostate_tick',args,'',env);
++   assert.equal(state.status,0,state.stderr);
++   assert.equal(parse(state).ok,true);
++   assert.equal(JSON.parse(fs.readFileSync(path.join(root,'now-state.json'))).scale_version,2);
++   assert.equal(JSON.parse(fs.readFileSync(path.join(root,'heartbeat-state.json'))).lastSnapshotResult,'success');
++   const journal = run('journal_write',['--journal-dbid','journal'],JSON.stringify({body:'I felt uncertain, then settled; the question remains.'}),env);
++   assert.equal(journal.status,0,journal.stderr);
++   const writes = fs.readFileSync(log,'utf8').trim().split('\n').map(JSON.parse).filter(x=>x.path.endsWith('/pages'));
++   assert.equal(writes.length,4);
++   assert.equal(writes[1].body.properties.event.relation[0].id,'fixture-page');
++   assert.equal(writes[2].body.properties.event.relation[0].id,'fixture-page');
++   assert.match(writes[3].body.properties.body.rich_text[0].text.content,/I felt uncertain/);
++   assert.notEqual(run('emostate_tick',[...args.slice(0,-1),path.join(root,'failed-tick-receipt.json')],'',{...env,SIS_TEST_FAIL:'1'}).status,0);
++   const failedJournal = run('journal_write',['--journal-dbid','journal'],'{"body":"subjective fixture"}',{...env,SIS_TEST_FAIL:'1'});
++   assert.notEqual(failedJournal.status,0);
++   assert.doesNotMatch(failedJournal.stdout,/"ok":\s*true/);
+
+### scripts/migrate_emotion_scale.js  [code]
++ #!/usr/bin/env node
++ // Plan from a complete snapshot; guarded/idempotent apply or rollback.
++ import fs from 'node:fs';
++ import {httpJson} from './notionctl_bridge.js';
++ import {planScaleMigration,applyScalePlan} from './emotion_scale_migration.js';
++ import {atomicJson} from './soul_io.js';
++ const args=process.argv.slice(2),mode=args[0],file=args[1];
++ try{
++  if(mode==='plan'){
++   const rows={state:JSON.parse(fs.readFileSync(file+'/all-state.json')),emotions:JSON.parse(fs.readFileSync(file+'/all-emotions.json'))};
++   const plan=planScaleMigration(rows);atomicJson(args[2],plan);
++   console.log(JSON.stringify({ok:true,operations:plan.operations.length,plan:args[2]}));
++  }else if(['apply','rollback'].includes(mode)){
++   const plan=JSON.parse(fs.readFileSync(file));
++   const result=await applyScalePlan(plan,{request:httpJson,progressFile:args[2],direction:mode==='apply'?'forward':'rollback',
++    onProgress:(completed,total)=>{if(completed%10===0||completed===total)console.error(JSON.stringify({completed,total}));}});
++   console.log(JSON.stringify(result));
++  }else throw Error('Usage: migrate_emotion_scale.js plan <snapshot-directory> <plan.json> | apply/rollback <plan.json> <progress.json>');
++ }catch(e){console.error(e.message);process.exitCode=1;}
+
+### scripts/notionctl_bridge.js  [code]
+-     throw new Error(`notionctl api execution failed. ${authSetupHint()}\n${redactKnownSecrets(combined || 'unknown error')}`);
+-     throw new Error(`notionctl api not ok. ${authSetupHint()}\n${redactKnownSecrets(out)}`);
++ }
++ function apiFailureHint(raw) {
++   if (/unauthorized|\b401\b|missing.*(?:token|api.key)|NOTION_API_KEY.*(?:required|missing)/i.test(String(raw))) return authSetupHint();
++   if (/validation_error|property that exists/i.test(String(raw))) return 'Validate the target database/data source IDs and property schema; this is not an authentication diagnosis.';
++   return 'Inspect the failing endpoint/stage before changing credentials or retrying a write.';
++     throw new Error(`notionctl api execution failed. ${apiFailureHint(combined)}\n${redactKnownSecrets(combined || 'unknown error')}`);
++     throw new Error(`notionctl api not ok. ${apiFailureHint(out)}\n${redactKnownSecrets(out)}`);
+
+### scripts/notionctl_bridge.test.js  [code]
++ import test from 'node:test';
++ import assert from 'node:assert/strict';
++ import fs from 'node:fs';
++ import os from 'node:os';
++ import path from 'node:path';
++ import { spawnSync } from 'node:child_process';
++ import { fileURLToPath } from 'node:url';
++ test('validation errors do not masquerade as auth failures and known tokens stay redacted', () => {
++  const root=fs.mkdtempSync(path.join(os.tmpdir(),'sis-error-hint-'));
++  const mock=path.join(root,'notionctl.mjs'),probe=path.join(root,'probe.mjs');
++  const bridge=new URL('./notionctl_bridge.js',import.meta.url).href;
++  fs.writeFileSync(mock,"console.log(JSON.stringify({ok:false,error:process.env.SIS_FIXTURE_FAILURE,details:'fixture-secret-value'}));");
++  fs.writeFileSync(probe,"import {httpJson} from "+JSON.stringify(bridge)+";try{httpJson('GET','/users/me')}catch(e){console.log(e.message)}");
++  for(const code of ['validation_error','unauthorized']){
++   const env={...process.env,NOTIONCTL_PATH:mock,NOTION_API_KEY:'fixture-secret-value',SIS_FIXTURE_FAILURE:code};
++   delete env.NOTION_TOKEN;delete env.NOTION_API_TOKEN;
++   const r=spawnSync(process.execPath,[probe],{encoding:'utf8',env,timeout:5000});
++   assert.equal(r.status,0,r.stderr);assert.doesNotMatch(r.stdout,/fixture-secret-value/);
++   if(code==='validation_error'){assert.match(r.stdout,/target database/);assert.doesNotMatch(r.stdout,/Configure Notion auth/);}
++   else assert.match(r.stdout,/Configure Notion auth/);
++  }
++ });
++ });
++ test('dependency discovery works for unscoped and owner-qualified installed snapshots', () => {
++   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sis-install-path-'));
++   const source = path.join(path.dirname(fileURLToPath(import.meta.url)), 'notionctl_bridge.js');
++   const env = { ...process.env };
++   for (const name of ['NOTIONCTL_PATH','NOTION_API_KEY','NOTION_TOKEN','NOTION_API_TOKEN']) delete env[name];
++   for (const relative of ['skills/soul-in-sapphire', 'skills/@fixture/soul-in-sapphire']) {
++     const workspace = path.join(root, relative.includes('@') ? 'scoped' : 'unscoped');
++     const installed = path.join(workspace, relative);
++     const dependency = path.join(workspace, 'skills/notion-api-automation/scripts');
++     fs.mkdirSync(path.join(installed, 'scripts'), { recursive:true });
++     fs.mkdirSync(dependency, { recursive:true });
++     fs.writeFileSync(path.join(installed, 'package.json'), '{"type":"module"}');
++     fs.copyFileSync(source, path.join(installed, 'scripts/notionctl_bridge.js'));
++     fs.writeFileSync(path.join(dependency, 'notionctl.mjs'), 'console.log(JSON.stringify({ok:true,result:{fixture:true}}));');
++     fs.writeFileSync(path.join(installed, 'probe.mjs'), "import {httpJson} from './scripts/notionctl_bridge.js'; console.log(JSON.stringify(httpJson('GET','/users/me')));");
++     const result = spawnSync(process.execPath, [path.join(installed, 'probe.mjs')], { env, encoding:'utf8', timeout:5000 });
++     assert.equal(result.status, 0, result.stderr);
++     assert.deepEqual(JSON.parse(result.stdout), {fixture:true});
++   }
+
+### scripts/setup_ltm.js  [code]
++     scale_version: { number: {} },
+
+### scripts/soul_io.js  [code]
++ import fs from 'node:fs';
++ import path from 'node:path';
++ import crypto from 'node:crypto';
++ export const nowIso=()=>new Date().toISOString();
++ export function atomicJson(file,value){
++  fs.mkdirSync(path.dirname(file),{recursive:true,mode:0o700});
++  fs.mkdirSync(path.dirname(file),{recursive:true,mode:0o700});
++  const tmp=file+'.'+crypto.randomUUID()+'.tmp';
++  fs.writeFileSync(tmp,JSON.stringify(value,null,2)+'\n',{mode:0o600,flag:'wx'});
++  fs.renameSync(tmp,file);
++ }
++ }
++ }
++ }
++ export function loadIds(file){return file?JSON.parse(fs.readFileSync(file,'utf8')):{};}
++ export async function withFileLock(file,work){
++  let fd;
++  try{fd=fs.openSync(file,'wx',0o600);}catch(e){
++   if(e.code==='EEXIST')throw Error('Writer lock already exists; check its owner before recovery: '+file);
++   throw e;
++  }
++  try{fs.writeFileSync(fd,JSON.stringify({pid:process.pid,created_at:nowIso()}));return await work();}
++  finally{fs.closeSync(fd);fs.unlinkSync(file);}
++ export function readText(prop){
++  if(prop?.type==='date')return prop.date?.start||'';
++  return (prop?.[prop.type]||[]).map(x=>x.plain_text??x.text?.content??'').join('');
++ export const richText=value=>({rich_text:String(value).match(/[\s\S]{1,2000}/gu)?.map(content=>({type:'text',text:{content}}))||[]});
++ export async function assertTarget(request,lane,id,dsid,required){
++  if(!id)throw Error('Missing '+lane+' database ID');
++  const db=await request('GET','/v1/databases/'+id);
++  const ds=dsid||db.data_sources?.[0]?.id;
++  if(!ds||!db.data_sources?.some(x=>x.id===ds))throw Error(lane+' database/data source mismatch');
++  const schema=await request('GET','/v1/data_sources/'+ds);
++  if(schema.parent?.database_id&&schema.parent.database_id!==id)throw Error(lane+' data source parent mismatch');
++  for(const [name,type] of Object.entries(required))if(schema.properties?.[name]?.type!==type)throw Error(lane+' schema missing '+name+' ('+type+')');
++  return {dbid:id,dsid:ds,schema};
+
+### scripts/soul_io.test.js  [code]
++ import test from 'node:test';
++ import assert from 'node:assert/strict';
++ import fs from 'node:fs';
++ import os from 'node:os';
++ import path from 'node:path';
++ import {spawnSync} from 'node:child_process';
++ import {withFileLock} from './soul_io.js';
++ const root=fs.mkdtempSync(path.join(os.tmpdir(),'sis-current-'));
++ test('writer lock excludes concurrent work and releases on success/failure',async()=>{
++  const file=path.join(root,'writer.lock');let release;
++  const held=withFileLock(file,()=>new Promise(r=>{release=r;}));
++  await assert.rejects(withFileLock(file,()=>{}),/lock already/);release();await held;
++  assert.equal(fs.existsSync(file),false);
++  assert.equal(fs.existsSync(file),false);
++  await assert.rejects(withFileLock(file,()=>{throw Error('fixture');}),/fixture/);
++ });
++ });
++ test('current recall adds projection without overwriting the historical zero snapshot',()=>{
++  const mock=path.join(root,'notionctl.mjs');
++  fs.writeFileSync(mock,`console.log(JSON.stringify({ok:true,result:{results:[{id:'fixture',properties:{
++  when:{type:'date',date:{start:'2026-10-04T09:00:00Z'}},
++  state_json:{type:'rich_text',rich_text:[{plain_text:'{"stress":0,"joy":9,"__meta":{"version":1}}'}]}
++  }}]}}));`);
++  const env={...process.env,NOTIONCTL_PATH:mock};for(const k of ['NOTION_API_KEY','NOTION_TOKEN','NOTION_API_TOKEN'])delete env[k];
++  const file=new URL('./state_recall.js',import.meta.url);
++  const r=spawnSync(process.execPath,[file.pathname,'--state-dsid','fixture','--current','--at','2026-10-05T09:00:00Z'],{encoding:'utf8',env});
++  assert.equal(r.status,0,r.stderr);const row=JSON.parse(r.stdout)[0];
++  assert.equal(row.state_json.stress,0);assert.equal(row.state_json.joy,9);
++  assert.equal(row.projected_state.stress,-2.5);assert.equal(row.projected_state.joy,2);
++  assert.equal(row.temporal_scope,'projection_now_from_recorded_snapshot');
+
+### scripts/state_recall.js  [code]
+- import { queryRecent, textOf } from './notionctl_bridge.js';
+-   const out = { limit: 1, write: '', stateDsid: null };
+- function main() {
+-   const pages = queryRecent(dsId, Math.max(1, args.limit));
+- try { main(); } catch (e) { console.error(String(e?.stack || e)); process.exit(1); }
++ import { queryDataSource, textOf } from './notionctl_bridge.js';
++ import { projectState } from './emotion_math.js';
++   const out = { limit: 1, write: '', stateDsid: null, current: false, at: nowIsoLocal() };
++     else if (a === '--current') out.current = true;
++     else if (a === '--at') out.at = argv[++i] || '';
++     else throw new Error('Unknown state recall argument: ' + a);
++   }
++ async function main() {
++   if (!Number.isInteger(args.limit) || args.limit < 1 || args.limit > 100) throw new Error('limit must be 1..100');
++   const pages = (await queryDataSource(dsId, {page_size: args.limit, sorts:[{property:'when',direction:'descending'}]})).results || [];
++   if (args.current) for (const row of out) {
++     row.projected_at = args.at;
++     row.projected_state = projectState(row.state_json, row.when, args.at);
++     row.temporal_scope = 'projection_now_from_recorded_snapshot';
++ main().catch(e => { console.error(String(e?.stack || e)); process.exitCode = 1; });

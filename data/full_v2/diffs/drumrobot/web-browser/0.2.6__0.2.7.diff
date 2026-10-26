@@ -1,0 +1,64 @@
+drumrobot/web-browser  0.2.6 -> 0.2.7
+change_type: docs   changelog: web-browser 0.2.7  - Docs updated: Improved, clarified, or extended guides for `ui-test.md`, `credential-issue.md`, and `ui-test.md`. - File cleanup: Removed outdated or redundant file `skill-card.md`. - No changes to core logic or APIs; this release is primarily documentation and organizational updates.
+
+### CHANGELOG.md  [docs]
++ ## [0.2.7](https://github.com/es6kr/skills/compare/web-browser-v0.2.6...web-browser-v0.2.7) (2026-08-17)
++ ### Bug Fixes
++ * promote next-fix staging (30 fixes across 14 skills) ([ee467c0](https://github.com/es6kr/skills/commit/ee467c045d779d7b80d30f160763ec3534a9742b))
++ * **web-browser:** credential-issue backend routing — session-existence gate + account-mismatch rule ([e5a9098](https://github.com/es6kr/skills/commit/e5a90986812c90b101a24554f3de9038a59906b4))
++ * **web-browser:** document virtualized table bulk row operation pattern ([c5bc8f0](https://github.com/es6kr/skills/commit/c5bc8f0610263a963e8a75bfd30f36f2a5dafa76))
++ * **wip:** cross-ref PR-URL and TaskCreate subject repo-qualifier rules ([#186](https://github.com/es6kr/skills/issues/186)) ([4982364](https://github.com/es6kr/skills/commit/49823641a7b08123ebd0325273892bee41bc3280))
+
+### credential-issue.md  [docs]
+- | 1 | **chrome-devtools** (real session) | Reuses the user's already-logged-in browser session — often no login needed | `chrome-devtools-mcp` connected |
++ | 1 | **chrome-devtools** (real session) | Reuses the user's already-logged-in browser session — often no login needed | `chrome-devtools-mcp` connected **AND the instance actually holds a logged-in session** (see session-existence gate below) |
++ **Session-existence gate (HARD STOP — the priority column is conditional routing, not a fixed
++ ranking)**: each priority's "Why" is its **applicability condition**. chrome-devtools ranks 1st
++ *because* it reuses a real logged-in session — an MCP-launched instance whose `list_pages` shows only
++ `about:blank` (or whose target page redirects to a login screen) has **no session to reuse**, so the
++ rank-1 rationale is void and a backend that *does* hold a session (e.g., an already-open cmux panel)
++ outranks it. Before switching backends mid-flow, verify the destination backend actually holds a
++ logged-in session; if it does not, the switch buys nothing and costs the user a fresh login plus a
++ second browser window.
++ **Account mismatch is an account problem, not a backend problem (HARD STOP)**: when the current
++ backend's session is logged in as the **wrong account** (e.g., panel session = account B, credential
++ must be issued under account A), the fix is **account switching inside the same backend** (GitHub
++ "Switch account" / `login?add_account=1` — the user signs in once in a panel they can see), NOT
++ abandoning the backend for another one. A backend swap discards a working session+UI surface and, if
++ the destination is a blank instance, degrades to a fresh-login flow anyway. Only swap backends when
++ the destination verifiably holds the *correct* account's session.
++ | # | Don't | Do |
++ |---|-------|----|
++ | 8 | Wrong account detected in the current backend's session → abandon the backend and open the same page in another backend (which turns out to be a blank/no-session instance → fresh-login demand + second browser window) | Account mismatch = switch accounts **inside the same backend** (GitHub `login?add_account=1` in the visible panel). Swap backends only after verifying the destination holds the correct account's live session (`list_pages` non-blank + target page not redirecting to login) |
++ 3.5. **Before any mid-flow backend switch**: does the destination backend actually hold a logged-in session for the **required account**? (`list_pages` non-blank + no login redirect). If not, stay in the current backend — an account mismatch there is solved by in-backend account switching, not by a backend swap (session-existence gate above).
++ ## Service account / authentication creation — pre-confirmation mandatory (HARD STOP)
++ **Before creating any service account (sign-up, API key issuance, OAuth app registration), confirm with `AskUserQuestion`.**
++ | 1 | Use `userEmail` from `MEMORY.md` to autonomously create an account | `AskUserQuestion` to confirm email / account name |
++ | 2 | Auto-generate a password and not report it | Ask for the desired password, or generate and **immediately** report it |
++ | 3 | Think "we need an account to proceed quickly" and create one | Account creation is the user's decision. Report the need + ask via `AskUserQuestion` first |
++ | 4 | Call a register API as soon as authentication is needed | `AskUserQuestion`: "Which email / password to use?" first |
++ **Applies to**: HedgeDoc, Gitea, ArgoCD, Authentik, MinIO, and all self-hosted + external SaaS services.
+
+### ui-test.md  [docs]
++ ## Virtualized Table Bulk Row Operations
++ Virtualized tables (React-window/virtual-scroll UIs like Notion databases, large grids) only render rows near the current viewport into the DOM. This breaks the naive snapshot→ref→click loop in specific ways:
++ ### Symptom pattern
++ - `browser_snapshot` frequently exceeds the token limit (50-70KB) and gets auto-saved to a file
++ - Element refs go stale after 1-2 interactions because scrolling/re-render unmounts and remounts rows with new refs
++ - `document.querySelectorAll` via `browser_evaluate` unreliably finds custom-rendered controls (checkboxes that aren't real `<input type="checkbox">`, or don't consistently match `[role="checkbox"]`)
++ - Accessible-name-based locators collide when many elements share the same (often empty) label — `getByLabel('', {exact:true}).nth(N)` resolves ambiguously as the DOM shifts between calls
++ ### Procedure
++ 1. **Never assume one snapshot covers the whole dataset.** Scroll to top/middle/bottom (`el.scrollTop = ...` on the scrollable container) and snapshot at each position to cover the full row set — don't infer total row count from a single snapshot's visible rows.
++ 2. **When a snapshot exceeds the token limit and is saved to a file**, immediately grep/parse the saved file (`uv run python3 -c "import re; ..."` or `grep -n`) to extract element refs paired with their row content, rather than retrying the snapshot call hoping for a smaller result.
++ 3. **Extract a ref and click it immediately** — don't batch multiple snapshot→ref-extraction cycles before acting. A ref from an older snapshot is often stale by the time you get to it if the page re-rendered in between (scroll, a prior click, a dialog open/close).
++ 4. **After each click, verify the actual target was hit** — a successful tool call is not proof the intended row was selected. Query the live DOM state (e.g. elements with `aria-checked="true"` plus their closest row's text) and confirm it matches the intended row's content signature.
++ 5. **For bulk multi-select + destructive action** (e.g. select N rows → delete): click each target individually via a fresh ref each time, verify the running selection-count indicator after each batch (the UI's own "N selected" label, in whatever language it renders), then do a final content-level verification of every selected row **before** executing the action.
++ 6. **When distinguishing "old" vs "new" duplicate rows by content** (e.g. after a data merge produced duplicates), verify the first pair by comparing actual field content against a known-old-value signature, then confirm any assumed ordering pattern (e.g. "old always sorts first") holds before relying on it for the remaining pairs.
++ ### Don't / Do
++ | # | Don't | Do |
++ |---|-------|-----|
++ | 1 | Assume one snapshot at the current scroll position shows the entire table | Scroll to top/middle/bottom and snapshot at each position to cover all rows |
++ | 2 | Reuse a ref from a snapshot taken several actions ago | Extract ref → click immediately. If a click fails with "ref not found", re-snapshot and re-extract rather than retrying the same ref |
++ | 3 | Trust "click tool returned success" as proof the intended row was selected | Query `aria-checked="true"` (or equivalent) plus closest row text after every click/batch, compare against expected content |
++ | 4 | Execute a bulk delete/action right after reaching the target selection count | Verify selection count AND spot-check row content for every selected item before the destructive action |
++ | 5 | Use `document.querySelectorAll(...)` text-match on custom UI controls and assume zero results means "not found" | Custom-rendered controls may not match simple DOM queries reliably — cross-check with the accessibility snapshot (which traverses non-standard DOM/shadow structures) before concluding an element doesn't exist |

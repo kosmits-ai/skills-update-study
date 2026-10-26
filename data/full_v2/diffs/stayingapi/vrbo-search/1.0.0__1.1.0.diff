@@ -1,0 +1,54 @@
+stayingapi/vrbo-search  1.0.0 -> 1.1.0
+change_type: instructions+docs   changelog: vrbo-search 1.1.0  - Expanded SKILL.md documentation with a platform × endpoint support matrix to clarify which features each OTA supports. - Documented async job handling, polling, partial/failed results, and guidance on interpreting empty results and failed jobs. - Added details and caveats around pagination, external IDs, platform limitations, and rate limiting. - Updated tags/metadata to use category: "integrations" instead of "travel". - Removed unused file: skill-card.md.
+
+### SKILL.md  [instructions]
+- metadata: {"openclaw":{"emoji":"🔍","requires":{"env":["STAYINGAPI_KEY"]},"primaryEnv":"STAYINGAPI_KEY","homepage":"https://stayingapi.com"},"hermes":{"tags":["vrbo","vrbo-api","search","vacation-rental","travel","accommodation"],"category":"travel"}}
+- - `location` — Place name ("Split, HR") or "lat,lng". Required.
+- StayingAPI is **cross-platform**: Vrbo data comes back in the *same unified schema* as Airbnb, Booking.com, Vrbo and Google Hotels, and the price-compare tool returns a computed **min** and **median** across every OTA — something a single-platform wrapper can't do.
+- A live call that has to scrape returns `202` + a `jobId`; poll `GET /v1/jobs/{jobId}` (free) until `data.status` is `completed`, then read `data.result`. On a fan-out, check `meta.partial` and `meta.platformResults[]`.
++ metadata: {"openclaw":{"emoji":"🔍","requires":{"env":["STAYINGAPI_KEY"]},"primaryEnv":"STAYINGAPI_KEY","homepage":"https://stayingapi.com"},"hermes":{"tags":["vrbo","vrbo-api","search","vacation-rental","travel","accommodation"],"category":"integrations"}}
++ - `location` — **Required.** Place name ("Split, HR") or "lat,lng".
++ - `platforms[]` — Drives fan-out + per-platform billing.
++ ## Platform × endpoint support
++ Not every endpoint supports every platform. Verified:
++ | platform | search | availability | price | price-compare | listing | reviews |
++ |---|---|---|---|---|---|---|
++ | `airbnb` | yes | yes | yes | yes | yes | yes |
++ | `booking` | yes | yes | yes | yes | yes | yes |
++ | `vrbo` | yes | yes | yes | yes | yes | yes |
++ | `google` | yes | yes | yes | yes | **no** | **no** |
++ `GET /v1/listing/google/…` and `GET /v1/reviews?platform=google` return
++ `400 platform_not_enabled` ("google is not enabled for this endpoint"). Use `booking`,
++ `airbnb` or `vrbo` for listing detail and reviews; use `google` for search, price and
++ cross-OTA price-compare.
++ StayingAPI is **cross-platform**: Vrbo data comes back in the *same unified schema* as Airbnb, Booking.com and Google Hotels, so one integration covers them all. `/v1/price-compare` resolves a property through the Google Hotels backbone and returns the offers it exposes plus a StayingAPI-computed **min** and **median** over those offers, as first-class fields.
++ > Coverage varies by property and by what the backbone returns: some properties come back with several OTA offers, others with a single aggregated-lowest offer (in which case `min` equals `median` and `offers` has one entry, sometimes a direct-supplier rate rather than an OTA). Read `offers.length` before describing a result as a multi-platform comparison.
++ A live call that has to scrape returns `202` with `data.jobId`, `data.pollUrl` and
++ `data.estimatedSeconds` (the `202` itself charges 0). Poll `GET /v1/jobs/{jobId}` (free)
++ until `data.status` is TERMINAL — `completed` **or** `failed`.
++ - **`completed`** → the payload is at `data.result` (the same schema the sync call returns;
++   `data` itself is just `{jobId, result, status}`). `meta` carries `partial`,
++   `platformResults[]` and `warnings[]`. A completed job may still return an **empty**
++   result (`data.result: []`) — the reason is in `meta.warnings[]` (e.g. `no_results`), and
++   empty results charge 0.
++ - **`failed`** → HTTP is still **200**, not an HTTP error. The failure is nested at
++   `data.error` (`code`, `type`, `message`, `retryable`). Detect it with
++   `data.status === "failed"`, **not** a top-level `error`. `creditsCharged` is 0, and `meta`
++   carries only `{requestId, creditsCharged, platforms}` — do **not** read `partial`,
++   `platformResults` or `warnings` on a failed job.
++ Pace your polling: honour the `Retry-After` header, back off between attempts, and cap the
++ number of attempts. A tight loop hits `429 rate_limit_exceeded` (120 requests/minute).
++ ## Known limitations
++ - **Pagination:** `limit`/`cursor` are accepted where documented, but availability depends on the endpoint and the upstream source — treat `meta.pagination` as authoritative and stop when `hasMore` is false or `nextCursor` is null.
++ - **Externally-sourced ids:** a Vrbo id obtained somewhere other than `/v1/search` may not resolve upstream and can produce a failed job (`all_actors_failed`). Prefer ids from `/v1/search` (`platformListingId`).
++ - **Platform gaps:** see the support matrix above — `google` has no listing or reviews endpoint.
+
+### references/auth-setup.md  [docs]
+- - **Evaluate with zero friction:** use a **sandbox** key (`stay_test_…`). Sandbox calls return deterministic fixtures and cost **0 credits** — perfect for wiring the skill up before signing up.
+- - **Live data:** create a free account at <https://stayingapi.com/signup> (no card) and make a key in the dashboard. Live keys are `stay_live_…`.
++ Both key types come from the same place — the dashboard:
++ 1. Create a free account at <https://stayingapi.com/signup> (no credit card).
++ 2. Open <https://stayingapi.com/dashboard/keys> and copy a key.
++ - **Evaluate with zero friction:** use a **sandbox** key (`stay_test_…`). Sandbox calls return deterministic fixtures and cost **0 credits**. Sandbox keys work **immediately** — you do not need to verify your email first.
++ - **Live data:** use a live key (`stay_live_…`). Verifying your email is what unlocks live calls and their credits.
++ > Sandbox fixtures are illustrative, not a mirror of your request — they may echo different dates, occupancy or even a different property than you asked for. Use them to wire up parsing and error handling, then switch to a `stay_live_` key for real data.

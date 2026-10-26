@@ -1,0 +1,510 @@
+drumrobot/backlog  0.3.2 -> 0.4.0
+change_type: docs+code   changelog: - Added Plane tracker integration scripts, including identifier verification and test coverage. - Enhanced create and sync scripts to support Plane issue management. - Removed deprecated documentation file (skill-card.md). - Updated and expanded tests for Plane client and workflow. - Minor updates to documentation and CHANGELOG.
+
+### CHANGELOG.md  [docs]
++ ## [0.4.0](https://github.com/es6kr/skills/compare/backlog-v0.3.2...backlog-v0.4.0) (2026-09-20)
++ ### Features
++ * **backlog:** add plane_verify_identifier.py to catch wrong-key references ([#508](https://github.com/es6kr/skills/issues/508)) ([704af59](https://github.com/es6kr/skills/commit/704af59599ed2d848e540f963b8fbc9bccd83d1f))
++ ### Bug Fixes
++ * address code review feedback ([0c08bfb](https://github.com/es6kr/skills/commit/0c08bfbf2b5b737fdce685c8f15ead56c64290f4))
++ * **backlog:** add browse_url helper and use it in Plane issue reporting paths ([91ee0ce](https://github.com/es6kr/skills/commit/91ee0ce0a9580283725491ffb08a4013429fdb54))
+
+### create.md  [docs]
+-   "id": "86db2a42-172e-4413-98a2-9f5f704104e8",
+-   "title": "[es6kr/skills] Roll out PR 282, 283, 286 and live-verify",
+-   "url": "https://plane.es6.kr/es6kr/projects/4b4d8bfc-5e5d-495b-bd4c-301fe89e5bb0/issues/86db2a42-172e-4413-98a2-9f5f704104e8",
+- After creation, attach the returned `url` to the tracker item: `→ Plane (<url>)`.
++   "id": "<issue-uuid>",
++   "title": "Issue title",
++   "url": "https://<plane-host>/<workspace-slug>/projects/<project-uuid>/issues/<issue-uuid>",
++   "browse_url": "https://<plane-host>/<workspace-slug>/browse/<IDENTIFIER>-8",
++ **`url` vs `browse_url` — use `browse_url` for anything a person reads or clicks.** `url` is the raw API-shaped link (workspace slug + project UUID + issue UUID) — Plane resolves it, but a reader can't tell what it points to from the UUIDs alone. `browse_url` is the short `<IDENTIFIER>-<SEQ>` form and is what belongs in tracker items, chat reports, and issue/PR comments. After creation, attach the returned `browse_url` to the tracker item: `→ Plane (<browse_url>)`. `browse_url` is `null` only if the project-identifier lookup failed (rare, best-effort) — fall back to `url` in that case, but treat it as a signal something's off, not the normal path.
+
+### scripts/plane_client.py  [code]
++     """
++     """
++     )
++     try:
++         )
++ def format_browse_url(plane_host, workspace_slug, identifier, sequence_id):
++     """Human-facing URL: https://<host>/<workspace_slug>/browse/<IDENTIFIER>-<SEQ>.
++     Module-level so callers that never instantiate ``PlaneClient`` (e.g.
++     scripts that hand-roll their own urllib requests) can still produce the
++     standard reporting URL instead of a project-UUID-nested API URL. See
++     ``PlaneClient.browse_url`` for the instance-method form.
++     return "%s/%s/browse/%s-%s" % (
++         plane_host.rstrip("/"),
++         workspace_slug,
++         identifier,
++         sequence_id,
++ def fetch_project_identifier(plane_host, workspace_slug, token, project_id, user_agent=None):
++     """One-off GET for a project's short code (e.g. "INFRA") given its UUID.
++     Standalone (no ``PlaneClient`` instance) for callers — like
++     ``plane_create_issue.py``'s REST path — that build requests with their own
++     ``urllib.request`` calls rather than through the class. Returns ``None`` on
++     any failure; callers should fall back to the raw ``issue_url`` in that case
++     rather than raising, since this is only needed to build a nicer report URL.
++     url = "%s/api/v1/workspaces/%s/projects/%s/" % (plane_host.rstrip("/"), workspace_slug, project_id)
++     headers = {"User-Agent": user_agent or UA}
++     req = urllib.request.Request(url, headers=headers, method="GET")
++     req.add_unredirected_header("x-api-key", token)
++         with urllib.request.urlopen(req, timeout=30) as resp:
++             data = json.loads(resp.read().decode("utf-8"))
++         return data.get("identifier")
++     except Exception:
++         return None
++             )
++     def list_projects(self):
++         """Return every project in the workspace (id, identifier, name, ...), following pagination.
++         Used to resolve a short project code (e.g. "ES6KR") to its project_id
++         before an identifier-based lookup — see plane_verify_identifier.py.
++         Not cached: the project list is small and rarely called in a loop.
++         """
++         """
++         """
++         projects = []
++         cursor = "%d:0:0" % PAGE_SIZE
++         while True:
++             page = self.request(
++                 "workspaces/%s/projects/?cursor=%s" % (self.profile["workspace_slug"], cursor)
++             if isinstance(page, list):
++                 return page
++             results = page.get("results", [])
++             projects.extend(results)
++             next_cursor = page.get("next_cursor")
++             if not next_cursor or not page.get("next_page_results"):
++                 break
++             cursor = next_cursor
++         return projects
++         """Internal API-shaped URL (project UUID + issue UUID).
++         Not for human-facing reports or chat/comment output — Plane resolves
++         this fine, but it embeds implementation UUIDs a reader can't act on.
++         Use ``browse_url`` wherever the link is meant to be read or clicked.
++     def browse_url(self, identifier, sequence_id):
++         """Human-facing URL: https://<host>/<workspace_slug>/browse/<IDENTIFIER>-<SEQ>.
++         ``identifier`` is the project's short code (e.g. "INFRA"), ``sequence_id``
++         the issue's per-project sequence number (e.g. 62) — both already present
++         on any issue/project payload this client returns. Use this, not
++         ``issue_url``, for anything a person will read or click.
++         return format_browse_url(
++             self.profile["plane_host"], self.profile["workspace_slug"], identifier, sequence_id
+
+### scripts/plane_create_issue.py  [code]
+- from plane_client import resolve_profile, normalize_priority  # noqa: E402
+-             print(f"   URL:   {res.get('url')}")
++ from plane_client import resolve_profile, normalize_priority, format_browse_url, fetch_project_identifier  # noqa: E402
++             identifier = fetch_project_identifier(plane_host, workspace_slug, token, prj_id)
++             browse_url = format_browse_url(plane_host, workspace_slug, identifier, seq_id) if identifier else None
++                 "browse_url": browse_url,
++     identifier = fetch_project_identifier(plane_host, workspace_slug, token, prj_id)
++     browse_url = format_browse_url(plane_host, workspace_slug, identifier, seq_id) if identifier else None
++         "browse_url": browse_url,
++         "browse_url": f"{plane_host}/{workspace_slug}/browse/{{prj.identifier}}-{{existing.sequence_id}}",
++     "browse_url": f"{plane_host}/{workspace_slug}/browse/{{prj.identifier}}-{{issue.sequence_id}}",
++             print(f"   URL:   {res.get('browse_url') or res.get('url')}")
+
+### scripts/plane_indexify.py  [code]
+-                     block, best, identifiers[project_id], client.issue_url(project_id, best["id"]), args.note
++                     block,
++                     best,
++                     identifiers[project_id],
++                     client.browse_url(identifiers[project_id], best.get("sequence_id")),
++                     args.note,
+
+### scripts/plane_verify_identifier.py  [code]
++ #!/usr/bin/env python3
++ """plane_verify_identifier.py — confirm a Plane identifier actually refers to
++ what the caller believes it does, before citing it in an ask/issue/PR comment.
++ Motivation: a wrong-key reference (e.g. citing ES6KR-128 when the intended
++ issue is actually ES6KR-129) has recurred several times — Gemini-registered
++ identifiers pointing at an unrelated issue, or a stale reference surviving a
++ tracker re-shuffle. Nothing mechanically checked "does this key's real title
++ match what I think it's about" before the reference was published.
++ Usage::
++     python3 plane_verify_identifier.py ES6KR-128
++     python3 plane_verify_identifier.py ES6KR-128 --expect-title-contains "hook registry"
++     python3 plane_verify_identifier.py --browse-url https://plane.dgs.ai.kr/dgs/browse/ES6KR-128
++ Exit codes:
++     0  identifier resolved (and, if given, --expect-title-contains matched)
++     1  identifier does not resolve, or a usage/profile error
++     2  identifier resolves but --expect-title-contains did NOT match —
++        the reference is likely citing the wrong key
++ """
++ import argparse
++ import os
++ import re
++ import sys
++ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
++ from plane_client import PlaneClient, PlaneError, format_browse_url  # noqa: E402
++ IDENTIFIER_RE = re.compile(r"^([A-Za-z][A-Za-z0-9]*)-(\d+)$")
++ BROWSE_URL_RE = re.compile(r"/browse/([A-Za-z][A-Za-z0-9]*)-(\d+)\b")
++ def parse_identifier(raw):
++     m = IDENTIFIER_RE.match(raw.strip())
++     if not m:
++     if not m:
++         raise ValueError('not a valid Plane identifier: %r (expected a form like "ES6KR-128")' % raw)
++     return m.group(1).upper(), int(m.group(2))
++     return m.group(1).upper(), int(m.group(2))
++ def parse_browse_url(url):
++     m = BROWSE_URL_RE.search(url)
++         raise ValueError("could not find an IDENTIFIER-SEQ in browse URL: %r" % url)
++ def resolve(client, project_code, sequence_id):
++     """Return (project, issue) or raise LookupError with a clear message."""
++     projects = client.list_projects()
++     project = next((p for p in projects if (p.get("identifier") or "").upper() == project_code), None)
++     if project is None:
++         known = ", ".join(sorted((p.get("identifier") or "?") for p in projects)) or "(none)"
++         raise LookupError(
++         raise LookupError(
++             "no project with identifier %r in this workspace (known: %s)" % (project_code, known)
++         )
++         )
++         )
++     issues = client.list_issues(project["id"])
++     issue = next((i for i in issues if i.get("sequence_id") == sequence_id), None)
++     if issue is None:
++             "%s-%d does not exist (project %r has %d issues)"
++             % (project_code, sequence_id, project_code, len(issues))
++     return project, issue
++ def main(argv=None):
++     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
++     parser.add_argument("identifier", nargs="?", help='e.g. "ES6KR-128"')
++     parser.add_argument("--browse-url", help="alternative to a bare identifier: a full browse URL")
++     parser.add_argument(
++         "--expect-title-contains",
++         help="case-insensitive substring the real issue title must contain",
++     )
++     args = parser.parse_args(argv)
++     if not args.identifier and not args.browse_url:
++         parser.error("provide either a bare IDENTIFIER-SEQ or --browse-url")
++     try:
++     try:
++     try:
++         project_code, sequence_id = (
++             parse_browse_url(args.browse_url) if args.browse_url else parse_identifier(args.identifier)
++     except ValueError as exc:
++         print("ERROR: %s" % exc, file=sys.stderr)
++         print("ERROR: %s" % exc, file=sys.stderr)
++         print("ERROR: %s" % exc, file=sys.stderr)
++         print("ERROR: %s" % exc, file=sys.stderr)
++         return 1
++         return 1
++         return 1
++         return 1
++         client = PlaneClient()
++     except PlaneError as exc:
++     except PlaneError as exc:
++         project, issue = resolve(client, project_code, sequence_id)
++     except LookupError as exc:
++     title = issue.get("name", "")
++     browse = format_browse_url(client.profile["plane_host"], client.profile["workspace_slug"], project_code, sequence_id)
++     print("%s-%d: %s" % (project_code, sequence_id, title))
++     print("  state_id: %s" % issue.get("state_id", "?"))
++     print("  browse:   %s" % browse)
++     if args.expect_title_contains:
++         if args.expect_title_contains.lower() not in title.lower():
++             print(
++                 "\nMISMATCH: expected the title to contain %r, but the actual title is %r. "
++                 "This identifier likely refers to a DIFFERENT issue than intended — "
++                 "do not cite it without re-checking." % (args.expect_title_contains, title),
++                 file=sys.stderr,
++             )
++             return 2
++         print("\nOK: title contains %r" % args.expect_title_contains)
++     return 0
++ if __name__ == "__main__":
++     sys.exit(main())
+
+### scripts/test_plane_client_browse_url.py  [code]
++ #!/usr/bin/env python3
++ """
++ """
++ Unit tests for PlaneClient.browse_url() (2026-09-16, 3rd recurrence of the
++ project-UUID-nested-URL reporting mistake — see failed-attempts.md
++ "Plane 이슈/Intake 보고 시 워크스페이스·식별자가 포함된 표준 브라우즈 URL 표기 누락").
++ issue_url() returns the internal API-shaped URL
++ (.../projects/<project-uuid>/issues/<issue-uuid>) and must keep doing so — it
++ is still useful as a machine-resolvable link. browse_url() is the new
++ human-facing method and must never regress to that nested-UUID shape.
++ import sys
++ import unittest
++ from pathlib import Path
++ import importlib.util
++ SCRIPT_DIR = Path(__file__).parent.resolve()
++ sys.path.insert(0, str(SCRIPT_DIR))
++ _client_path = SCRIPT_DIR / "plane_client.py"
++ _client_spec = importlib.util.spec_from_file_location("plane_client", str(_client_path))
++ plane_client = importlib.util.module_from_spec(_client_spec)
++ sys.modules["plane_client"] = plane_client
++ _client_spec.loader.exec_module(plane_client)
++ def make_client(host="https://plane.dgs.ai.kr", slug="dgs"):
++     client = plane_client.PlaneClient.__new__(plane_client.PlaneClient)
++     client.profile = {"plane_host": host, "workspace_slug": slug}
++     return client
++ class TestBrowseUrl(unittest.TestCase):
++     def test_browse_url_matches_standard_format(self):
++         client = make_client()
++         client = make_client()
++         client = make_client()
++         client = make_client()
++         client = make_client()
++         client = make_client()
++         self.assertEqual(
++             client.browse_url("INFRA", 62),
++             "https://plane.dgs.ai.kr/dgs/browse/INFRA-62",
++         )
++     def test_browse_url_accepts_int_or_str_sequence_id(self):
++         self.assertEqual(client.browse_url("DTWEB", 37), client.browse_url("DTWEB", "37"))
++     def test_browse_url_never_contains_projects_issues_path(self):
++         url = client.browse_url("AIAUTO", 176)
++         self.assertNotIn("/projects/", url)
++         self.assertNotIn("/issues/", url)
++     def test_issue_url_still_returns_the_internal_api_shape(self):
++         # issue_url() is intentionally unchanged — it is the internal/API URL,
++         # not a reporting format. This test pins that so a future edit doesn't
++         # silently collapse the two methods into one.
++         url = client.issue_url("11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222")
++         self.assertIn("/projects/11111111-1111-1111-1111-111111111111/", url)
++         self.assertIn("/issues/22222222-2222-2222-2222-222222222222", url)
++ class TestListProjects(unittest.TestCase):
++     def test_list_projects_handles_bare_list_response(self):
++         client.request = lambda path: [{"id": "p1", "identifier": "P1"}]
++         projects = client.list_projects()
++         projects = client.list_projects()
++         self.assertEqual(projects, [{"id": "p1", "identifier": "P1"}])
++     def test_list_projects_paginates_cursor(self):
++         calls = []
++         def fake_request(path):
++             calls.append(path)
++             if "cursor=100:0:0" in path:
++                 return {
++                     "results": [{"id": "p1", "identifier": "P1"}],
++                     "next_cursor": "100:1:0",
++                     "next_page_results": True,
++                 }
++             return {
++                 "results": [{"id": "p2", "identifier": "P2"}],
++                 "next_cursor": None,
++                 "next_page_results": False,
++             }
++         client.request = fake_request
++         self.assertEqual(len(projects), 2)
++         self.assertEqual(projects[0]["identifier"], "P1")
++         self.assertEqual(projects[1]["identifier"], "P2")
++         self.assertEqual(len(calls), 2)
++ if __name__ == "__main__":
++     unittest.main()
+
+### scripts/test_plane_create_issue_browse_url.py  [code]
++ #!/usr/bin/env python3
++ """
++ """
++ Unit tests for browse_url wiring in plane_create_issue.py (2026-09-16, 3rd
++ recurrence fix — see failed-attempts.md "Plane 이슈/Intake 보고 시 워크스페이스·
++ 식별자가 포함된 표준 브라우즈 URL 표기 누락"). create.md's Output Schema told
++ callers to attach the returned `url` verbatim, and every create path built
++ that `url` in the banned project-UUID-nested form — this is the actual
++ mechanism behind the repeated mistake, not an isolated reporting slip.
++ All network calls are mocked (urllib.request.urlopen, subprocess.run).
++ import json
++ import sys
++ import unittest
++ from pathlib import Path
++ from unittest import mock
++ import importlib.util
++ SCRIPT_DIR = Path(__file__).parent.resolve()
++ sys.path.insert(0, str(SCRIPT_DIR))
++ _client_path = SCRIPT_DIR / "plane_client.py"
++ _client_spec = importlib.util.spec_from_file_location("plane_client", str(_client_path))
++ plane_client = importlib.util.module_from_spec(_client_spec)
++ sys.modules["plane_client"] = plane_client
++ _client_spec.loader.exec_module(plane_client)
++ _issue_path = SCRIPT_DIR / "plane_create_issue.py"
++ _issue_spec = importlib.util.spec_from_file_location("plane_create_issue", str(_issue_path))
++ plane_create_issue = importlib.util.module_from_spec(_issue_spec)
++ sys.modules["plane_create_issue"] = plane_create_issue
++ _issue_spec.loader.exec_module(plane_create_issue)
++ BASE_PROFILE = {
++     "plane_host": "https://plane.dgs.ai.kr",
++     "token": "test-token",
++     "workspace_slug": "dgs",
++     "default_project": "bd4376d5-d451-4608-8c08-f9fda009f4a6",
++ }
++ class _FakeResponse:
++     def __init__(self, payload):
++         self._payload = payload
++     def __enter__(self):
++         return self
++     def __exit__(self, *exc):
++         return False
++     def read(self):
++         return json.dumps(self._payload).encode("utf-8")
++ def _routing_urlopen(create_payload, project_payload):
++     """A urlopen fake that tells the create POST apart from the identifier GET
++     by method, the way the real Plane REST API distinguishes them."""
++     def _fake(req, *a, **kw):
++         if req.get_method() == "GET":
++             return _FakeResponse(project_payload)
++         return _FakeResponse(create_payload)
++     return _fake
++ class TestRestApiBrowseUrl(unittest.TestCase):
++     def test_create_via_rest_api_includes_browse_url(self):
++         fake = _routing_urlopen(
++         fake = _routing_urlopen(
++             create_payload={"id": "issue-uuid", "sequence_id": 62},
++             project_payload={"identifier": "INFRA"},
++         )
++         )
++         )
++         with mock.patch.object(plane_create_issue.urllib.request, "urlopen", fake):
++         with mock.patch.object(plane_create_issue.urllib.request, "urlopen", fake):
++             res = plane_create_issue.create_via_rest_api(dict(BASE_PROFILE), "title", is_intake=False)
++             res = plane_create_issue.create_via_rest_api(dict(BASE_PROFILE), "title", is_intake=False)
++         self.assertTrue(res["success"])
++         self.assertTrue(res["success"])
++         self.assertTrue(res["success"])
++         self.assertEqual(res["browse_url"], "https://plane.dgs.ai.kr/dgs/browse/INFRA-62")
++         # The raw API url is retained too — some callers may still want it.
++         self.assertIn("/projects/", res["url"])
++     def test_create_via_rest_api_degrades_to_none_when_identifier_lookup_fails(self):
++         def _fake(req, *a, **kw):
++             if req.get_method() == "GET":
++                 raise plane_create_issue.urllib.error.HTTPError(
++                     req.full_url, 403, "Forbidden", {}, None
++                 )
++             return _FakeResponse({"id": "issue-uuid", "sequence_id": 62})
++         with mock.patch.object(plane_create_issue.urllib.request, "urlopen", _fake):
++         self.assertIsNone(res["browse_url"])
++     def test_intake_create_includes_browse_url(self):
++             create_payload={"issue": "issue-uuid", "issue_detail": {"id": "issue-uuid", "sequence_id": 176}},
++             project_payload={"identifier": "AIAUTO"},
++             res = plane_create_issue.create_via_rest_api(dict(BASE_PROFILE), "title", is_intake=True)
++         self.assertEqual(res["browse_url"], "https://plane.dgs.ai.kr/dgs/browse/AIAUTO-176")
++ class TestK3sFallbackBrowseUrl(unittest.TestCase):
++     def test_generated_script_computes_browse_url_from_prj_identifier(self):
++         script = plane_create_issue.build_k3s_py_script(
++             "dgs", "bd4376d5-d451-4608-8c08-f9fda009f4a6", "https://plane.dgs.ai.kr",
++             "title", "desc", is_intake=False,
++         self.assertIn('"browse_url": f"https://plane.dgs.ai.kr/dgs/browse/{prj.identifier}-{issue.sequence_id}"', script)
++         self.assertIn('"browse_url": f"https://plane.dgs.ai.kr/dgs/browse/{prj.identifier}-{existing.sequence_id}"', script)
++         compile(script, "<k3s_py_script>", "exec")  # generated source must still be valid Python
++ class TestCliOutputPrefersBrowseUrl(unittest.TestCase):
++     def test_main_prints_browse_url_when_present(self):
++         fake_res = {
++             "success": True, "sequence_id": 62, "method": "REST API", "title": "t",
++             "url": "https://plane.dgs.ai.kr/dgs/projects/x/issues/y",
++             "browse_url": "https://plane.dgs.ai.kr/dgs/browse/INFRA-62",
++         }
++         with mock.patch.object(plane_create_issue, "create_plane_issue", return_value=fake_res):
++             with mock.patch.object(sys, "argv", ["plane_create_issue.py", "--title", "t"]):
++                 with mock.patch("builtins.print") as mock_print:
++                     plane_create_issue.main()
++         printed = "\n".join(str(c.args[0]) for c in mock_print.call_args_list)
++         self.assertIn("https://plane.dgs.ai.kr/dgs/browse/INFRA-62", printed)
++         self.assertNotIn("/projects/x/issues/y", printed)
++ if __name__ == "__main__":
++     unittest.main()
+
+### scripts/test_plane_verify_identifier.py  [code]
++ #!/usr/bin/env python3
++ """Unit tests for plane_verify_identifier.py.
++ Covers the identifier/browse-url parsers, the resolve() lookup (against a
++ fake duck-typed client — no network), and main()'s exit codes for the three
++ outcomes: resolves+matches (0), does not resolve (1), resolves but the title
++ doesn't match --expect-title-contains (2).
++ """
++ import importlib.util
++ import sys
++ import unittest
++ from pathlib import Path
++ from unittest.mock import patch
++ SCRIPT_DIR = Path(__file__).parent.resolve()
++ sys.path.insert(0, str(SCRIPT_DIR))
++ spec = importlib.util.spec_from_file_location("plane_verify_identifier", str(SCRIPT_DIR / "plane_verify_identifier.py"))
++ pvi = importlib.util.module_from_spec(spec)
++ spec.loader.exec_module(pvi)
++ class FakeClient:
++     """Duck-typed stand-in for PlaneClient — no network, no profile."""
++     def __init__(self, projects, issues_by_project_id):
++         self._projects = projects
++         self._issues_by_project_id = issues_by_project_id
++         self.profile = {"plane_host": "https://plane.example.com", "workspace_slug": "myws"}
++     def list_projects(self):
++         return self._projects
++     def list_issues(self, project_id):
++         return self._issues_by_project_id.get(project_id, [])
++ class TestParseIdentifier(unittest.TestCase):
++     def test_valid(self):
++     def test_valid(self):
++         self.assertEqual(pvi.parse_identifier("ES6KR-128"), ("ES6KR", 128))
++     def test_lowercase_normalized_uppercase(self):
++         self.assertEqual(pvi.parse_identifier("infra-6"), ("INFRA", 6))
++     def test_invalid_raises(self):
++         with self.assertRaises(ValueError):
++         with self.assertRaises(ValueError):
++         with self.assertRaises(ValueError):
++             pvi.parse_identifier("not-an-identifier")
++     def test_missing_number_raises(self):
++             pvi.parse_identifier("ES6KR-")
++ class TestParseBrowseUrl(unittest.TestCase):
++         url = "https://plane.dgs.ai.kr/dgs/browse/ES6KR-128"
++         self.assertEqual(pvi.parse_browse_url(url), ("ES6KR", 128))
++     def test_trailing_path_ignored(self):
++         url = "https://plane.dgs.ai.kr/dgs/browse/INFRA-6/some-slug-suffix"
++         self.assertEqual(pvi.parse_browse_url(url), ("INFRA", 6))
++     def test_no_browse_segment_raises(self):
++             pvi.parse_browse_url("https://plane.dgs.ai.kr/dgs/projects/uuid/issues/uuid")
++ class TestResolve(unittest.TestCase):
++     def setUp(self):
++     def setUp(self):
++         self.client = FakeClient(
++         self.client = FakeClient(
++             projects=[{"id": "proj-1", "identifier": "ES6KR"}, {"id": "proj-2", "identifier": "INFRA"}],
++             issues_by_project_id={
++             issues_by_project_id={
++                 "proj-1": [
++                     {"sequence_id": 128, "name": "hook registry relocation", "state_id": "done"},
++                     {"sequence_id": 129, "name": "unrelated other issue", "state_id": "todo"},
++                 ],
++             },
++             },
++         )
++         )
++     def test_finds_project_and_issue(self):
++         project, issue = pvi.resolve(self.client, "ES6KR", 128)
++         self.assertEqual(project["id"], "proj-1")
++         self.assertEqual(issue["name"], "hook registry relocation")
++     def test_unknown_project_code_raises(self):
++         with self.assertRaisesRegex(LookupError, "no project with identifier"):
++             pvi.resolve(self.client, "NOPE", 1)
++     def test_unknown_sequence_id_raises(self):
++         with self.assertRaisesRegex(LookupError, "does not exist"):
++             pvi.resolve(self.client, "ES6KR", 999)
++ class TestMain(unittest.TestCase):
++             projects=[{"id": "proj-1", "identifier": "ES6KR"}],
++                 "proj-1": [{"sequence_id": 128, "name": "hook registry relocation", "state_id": "done"}],
++     def test_resolves_and_title_matches_exit_0(self):
++         with patch.object(pvi, "PlaneClient", return_value=self.client):
++         with patch.object(pvi, "PlaneClient", return_value=self.client):
++         with patch.object(pvi, "PlaneClient", return_value=self.client):
++         with patch.object(pvi, "PlaneClient", return_value=self.client):
++         with patch.object(pvi, "PlaneClient", return_value=self.client):
++             rc = pvi.main(["ES6KR-128", "--expect-title-contains", "hook registry"])
++         self.assertEqual(rc, 0)
++         self.assertEqual(rc, 0)
++         self.assertEqual(rc, 0)
++     def test_resolves_without_expectation_exit_0(self):
++             rc = pvi.main(["ES6KR-128"])
++     def test_unresolvable_identifier_exit_1(self):
++             rc = pvi.main(["ES6KR-999"])
++         self.assertEqual(rc, 1)
++     def test_title_mismatch_exit_2(self):
++         # This is the exact class of bug the script exists to catch: a wrong
++         # key is cited, and the real title has nothing to do with what the
++         # caller expected.
++             rc = pvi.main(["ES6KR-128", "--expect-title-contains", "totally different topic"])
++         self.assertEqual(rc, 2)
++     def test_browse_url_input_resolves_same_as_bare_identifier(self):
++             rc = pvi.main(["--browse-url", "https://plane.example.com/myws/browse/ES6KR-128"])
++ if __name__ == "__main__":
++     unittest.main()

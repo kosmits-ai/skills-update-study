@@ -1,0 +1,390 @@
+anatoli-iliev/web-observer  0.1.1 -> 0.2.0
+change_type: instructions+docs+code   changelog: Watch several sites: vercel.projects and ga4.properties take lists in place of the singular keys, which still work. Each Vercel project is polled separately with its own alert state; a 0.1.1 state file carries over to the first project. The GA4 digest gets one section per property, and a failing property no longer holds back the rest.
+
+### CHANGELOG.md  [docs]
++ ## [0.2.0] - 2026-10-14
++ ### Added
++ - **The Vercel and GA4 modules watch more than one site.** `vercel.projects`
++   takes a list of projects in place of `vercel.project`, and `ga4.properties` a
++   list of properties in place of `ga4.property`; the singular forms still work.
++   Each Vercel project is polled with its own query and keeps its own alert
++   state, so one site's errors neither raise nor clear another's alert. The GA4
++   digest gets one section per property, and a failing property no longer holds
++   back the rest. Uptime already took one watch per URL.
++ ### Changed
++ - **Vercel state is kept per project.** A state file written by 0.1.1 is read
++   back and handed to the first configured project, so upgrading neither repeats
++   an alert nor forgets an outstanding one.
++ - **`vercel-watch` saves its state even when it exits 2.** With several
++   projects, a configuration problem on one must not stop another's alert from
++   being remembered as sent.
+
+### README.md  [docs]
++ To watch several sites, name them all with `projects` instead of `project`, for
++ example `"projects": ["my-project", "my-other-project"]`. Each project is polled
++ with its own query and keeps its own alert state, so errors on one site neither
++ raise nor clear an alert for another, and every alert names its project. The
++ `errors` and `budget` settings apply to all of them, and one account- or
++ team-scoped token covers them all.
++ For several sites, use `"properties": ["123456789", "987654321"]` instead of
++ `property`. The digest then has one section per property, and a property that
++ fails is reported in the run log without holding back the others.
+
+### SETUP.md  [docs]
++ ```
++ ```json
++ For more than one site, list them under `projects` instead of `project`:
++ { "vercel": { "enabled": true, "projects": ["my-project", "my-other-project"] } }
++ Each project is polled separately and keeps its own alert state. Uptime needs no
++ equivalent: add one entry per URL to `uptime.watches`.
++ For several sites, write `"properties": ["123456789", "987654321"]` instead of
++ `property`; the digest gets one section per property.
+
+### SKILL.md  [instructions]
+- version: 0.1.1
++ version: 0.2.0
++   When several projects are configured and the question does not say which
++   site, ask, or pass `--project` for each and say which answer is which.
++ For several sites, write `"projects": ["a", "b"]` instead of `project`, and
++ `"properties": ["1", "2"]` instead of `property`; giving both spellings is a
++ configuration error. Each Vercel project keeps its own alert state and every
++ alert names its project. Uptime already takes one entry per URL in `watches`.
+
+### lib/bridge/ga4.d.ts  [code]
+- /** The arguments a scheduled digest runs with. */
+- export declare function digestArgv(config: Config): string[];
++ /**
++  *
++  */
++  * The arguments a scheduled digest runs with.
++  * @param property The property to report on, or null for open-ga4's default.
++ export declare function digestArgv(config: Config, property: string | null): string[];
+
+### lib/bridge/ga4.js  [code]
+- /** The arguments a scheduled digest runs with. */
+- export function digestArgv(config) {
+-     if (config.ga4.property !== null)
+-         argv.push("--property", config.ga4.property);
++ /**
++  *
++  */
++  * The arguments a scheduled digest runs with.
++  * @param property The property to report on, or null for open-ga4's default.
++ export function digestArgv(config, property) {
++     if (property !== null)
++         argv.push("--property", property);
+
+### lib/bridge/vercel.d.ts  [code]
+- export declare function errorsArgv(config: Config, windowMinutes: number): string[];
+- /** The arguments for one performance-budget check. */
+- export declare function budgetArgv(config: Config): string[];
++ export declare function errorsArgv(project: string, windowMinutes: number): string[];
++ /** The arguments for one performance-budget check of one project. */
++ export declare function budgetArgv(config: Config, project: string): string[];
+
+### lib/bridge/vercel.js  [code]
+- export function errorsArgv(config, windowMinutes) {
+-     const argv = ["errors", "--since", `${windowMinutes}m`, "--json", "--limit", "200"];
+-     if (config.vercel.project !== null)
+-     if (config.vercel.project !== null)
+-         argv.push("--project", config.vercel.project);
+-         argv.push("--project", config.vercel.project);
+-     return argv;
+- /** The arguments for one performance-budget check. */
+- export function budgetArgv(config) {
+-     const argv = ["vitals"];
++ export function errorsArgv(project, windowMinutes) {
++     return ["errors", "--since", `${windowMinutes}m`, "--json", "--limit", "200", "--project", project];
++ /** The arguments for one performance-budget check of one project. */
++ export function budgetArgv(config, project) {
++     const argv = ["vitals", "--project", project];
+
+### lib/cli/main.js  [code]
+-             if (!args.dryRun && outcome.code !== EXIT_CONFIG) {
+-                 // notice is not repeated every fifteen minutes.
++             if (!args.dryRun) {
++                 // notice is not repeated every fifteen minutes. That includes a
++                 // configuration failure: with several projects, one of them failing
++                 // must not stop another's alert from being remembered as sent, and a
++                 // run refused before polling returns the state exactly as loaded.
+
+### lib/commands/delegate.js  [code]
+-     const result = await deps.invoke(digestArgv(context.config));
+-     if (result.code !== 0 || result.stdout.trim() === "") {
+-         const detail = result.spawnFailed
+-             ? result.stderr.trim()
+-             : result.timedOut
+-                 ? "it did not finish in time"
+-                 : (result.stderr.trim() || result.stdout.trim()).split("\n").slice(0, 4).join(" ");
+-         note(context.streams, `error: the GA4 digest failed: ${detail}`);
+-         return result.code === 2 ? EXIT_CONFIG : EXIT_FAILURE;
+-     const heading = `📈 Traffic digest, last ${context.config.ga4.digest.since}`;
+-     const message = `${heading}\n\n${result.stdout.trimEnd()}`;
+-         return EXIT_OK;
+-     return EXIT_OK;
++         }
++     // One section per property. A property that fails is reported in the run log
++     // and the others are still delivered: one broken credential should not cost
++     // every other site its digest.
++     const properties = context.config.ga4.properties;
++     const targets = properties.length === 0 ? [null] : properties;
++     const since = context.config.ga4.digest.since;
++     const sections = [];
++     let code = EXIT_OK;
++     for (const property of targets) {
++         const result = await deps.invoke(digestArgv(context.config, property));
++         if (result.code !== 0 || result.stdout.trim() === "") {
++             const detail = result.spawnFailed
++                 ? result.stderr.trim()
++                 : result.timedOut
++                     ? "it did not finish in time"
++                     : (result.stderr.trim() || result.stdout.trim()).split("\n").slice(0, 4).join(" ");
++             const which = property === null ? "" : ` for property ${property}`;
++             note(context.streams, `error: the GA4 digest${which} failed: ${detail}`);
++             if (code !== EXIT_CONFIG)
++                 code = result.code === 2 ? EXIT_CONFIG : EXIT_FAILURE;
++             continue;
++         const heading = targets.length > 1
++             ? `📈 Traffic digest for property ${property}, last ${since}`
++             : `📈 Traffic digest, last ${since}`;
++         sections.push(`${heading}\n\n${result.stdout.trimEnd()}`);
++     if (sections.length === 0)
++         return code;
++         return code;
++     const message = sections.join("\n\n");
++     return code;
+
+### lib/commands/vercelWatch.js  [code]
+- import { loadState, pruneSeenIds } from "../state.js";
+-     const vercel = { ...state.vercel, seenRequestIds: { ...state.vercel.seenRequestIds } };
+-     const project = config.vercel.project ?? "(default project)";
+-     if (config.vercel.errors.enabled && isDue(vercel.lastPollAtMs, config.vercel.errors.intervalMinutes, nowMs)) {
+-             const windowMinutes = windowFor(config.vercel.errors.windowMinutes, config.vercel.errors.intervalMinutes, sinceLastPoll);
+-             const result = await deps.invoke(errorsArgv(config, windowMinutes));
+-                     payload = toSafeEntries(JSON.parse(result.stdout), config.vercel.errors.includeMessages);
+-                     note(streams, `error: could not read the Vercel errors output: ${reason}`);
+-                     return { code: EXIT_FAILURE, message: "", state };
+-                 if (fresh.length > config.vercel.errors.threshold) {
+-                     blocks.push(formatErrorAlert(project, fresh, payload, windowMinutes, config.vercel.errors.includeMessages, nowMs));
+-     if (config.vercel.budget.enabled &&
+-         isDue(vercel.lastBudgetPollAtMs, config.vercel.budget.intervalMinutes, nowMs)) {
+-         const result = await deps.invoke(budgetArgv(config));
+-                 const thresholds = Object.entries(config.vercel.budget.metrics)
+-     const nextState = { ...state, vercel };
++ /**
++  *
++  */
++ import { loadState, pruneSeenIds, vercelStateOf, } from "../state.js";
++ }
++         }
++     }
++     const { config, streams } = context;
++     let code = EXIT_OK;
++     const nextVercel = {};
++     const noLogsReported = { value: false };
++     for (const [index, project] of config.vercel.projects.entries()) {
++         const previous = vercelStateOf(state, project, index === 0);
++         const vercel = { ...previous, seenRequestIds: { ...previous.seenRequestIds } };
++         const projectCode = await pollProject(context, deps, project, vercel, nowMs, blocks, noLogsReported);
++         // The most serious outcome wins: a configuration problem on one project
++         // must not be hidden by another project polling cleanly.
++         if (projectCode === EXIT_CONFIG || (projectCode !== EXIT_OK && code === EXIT_OK)) {
++             code = projectCode;
++         nextVercel[project] = vercel;
++     // Projects no longer configured are dropped, along with any legacy entry.
++     const nextState = { ...state, vercel: nextVercel };
++  * Run whichever parts of the Vercel watch are due for one project.
++  * @param vercel This project's state, updated in place.
++  * @param blocks Messages to deliver, appended to.
++  * @param noLogsReported Shared across projects, so a missing logs surface is
++  *   announced once rather than once per site.
++  * @returns The exit code for this project alone.
++ async function pollProject(context, deps, project, vercel, nowMs, blocks, noLogsReported) {
++     const { errors, budget } = config.vercel;
++     if (errors.enabled && isDue(vercel.lastPollAtMs, errors.intervalMinutes, nowMs)) {
++             if (!vercel.failing && !noLogsReported.value) {
++                 noLogsReported.value = true;
++             }
++             const windowMinutes = windowFor(errors.windowMinutes, errors.intervalMinutes, sinceLastPoll);
++             const result = await deps.invoke(errorsArgv(project, windowMinutes));
++                     payload = toSafeEntries(JSON.parse(result.stdout), errors.includeMessages);
++                     note(streams, `error: could not read the Vercel errors output for ${project}: ${reason}`);
++                     return EXIT_FAILURE;
++                 if (fresh.length > errors.threshold) {
++                     blocks.push(formatErrorAlert(project, fresh, payload, windowMinutes, errors.includeMessages, nowMs));
++     if (budget.enabled &&
++         isDue(vercel.lastBudgetPollAtMs, budget.intervalMinutes, nowMs)) {
++         const result = await deps.invoke(budgetArgv(config, project));
++                 const thresholds = Object.entries(budget.metrics)
++     return code;
+
+### lib/config.d.ts  [code]
+-     /** Project name or `prj_` id. */
+-     project: string | null;
+-     property: string | null;
++     /**
++     /**
++      *
++      */
++      */
++      * Project names or `prj_` ids, in the order they are polled.
++      * Written in the file as `project` for one or `projects` for several. Every
++      * project shares the error and budget settings below, and keeps its own state,
++      * so an outage on one site neither raises nor clears an alert for another.
++     projects: string[];
++      * Property ids, one digest section each. Written as `property` for one or
++      * `properties` for several. Empty means the open-ga4 skill's own default.
++     properties: string[];
+
+### lib/config.js  [code]
+-         project: null,
+-     rejectUnknownKeys(path, object, ["enabled", "project", "errors", "budget"]);
+-     const project = readNullableString(`${path}.project`, object["project"], null);
+-     if (enabled && project === null) {
+-             "project. Run the vercel-insights skill's --list-projects to see the names");
+-     return { enabled, project, errors, budget };
+-         property: null,
+-     rejectUnknownKeys(path, object, ["enabled", "property", "digest"]);
+-     const property = readNullableString(`${path}.property`, object["property"], null);
+-     return { enabled, property, digest };
++ /**
++  *
++  */
++     }
++     }
++     }
++     }
++ }
++         }
++  * A list of names written either as one string under `singular` or as an array
++  * under `plural`.
++  * Both spellings are accepted because a single site is the common case and the
++  * plural is what a second site needs; both at once is refused, since which one
++  * won would be invisible from the output.
++ function readNameList(path, object, singular, plural) {
++     const one = object[singular];
++     const many = object[plural];
++     if (one !== undefined && one !== null && many !== undefined) {
++         throw new ConfigError(`${path}.${plural}`, `is set alongside ${singular}. Use ${singular} for one or ${plural} for several, not both`);
++     if (many === undefined) {
++         const name = readNullableString(`${path}.${singular}`, one, null);
++         return name === null ? [] : [name];
++     if (!Array.isArray(many)) {
++         throw new ConfigError(`${path}.${plural}`, `must be an array, not ${describe(many)}`);
++     const names = many.map((item, index) => readString(`${path}.${plural}[${index}]`, item, ""));
++     for (const [index, name] of names.entries()) {
++         const previous = names.indexOf(name);
++         if (previous !== index) {
++             throw new ConfigError(`${path}.${plural}[${index}]`, `repeats ${JSON.stringify(name)}, already listed at ${plural}[${previous}]`);
++     return names;
++         projects: [],
++     rejectUnknownKeys(path, object, ["enabled", "project", "projects", "errors", "budget"]);
++     const projects = readNameList(path, object, "project", "projects");
++     if (enabled && projects.length === 0) {
++             "project. Set project for one site or projects for several. Run the " +
++             "vercel-insights skill's --list-projects to see the names");
++     return { enabled, projects, errors, budget };
++         properties: [],
++     rejectUnknownKeys(path, object, ["enabled", "property", "properties", "digest"]);
++     const properties = readNameList(path, object, "property", "properties");
++     return { enabled, properties, digest };
+
+### lib/state.d.ts  [code]
+-     vercel: VercelWatchState;
++ /**
++ /**
++  *
++  */
++  */
++     /**
++      * One entry per Vercel project, keyed by the name in the configuration.
++      *
++      * Releases before multi-project support kept a single unkeyed object here.
++      * That is read back under {@link LEGACY_VERCEL_KEY} and handed to the first
++      * configured project by {@link vercelStateOf}, so an upgrade neither repeats
++      * an alert nor forgets an outstanding one.
++      */
++     vercel: Record<string, VercelWatchState>;
++  * Where a pre-multi-project Vercel state is parked until a project claims it.
++  * Parentheses and a space cannot occur in a Vercel project name or id.
++ export declare const LEGACY_VERCEL_KEY = "(single project)";
++  * The Vercel state for one project, creating a blank one on first sight.
++  * @param first Whether this is the first configured project, the one that
++  *   inherits a state written before projects were keyed.
++ export declare function vercelStateOf(state: State, project: string, first: boolean): VercelWatchState;
+
+### lib/state.js  [code]
+-     return { version: 1, watches: {}, vercel: freshVercelState() };
+-         const entry = vercel;
+-         const seen = {};
+-         const rawSeen = entry["seenRequestIds"];
+-         if (typeof rawSeen === "object" && rawSeen !== null && !Array.isArray(rawSeen)) {
+-             for (const [id, at] of Object.entries(rawSeen)) {
+-                 const stamp = readNumberOrNull(at);
+-                 if (stamp !== null)
+-                     seen[id] = stamp;
+-         state.vercel = {
+-             seenRequestIds: seen,
+-             alerting: entry["alerting"] === true,
+-             lastPollAtMs: readNumberOrNull(entry["lastPollAtMs"]),
+-             failing: entry["failing"] === true,
+-             budgetAlerting: entry["budgetAlerting"] === true,
+-             lastBudgetPollAtMs: readNumberOrNull(entry["lastBudgetPollAtMs"]),
+-         };
++ /**
++ /**
++  *
++  */
++  */
++  * Where a pre-multi-project Vercel state is parked until a project claims it.
++  * Parentheses and a space cannot occur in a Vercel project name or id.
++ export const LEGACY_VERCEL_KEY = "(single project)";
++     return {
++     };
++ }
++ }
++     return { version: 1, watches: {}, vercel: {} };
++     }
++         }
++         }
++         const entries = vercel;
++         if ("seenRequestIds" in entries || "lastPollAtMs" in entries) {
++             state.vercel[LEGACY_VERCEL_KEY] = parseVercelState(entries);
++         else {
++             for (const [project, raw] of Object.entries(entries)) {
++                 if (typeof raw !== "object" || raw === null || Array.isArray(raw))
++                     continue;
++                 state.vercel[project] = parseVercelState(raw);
++ function parseVercelState(entry) {
++     const seen = {};
++     const rawSeen = entry["seenRequestIds"];
++     if (typeof rawSeen === "object" && rawSeen !== null && !Array.isArray(rawSeen)) {
++         for (const [id, at] of Object.entries(rawSeen)) {
++             const stamp = readNumberOrNull(at);
++             if (stamp !== null)
++                 seen[id] = stamp;
++         seenRequestIds: seen,
++         alerting: entry["alerting"] === true,
++         lastPollAtMs: readNumberOrNull(entry["lastPollAtMs"]),
++         failing: entry["failing"] === true,
++         budgetAlerting: entry["budgetAlerting"] === true,
++         lastBudgetPollAtMs: readNumberOrNull(entry["lastBudgetPollAtMs"]),
++  * The Vercel state for one project, creating a blank one on first sight.
++  * @param first Whether this is the first configured project, the one that
++  *   inherits a state written before projects were keyed.
++ export function vercelStateOf(state, project, first) {
++     return (state.vercel[project] ??
++         (first ? state.vercel[LEGACY_VERCEL_KEY] : undefined) ??
++         freshVercelState());
+
+### lib/version.d.ts  [code]
+- export declare const VERSION = "0.1.1";
++ export declare const VERSION = "0.2.0";
+
+### lib/version.js  [code]
+- export const VERSION = "0.1.1";
++ export const VERSION = "0.2.0";
+
+### package.json  [code]
+-   "version": "0.1.1",
++   "version": "0.2.0",

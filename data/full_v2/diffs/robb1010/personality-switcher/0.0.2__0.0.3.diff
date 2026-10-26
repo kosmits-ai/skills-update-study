@@ -1,0 +1,257 @@
+robb1010/personality-switcher  0.0.2 -> 0.0.3
+change_type: instructions+code   changelog: Add backup management: move to personalities/backups/, auto-cleanup (keep 10), personality names in backup directories
+
+### SKILL.md  [instructions]
+- ├── _personality_current_*           (timestamped backups)
+-     └── <personality-name>/
+-         ├── SOUL.md
+-         └── IDENTITY.md
+- Timestamped backups are created before every switch in the workspace root:
+- - `_personality_backup_current_2026-02-08T18-27-33.371866/`
+- **Keep the last 5 backups** for recovery options. Manual recovery:
+- cp _personality_backup_current_<timestamp>/SOUL.md ./SOUL.md
+- cp _personality_backup_current_<timestamp>/IDENTITY.md ./IDENTITY.md
+- - `switch_personality.py` — Atomic switch with backup/rollback
+- - `utils.py` — Shared utilities (I/O, backups, validation, state)
++ ```
++ ```
++ ### Backup Management
++ **Backup Location:** `~/.openclaw/workspace/personalities/backups/`
++ Backups are stored in a dedicated folder (not scattered at workspace root). When you switch personalities:
++ - A timestamped backup of the previous personality is created
++ - **Automatic cleanup runs** — keeps the 10 most recent backups by default
++ - Old backups are automatically deleted to prevent clutter
++ **Manual Cleanup:**
++ ```bash
++ ```bash
++ python3 ~/.openclaw/workspace/skills/personality-switcher/scripts/cleanup_backups.py --keep 5
++ python3 ~/.openclaw/workspace/skills/personality-switcher/scripts/cleanup_backups.py --keep 10 --days 7
++ Options:
++ - `--keep N` — Keep N most recent backups (default: 10)
++ - `--days D` — Also delete backups older than D days
++ **Optional: Add to HEARTBEAT.md for periodic cleanup:**
++ python3 ~/.openclaw/workspace/skills/personality-switcher/scripts/cleanup_backups.py --keep 10
++     │   ├── SOUL.md
++     │   └── IDENTITY.md
++     ├── <personality-name>/
++     └── backups/
++         ├── current_2026-02-08T17-27-41.628113/
++         │   ├── SOUL.md
++         │   └── IDENTITY.md
++         └── current_2026-02-08T17-27-33.371866/
++             ├── SOUL.md
++             └── IDENTITY.md
++ **Note:** Backups are automatically cleaned up. Workspace root stays clean—all internal machinery lives in `personalities/`.
++ Timestamped backups are created before every switch in `personalities/backups/`:
++ - `current_2026-02-08T17-27-33.371866/`
++ **Manual recovery** (if needed):
++ # List available backups
++ ls -la ~/.openclaw/workspace/personalities/backups/
++ cp ~/.openclaw/workspace/personalities/backups/current_<timestamp>/SOUL.md ~/.openclaw/workspace/SOUL.md
++ cp ~/.openclaw/workspace/personalities/backups/current_<timestamp>/IDENTITY.md ~/.openclaw/workspace/IDENTITY.md
++ Backups are automatically cleaned up; by default, the 10 most recent are kept. Adjust cleanup frequency or retention in HEARTBEAT.md as needed.
++ - `switch_personality.py` — Atomic switch with backup/rollback (auto-cleanup included)
++ - `cleanup_backups.py` — Manual backup cleanup (with `--keep` and `--days` options)
++ - `utils.py` — Shared utilities (I/O, backups, validation, state, cleanup)
++ ### Cleanup on Switch
++ By default, `switch_personality.py` automatically cleans up old backups after a successful switch, keeping the 10 most recent. This happens silently unless cleanup fails, in which case a warning is included in the response.
+
+### scripts/cleanup_backups.py  [code]
++ #!/usr/bin/env python3
++ """
++ """
++ Clean up old personality backups.
++ Usage: python3 cleanup_backups.py [--keep N] [--days D]
++ Options:
++   --keep N   Keep the N most recent backups (default: 10)
++   --days D   Also delete backups older than D days
++ import sys
++ import json
++ import argparse
++ from pathlib import Path
++ # Add scripts dir to path for utils import
++ sys.path.insert(0, str(Path(__file__).parent))
++ from utils import (
++     get_workspace, cleanup_old_backups, get_backup_info
++ )
++ def cleanup_backups(keep_count=10, max_age_days=None):
++     """Perform cleanup and return result."""
++     workspace = get_workspace()
++     # Get backup info before cleanup
++     backups_before = get_backup_info(workspace)
++     # Perform cleanup
++     deleted_count, error = cleanup_old_backups(workspace, keep_count=keep_count, max_age_days=max_age_days)
++     # Get backup info after cleanup
++     backups_after = get_backup_info(workspace)
++     if error:
++         return {
++             "status": "error",
++             "message": error,
++             "code": "cleanup_failed"
++         }
++     return {
++         "status": "success",
++         "message": f"Cleanup complete. Deleted {deleted_count} old backup(s).",
++         "deleted_count": deleted_count,
++         "backups_before": len(backups_before),
++         "backups_after": len(backups_after),
++         "keep_count": keep_count,
++         "max_age_days": max_age_days,
++         "remaining_backups": backups_after
++     }
++ def main():
++     parser = argparse.ArgumentParser(description="Clean up old personality backups")
++     parser.add_argument("--keep", type=int, default=10, help="Keep N most recent backups (default: 10)")
++     parser.add_argument("--days", type=int, default=None, help="Also delete backups older than D days")
++     args = parser.parse_args()
++     result = cleanup_backups(keep_count=args.keep, max_age_days=args.days)
++     print(json.dumps(result, indent=2))
++ if __name__ == "__main__":
++     main()
+
+### scripts/switch_personality.py  [code]
+-     personality_exists, copy_personality_to_workspace, copy_workspace_to_personality
+-     return {
++     personality_exists, copy_personality_to_workspace, copy_workspace_to_personality,
++     cleanup_old_backups
++         }
++     # Clean up old backups (keep last 10)
++     cleanup_count, cleanup_error = cleanup_old_backups(workspace, keep_count=10)
++     response = {
++     if cleanup_count > 0:
++         response["cleanup"] = {
++             "deleted_backups": cleanup_count,
++             "note": "Old backups automatically cleaned up"
++     if cleanup_error:
++         response["cleanup_warning"] = cleanup_error
++     return response
+
+### scripts/utils.py  [code]
+-     Create timestamped backup of SOUL.md and IDENTITY.md.
+-     backup_dir = workspace / f"_personality_{prefix}_{timestamp}"
++ def get_backups_dir(workspace):
++     """Return personality backups directory path."""
++     backups_dir = workspace / "personalities" / "backups"
++     backups_dir.mkdir(parents=True, exist_ok=True)
++     return backups_dir
++         return None
++         return None
++     try:
++     try:
++     try:
++     except Exception:
++     except Exception:
++     """
++     """
++     """
++     """
++     """
++     """
++     Create timestamped backup of SOUL.md and IDENTITY.md in personalities/backups/.
++     Includes personality name in backup directory for easy identification.
++     # Get current active personality to include in backup name
++     active_personality = read_state(workspace)
++     if not active_personality:
++         active_personality = "unknown"
++     backups_dir = get_backups_dir(workspace)
++     # Format: from-<personality>_<timestamp> or backup-<personality>_<timestamp>
++     backup_dir = backups_dir / f"{prefix}-from-{active_personality}_{timestamp}"
++ def _extract_backup_timestamp(backup_name):
++     Extract timestamp from backup directory name.
++     Handles both old and new formats:
++     - Old: "current_2026-02-08T17-19-13.100517"
++     - New: "current-from-aelindor_2026-02-08T17-19-13.100517"
++     Return timestamp string (ISO format with colons restored) or None if unparseable.
++         # Find the last underscore - everything after is the timestamp
++         parts = backup_name.rsplit('_', 1)
++         if len(parts) != 2:
++             return None
++         timestamp_str = parts[1]  # e.g., "2026-02-08T17-19-13.100517"
++         # Convert back to ISO format: "2026-02-08T17:19:13.100517Z"
++         if 'T' in timestamp_str:
++             date_part, time_part = timestamp_str.split('T')
++             # Reconstruct time with colons: "17-19-13" → "17:19:13"
++             time_components = time_part.split('.')
++             if len(time_components) == 2:
++                 time_hms = time_components[0]  # "17-19-13"
++                 fractional = time_components[1]  # "100517"
++                 restored = f"{date_part}T{time_hms.replace('-', ':')}.{fractional}Z"
++                 return restored
++ def cleanup_old_backups(workspace, keep_count=10, max_age_days=None):
++     Clean up old backups in personalities/backups/.
++     Keep the most recent `keep_count` backups.
++     Optionally delete backups older than `max_age_days` days.
++     Return (deleted_count, error_message or None).
++         backups_dir = get_backups_dir(workspace)
++         backups_dir = get_backups_dir(workspace)
++         if not backups_dir.exists():
++         if not backups_dir.exists():
++             return 0, None
++             return 0, None
++         # List all backup directories
++         backups = []
++         backups = []
++         for item in backups_dir.iterdir():
++             if item.is_dir():
++             if item.is_dir():
++                 try:
++                 try:
++                 try:
++                     timestamp_str = _extract_backup_timestamp(item.name)
++                     timestamp_str = _extract_backup_timestamp(item.name)
++                     if timestamp_str:
++                     if timestamp_str:
++                         dt = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
++                         dt = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
++                         backups.append((dt, item))
++                 except Exception:
++                 except Exception:
++                     # Skip unparseable backup directories
++                     continue
++                     continue
++         if not backups:
++         # Sort by timestamp (newest first)
++         backups.sort(key=lambda x: x[0], reverse=True)
++         deleted_count = 0
++         now = datetime.now(timezone.utc)
++         now = datetime.now(timezone.utc)
++         for i, (timestamp, backup_dir) in enumerate(backups):
++             should_delete = False
++             # Delete if beyond keep_count
++             if i >= keep_count:
++                 should_delete = True
++             # Delete if older than max_age_days
++             if max_age_days is not None:
++                 age_days = (now - timestamp).days
++                 if age_days > max_age_days:
++                     should_delete = True
++             if should_delete:
++                     shutil.rmtree(backup_dir)
++                     deleted_count += 1
++                 except Exception as e:
++                     return deleted_count, f"Failed to delete backup {backup_dir.name}: {str(e)}"
++         return deleted_count, None
++     except Exception as e:
++         return 0, f"Cleanup failed: {str(e)}"
++ def get_backup_info(workspace):
++     Get information about current backups.
++     Return list of dicts: [{"name": "...", "from_personality": "...", "timestamp": "...", "age_days": ...}, ...]
++             return []
++         for item in sorted(backups_dir.iterdir(), reverse=True):
++                         age_days = (now - dt).days
++                         # Extract personality name from backup directory name
++                         # Format: "current-from-aelindor_2026-02-08T..." or "backup-from-default_..."
++                         from_personality = "unknown"
++                         if "from-" in item.name:
++                             parts = item.name.split("from-")
++                             if len(parts) == 2:
++                                 personality_part = parts[1].rsplit('_', 1)[0]  # Remove timestamp
++                                 from_personality = personality_part
++                         backups.append({
++                             "name": item.name,
++                             "from_personality": from_personality,
++                             "timestamp": timestamp_str,
++                             "age_days": age_days
++                         })
++         return backups
++         return []

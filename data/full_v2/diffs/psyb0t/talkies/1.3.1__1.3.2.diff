@@ -1,0 +1,76 @@
+psyb0t/talkies  1.3.1 -> 1.3.2
+change_type: instructions+docs   changelog: **Security warning and documentation changes.**  - Added prominent security and safety disclaimer to documentation, detailing risks of unauthenticated access, shell command execution, and server-side file persistence. - Clarified that all API requests interact with an operator-specified server, and that remote servers are not vetted by the skill. - Documented that `file_path` URLs are fetched and cached server-side, not client-side. - Reduced the listed number of ASR backends from eight to seven
+
+### SKILL.md  [instructions]
+- description: Self-hosted OpenAI-compatible speech service. /v1/audio/transcriptions fronts eight open ASR models (Whisper, Parakeet, Nemotron-3.5-ASR, Canary); /v1/audio/speech fronts 2 TTS engines / 3 backends — Kokoro-82M (41 baked voices, PyTorch + ONNX runtimes) and the CUDA-only Qwen3-TTS family (voice cloning, preset speakers, voice design). Same wire format as OpenAI — change the base URL + slug. Stereo diarization, URL fetching, MCP endpoint, bearer auth.
+- ASR (`POST /v1/audio/transcriptions`): eight backends — `whisper-large-v3`, `whisper-large-v3-turbo`, `parakeet-tdt-0.6b-v3`, `nemotron-3.5-asr-0.6b`, `canary-180m-flash`, `canary-1b-flash`, `canary-qwen-2.5b`.
+- - Real-time / streaming output — both endpoints are request/response only.
+- - Per-request `prompt` / `temperature` (transcribe) or `instructions` (speech) injection — fields accepted for compat, **ignored**.
+- | `qwen3-tts-0.6b` | Qwen3-TTS (12 kHz) | base | no | yes | 17 (en, zh, ja, ko, fr, de, es, it, pt, ru, vi, th, id, ar, tr, pl, nl) | 3 builtin samples + any `.wav` under `/data/custom-voices/` |
+- | `qwen3-tts-1.7b` | Qwen3-TTS (12 kHz) | base | no | yes | 10 (en, zh, ja, ko, fr, de, es, it, pt, ru) | 3 builtin samples + any `.wav` under `/data/custom-voices/` |
+- | `qwen3-tts-0.6b-custom` | Qwen3-TTS (12 kHz) | custom_voice | no | yes | en, zh, ja, ko | 9 preset speakers (`instructions` dropped — 0.6B limitation) |
+- | `qwen3-tts-1.7b-custom` | Qwen3-TTS (12 kHz) | custom_voice | no | yes | en, zh, ja, ko | 9 preset speakers + emotion via `instructions` |
+- | `qwen3-tts-1.7b-design` | Qwen3-TTS (12 kHz) | voice_design | no | yes | en, zh, ja, ko | voice synthesized from NL description in `instructions` (required) |
+- | `GET /v1/files` | List every staged file. Returns `{"files": [{"path", "size", "modified"}]}`. |
+- | `DELETE /v1/files/{path}` | Removes file and prunes empty parent dirs. 404 if missing. |
+- 10. **`prompt` / `temperature` / `instructions` are ignored** even though the request schemas accept them. Don't expect them to do anything.
+- 17. **Different TTS sample rates** — Kokoro emits 24 kHz mono PCM; Qwen3-TTS emits 12 kHz mono PCM. ffmpeg re-encodes both into your chosen `response_format`, but if you select `pcm` (raw, no container), you must know the source rate per model to play it back correctly.
++ description: Self-hosted OpenAI-compatible speech service. /v1/audio/transcriptions fronts seven open ASR models (Whisper, Parakeet, Nemotron-3.5-ASR, Canary); /v1/audio/speech fronts 2 TTS engines / 3 backends — Kokoro-82M (41 baked voices, PyTorch + ONNX runtimes) and the CUDA-only Qwen3-TTS family (voice cloning, preset speakers, voice design). Same wire format as OpenAI — change the base URL + slug. Stereo diarization, URL fetching, MCP endpoint, bearer auth.
++ ASR (`POST /v1/audio/transcriptions`): seven backends — `whisper-large-v3`, `whisper-large-v3-turbo`, `parakeet-tdt-0.6b-v3`, `nemotron-3.5-asr-0.6b`, `canary-180m-flash`, `canary-1b-flash`, `canary-qwen-2.5b`.
++ ## Security & safety
++ This skill is **not** low-risk to orchestrate blindly — it issues local shell commands (`curl`, `ffmpeg`, `docker` in the typical deployment/setup path) and outbound HTTP requests to whatever `$TALKIES_URL` points at:
++ - **Outbound HTTP to an operator-chosen host.** Every command in this skill hits `$TALKIES_URL` — a server the skill does not control or vet. Point it only at an instance you run or trust.
++ - **`file_path` URL fetches happen server-side, not client-side.** Passing a URL causes the *talkies server* to download it — see [URL `file_path` (Download + Cache)](#url-file_path-download--cache) below.
++ - **Staged files persist server-side until explicitly deleted**, and are enumerable by anyone who can reach the API — see [Server-Side File Staging](#server-side-file-staging-v1files) below.
++ - **No auth by default.** `TALKIES_AUTH_TOKEN` is opt-in; an unconfigured server is wide open to anyone who can reach the port. Treat this skill as requiring auth + least-privilege network exposure in any non-trusted environment.
++ - **Local shell execution.** `references/setup.md` and workflow examples run `docker`, `curl`, and `ffmpeg` directly on the local host — review commands before running them against unfamiliar hosts/images.
++ - Real-time / streaming ASR — `/v1/audio/transcriptions` is request/response only. (TTS has one streaming exception: `qwen3-tts-*` + `response_format=pcm` streams chunked PCM — see [Streaming PCM (Qwen3-TTS)](#streaming-pcm-qwen3-tts).)
++ - Per-request `prompt` / `temperature` on `/v1/audio/transcriptions` — accepted for OpenAI compat, **ignored**. (`instructions` on `/v1/audio/speech` is different: Kokoro ignores it, but Qwen3-TTS honors it in most modes — see [Request Body](#request-body).)
++ ```bash
++ ```
++ # WARNING: the URL is fetched by the talkies SERVER, not this client, and the
++ # download is cached persistently on disk (see "URL file_path" below). Don't
++ # pass URLs to private/sensitive media unless you trust the server operator.
++ curl -s $TALKIES_URL/v1/audio/speech \
++   -H "Content-Type: application/json" \
++ | `qwen3-tts-0.6b` | Qwen3-TTS (24 kHz) | base | no | yes | 17 (en, zh, ja, ko, fr, de, es, it, pt, ru, vi, th, id, ar, tr, pl, nl) | 3 builtin samples + any `.wav` under `/data/custom-voices/` |
++ | `qwen3-tts-1.7b` | Qwen3-TTS (24 kHz) | base | no | yes | 10 (en, zh, ja, ko, fr, de, es, it, pt, ru) | 3 builtin samples + any `.wav` under `/data/custom-voices/` |
++ | `qwen3-tts-0.6b-custom` | Qwen3-TTS (24 kHz) | custom_voice | no | yes | en, zh, ja, ko | 9 preset speakers (`instructions` dropped — 0.6B limitation) |
++ | `qwen3-tts-1.7b-custom` | Qwen3-TTS (24 kHz) | custom_voice | no | yes | en, zh, ja, ko | 9 preset speakers + emotion via `instructions` |
++ | `qwen3-tts-1.7b-design` | Qwen3-TTS (24 kHz) | voice_design | no | yes | en, zh, ja, ko | voice synthesized from NL description in `instructions` (required) |
++ | `temperature` | no | `0.9` | **Non-OpenAI extra, Qwen3-TTS only** (`extra_body`). Sampler temperature, `[0.0, 2.0]`. Ignored by Kokoro. |
++ | `top_k` | no | `50` | **Non-OpenAI extra, Qwen3-TTS only.** Top-k truncation, `[1, 1000]`. Ignored by Kokoro. |
++ | `top_p` | no | `1.0` | **Non-OpenAI extra, Qwen3-TTS only.** Nucleus sampling, `[0.0, 1.0]`. Ignored by Kokoro. |
++ | `repetition_penalty` | no | `1.05` | **Non-OpenAI extra, Qwen3-TTS only.** Penalizes codec-token repeats, `[0.5, 2.0]`. Ignored by Kokoro. |
++ | `max_new_tokens` | no | `2048` (model max) | **Non-OpenAI extra, Qwen3-TTS only.** Codec-step cap, `[1, 2048]`. Ignored by Kokoro. |
++ | `do_sample` | no | `true` | **Non-OpenAI extra, Qwen3-TTS only.** `false` = greedy decode. Ignored by Kokoro. |
++ Out-of-range sampling values → 422 (Pydantic validation).
++ ### Streaming PCM (Qwen3-TTS)
++ `qwen3-tts-*` slugs stream `response_format=pcm` requests as chunked int16 PCM instead of buffering the whole utterance — first-audio latency drops from seconds to sub-second. Kokoro and every non-`pcm` format are unaffected (buffered as normal). Response carries an `X-Sample-Rate` header; chunk size (codec steps per yielded chunk) is tunable via `TALKIES_QWEN3_STREAM_CHUNK_SIZE` (default 8) — see [references/setup.md](references/setup.md).
++   -d '{"model":"qwen3-tts-0.6b","input":"Streaming test.","response_format":"pcm"}' \
++   --output stream.pcm
++ **Staged files persist until explicitly deleted** — nothing auto-expires them — and `GET /v1/files` enumerates every staged path to anyone who can reach the API. Don't stage sensitive/private media on a server without auth enabled (`TALKIES_AUTH_TOKEN`); clean up (`DELETE /v1/files/{path}`) when done.
++ | `GET /v1/files` | List every staged file. Returns `{"files": [{"path", "size", "modified"}]}`. **Enumerable by anyone with API access — no per-file ownership/isolation.** |
++ | `DELETE /v1/files/{path}` | Removes file and prunes empty parent dirs. 404 if missing. **Files do NOT self-expire — call this when you're done with a file.** |
++ **The download happens server-side, and the result is cached persistently on the talkies server's disk** — not a transient client-side fetch. Anyone who can reach the API can later list/read that cached copy via `GET /v1/files` (see [Server-Side File Staging](#server-side-file-staging-v1files) above). Don't pass URLs to private/sensitive media unless the talkies server itself is trusted and access-controlled (`TALKIES_AUTH_TOKEN`); invalidate the cache entry when done.
++ 10. **ASR's `prompt` / `temperature` are ignored** even though the request schema accepts them. TTS's `instructions` is different — Kokoro ignores it, but Qwen3-TTS honors it in `base` mode and `*-custom` (except the 0.6B checkpoint) and requires it for `*-design`.
++ 17. **Both TTS engines emit 24 kHz mono PCM** — Kokoro and Qwen3-TTS both output int16 24 kHz mono. ffmpeg re-encodes into your chosen `response_format`; `pcm` (raw, no container) hands back that same rate directly — check the `X-Sample-Rate` response header on Qwen3-TTS streaming responses if you need it confirmed per-request.
+
+### references/setup.md  [docs]
+- Serves 3× Whisper + `canary-180m-flash` + `nemotron-3.5-asr-0.6b` (CPU-optimized, via parakeet.cpp) for ASR, plus `kokoro-82m` and `kokoro-82m-nvidia` for TTS. The CUDA-only ASR models aren't worth running on CPU, and the Qwen3-TTS family is CUDA-only.
+- Serves all eight ASR models plus both TTS engines / 3 backends (`kokoro-82m`, `kokoro-82m-nvidia`, and the 5 Qwen3-TTS slugs). Requires the NVIDIA Container Toolkit on the host.
+- | CPU | `psyb0t/talkies:latest` | `linux/amd64` | 3× Whisper, Canary-180m-Flash, Nemotron-3.5-ASR (parakeet.cpp), Kokoro-82M ×2 runtimes | ~3 GB |
+- | CUDA | `psyb0t/talkies:latest-cuda` | `linux/amd64` | all eight ASR + Kokoro-82M ×2 runtimes + Qwen3-TTS ×5 | ~11 GB |
++ Serves 2× Whisper + `canary-180m-flash` + `nemotron-3.5-asr-0.6b` (CPU-optimized, via parakeet.cpp) for ASR, plus `kokoro-82m` and `kokoro-82m-nvidia` for TTS. The CUDA-only ASR models aren't worth running on CPU, and the Qwen3-TTS family is CUDA-only.
++ Serves all seven ASR models plus both TTS engines / 3 backends (`kokoro-82m`, `kokoro-82m-nvidia`, and the 5 Qwen3-TTS slugs). Requires the NVIDIA Container Toolkit on the host.
++ | CPU | `psyb0t/talkies:latest` | `linux/amd64` | 2× Whisper, Canary-180m-Flash, Nemotron-3.5-ASR (parakeet.cpp), Kokoro-82M ×2 runtimes | ~3 GB |
++ | CUDA | `psyb0t/talkies:latest-cuda` | `linux/amd64` | all seven ASR + Kokoro-82M ×2 runtimes + Qwen3-TTS ×5 | ~11 GB |
++ | Var | Default | What it does |
++ | Var | Default | What it does |
++ |---|---|---|
++ |---|---|---|
++ **Security note on `$TALKIES_DATA_DIR/files/`:** staged uploads and cached URL downloads persist here **indefinitely** — nothing auto-expires them — and are enumerable by any caller via `GET /v1/files` (no per-caller isolation; see [Server-Side File Staging](../SKILL.md#server-side-file-staging-v1files) in SKILL.md). Deploy with `TALKIES_AUTH_TOKEN` set and least-privilege network exposure if the deployment isn't fully trusted, and clean up staged files (`DELETE /v1/files/{path}`) once you're done with them.
++ ### Qwen3-TTS streaming
++ | `TALKIES_QWEN3_STREAM_CHUNK_SIZE` | `8` | Codec steps decoded per yielded chunk when `response_format=pcm` streams from a `qwen3_tts` backend (~1 s of audio per 12 steps). Only relevant to that streaming path. |
++ ### Logging
++ | `TALKIES_LOG_LEVEL` (falls back to `LOG_LEVEL`) | `info` | `debug` / `info` / `warn` / `error` / `fatal` (case-insensitive; `warning` / `critical` also accepted). Unrecognized values fail fast at startup. JSON structured logs on stdout. **`debug` logs full request/response bodies** (TTS input text, cloned-voice reference transcripts, ASR transcripts) — PII; a one-time WARNING fires at startup when active. |

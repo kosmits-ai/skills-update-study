@@ -1,0 +1,2258 @@
+wgj24/secretary-memory  1.0.0 -> 1.1.0
+change_type: instructions+code   changelog: v3: 容量管理/FTS5索引/跨会话召回/用户图谱/自动Skill创建
+
+### SKILL.md  [instructions]
+- description: OpenClaw 秘书式多分区记忆系统 v2.0。仿生现代秘书的笔记本分类法，支持：(1) 多分区并发搜索 + 每分区3条上下文召回，(2) 会话自动摘要，(3) 偏好自动提取，(4) 记忆冲突主动检测，(5) 定时 consolidation + 会话结束 hook，(6) 精细化恢复/回溯。触发条件：(1) 用户提及记忆管理/记忆系统/秘书式记忆，(2) 需要搜索/召回历史记忆，(3) 需要归档或整理记忆，(4) 设计新的记忆架构。
+- # Secretary Memory - 秘书式记忆系统
+- ## 核心概念
+- 将 OpenClaw 的记忆系统改造成类似现代秘书的多笔记本分工模式：
+- | 笔记本 | 目录 | 说明 |
+- |--------|------|------|
+- | 已完成 | `archive/` | 7天前的日志、已结束项目、历史决策 |
+- | 待办 | `agenda/` | 今日待办、本周计划、跟进事项 |
+- | 偏好 | `profile/` | 用户偏好、习惯、联系人 |
+- | 项目 | `projects/` | 进行中的项目 |
+- | 知识 | `knowledge/` | 沉淀的技术/领域知识 |
+- | 日志 | `daily/` | 7天内的每日日志（原始流水） |
+- memory/                          # 根目录
+- ├── daily/                      # 每日日志（7天内）
+- │   └── 2026-04-30.md
+- ├── archive/                    # 归档（7天前）
+- │   ├── daily/                 # 归档日志
+- │   ├── projects/              # 已结束项目
+- │   ├── decisions/             # 历史决策
+- │   ├── index.json            # 话题索引
+- │   └── .restore_log.json     # 归档操作日志
+- ├── agenda/                    # 待办
+- │   ├── today/
+- │   ├── this-week/
+- │   └── follow-ups/
+- ├── profile/                    # 用户偏好
+- │   ├── preferences/           # 沟通风格、技术背景等
+- │   ├── habits/               # 工作习惯偏好
+- │   └── contacts/             # 联系人信息
+- ├── projects/                   # 进行中项目
+- ├── knowledge/                  # 知识沉淀
+- │   ├── tech/
+- │   └── domain/
+- ├── consolidate.py              # 归档脚本
+- ├── memory_search.py           # 搜索脚本
+- ├── session_summary.py         # 会话摘要脚本
+- ├── context_loader.py          # 上下文加载脚本
+- ├── profile_miner.py           # 偏好提取脚本
+- ├── conflict_detector.py       # 冲突检测脚本
+- ├── restore.py                # 恢复/回溯脚本
+- └── migrate.py                 # 迁移脚本
+- ## 脚本使用
+- 在会话结束时自动生成摘要，写入 `daily/`。
+- # 生成摘要
+- # 预览（不写入）
+- python3 session_summary.py --session "..." --topics "..." --dry-run
+- # JSON 格式输出
+- # JSON 格式输出
+- # JSON 格式输出
+- # JSON 格式输出
+- python3 session_summary.py --session "..." --topics "..." --json
+- # 测试模式
+- python3 session_summary.py --test
+- 新会话开始时召回相关历史记忆（每分区 3 条）。
+- # 召回相关记忆
+- # 简洁模式（只输出关键摘要）
+- # 简洁模式（只输出关键摘要）
+- # 输出可直接注入 prompt 的格式
+- # 每分区限制为 5 条
+- # 每分区限制为 5 条
+- python3 context_loader.py "项目X" --limit 5
+- python3 context_loader.py "项目X" --json
+- 从会话内容中增量提取用户偏好，只增不改。
+- # 从会话内容提取偏好
+- # 从文件读取内容
+- python3 profile_miner.py --file /path/to/session.log
+- # 预览将要提取的偏好（不写入）
+- python3 profile_miner.py --session "..." --dry-run
+- # 列出当前已提取的偏好
+- python3 profile_miner.py --session "..." --json
+- 检测新记忆与已有记忆的矛盾，主动提示。
+- # 检测冲突
+- # 从文件读取新内容
+- python3 conflict_detector.py --new-file /path/to/content.md --topic "架构设计"
+- python3 conflict_detector.py --new "决定A" --topic "项目X" --json
+- 支持按日期、话题、文件类型精细化恢复。
+- # 列出归档操作历史
+- # 列出所有已归档的文件
+- python3 restore.py --archives
+- # 恢复指定日期的归档
+- # 恢复指定话题的归档
+- # 恢复单个归档文件
+- python3 restore.py --file archive/decisions/xxx.md
+- # 预览恢复（不实际执行）
+- python3 restore.py --date 2026-04-23 --dry-run
+- # 干跑测试（不实际修改）
+- python3 memory/consolidate.py --dry-run
+- # 实际执行
+- python3 memory/consolidate.py --verbose
+- # 从 archive 恢复到 daily/
+- python3 memory/consolidate.py --restore
+- # 查看归档操作历史
+- python3 memory/consolidate.py --restore-log
+- 归档流程：
+- 1. 扫描 `daily/` 下超过7天的日志
+- 2. 提取项目信息 → `archive/projects/`
+- 3. 提取决策信息 → `archive/decisions/`
+- 4. 移动日志 → `archive/daily/`（记录到 `.restore_log.json`）
+- 5. 更新 `memory.md` 精选摘要
+- 6. 更新 `archive/index.json` 话题索引
+- ### 多分区搜索
+- # 搜索所有分区（默认，每分区最多 3 条）
+- python3 memory/memory_search.py "用户偏好"
+- # 深度搜索（包含 archive 历史归档）
+- python3 memory/memory_search.py "GUI Agent" --deep
+- # 仅搜索历史归档
+- python3 memory/memory_search.py "之前那个项目" --archive-only
+- # 指定分区
+- python3 memory/memory_search.py "项目" -p profile,projects
+- python3 memory/memory_search.py "项目" --quiet
+- python3 memory/memory_search.py "项目" --per-partition-limit 5
+- # JSON 输出
+- python3 memory/memory_search.py "论文" --json
+- ### 迁移旧结构
+- # 干跑测试
+- python3 memory/migrate.py --dry-run
+- # 执行迁移
+- python3 memory/migrate.py
+- ## 自动运作流程
+- OpenClaw 写 memory/YYYY-MM-DD.md
+-         ↓ (每天 00:05 cron: 移动到 daily/)
+- 移动到 memory/daily/YYYY-MM-DD.md
+-         ↓ (每天 18:00 cron: consolidation)
+- 7天前 → archive/daily/
+- 项目 → archive/projects/
+- 决策 → archive/decisions/
+- 关联 → archive/index.json
+- ## 归档触发机制（archive/ 何时被查询）
+- | 触发条件 | 说明 |
+- |---------|------|
+- | 用户显式查询 | "之前那个项目怎么设计的"、"上次讨论的结论是" |
+- | `--deep` 搜索 | 包含 archive/ 的所有历史归档 |
+- | `--archive-only` | 仅搜索历史归档 |
+- | consolidation 时 | 自动建立话题索引，关联相关历史归档 |
+- ## consolidation时机
+- - **每日定时**: 每天 18:00 Asia/Shanghai 自动执行
+- - **手动触发**: 用户要求整理记忆时
+- - **迁移触发**: 首次使用此技能时，运行 migrate.py
+- ## Hooks 配置（自动化）
+- ### 推荐配置 - 实时增量写入
+- 为解决"增量写入没做"的问题，建议配置以下 hooks 实现实时监控：
+- ```json
+- {
+-   "hooks": {
+-     "session:start": "python3 <path-to-scripts>/realtime_monitor.py --daemon --interval 3",
+-     "session:end": "python3 <path-to-scripts>/session_summary.py --session-id {session_id}",
+-     "session:end": "python3 <path-to-scripts>/session_summary.py --session-id {session_id}",
+-     "cron": "0 18 * * * python3 <path-to-scripts>/consolidate.py --verbose"
+-   }
+- }
+- ### 传统配置 - 定时批处理
+- 如果不需要实时监控，可以使用传统的定时批处理：
+-     "cron": "0 0,6,12,18 * * * python3 <path-to-scripts>/realtime_monitor.py --once"
+- ### 手动运行
+- 也可以手动运行脚本：
+- # 实时增量监控（新会话文件立即移动到 daily/）
+- python3 scripts/realtime_monitor.py --daemon
+- # 单次检查
+- python3 scripts/realtime_monitor.py --once
+- # 持续监控并实时追加会话内容
+- python3 scripts/session_summary.py --watch
+- # 传统会话摘要
+- python3 scripts/session_summary.py --session "会话内容..." --topics "话题"
+- 注意：
+- - `session:start` hook 在新会话开始时触发，启动实时监控
+- - `session:end` hook 在每次会话结束时触发，自动生成会话摘要
+- - `cron` 需要系统支持定时任务，Claude Code 的 settings.json 不直接支持 cron，需使用外部定时器或 Claude Code 的 scheduled_tasks
+- - 建议使用绝对路径指向 `secretary-memory/scripts/` 目录
+- - `realtime_monitor.py` 支持 `--interval` 参数调整检查频率（默认3秒）
+- ## 脚本列表
+- | 脚本 | 功能 | 实时支持 |
+- | `session_summary.py` | 会话摘要生成 | 支持 --watch 实时追加 |
+- | `context_loader.py` | 上下文加载 | - |
+- | `profile_miner.py` | 偏好提取 | - |
+- | `conflict_detector.py` | 冲突检测 | - |
+- | `restore.py` | 恢复/回溯 | - |
+- | `consolidate.py` | 归档脚本 | - |
+- | `memory_search.py` | 多分区搜索 | - |
+- | `realtime_monitor.py` | **v2 修复版：实时监控** | **写时保护 + 事件驱动 + symlink** |
+- ### realtime_monitor.py v2 修复内容
+- | 问题 | 解决方案 |
+- |------|---------|
+- | 写时移动冲突 | 等待文件写完才移动（`fuser`/`lsof` 检测） |
+- | 轮询延迟 | FSEvents (macOS) / inotify (Linux) 事件驱动 |
+- | 文件句柄问题 | 移动后创建 symlink，内容同步合并 |
++ ---
++ ---
++ ---
++ ---
++ ---
++ ---
++ ---
++ ---
++ ---
++ ---
++ description: OpenClaw 秘书式多分区记忆系统 v3.0。仿生现代秘书的笔记本分类法，支持：(1) 多分区并发搜索 + 每分区3条上下文召回，(2) 会话自动摘要，(3) 偏好自动提取 + 用户关系图谱，(4) 记忆冲突主动检测，(5) 定时 consolidation + 会话结束 hook，(6) 精细化恢复/回溯，(7) FTS5 全文搜索 + LLM 摘要，(8) 跨会话召回，(9) 容量管理，(10) 自动 Skill 生成。触发条件：(1) 用户提及记忆管理/记忆系统/秘书式记忆，(2) 需要搜索/召回历史记忆，(3) 需要归档或整理记忆，(4) 设计新的记忆架构。
++ # Secretary Memory - 秘书式记忆系统 v3.0
++ ## 五大核心改进
++ | 改进 | 模块 | 触发时机 |
++ | 1. 容量管理 | `capacity_manager.py` | 每次 consolidation 时自动运行 |
++ | 2. FTS5 + LLM 摘要 | `fts5_index.py`, `session_search.py` | 搜索时或会话开始 |
++ | 3. 跨会话召回 | `auto_loader.py` | OpenClaw 会话开始时 |
++ | 4. 用户建模 | `user_model.py` | 每次会话结束时增量 |
++ | 5. 自动 Skill 生成 | `skill-creator/` | 同一问题出现 ≥3 次 |
++ ```
++ ```
++ ```
++ ```
++ ```
++ memory/                              # 根目录
++ ├── daily/                          # 每日日志（7天内）
++ ├── archive/                         # 归档（7天前）
++ ├── agenda/                          # 待办
++ ├── profile/                        # 用户偏好
++ ├── projects/                        # 进行中项目
++ ├── knowledge/                       # 知识沉淀
++ ├── scripts/                         # 脚本目录
++ │   ├── session_summary.py          # 会话摘要
++ │   ├── context_loader.py          # 上下文加载
++ │   ├── memory_search.py           # 多分区搜索
++ │   ├── consolidate.py             # 归档脚本 (集成容量管理)
++ │   ├── capacity_manager.py        # [NEW] 容量管理
++ │   ├── fts5_index.py             # [NEW] FTS5 全文搜索
++ │   ├── session_search.py          # [NEW] 统一搜索入口
++ │   ├── auto_loader.py             # [NEW] 跨会话召回
++ │   ├── user_model.py              # [NEW] 用户关系图谱
++ │   ├── profile_miner.py           # 偏好提取 (集成用户图谱)
++ │   ├── conflict_detector.py        # 冲突检测
++ │   ├── restore.py                 # 恢复/回溯
++ │   ├── migrate.py                 # 迁移脚本
++ │   ├── realtime_monitor.py         # 实时监控
++ │   └── skill-creator/             # [NEW] 自动 Skill 生成
++ │       ├── SKILL.md
++ │       └── auto_skill_generator.py
++ └── references/
++     └── SPEC.md
++ ## 1. 容量管理 (capacity_manager.py)
++ 自动检测 memory 目录容量，防止爆满。
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ # 检查容量（每次 consolidation 自动运行）
++ python3 capacity_manager.py --check
++ # 详细输出
++ python3 capacity_manager.py --verbose --warn
++ # 仅检查不执行
++ python3 consolidate.py --check-capacity
++ # 自动归档触发检查
++ python3 capacity_manager.py --auto
++ **阈值配置：**
++ | 指标 | 警告线 | 临界值 |
++ |------|--------|--------|
++ | MEMORY.md 行数 | 80% (400行) | 95% (475行) |
++ | daily/ 文件数 | 80% (24个) | 95% (28个) |
++ | archive/ 大小 | 80% (80MB) | 95% (95MB) |
++ ## 2. FTS5 + LLM 摘要 (fts5_index.py, session_search.py)
++ 基于 SQLite FTS5 的快速全文搜索，配合 LLM 总结结果。
++ # 构建 FTS5 索引（首次使用）
++ python3 session_search.py --build-index
++ # FTS5 + LLM 摘要搜索
++ python3 session_search.py "项目X 架构设计"
++ # 纯 FTS5（无 LLM）
++ python3 session_search.py "项目X" --no-llm
++ # 传统分区搜索
++ python3 session_search.py "项目X" --classic
++ # 混合搜索（默认）
++ python3 session_search.py "项目X"
++ # 会话开始时召回
++ python3 session_search.py "项目X" --context
++ # 查看索引统计
++ python3 session_search.py --stats
++ # 优化数据库
++ python3 fts5_index.py --vacuum
++ **搜索策略：**
++ - `fts5`: 仅 FTS5 全文搜索（BM25 排序）
++ - `classic`: 传统分区搜索
++ - `hybrid`: FTS5 + 经典搜索合并（默认）
++ ## 3. 跨会话召回 (auto_loader.py)
++ 会话开始时自动加载相关记忆，按优先级排序。
++ # CLI 用法
++ python3 auto_loader.py --topic "项目X 架构"
++ python3 auto_loader.py --topic "项目X" --inject   # 输出注入格式
++ python3 auto_loader.py --stats                    # 查看加载状态
++ # Hook 用法
++ python3 auto_loader.py --hook-start --session-id {session_id} --topic "项目X"
++ **优先级算法：**
++ 综合得分 = 相关性 × 分区权重 × 时间加权
++ 分区权重:
++   agenda     → 2.0  (最高)
++   projects   → 1.8
++   profile    → 1.5
++   knowledge  → 1.2
++   daily      → 1.0
++   archive    → 0.5  (最低)
++ 时间加权:
++   7天内 → 1.5x
++   7天后 → 指数衰减，最少 0.3
++ ## 4. 用户建模 (user_model.py)
++ 从会话中提取实体和关系，构建用户知识图谱。
++ # 构建图谱
++ python3 user_model.py --build
++ # 增量更新
++ python3 user_model.py --update
++ # 图谱统计
++ python3 user_model.py --stats
++ # 按话题查询
++ python3 user_model.py --query "项目X"
++ # 获取实体局部图谱
++ python3 user_model.py --entity "Python" --depth 2
++ # 清理低频实体
++ python3 user_model.py --vacuum
++ **实体类型：**
++ | 类型 | 权重 | 示例 |
++ |------|------|------|
++ | user | 2.0 | 用户、客户 |
++ | project | 1.8 | 项目、系统 |
++ | technology | 1.5 | Python、React |
++ | person | 1.3 | 开发者、工程师 |
++ | preference | 1.2 | 喜欢简洁回答 |
++ | concept | 1.0 | 架构、设计 |
++ **关系类型：** `works_on`, `uses`, `manages`, `interested_in`, `collaborates_with`
++ **数据文件：**
++ - 图谱：`memory/.user_graph.json`
++ - 统计：`memory/.user_graph_stats.json`
++ ## 5. 自动 Skill 生成 (skill-creator/)
++ 检测复杂/重复任务，自动生成新 Skill 封装解决方案。
++ # 检测复杂任务（扫描 daily/ 历史）
++ python3 skill-creator/auto_skill_generator.py --detect
++ # 生成新 Skill
++ python3 skill-creator/auto_skill_generator.py --generate \
++     --name "task-tracker" \
++     --pattern "task_tracking" \
++     --description "自动化任务追踪" \
++     --triggers "任务,todo,追踪" \
++     --steps "创建任务" "更新状态" "生成报告"
++ # 注册触发词
++ python3 skill-creator/auto_skill_generator.py --register \
++     --skill "task-tracker" --triggers "任务,todo"
++ # 查看统计
++ python3 skill-creator/auto_skill_generator.py --stats
++ # 列出已生成的 Skills
++ python3 skill-creator/auto_skill_generator.py --list
++ # 自我改进
++ python3 skill-creator/auto_skill_generator.py --improve
++ **内置复杂模式识别：**
++ | 模式 | 关键词 | 建议名称 |
++ |------|--------|----------|
++ | task_tracking | 任务、todo、追踪、待办 | task-tracker |
++ | code_review | 代码审查、review、PR | code-review |
++ | bug_triage | bug、修复、问题 | bug-triage |
++ | meeting_notes | 会议、meeting、纪要 | meeting-notes |
++ | data_analysis | 分析、数据、报表 | data-analysis |
++ | doc_generation | 文档、doc、生成 | doc-generator |
++ | test_generation | 测试、test、用例 | test-generator |
++ | deployment | 部署、deploy、发布 | deploy-helper |
++ | api_design | API、接口、rest | api-designer |
++ | db_schema | 数据库、schema、表结构 | db-schema-manager |
++ ## 原有脚本
++ python3 session_summary.py --session "..." --dry-run  # 预览
++ python3 session_summary.py --watch                    # 实时监控追加
++ python3 consolidate.py --verbose
++ python3 consolidate.py --dry-run
++ python3 consolidate.py --check-capacity  # 仅检查容量
++ ### 多分区搜索 memory_search.py
++ python3 memory_search.py "用户偏好"
++ python3 memory_search.py "GUI Agent" --deep
++ python3 memory_search.py "项目" -p profile,projects
++ ### 实时监控 realtime_monitor.py
++ python3 realtime_monitor.py --daemon          # 事件驱动
++ python3 realtime_monitor.py --daemon --poll  # 降级轮询
++ python3 realtime_monitor.py --once            # 单次检查
++ python3 realtime_monitor.py --status         # 查看状态
++ ## Hooks 配置（v3.0 推荐）
++     "session:start": "python3 <path>/auto_loader.py --hook-start --session-id {session_id} --topic {topic}",
++     "session:end": "python3 <path>/session_summary.py --session-id {session_id} && python3 <path>/profile_miner.py --session-id {session_id}",
++     "cron": "0 18 * * * python3 <path>/consolidate.py --verbose"
++ ## 自动运作流程 (v3.0)
++ 会话开始
++     ↓
++     ↓
++     ↓
++     ↓
++     ↓
++     ↓
++     ↓
++     ↓
++     ↓
++ auto_loader.py 加载相关记忆 (FTS5 + 优先级排序)
++ 用户交互...
++ 会话结束
++ session_summary.py 生成摘要 → daily/
++ profile_miner.py 提取偏好 + user_model.py 更新图谱
++ (定时 18:00)
++ consolidate.py 归档 (自动检查容量)
++ capacity_manager.py 容量警告 (≥80%)
++ 容量临界 (≥95%) → 自动触发更多归档
+
+### scripts/auto_loader.py  [code]
++ #!/usr/bin/env python3
++ """
++ """
++ OpenClaw 秘书式记忆系统 - 自动上下文加载器
++ 会话开始时自动加载相关记忆并注入到 prompt
++ 用法:
++     from auto_loader import AutoContextLoader
++     loader = AutoContextLoader()
++     loader = AutoContextLoader()
++     loader = AutoContextLoader()
++     context = loader.load_on_start("项目X 架构设计")
++     prompt = loader.inject_to_context(context, base_prompt)
++ 触发时机: OpenClaw 会话开始时（配合 hooks 或 AGENTS.md）
++ import os
++ import json
++ import sys
++ from pathlib import Path
++ from datetime import datetime, timedelta
++ from typing import List, Dict, Optional, Tuple
++ # ============== 配置 ==============
++ MEMORY_DIR = Path(os.environ.get("OPENCLAW_MEMORY_DIR", "/root/.openclaw/workspace/memory"))
++ STATE_FILE = MEMORY_DIR / ".auto_loader_state.json"
++ # 加载配置
++ MAX_MEMORIES = 5           # 最大加载记忆条数
++ RECENCY_BONUS_DAYS = 7    # 7天内记忆获得时间加权
++ RECENCY_BONUS_FACTOR = 1.5  # 时间加权系数
++ PARTITION_WEIGHTS = {
++     "agenda": 2.0,         # 待办权重最高
++     "projects": 1.8,
++     "profile": 1.5,
++     "knowledge": 1.2,
++     "daily": 1.0,
++     "archive": 0.5          # 归档权重最低
++ }
++ MIN_SCORE_THRESHOLD = 0.1  # 最低得分阈值
++ # ============== 优先级排序器 ==============
++ class PriorityRanker:
++     """记忆优先级排序器（时间 + 相关性）"""
++     @staticmethod
++     @staticmethod
++     def calculate_score(
++         memory: Dict,
++         query: str,
++         now: datetime = None
++     ) -> float:
++         """计算记忆的综合得分
++         综合得分 = 相关性得分 × 分区权重 × 时间加权
++         Args:
++         Args:
++         Args:
++         Args:
++         Args:
++             memory: 记忆字典，包含 score, partition, date 等
++             query: 当前查询
++             query: 当前查询
++             now: 当前时间
++         Returns:
++         Returns:
++         Returns:
++         Returns:
++         Returns:
++             综合得分 (0-1)
++         """
++         """
++         """
++         """
++         """
++         if now is None:
++             now = datetime.now()
++         # 基础相关性得分（已由搜索器计算）
++         base_score = memory.get("score", memory.get("relevance", 0))
++         if base_score <= 0:
++             return 0
++         # 归一化到 0-1
++         normalized_score = min(base_score / 10, 1.0)
++         # 分区权重
++         partition = memory.get("partition", "unknown")
++         partition_weight = PARTITION_WEIGHTS.get(partition, 1.0)
++         # 时间加权
++         date_str = memory.get("date", "")
++         days_old = 0
++         if date_str:
++             try:
++             try:
++             try:
++             try:
++                 memory_date = datetime.strptime(date_str[:10], "%Y-%m-%d")
++                 days_old = (now - memory_date).days
++             except Exception:
++             except Exception:
++                 pass
++                 pass
++         # 指数衰减：越新权重越高
++         if days_old <= RECENCY_BONUS_DAYS:
++             time_weight = RECENCY_BONUS_FACTOR
++         else:
++         else:
++         else:
++             time_weight = max(0.3, 1.0 - (days_old - RECENCY_BONUS_DAYS) / 365)
++         # 综合得分
++         final_score = normalized_score * partition_weight * time_weight
++         return min(final_score, 1.0)
++     def rank(memories: List[Dict], query: str) -> List[Dict]:
++         """对记忆列表排序
++             memories: 记忆列表
++             排序后的记忆列表（附带 score 字段）
++         for memory in memories:
++             memory["priority_score"] = PriorityRanker.calculate_score(memory, query)
++         # 过滤低于阈值的
++         filtered = [m for m in memories if m["priority_score"] >= MIN_SCORE_THRESHOLD]
++         # 排序：得分高的在前
++         filtered.sort(key=lambda x: -x["priority_score"])
++         return filtered
++ # ============== 自动上下文加载器 ==============
++ class AutoContextLoader:
++     """会话开始时自动加载上下文"""
++     def __init__(self, memory_dir: Path = MEMORY_DIR):
++         self.memory_dir = memory_dir
++         self.state_file = STATE_FILE
++         self.state = self._load_state()
++         self.llm_summarizer = None  # 延迟加载
++     def _load_state(self) -> Dict:
++         """加载状态"""
++         if self.state_file.exists():
++                 return json.loads(self.state_file.read_text(encoding="utf-8"))
++         return {
++             "last_session_id": None,
++             "last_topic": None,
++             "loaded_count": 0,
++             "last_load_time": None
++         }
++     def _save_state(self):
++         """保存状态"""
++         try:
++         try:
++             self.state_file.write_text(
++                 json.dumps(self.state, ensure_ascii=False, indent=2),
++                 encoding="utf-8"
++             )
++         except Exception:
++             pass
++     def _get_llm_summarizer(self):
++         """延迟加载 LLM 摘要器"""
++         if self.llm_summarizer is None:
++             from fts5_index import LLMSummarizer
++             self.llm_summarizer = LLMSummarizer()
++         return self.llm_summarizer
++     def load_on_start(self, session_topic: str = "", session_id: str = "") -> List[Dict]:
++         """会话开始时加载相关记忆
++             session_topic: 当前会话话题/查询
++             session_id: 会话 ID（可选）
++             加载的记忆列表（已排序）
++         if not session_topic and not session_id:
++             return []
++             return []
++         # 避免重复加载同一会话
++         if session_id and session_id == self.state.get("last_session_id"):
++         # 保存状态
++         if session_id:
++             self.state["last_session_id"] = session_id
++         if session_topic:
++             self.state["last_topic"] = session_topic
++         # 执行搜索
++         memories = self._search_memories(session_topic)
++         # 优先级排序
++         ranked = PriorityRanker.rank(memories, session_topic)
++         # 限制数量
++         result = ranked[:MAX_MEMORIES]
++         # 更新状态
++         self.state["loaded_count"] = len(result)
++         self.state["last_load_time"] = datetime.now().isoformat()
++         self._save_state()
++         return result
++     def _search_memories(self, query: str) -> List[Dict]:
++         """搜索相关记忆"""
++         memories = []
++         # 优先使用 FTS5
++             from fts5_index import FTS5Index
++             fts = FTS5Index(self.memory_dir)
++             results = fts.search(query, limit=20)
++             for r in results:
++                 memories.append({
++                     "path": r["path"],
++                     "title": r.get("title", ""),
++                     "content": r.get("content", ""),
++                     "partition": r.get("partition", "unknown"),
++                     "date": r.get("date", ""),
++                     "score": abs(r.get("rank", 0)),  # BM25 rank 转正值
++                     "source": "fts5"
++                 })
++         except Exception as e:
++             print(f"[AutoLoader] FTS5 搜索失败: {e}")
++         # 如果 FTS5 没有结果，回退到经典搜索
++         if not memories:
++         if not memories:
++         if not memories:
++         if not memories:
++                 from memory_search import MemorySearch
++                 searcher = MemorySearch(self.memory_dir, per_partition_limit=3)
++                 results = searcher.search(query, max_results=20)
++                 for r in results:
++                     memories.append({
++                         "path": r["file"],
++                         "title": r.get("file", ""),
++                         "content": r.get("context", ""),
++                         "partition": r.get("partition", "unknown"),
++                         "date": "",
++                         "score": r.get("relevance", 0),
++                         "source": "classic"
++                     })
++             except Exception as e:
++             except Exception as e:
++                 print(f"[AutoLoader] 经典搜索失败: {e}")
++         return memories
++     def inject_to_context(
++         self,
++         memories: List[Dict],
++         base_prompt: str = "",
++         use_llm_summary: bool = True
++     ) -> str:
++         """将记忆格式化并注入到 prompt
++             memories: load_on_start() 返回的记忆列表
++             base_prompt: 原始 prompt（可选）
++             注入上下文后的完整 prompt
++             return base_prompt
++         sections = []
++         # 标题
++         sections.append("\n\n<!-- 上下文记忆召回 -->\n")
++         sections.append("## 📚 相关记忆\n")
++         # LLM 摘要（如果可用）
++         if use_llm_summary and len(memories) >= 2:
++                 summarizer = self._get_llm_summarizer()
++                 summary = summarizer.summarize(memories, query=self.state.get("last_topic", ""))
++                 if summary:
++                     sections.append(f"\n### 智能摘要\n{summary}\n")
++                 print(f"[AutoLoader] LLM 摘要失败: {e}")
++         # 逐条记忆
++         sections.append("\n### 详细记忆\n")
++         for i, m in enumerate(memories, 1):
++             title = m.get("title", m["path"][-50:])
++             partition = m.get("partition", "unknown")
++             date = m.get("date", "")
++             content = m.get("content", "")[:300]
++             sections.append(f"\n**{i}. [{partition}] {title}**")
++             if date:
++                 sections.append(f"  📅 {date}")
++             if content:
++                 clean = content.replace("\n", " ").strip()
++                 sections.append(f"  {clean}...")
++         # 注入到 prompt
++         if base_prompt:
++             # 尝试插入到适当位置
++             if "<!-- 上下文记忆召回 -->" in base_prompt:
++                 return base_prompt  # 已注入
++             # 插入到开头
++             return "".join(sections) + "\n\n" + base_prompt
++             return "".join(sections)
++     def get_context_for_prompt(self, session_topic: str = "") -> str:
++         """获取上下文字符串（便捷方法）
++         等同于 load_on_start() + inject_to_context()
++             session_topic: 会话话题
++             上下文字符串（可直接追加到 system prompt）
++         memories = self.load_on_start(session_topic)
++         return self.inject_to_context(memories, use_llm_summary=True)
++     def format_memory_list(self, memories: List[Dict]) -> str:
++         """格式化记忆列表（简洁模式）"""
++             return "无相关记忆"
++         parts = []
++         for m in memories[:MAX_MEMORIES]:
++             partition = m.get("partition", "?")
++             title = m.get("title", m.get("path", "?")[-30:])
++             score = m.get("priority_score", 0)
++             parts.append(f"[{partition}] {title} (优先级: {score:.2f})")
++         return "\n".join(parts)
++ # ============== Hook 集成 ==============
++ def on_session_start(session_id: str = "", session_topic: str = ""):
++     """会话开始时的 hook 函数
++     用法（在 AGENTS.md 或 hooks 中）:
++         python3 auto_loader.py --hook-start --session-id {session_id} --topic "xxx"
++     """
++     memories = loader.load_on_start(session_topic, session_id)
++     if memories:
++         print(f"[AutoLoader] 已加载 {len(memories)} 条相关记忆:")
++         print(loader.format_memory_list(memories))
++         print(loader.format_memory_list(memories))
++         # 输出注入格式
++         context = loader.inject_to_context(memories)
++         context = loader.inject_to_context(memories)
++         print("\n--- 注入上下文 ---")
++         print(context[:500] + "..." if len(context) > 500 else context)
++     else:
++     else:
++         print("[AutoLoader] 未找到相关记忆")
++     return memories
++ # ============== CLI 主程序 ==============
++ def main():
++     import argparse
++     parser = argparse.ArgumentParser(description="OpenClaw 自动上下文加载器")
++     parser.add_argument("--topic", "-t", default="", help="会话话题/查询")
++     parser.add_argument("--session-id", "-s", default="", help="会话 ID")
+
+### scripts/capacity_manager.py  [code]
++ #!/usr/bin/env python3
++ """
++ """
++ OpenClaw 秘书式记忆系统 - 容量管理器
++ 检测 memory 目录容量，在接近满时自动触发归档
++ 用法:
++     from capacity_manager import CapacityManager
++     cm = CapacityManager()
++     cm.check_usage()      # 检测容量
++     cm.warn_if_full()     # 超过80%警告
++     cm.auto_archive_if_needed()  # 超过95%自动归档
++ import os
++ import json
++ from pathlib import Path
++ from datetime import datetime
++ from typing import Dict, Tuple, Optional
++ # ============== 配置 ==============
++ MEMORY_DIR = Path(os.environ.get("OPENCLAW_MEMORY_DIR", "/root/.openclaw/workspace/memory"))
++ MEMORY_MD = MEMORY_DIR / "memory.md"   # 长期记忆精选
++ ARCHIVE_DIR = MEMORY_DIR / "archive"   # 归档目录
++ DAILY_DIR = MEMORY_DIR / "daily"      # 每日日志
++ # 容量阈值
++ WARN_THRESHOLD = 0.80   # 80% 警告
++ CRITICAL_THRESHOLD = 0.95  # 95% 自动归档
++ # MEMORY.md 最大行数（经验值，可调整）
++ MAX_MEMORY_MD_LINES = 500
++ # daily/ 目录最大文件数
++ MAX_DAILY_FILES = 30
++ # archive/ 目录最大容量（MB）
++ MAX_ARCHIVE_SIZE_MB = 100
++ # ============== 容量检查器 ==============
++ class CapacityManager:
++     """容量管理器"""
++     def __init__(self, verbose: bool = False):
++         self.verbose = verbose
++         self.state_file = MEMORY_DIR / ".capacity_state.json"
++         self.state = self._load_state()
++     def _load_state(self) -> Dict:
++         """加载容量状态"""
++         if self.state_file.exists():
++             try:
++             try:
++             try:
++                 return json.loads(self.state_file.read_text(encoding="utf-8"))
++             except Exception:
++             except Exception:
++             except Exception:
++                 pass
++                 pass
++                 pass
++         return {
++             "last_check": None,
++             "memory_md_lines": 0,
++             "daily_file_count": 0,
++             "archive_size_mb": 0.0,
++             "last_warn_time": None,
++             "last_archive_time": None,
++         }
++         }
++     def _save_state(self):
++         """保存容量状态"""
++         self.state["last_check"] = datetime.now().isoformat()
++         try:
++             self.state_file.write_text(
++                 json.dumps(self.state, ensure_ascii=False, indent=2),
++                 encoding="utf-8"
++             )
++         except Exception:
++             pass
++     def _get_memory_md_info(self) -> Tuple[int, int]:
++         """获取 MEMORY.md 行数和最大行数
++         Returns:
++         Returns:
++         Returns:
++         Returns:
++             (当前行数, 最大行数)
++         """
++         """
++         """
++         """
++         if MEMORY_MD.exists():
++                 lines = len(MEMORY_MD.read_text(encoding="utf-8").splitlines())
++                 return lines, MAX_MEMORY_MD_LINES
++         return 0, MAX_MEMORY_MD_LINES
++     def _get_daily_file_count(self) -> int:
++         """获取 daily/ 目录文件数"""
++         if DAILY_DIR.exists():
++             return len([f for f in DAILY_DIR.iterdir() if f.is_file() and not f.name.startswith('.')])
++         return 0
++     def _get_archive_size_mb(self) -> float:
++         """获取 archive/ 目录大小（MB）"""
++         total = 0.0
++         if ARCHIVE_DIR.exists():
++             for f in ARCHIVE_DIR.rglob("*"):
++                 if f.is_file():
++                     total += f.stat().st_size
++         return total / (1024 * 1024)
++     def _get_dir_file_count(self, dir_path: Path) -> int:
++         """获取指定目录的文件数（递归）"""
++         if not dir_path.exists():
++             return 0
++         return len([f for f in dir_path.rglob("*") if f.is_file() and not f.name.startswith('.')])
++     def check_usage(self) -> Dict[str, any]:
++         """全面检测容量使用情况
++             容量使用报告
++         memory_md_lines, max_lines = self._get_memory_md_info()
++         daily_count = self._get_daily_file_count()
++         archive_size = self._get_archive_size_mb()
++         # 计算各项使用率
++         memory_md_ratio = memory_md_lines / max_lines if max_lines > 0 else 0
++         daily_ratio = daily_count / MAX_DAILY_FILES if MAX_DAILY_FILES > 0 else 0
++         archive_ratio = archive_size / MAX_ARCHIVE_SIZE_MB if MAX_ARCHIVE_SIZE_MB > 0 else 0
++         report = {
++             "timestamp": datetime.now().isoformat(),
++             "memory_md": {
++                 "lines": memory_md_lines,
++                 "max_lines": max_lines,
++                 "ratio": round(memory_md_ratio, 3),
++                 "percent": round(memory_md_ratio * 100, 1),
++                 "status": "critical" if memory_md_ratio >= CRITICAL_THRESHOLD else "warning" if memory_md_ratio >= WARN_THRESHOLD else "ok"
++             },
++             },
++             },
++             "daily": {
++                 "count": daily_count,
++                 "max_count": MAX_DAILY_FILES,
++                 "ratio": round(daily_ratio, 3),
++                 "percent": round(daily_ratio * 100, 1),
++                 "status": "critical" if daily_ratio >= CRITICAL_THRESHOLD else "warning" if daily_ratio >= WARN_THRESHOLD else "ok"
++             "archive": {
++                 "size_mb": round(archive_size, 2),
++                 "max_size_mb": MAX_ARCHIVE_SIZE_MB,
++                 "ratio": round(archive_ratio, 3),
++                 "percent": round(archive_ratio * 100, 1),
++                 "status": "critical" if archive_ratio >= CRITICAL_THRESHOLD else "warning" if archive_ratio >= WARN_THRESHOLD else "ok"
++             "overall": {
++                 "max_ratio": max(memory_md_ratio, daily_ratio, archive_ratio),
++                 "status": "critical" if max(memory_md_ratio, daily_ratio, archive_ratio) >= CRITICAL_THRESHOLD else "warning" if max(memory_md_ratio, daily_ratio, archive_ratio) >= WARN_THRESHOLD else "ok"
++             }
++         # 更新状态
++         self.state["memory_md_lines"] = memory_md_lines
++         self.state["daily_file_count"] = daily_count
++         self.state["archive_size_mb"] = round(archive_size, 2)
++         self._save_state()
++         self._save_state()
++         if self.verbose:
++             self._print_report(report)
++         return report
++     def _print_report(self, report: Dict):
++         """打印容量报告"""
++         print("\n## 容量使用报告")
++         print(f"时间: {report['timestamp'][:19]}")
++         md = report["memory_md"]
++         md = report["memory_md"]
++         print(f"\n[MEMORY.md] {md['lines']}/{md['max_lines']} 行 ({md['percent']}%) - {md['status'].upper()}")
++         daily = report["daily"]
++         daily = report["daily"]
++         print(f"[daily/] {daily['count']}/{daily['max_count']} 文件 ({daily['percent']}%) - {daily['status'].upper()}")
++         archive = report["archive"]
++         archive = report["archive"]
++         print(f"[archive/] {archive['size_mb']}/{archive['max_size_mb']} MB ({archive['percent']}%) - {archive['status'].upper()}")
++         overall = report["overall"]
++         print(f"\n总体状态: {overall['status'].upper()} (最大使用率: {overall['max_ratio']*100:.1f}%)")
++     def warn_if_full(self, report: Optional[Dict] = None) -> bool:
++         """检查是否超过容量阈值，打印警告
++         Args:
++             report: 可选，已有的容量报告
++             是否需要警告
++         if report is None:
++             report = self.check_usage()
++         needs_warn = False
++         warnings = []
++         for key in ["memory_md", "daily", "archive"]:
++             item = report[key]
++             if item["status"] == "critical":
++                 warnings.append(f"  [!] {key}: {item['percent']}% (超过临界值 {CRITICAL_THRESHOLD*100:.0f}%)")
++                 needs_warn = True
++                 needs_warn = True
++             elif item["status"] == "warning":
++                 warnings.append(f"  [~] {key}: {item['percent']}% (超过警告线 {WARN_THRESHOLD*100:.0f}%)")
++         if warnings:
++             print("\n" + "="*50)
++             print("[容量警告] memory 目录接近容量上限!")
++             print("="*50)
++             print("="*50)
++             for w in warnings:
++                 print(w)
++             print("建议: 运行 python3 consolidate.py --verbose 进行归档")
++             # 记录警告时间
++             self.state["last_warn_time"] = datetime.now().isoformat()
++             self._save_state()
++         return needs_warn
++     def auto_archive_if_needed(self) -> Tuple[bool, str]:
++         """检查是否需要自动归档
++             (是否触发了归档, 消息)
++         report = self.check_usage()
++         report = self.check_usage()
++         # 检查是否超过临界值
++         if report["overall"]["status"] != "critical":
++             return False, "容量未超过临界值，无需自动归档"
++         # 检查是否在24小时内已经自动归档过
++         last_archive = self.state.get("last_archive_time")
++         if last_archive:
++                 last_time = datetime.fromisoformat(last_archive)
++                 hours_since = (datetime.now() - last_time).total_seconds() / 3600
++                 if hours_since < 24:
++                     return False, f"距离上次自动归档仅 {hours_since:.1f} 小时，跳过"
++         # 触发归档前检查
++         can_archive = False
++         reasons = []
++         if report["memory_md"]["status"] == "critical":
++             reasons.append(f"MEMORY.md 超过 {MAX_MEMORY_MD_LINES} 行")
++             can_archive = True
++             can_archive = True
++             can_archive = True
++         if report["daily"]["status"] == "critical":
++             reasons.append(f"daily/ 超过 {MAX_DAILY_FILES} 个文件")
++         if report["archive"]["status"] == "critical":
++             reasons.append(f"archive/ 超过 {MAX_ARCHIVE_SIZE_MB} MB")
++         if not can_archive:
++             return False, "容量已满但无法自动清理"
++         print("\n" + "="*50)
++         print("[容量管理器] 自动归档触发!")
++         print("="*50)
++         print("="*50)
++         for r in reasons:
++             print(f"  - {r}")
++         print("将执行 consolidation 流程...\n")
++         # 记录触发时间
++         self.state["last_archive_time"] = datetime.now().isoformat()
++         return True, "; ".join(reasons)
++     def get_summary(self) -> str:
++         """获取容量摘要（一行）"""
++         parts = []
++         parts.append(f"MEMORY.md: {md['lines']}行")
++         parts.append(f"daily: {daily['count']}文件")
++         parts.append(f"archive: {archive['size_mb']}MB")
++         overall = report["overall"]["status"]
++         status_icon = "🔴" if overall == "critical" else "🟡" if overall == "warning" else "🟢"
++         return f"{status_icon} [{', '.join(parts)}]"
++ # ============== 主程序 ==============
++ def main():
++     import argparse
++     parser = argparse.ArgumentParser(description="OpenClaw 容量管理器")
++     parser.add_argument("--verbose", "-v", action="store_true", help="详细输出")
++     parser.add_argument("--check", "-c", action="store_true", help="检查容量")
++     parser.add_argument("--warn", "-w", action="store_true", help="检查并警告")
++     parser.add_argument("--auto", "-a", action="store_true", help="检查并触发自动归档")
++     args = parser.parse_args()
++     cm = CapacityManager(verbose=args.verbose)
++     if args.check:
++         cm.check_usage()
++     if args.warn:
++         cm.warn_if_full()
++     if args.auto:
++         triggered, msg = cm.auto_archive_if_needed()
++         print(f"自动归档: {'是' if triggered else '否'} - {msg}")
++     if not (args.check or args.warn or args.auto):
++         # 默认：检查 + 警告
++         report = cm.check_usage()
++         cm.warn_if_full(report)
++         print(f"\n容量摘要: {cm.get_summary()}")
++ if __name__ == "__main__":
++     main()
+
+### scripts/consolidate.py  [code]
++ # 导入容量管理器
++ from capacity_manager import CapacityManager, WARN_THRESHOLD, CRITICAL_THRESHOLD
++         # ========== 容量检查 ==========
++         if not self.dry_run:
++             cm = CapacityManager(verbose=self.verbose)
++             report = cm.check_usage()
++             # 打印容量警告
++             cm.warn_if_full(report)
++             # 检查是否需要自动归档
++             if report["overall"]["status"] == "critical":
++                 triggered, msg = cm.auto_archive_if_needed()
++                 if triggered:
++                     print(f"[容量管理器] 触发原因: {msg}")
++         # ========== 容量检查结束 ==========
++         # 容量状态
++         cm = CapacityManager()
++         print(f"\n  容量状态: {cm.get_summary()}")
++     parser.add_argument("--check-capacity", action="store_true", help="仅检查容量，不执行归档")
++     # 容量检查模式
++     if args.check_capacity:
++         cm = CapacityManager(verbose=True)
++         report = cm.check_usage()
++         cm.warn_if_full(report)
++         print(f"\n容量摘要: {cm.get_summary()}")
++         return
+
+### scripts/fts5_index.py  [code]
++ #!/usr/bin/env python3
++ """
++ """
++ """
++ """
++ OpenClaw 秘书式记忆系统 - FTS5 全文搜索索引
++ 基于 SQLite FTS5 的快速全文搜索，支持 LLM 摘要
++ 用法:
++     from fts5_index import FTS5Index
++     idx = FTS5Index()
++     idx.build_index()           # 构建索引
++     results = idx.search("项目X")  # 搜索
++     summary = idx.summarize(results, query)  # LLM 摘要
++ import os
++ import re
++ import json
++ import sqlite3
++ import threading
++ from pathlib import Path
++ from datetime import datetime
++ from typing import List, Dict, Optional, Tuple
++ from concurrent.futures import ThreadPoolExecutor
++ # ============== 配置 ==============
++ MEMORY_DIR = Path(os.environ.get("OPENCLAW_MEMORY_DIR", "/root/.openclaw/workspace/memory"))
++ FTS_DB = MEMORY_DIR / ".fts5_index.db"
++ FTS_LOCK = threading.Lock()
++ # LLM 配置（可通过环境变量覆盖）
++ LLM_API_URL = os.environ.get("LLM_API_URL", "http://localhost:11434/api/generate")
++ LLM_MODEL = os.environ.get("LLM_MODEL", "llama3")
++ # ============== FTS5 索引类 ==============
++ class FTS5Index:
++     """FTS5 全文搜索索引"""
++     def __init__(self, memory_dir: Path = MEMORY_DIR):
++         self.memory_dir = memory_dir
++         self.db_path = memory_dir / ".fts5_index.db"
++         self._ensure_db()
++     def _ensure_db(self):
++         """确保数据库和表存在"""
++         with FTS_LOCK:
++             conn = sqlite3.connect(str(self.db_path))
++             cursor = conn.cursor()
++             cursor = conn.cursor()
++             cursor = conn.cursor()
++             cursor = conn.cursor()
++             # 创建 FTS5 虚拟表
++             cursor.execute("""
++             cursor.execute("""
++             cursor.execute("""
++                 CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
++                     path,
++                     title,
++                     title,
++                     content,
++                     partition,
++                     partition,
++                     date,
++                     tokenize='unicode61 remove_diacritics 2'
++                 )
++                 )
++             """)
++             """)
++             # 创建元数据表（跟踪索引状态）
++                 CREATE TABLE IF NOT EXISTS fts_meta (
++                     path TEXT PRIMARY KEY,
++                     title TEXT,
++                     partition TEXT,
++                     date TEXT,
++                     indexed_at TEXT,
++                     file_mtime REAL,
++                     file_size INTEGER
++             conn.commit()
++             conn.close()
++             conn.close()
++             conn.close()
++             conn.close()
++     def _get_connection(self) -> sqlite3.Connection:
++         """获取数据库连接"""
++         conn = sqlite3.connect(str(self.db_path))
++         conn.row_factory = sqlite3.Row
++         return conn
++     def index_file(self, file_path: Path, partition: str = "unknown") -> bool:
++         """索引单个文件
++         Args:
++         Args:
++         Args:
++         Args:
++         Args:
++         Args:
++             file_path: 文件路径
++             partition: 分区名称
++         Returns:
++         Returns:
++         Returns:
++         Returns:
++         Returns:
++         Returns:
++             是否成功
++         """
++         """
++         """
++         """
++         """
++         """
++         """
++         try:
++         try:
++         try:
++         try:
++         try:
++         try:
++         try:
++         try:
++             if not file_path.exists() or file_path.is_dir():
++                 return False
++             stat = file_path.stat()
++             stat = file_path.stat()
++             content = file_path.read_text(encoding="utf-8", errors="ignore")
++             # 提取标题（第一行或文件名）
++             lines = content.split('\n')
++             title = lines[0].strip('# \n') if lines else file_path.stem
++             if len(title) > 200:
++                 title = title[:200]
++             # 提取日期（从文件名或内容）
++             date_match = re.match(r'^(\d{4}-\d{2}-\d{2})', file_path.stem)
++             date_str = date_match.group(1) if date_match else datetime.now().strftime("%Y-%m-%d")
++             # 清理内容（移除 markdown 格式）
++             clean_content = self._clean_content(content)
++             with FTS_LOCK:
++             with FTS_LOCK:
++             with FTS_LOCK:
++                 conn = self._get_connection()
++                 conn = self._get_connection()
++                 conn = self._get_connection()
++                 cursor = conn.cursor()
++                 cursor = conn.cursor()
++                 # 替换式插入（upsert）
++                 cursor.execute("""
++                 cursor.execute("""
++                     INSERT OR REPLACE INTO memory_fts (path, title, content, partition, date)
++                     VALUES (?, ?, ?, ?, ?)
++                 """, (str(file_path), title, clean_content, partition, date_str))
++                 # 更新元数据
++                     INSERT OR REPLACE INTO fts_meta (path, title, partition, date, indexed_at, file_mtime, file_size)
++                     VALUES (?, ?, ?, ?, ?, ?, ?)
++                 """, (
++                     str(file_path),
++                     date_str,
++                     datetime.now().isoformat(),
++                     stat.st_mtime,
++                     stat.st_size
++                 ))
++                 conn.commit()
++                 conn.commit()
++                 conn.close()
++                 conn.close()
++                 conn.close()
++             return True
++             return True
++             return True
++         except Exception as e:
++         except Exception as e:
++         except Exception as e:
++         except Exception as e:
++         except Exception as e:
++             print(f"[FTS] 索引文件失败 {file_path}: {e}")
++             return False
++             return False
++     def _clean_content(self, content: str) -> str:
++         """清理内容，移除 markdown 格式"""
++         # 移除标题标记
++         content = re.sub(r'^#+\s+', '', content, flags=re.MULTILINE)
++         # 移除加粗/斜体
++         content = re.sub(r'\*{1,3}([^*]+)\*{1,3}', r'\1', content)
++         # 移除链接
++         content = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', content)
++         # 移除代码块
++         content = re.sub(r'```[^`]*```', '', content, flags=re.DOTALL)
++         content = re.sub(r'`([^`]+)`', r'\1', content)
++         # 移除 HTML 标签
++         content = re.sub(r'<[^>]+>', '', content)
++         # 规范化空白
++         content = re.sub(r'\n{3,}', '\n\n', content)
++         return content.strip()
++     def build_index(self, partitions: List[str] = None, verbose: bool = False) -> Dict:
++         """构建或更新索引
++             partitions: 要索引的分区列表，None 表示全部
++             verbose: 详细输出
++             索引统计
++         if partitions is None:
++             partitions = ["daily", "archive/daily", "archive/projects", "archive/decisions",
++                          "agenda", "profile", "projects", "knowledge"]
++         stats = {
++             "total": 0,
++             "indexed": 0,
++             "skipped": 0,
++             "errors": 0
++         }
++         }
++         }
++         for partition in partitions:
++             partition_path = self.memory_dir / partition
++             if not partition_path.exists():
++                 continue
++             for md_file in partition_path.rglob("*.md"):
++                 if md_file.name.startswith('.'):
++                     continue
++                 stats["total"] += 1
++                 # 检查是否需要重新索引
++                 if self._needs_reindex(md_file):
++                     if self.index_file(md_file, partition):
++                         stats["indexed"] += 1
++                         if verbose:
++                             print(f"[FTS] 索引: {md_file.relative_to(self.memory_dir)}")
++                     else:
++                         stats["errors"] += 1
++                 else:
++                 else:
++                     stats["skipped"] += 1
++         if verbose:
++             print(f"\n[FTS] 索引构建完成: {stats['indexed']}/{stats['total']} 文件已索引 "
++                   f"({stats['skipped']} 跳过, {stats['errors']} 错误)")
++         return stats
++     def _needs_reindex(self, file_path: Path) -> bool:
++         """检查文件是否需要重新索引"""
++             conn = self._get_connection()
++             conn = self._get_connection()
++             conn = self._get_connection()
++                 SELECT file_mtime, file_size FROM fts_meta WHERE path = ?
++             """, (str(file_path),))
++             row = cursor.fetchone()
++             if not row:
++                 return True
++             return row['file_mtime'] != stat.st_mtime or row['file_size'] != stat.st_size
++         except Exception:
++         except Exception:
++     def search(self, query: str, limit: int = 20, partition: str = None) -> List[Dict]:
++         """FTS5 搜索
++             query: 搜索查询
++             query: 搜索查询
++             limit: 最大结果数
++             partition: 可选，限定分区
++             搜索结果列表
++         if not query.strip():
++             return []
++             return []
++             # 构建查询（支持 AND/OR）
++             fts_query = self._build_fts_query(query)
++             if partition:
++                 sql = """
++                 sql = """
++                     SELECT path, title, content, partition, date,
++                     SELECT path, title, content, partition, date,
++                            bm25(memory_fts) as rank,
++                            bm25(memory_fts) as rank,
++                            highlight(memory_fts, 2, '**', '**') as snippet
++                            highlight(memory_fts, 2, '**', '**') as snippet
++                     FROM memory_fts
++                     FROM memory_fts
++                     WHERE partition = ? AND memory_fts MATCH ?
++                     ORDER BY rank
++                     ORDER BY rank
++                     LIMIT ?
++                     LIMIT ?
++                 """
++                 """
++                 cursor.execute(sql, (partition, fts_query, limit))
++             else:
++                     WHERE memory_fts MATCH ?
++                 cursor.execute(sql, (fts_query, limit))
++             rows = cursor.fetchall()
++             results = []
++             for row in rows:
++                 results.append({
++                     "path": row['path'],
++                     "title": row['title'],
++                     "content": row['content'][:500],  # 保留前500字符
++                     "partition": row['partition'],
++                     "date": row['date'],
++                     "rank": row['rank'],
++                     "snippet": row['snippet']
++                 })
++             return results
++             print(f"[FTS] 搜索失败: {e}")
++     def _build_fts_query(self, query: str) -> str:
++         """构建 FTS5 查询字符串"""
++         # 处理中文（简单分词）
++         tokens = []
++         for word in query.split():
++             word = word.strip()
++             if word:
++                 # FTS5 短语匹配
++                 if len(word) > 1:
++                     tokens.append(f'"{word}"')
++                     tokens.append(word)
++         if not tokens:
++             return query
++         return " OR ".join(tokens)
++     def get_stats(self) -> Dict:
++         """获取索引统计"""
++             cursor.execute("SELECT COUNT(*) as count FROM memory_fts")
+
+### scripts/profile_miner.py  [code]
++ # ============== 用户图谱集成 ==============
++ def _get_user_model_integration():
++     """延迟加载用户图谱集成"""
++     from user_model import ProfileMinerIntegration
++     return ProfileMinerIntegration()
++         # ========== 用户图谱更新 ==========
++         if not self.dry_run and text.strip():
++             try:
++                 integration = _get_user_model_integration()
++                 graph_result = integration.process_session(text)
++                 stats["graph_entities"] = graph_result.get("entities_found", 0)
++                 stats["graph_relations"] = graph_result.get("relations_found", 0)
++             except Exception as e:
++                 print(f"[ProfileMiner] 图谱更新失败: {e}")
++         # ========== 图谱更新结束 ==========
+
+### scripts/session_search.py  [code]
++ #!/usr/bin/env python3
++ """
++ """
++ OpenClaw 秘书式记忆系统 - 统一搜索入口
++ 整合 FTS5 全文搜索 + 传统分区搜索 + LLM 摘要
++ 用法:
++     python3 session_search.py "项目X 架构"          # FTS5 + LLM 摘要
++     python3 session_search.py "项目X" --classic   # 传统分区搜索
++     python3 session_search.py "项目X" --no-llm    # FTS5 无摘要
++     python3 session_search.py --build-index       # 构建 FTS5 索引
++     python3 session_search.py --stats             # 索引统计
++ import os
++ import sys
++ from pathlib import Path
++ from typing import List, Dict, Optional
++ # 添加脚本目录到路径
++ sys.path.insert(0, str(Path(__file__).parent))
++ # ============== 配置 ==============
++ MEMORY_DIR = Path(os.environ.get("OPENCLAW_MEMORY_DIR", "/root/.openclaw/workspace/memory"))
++ # ============== 搜索策略 ==============
++ class SearchStrategy:
++     """搜索策略基类"""
++     def search(self, query: str, limit: int = 10) -> List[Dict]:
++     def search(self, query: str, limit: int = 10) -> List[Dict]:
++     def search(self, query: str, limit: int = 10) -> List[Dict]:
++     def search(self, query: str, limit: int = 10) -> List[Dict]:
++         raise NotImplementedError
++ class ClassicSearch(SearchStrategy):
++     """传统分区搜索（兼容模式）"""
++     def __init__(self):
++     def __init__(self):
++     def __init__(self):
++         from memory_search import MemorySearch
++         self.searcher = MemorySearch(MEMORY_DIR, per_partition_limit=3)
++         results = self.searcher.search(query, max_results=limit)
++         # 转换格式
++         # 转换格式
++         return [
++         return [
++             {
++             {
++             {
++                 "path": r["file"],
++                 "title": r["file"],
++                 "content": r["context"],
++                 "partition": r["partition"],
++                 "partition": r["partition"],
++                 "rank": r["relevance"],
++                 "source": "classic"
++             }
++             }
++             }
++             for r in results
++             for r in results
++         ]
++         ]
++ class FTS5Search(SearchStrategy):
++     """FTS5 全文搜索"""
++         from fts5_index import FTS5Index
++         from fts5_index import FTS5Index
++         self.index = FTS5Index(MEMORY_DIR)
++         results = self.index.search(query, limit=limit)
++                 "path": r["path"],
++                 "title": r["title"],
++                 "content": r["content"],
++                 "date": r.get("date", ""),
++                 "rank": r["rank"],
++                 "snippet": r.get("snippet", ""),
++                 "source": "fts5"
++ class HybridSearch(SearchStrategy):
++     """混合搜索：FTS5 + 经典搜索合并"""
++         self.fts5 = FTS5Search()
++         self.classic = ClassicSearch()
++         # 并发搜索
++         import concurrent.futures
++         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
++             fts5_future = executor.submit(self.fts5.search, query, limit)
++             classic_future = executor.submit(self.classic.search, query, limit)
++             fts5_results = fts5_future.result()
++             classic_results = classic_future.result()
++         # 合并去重（按 path）
++         seen = {}
++         for r in fts5_results:
++             seen[r["path"]] = r
++         for r in classic_results:
++             if r["path"] not in seen:
++                 seen[r["path"]] = r
++         results = list(seen.values())
++         # 按 rank 排序
++         results.sort(key=lambda x: x.get("rank", 0))
++         return results[:limit]
++ # ============== 主搜索器 ==============
++ class SessionSearch:
++     """统一搜索入口"""
++     def __init__(self, strategy: str = "hybrid"):
++         """
++         """
++         """
++         """
++         Args:
++             strategy: "fts5", "classic", "hybrid"
++         self.strategy_name = strategy
++         if strategy == "fts5":
++             self.strategy = FTS5Search()
++         elif strategy == "classic":
++             self.strategy = ClassicSearch()
++         else:  # hybrid
++             self.strategy = HybridSearch()
++         # LLM 摘要器
++         from fts5_index import LLMSummarizer
++         self.llm = LLMSummarizer()
++     def search(self, query: str, use_llm: bool = True, limit: int = 10,
++                partition: str = None) -> Dict:
++         """执行搜索
++         Returns:
++                 "query": str,
++                 "results": [...],
++                 "count": int,
++                 "summary": str (if use_llm),
++                 "strategy": str,
++                 "stats": {...}
++         results = self.strategy.search(query, limit=limit)
++         # 过滤分区
++         if partition:
++             results = [r for r in results if r.get("partition") == partition]
++         response = {
++             "query": query,
++             "results": results,
++             "count": len(results),
++             "strategy": self.strategy_name
++         }
++         # LLM 摘要
++         # LLM 摘要
++         if use_llm and results:
++             try:
++                 response["summary"] = self.llm.summarize(results, query)
++             except Exception as e:
++                 # 提取友好提示
++                 error_msg = str(e)
++                 if "LLM API" in error_msg or "Connection" in error_msg:
++                     response["llm_error"] = "LLM API 不可用，请配置 OpenClaw 的 API"
++                 else:
++                     response["llm_error"] = error_msg[:100]
++         # 索引统计
++         # 索引统计
++         if hasattr(self.strategy, 'index'):
++             response["stats"] = self.strategy.index.get_stats()
++         elif hasattr(self.strategy, 'fts5'):
++             response["stats"] = self.strategy.fts5.index.get_stats()
++         return response
++     def format_results(self, response: Dict, format: str = "text") -> str:
++         """格式化输出"""
++         if format == "json":
++             import json
++             # 移除不可序列化的部分
++             output = {k: v for k, v in response.items() if k != "stats"}
++             return json.dumps(output, ensure_ascii=False, indent=2)
++         query = response["query"]
++         results = response["results"]
++         if not results:
++             return f"未找到与「{query}」相关的记忆"
++         parts = []
++         if "summary" in response:
++             parts.append("## 📋 LLM 摘要\n")
++             parts.append(response["summary"])
++             parts.append("")
++             parts.append("")
++         # 结果列表
++         parts.append(f"## 🔍 搜索结果 ({response['count']} 条)")
++         current_partition = None
++         for i, r in enumerate(results, 1):
++             partition = r.get("partition", "unknown")
++             if partition != current_partition:
++                 current_partition = partition
++                 parts.append(f"\n### [{partition}]\n")
++             title = r.get("title", r["path"][-50:])
++             path = r.get("path", "")
++             date = r.get("date", "")
++             snippet = r.get("snippet") or r.get("content", "")[:200]
++             parts.append(f"{i}. **{title}**")
++             parts.append(f"   📁 {path}")
++             if date:
++                 parts.append(f"   📅 {date}")
++             if snippet:
++                 clean_snippet = snippet.replace("\n", " ").strip()[:150]
++                 parts.append(f"   💬 {clean_snippet}...")
++         # 策略信息
++         parts.append(f"---\n搜索策略: {response['strategy']}")
++         if "stats" in response and "error" not in response["stats"]:
++             stats = response["stats"]
++             parts.append(f"FTS5索引: {stats.get('document_count', 'N/A')} 文档")
++         return "\n".join(parts)
++ # ============== 上下文加载集成 ==============
++ def load_context_for_query(query: str, use_llm: bool = True) -> str:
++     """为新会话加载相关上下文（集成 FTS5）
++     Args:
++         query: 会话查询/话题
++         use_llm: 是否使用 LLM 摘要
++     Returns:
++         可注入 prompt 的上下文字符串
++     """
++     searcher = SessionSearch(strategy="hybrid")
++     response = searcher.search(query, use_llm=use_llm, limit=5)
++     if not response["results"]:
++         return ""
++     parts = ["<!-- 相关记忆召回 -->"]
++     if "summary" in response:
++         parts.append(f"\n## 记忆摘要\n{response['summary']}\n")
++     parts.append("\n## 原始记忆")
++     for r in response["results"][:3]:
++         parts.append(f"\n### {r['title']}")
++         content = r.get("content", "") or r.get("snippet", "")
++         if len(content) > 300:
++             content = content[:300] + "..."
++         parts.append(content)
++     return "\n".join(parts)
++ # ============== 主程序 ==============
++ def main():
++     import argparse
++     parser = argparse.ArgumentParser(
++         description="OpenClaw 秘书式记忆系统 - 统一搜索",
++         formatter_class=argparse.RawDescriptionHelpFormatter,
++         epilog="""
++ 示例:
++     python3 session_search.py "项目X 架构"        # FTS5 + LLM 摘要
++     python3 session_search.py "项目X" --classic # 传统分区搜索
++     python3 session_search.py "项目X" --no-llm  # FTS5 无摘要
++     python3 session_search.py --build-index     # 构建索引
++     )
++     )
++     parser.add_argument("query", nargs="?", help="搜索查询")
++     parser.add_argument("--classic", action="store_true", help="使用传统分区搜索")
++     parser.add_argument("--fts5", action="store_true", help="仅使用 FTS5 搜索")
++     parser.add_argument("--no-llm", action="store_true", help="不使用 LLM 摘要")
++     parser.add_argument("--limit", "-l", type=int, default=10, help="结果数量")
++     parser.add_argument("--partition", "-p", help="限定分区")
++     parser.add_argument("--json", "-j", action="store_true", help="JSON 输出")
++     parser.add_argument("--build-index", "-b", action="store_true", help="构建 FTS5 索引")
++     parser.add_argument("--stats", "-s", action="store_true", help="显示索引统计")
++     parser.add_argument("--context", "-c", action="store_true", help="加载上下文（用于会话开始）")
++     args = parser.parse_args()
++     # 索引操作
++     if args.build_index or args.stats:
++         fts = FTS5Index(MEMORY_DIR)
++         if args.build_index:
++             print("[FTS5] 构建索引...")
++             stats = fts.build_index(verbose=True)
++             print(f"[OK] 完成: {stats}")
++         if args.stats:
++             stats = fts.get_stats()
++             print(f"\n## FTS5 索引统计")
++             print(f"  文档: {stats.get('document_count', 'N/A')}")
++             print(f"  数据库: {stats.get('db_size_mb', 'N/A')} MB")
++             print(f"  最后更新: {stats.get('last_index', 'N/A')}")
++         return
++         return
++         return
++     if not args.query and not args.context:
++         parser.print_help()
++     # 确定策略
++     if args.classic:
++         strategy = "classic"
++     elif args.fts5:
++         strategy = "fts5"
++     else:
++     else:
++         strategy = "hybrid"
++     searcher = SessionSearch(strategy=strategy)
++     # 上下文加载模式
++     if args.context:
++         context = load_context_for_query(args.query or "", use_llm=not args.no_llm)
++         if context:
++             print(context)
++         else:
++             print("未找到相关记忆")
++     # 常规搜索
++     response = searcher.search(
++         args.query,
++         use_llm=not args.no_llm,
++         limit=args.limit,
++         partition=args.partition
++     if args.json:
++         print(searcher.format_results(response, format="json"))
++         print(searcher.format_results(response))
++ if __name__ == "__main__":
++     main()
+
+### scripts/skill-creator/SKILL.md  [instructions]
++ # Skill Creator - 自动 Skill 生成系统
++ 当检测到复杂或重复的任务模式时，自动生成新的 skill 来封装解决方案。
++ ## 核心功能
++ 1. **复杂任务检测** - 检测同一问题出现 3 次以上
++ 2. **Skill 生成** - 根据任务模式生成新的 skill 文件
++ 3. **触发词注册** - 自动注册触发新 skill 的关键词
++ 4. **自我改进** - 跟踪 skill 使用效果并优化
++ ## 工作流程
++ ```
++ ```
++ ```
++ ```
++ ```
++ 检测到重复问题 (≥3次)
++         ↓
++         ↓
++         ↓
++         ↓
++         ↓
++ 分析问题模式 & 提取解决方案
++ 生成新 Skill (SKILL.md + scripts/)
++ 注册触发词
++ 建议用户启用
++ 使用反馈 → 自我改进
++ ## 自动生成的 Skill 结构
++ {skill-name}/
++ ├── SKILL.md           # Skill 定义
++ ├── README.md          # 使用说明
++ ├── scripts/
++ │   ├── main.py        # 主入口
++ │   └── ...
++ └── references/
++     └── SPEC.md        # 规范文档
++ ## 使用方式
++ ```bash
++ # 检测复杂任务
++ python3 auto_skill_generator.py --detect
++ # 生成新 Skill
++ python3 auto_skill_generator.py --generate --name "项目任务追踪"
++ # 注册触发词
++ python3 auto_skill_generator.py --register --skill "任务追踪" --triggers "任务,追踪,todo"
++ # 查看统计
++ python3 auto_skill_generator.py --stats
++ # 自我改进
++ python3 auto_skill_generator.py --improve
++ ## 触发时机
++ - 同一问题/话题出现 3 次以上时自动建议
++ - 用户显式请求 "帮我自动化这个流程"
++ - consolidation 时发现可封装的模式
+
+### scripts/skill-creator/auto_skill_generator.py  [code]
++ #!/usr/bin/env python3
++ """
++ """
++ """
++ """
++ """
++ """
++ OpenClaw Skill Creator - 自动 Skill 生成系统
++ 检测复杂/重复任务，自动生成新的 skill
++ 用法:
++     python3 auto_skill_generator.py --detect              # 检测复杂任务
++     python3 auto_skill_generator.py --generate --name "xxx"  # 生成新 Skill
++     python3 auto_skill_generator.py --register --skill "xxx" --triggers "a,b,c"
++     python3 auto_skill_generator.py --stats              # 查看统计
++     python3 auto_skill_generator.py --improve            # 自我改进
++ 触发时机: 同一问题出现 3 次以上时自动建议
++ import os
++ import re
++ import json
++ import json
++ import hashlib
++ from pathlib import Path
++ from pathlib import Path
++ from datetime import datetime, timedelta
++ from typing import List, Dict, Optional, Tuple
++ from collections import defaultdict
++ import argparse
++ # ============== 配置 ==============
++ MEMORY_DIR = Path(os.environ.get("OPENCLAW_MEMORY_DIR", "/root/.openclaw/workspace/memory"))
++ SKILLS_DIR = MEMORY_DIR / ".generated_skills"  # 生成的 skill 存放目录
++ PATTERN_DB = MEMORY_DIR / ".task_patterns.json"  # 任务模式数据库
++ TRIGGER_DB = MEMORY_DIR / ".skill_triggers.json"  # 触发词数据库
++ SKILL_CREATOR_DIR = Path(__file__).parent  # skill-creator 目录
++ # 阈值
++ COMPLEXITY_THRESHOLD = 3  # 出现 N 次视为复杂
++ SKILL_SIMILARITY_THRESHOLD = 0.8  # 相似度阈值
++ # ============== 模式检测器 ==============
++ class PatternDetector:
++     """复杂任务模式检测器"""
++     # 复杂任务模式
++     COMPLEX_PATTERNS = {
++         "task_tracking": {
++             "keywords": ["任务", "todo", "追踪", "待办", "计划", "进度"],
++             "weight": 1.5,
++             "weight": 1.5,
++             "weight": 1.5,
++             "suggested_name": "task-tracker"
++         },
++         },
++         },
++         },
++         },
++         },
++         },
++         },
++         },
++         "code_review": {
++             "keywords": ["代码审查", "review", "PR", "merge", "代码检查"],
++             "suggested_name": "code-review"
++         "bug_triage": {
++             "keywords": ["bug", "修复", "问题", "错误", "缺陷", "issue"],
++             "weight": 1.3,
++             "weight": 1.3,
++             "suggested_name": "bug-triage"
++         "meeting_notes": {
++             "keywords": ["会议", "meeting", "纪要", "议程", "notes"],
++             "weight": 1.2,
++             "suggested_name": "meeting-notes"
++         "data_analysis": {
++             "keywords": ["分析", "数据", "报表", "统计", "analytics"],
++             "weight": 1.4,
++             "weight": 1.4,
++             "weight": 1.4,
++             "weight": 1.4,
++             "suggested_name": "data-analysis"
++         "doc_generation": {
++             "keywords": ["文档", "doc", "生成", "markdown", "README"],
++             "suggested_name": "doc-generator"
++         "test_generation": {
++             "keywords": ["测试", "test", "用例", "coverage"],
++             "suggested_name": "test-generator"
++         "deployment": {
++             "keywords": ["部署", "deploy", "发布", "上线", "release"],
++             "suggested_name": "deploy-helper"
++         "api_design": {
++             "keywords": ["API", "接口", "rest", "endpoint", "endpoint"],
++             "suggested_name": "api-designer"
++         "db_schema": {
++             "keywords": ["数据库", "schema", "表结构", "migration", "db"],
++             "suggested_name": "db-schema-manager"
++         }
++         }
++         }
++         }
++         }
++         }
++         }
++         }
++     }
++     def __init__(self):
++     def __init__(self):
++     def __init__(self):
++     def __init__(self):
++         self.patterns = self._load_patterns()
++     def _load_patterns(self) -> Dict:
++         """加载任务模式数据库"""
++         if PATTERN_DB.exists():
++             try:
++             try:
++                 return json.loads(PATTERN_DB.read_text(encoding="utf-8"))
++             except Exception:
++             except Exception:
++                 pass
++                 pass
++         return {
++         return {
++         return {
++         return {
++         return {
++             "detected_patterns": {},  # {pattern_id: {type, count, first_seen, last_seen, examples}}
++             "version": 1
++             "version": 1
++     def _save_patterns(self):
++         """保存任务模式数据库"""
++         PATTERN_DB.write_text(
++             json.dumps(self.patterns, ensure_ascii=False, indent=2),
++             encoding="utf-8"
++             encoding="utf-8"
++             encoding="utf-8"
++         )
++         )
++         )
++         )
++     def detect_from_text(self, text: str, session_id: str = "") -> List[Dict]:
++         """从文本中检测复杂任务模式
++         Returns:
++         Returns:
++         Returns:
++         Returns:
++         Returns:
++         Returns:
++             检测到的模式列表 [{type, keywords, count, confidence}]
++         """
++         """
++         """
++         """
++         """
++         """
++         """
++         text_lower = text.lower()
++         text_lower = text.lower()
++         detected = []
++         for pattern_type, pattern_info in self.COMPLEX_PATTERNS.items():
++             matches = []
++             for kw in pattern_info["keywords"]:
++                 if kw.lower() in text_lower:
++                     matches.append(kw)
++             if matches:
++                 confidence = len(matches) / len(pattern_info["keywords"])
++                 # 更新模式计数
++                 pattern_id = pattern_type
++                 if pattern_id not in self.patterns["detected_patterns"]:
++                     self.patterns["detected_patterns"][pattern_id] = {
++                         "type": pattern_type,
++                         "count": 0,
++                         "first_seen": datetime.now().isoformat(),
++                         "last_seen": None,
++                         "examples": [],
++                         "keywords": matches
++                     }
++                 self.patterns["detected_patterns"][pattern_id]["count"] += 1
++                 self.patterns["detected_patterns"][pattern_id]["last_seen"] = datetime.now().isoformat()
++                 # 记录示例
++                 if session_id and len(self.patterns["detected_patterns"][pattern_id]["examples"]) < 5:
++                     self.patterns["detected_patterns"][pattern_id]["examples"].append({
++                         "session_id": session_id,
++                         "text": text[:200],
++                         "timestamp": datetime.now().isoformat()
++                         "timestamp": datetime.now().isoformat()
++                     })
++                     })
++                 detected.append({
++                     "type": pattern_type,
++                     "suggested_name": pattern_info["suggested_name"],
++                     "matched_keywords": matches,
++                     "confidence": confidence,
++                     "count": self.patterns["detected_patterns"][pattern_id]["count"],
++                     "is_complex": self.patterns["detected_patterns"][pattern_id]["count"] >= COMPLEXITY_THRESHOLD
++                 })
++                 })
++                 })
++         if detected:
++             self._save_patterns()
++         return detected
++     def get_complex_patterns(self) -> List[Dict]:
++         """获取已达到复杂度阈值的模式"""
++         complex = []
++         for pattern_id, info in self.patterns["detected_patterns"].items():
++             if info["count"] >= COMPLEXITY_THRESHOLD:
++                 pattern_info = self.COMPLEX_PATTERNS.get(pattern_id, {})
++                 complex.append({
++                     "type": pattern_id,
++                     "suggested_name": pattern_info.get("suggested_name", pattern_id),
++                     "count": info["count"],
++                     "first_seen": info["first_seen"],
++                     "last_seen": info["last_seen"],
++                     "examples": info.get("examples", [])
++         # 按出现次数排序
++         complex.sort(key=lambda x: -x["count"])
++         return complex
++     def analyze_task_pattern(self, text: str) -> Dict:
++         """分析任务模式，返回建议
++             {
++                 "is_complex": bool,
++                 "pattern_type": str,
++                 "suggested_skill_name": str,
++                 "extracted_steps": [...],
++                 "confidence": float
++             }
++             }
++         detected = self.detect_from_text(text)
++         if not detected:
++             return {"is_complex": False}
++             return {"is_complex": False}
++         # 找最匹配的模式
++         best = max(detected, key=lambda x: (x["confidence"], x["count"]))
++         if not best["is_complex"]:
++         # 提取解决步骤
++         steps = self._extract_steps(text)
++             "is_complex": True,
++             "pattern_type": best["type"],
++             "suggested_skill_name": best["suggested_name"],
++             "matched_keywords": best["matched_keywords"],
++             "count": best["count"],
++             "extracted_steps": steps,
++             "confidence": best["confidence"]
++     def _extract_steps(self, text: str) -> List[str]:
++         """从文本中提取任务步骤"""
++         steps = []
++         # 数字列表
++         number_pattern = r'(?:^\d+[.、)]\s*.+)'
++         matches = re.findall(number_pattern, text, re.MULTILINE)
++         steps.extend([m.strip() for m in matches if len(m.strip()) > 5])
++         steps.extend([m.strip() for m in matches if len(m.strip()) > 5])
++         # 破折号列表
++         dash_pattern = r'(?:^-+\s*.+)'
++         matches = re.findall(dash_pattern, text, re.MULTILINE)
++         # 提取的步骤去重
++         seen = set()
++         unique = []
++         for s in steps:
++             key = s[:50].lower()
++             if key not in seen:
++                 seen.add(key)
++                 unique.append(s)
++         return unique[:10]  # 最多10步
++ # ============== Skill 生成器 ==============
++ class SkillGenerator:
++     """Skill 文件生成器"""
++         self.skills_dir = SKILLS_DIR
++         self.skills_dir.mkdir(parents=True, exist_ok=True)
++     def generate_skill(
++         self,
++         self,
++         self,
++         self,
++         name: str,
++         name: str,
++         name: str,
++         name: str,
++         pattern_type: str,
++         pattern_type: str,
++         pattern_type: str,
++         description: str = "",
++         steps: List[str] = None,
++         triggers: List[str] = None
++     ) -> Tuple[bool, str]:
++         """生成新的 Skill
++         Args:
++         Args:
++         Args:
++         Args:
++         Args:
++             name: Skill 名称（英文，简短）
++             pattern_type: 模式类型
++             description: 描述
++             steps: 执行步骤
++             triggers: 触发词列表
++             triggers: 触发词列表
++             (成功标志, 消息/Skill路径)
++         # 清理名称
++         safe_name = re.sub(r'[^a-zA-Z0-9_-]', '-', name.lower())
++         skill_dir = self.skills_dir / safe_name
++         if skill_dir.exists():
++             return False, f"Skill 已存在: {safe_name}"
++         try:
++             # 创建目录结构
++             skill_dir.mkdir(parents=True, exist_ok=True)
++             (skill_dir / "scripts").mkdir(exist_ok=True)
++             (skill_dir / "references").mkdir(exist_ok=True)
+
+### scripts/user_model.py  [code]
++ #!/usr/bin/env python3
++ """
++ """
++ OpenClaw 秘书式记忆系统 - 用户关系图谱
++ 从会话中提取实体和关系，构建用户知识图谱
++ 用法:
++     from user_model import UserModel
++     model = UserModel()
++     model = UserModel()
++     model.extract_entities(session_text)  # 提取实体
++     model.build_graph()                   # 构建图谱
++     model.update_model()                  # 增量更新
++     model.query_model("项目X")            # 按话题查询
++ 触发时机: 每次会话结束时增量提取
++ import os
++ import re
++ import json
++ from pathlib import Path
++ from datetime import datetime
++ from typing import List, Dict, Set, Optional, Tuple
++ from collections import defaultdict
++ # ============== 配置 ==============
++ MEMORY_DIR = Path(os.environ.get("OPENCLAW_MEMORY_DIR", "/root/.openclaw/workspace/memory"))
++ GRAPH_DB = MEMORY_DIR / ".user_graph.json"
++ GRAPH_STATS = MEMORY_DIR / ".user_graph_stats.json"
++ # ============== 实体关系图谱 ==============
++ class UserModel:
++     """用户关系图谱"""
++     # 实体类型定义
++     ENTITY_TYPES = {
++         "user": {"keywords": ["用户", "客户", "联系人", "我"], "weight": 2.0},
++         "project": {"keywords": ["项目", "project", "系统", "产品"], "weight": 1.8},
++         "technology": {"keywords": ["技术", "框架", "库", "语言", "工具"], "weight": 1.5},
++         "person": {"keywords": ["人名", "开发者", "工程师", "经理"], "weight": 1.3},
++         "concept": {"keywords": ["概念", "理论", "方法", "方案", "架构"], "weight": 1.0},
++         "preference": {"keywords": ["喜欢", "偏好", "习惯", "倾向"], "weight": 1.2},
++     }
++     # 关系类型定义
++     RELATION_TYPES = [
++         "works_on",      # 用户从事某项目
++         "uses",          # 使用某技术
++         "manages",       # 管理某项目
++         "interested_in", # 对某概念感兴趣
++         "has_preference", # 有某偏好
++         "related_to",    # 与某实体相关
++         "collaborates_with", # 与某人合作
++     ]
++     def __init__(self):
++     def __init__(self):
++         self.graph = self._load_graph()
++         self.stats = self._load_stats()
++     # ============== 持久化 ==============
++     def _load_graph(self) -> Dict:
++         """加载图谱"""
++         if GRAPH_DB.exists():
++             try:
++             try:
++                 return json.loads(GRAPH_DB.read_text(encoding="utf-8"))
++             except Exception:
++             except Exception:
++                 pass
++                 pass
++         return {
++         return {
++         return {
++         return {
++             "entities": {},      # {entity_id: {type, name, mentions, last_seen, properties}}
++             "relations": [],      # [{source, target, type, weight, last_seen}]
++             "version": 1
++         }
++         }
++         }
++         }
++         }
++         }
++     def _save_graph(self):
++         """保存图谱"""
++         try:
++         try:
++             GRAPH_DB.write_text(
++                 json.dumps(self.graph, ensure_ascii=False, indent=2),
++                 encoding="utf-8"
++                 encoding="utf-8"
++             )
++             )
++         except Exception as e:
++             print(f"[UserModel] 保存图谱失败: {e}")
++     def _load_stats(self) -> Dict:
++         """加载统计"""
++         if GRAPH_STATS.exists():
++                 return json.loads(GRAPH_STATS.read_text(encoding="utf-8"))
++             "total_entities": 0,
++             "total_relations": 0,
++             "last_update": None,
++             "entity_types": {},
++             "top_entities": []
++     def _save_stats(self):
++         """保存统计"""
++         # 更新统计
++         self.stats["total_entities"] = len(self.graph["entities"])
++         self.stats["total_relations"] = len(self.graph["relations"])
++         self.stats["last_update"] = datetime.now().isoformat()
++         # 实体类型统计
++         type_counts = defaultdict(int)
++         for entity in self.graph["entities"].values():
++         for entity in self.graph["entities"].values():
++             type_counts[entity.get("type", "unknown")] += 1
++         self.stats["entity_types"] = dict(type_counts)
++         # Top 实体（按 mentions 排序）
++         top = sorted(
++             self.graph["entities"].items(),
++             key=lambda x: x[1].get("mentions", 0),
++             reverse=True
++             reverse=True
++         )[:10]
++         self.stats["top_entities"] = [
++             {"id": k, "name": v.get("name", ""), "mentions": v.get("mentions", 0)}
++             for k, v in top
++         ]
++         ]
++         ]
++         ]
++         ]
++         ]
++         ]
++         ]
++             GRAPH_STATS.write_text(
++                 json.dumps(self.stats, ensure_ascii=False, indent=2),
++         except Exception:
++             pass
++     # ============== 实体提取 ==============
++     def extract_entities(self, text: str) -> List[Dict]:
++         """从文本中提取实体
++         Returns:
++         Returns:
++         Returns:
++         Returns:
++         Returns:
++             实体列表 [{type, name, properties}]
++         """
++         """
++         """
++         """
++         """
++         """
++         """
++         entities = []
++         # 1. 项目实体
++         project_patterns = [
++             r'(?:项目|project|系统|产品)[:：]\s*["\']?([^"\'\n]+?)["\']?(?:\n|$)',
++             r'(?:做|开发|负责|参与)["\']?\s*([^"\'\n]{2,20}?)(?:项目|系统)',
++             r'`([^`]+?项目[^`]*)`',  # 代码中的项目引用
++         for pattern in project_patterns:
++             matches = re.findall(pattern, text, re.IGNORECASE)
++             matches = re.findall(pattern, text, re.IGNORECASE)
++             matches = re.findall(pattern, text, re.IGNORECASE)
++             for m in matches:
++             for m in matches:
++             for m in matches:
++             for m in matches:
++             for m in matches:
++             for m in matches:
++                 name = m.strip()
++                 name = m.strip()
++                 name = m.strip()
++                 name = m.strip()
++                 name = m.strip()
++                 if len(name) >= 2:
++                 if len(name) >= 2:
++                 if len(name) >= 2:
++                 if len(name) >= 2:
++                 if len(name) >= 2:
++                     entities.append({
++                     entities.append({
++                     entities.append({
++                     entities.append({
++                     entities.append({
++                         "type": "project",
++                         "name": name[:50],
++                         "name": name[:50],
++                         "name": name[:50],
++                         "properties": {"source": "project_pattern"}
++                     })
++                     })
++                     })
++                     })
++                     })
++                     })
++         # 2. 技术实体
++         tech_patterns = [
++             r'\b(Python|JavaScript|TypeScript|Java|Go|Rust|C\+\+|React|Vue|Angular|Flask|FastAPI|Django|Next\.js|LangGraph|RAG|OpenAI|Claude|MiniMax|Git|Docker|Kubernetes)\b',
++             r'(?:使用|采用|基于)[:：]\s*([A-Za-z][A-Za-z0-9.]+)',
++             r'(?:技术|框架|库)[:：]\s*["\']?([^"\'\n]+?)["\']?',
++         for pattern in tech_patterns:
++                         "type": "technology",
++                         "name": name[:30],
++                         "properties": {"source": "tech_pattern"}
++         # 3. 人物实体
++         person_patterns = [
++             r'(?:开发者|工程师|经理|负责人|产品经理|设计师)[:：]\s*["\']?([A-Za-z\u4e00-\u9fa5]{2,10})["\']?',
++             r'@([A-Za-z\u4e00-\u9fa5]{2,10})',
++             r'([A-Z][a-z]+)\s+(?:说|认为|表示|指出)',
++         for pattern in person_patterns:
++             matches = re.findall(pattern, text)
++             matches = re.findall(pattern, text)
++             matches = re.findall(pattern, text)
++                         "type": "person",
++                         "name": name[:20],
++                         "properties": {"source": "person_pattern"}
++         # 4. 概念实体
++         concept_patterns = [
++             r'(?:架构|设计|方案|方法|理论|概念)[:：]\s*["\']?([^"\'\n]{3,30}?)["\']?',
++             r'(?:微服务|RESTful|GraphQL|CI/CD|DevOps|敏捷|Kanban)',
++         for pattern in concept_patterns:
++                         "type": "concept",
++                         "properties": {"source": "concept_pattern"}
++         # 5. 偏好实体
++         preference_patterns = [
++             r'(?:喜欢|偏好|倾向|习惯)[:：]\s*["\']?([^"\'\n]{2,30}?)["\']?',
++             r'(?:不|讨厌|不喜欢)[:：]\s*["\']?([^"\'\n]{2,30}?)["\']?',
++         for pattern in preference_patterns:
++                         "type": "preference",
++                         "properties": {"source": "preference_pattern"}
++         # 去重
++         # 去重
++         seen = set()
++         seen = set()
++         unique = []
++         unique = []
++         for e in entities:
++         for e in entities:
++             key = (e["type"], e["name"].lower())
++             if key not in seen:
++             if key not in seen:
++                 seen.add(key)
++                 seen.add(key)
++                 unique.append(e)
++         return unique
++         return unique
++     def extract_relations(self, text: str, entities: List[Dict]) -> List[Dict]:
++         """从文本中提取实体间关系
++         Args:
++         Args:
++         Args:
++         Args:
++         Args:
++         Args:
++             text: 原始文本
++             entities: 已提取的实体列表
++             关系列表 [{source, target, type, weight}]
++         relations = []
++         entity_names = [e["name"] for e in entities]
++         # 提取 co-occurrence 关系（同一上下文中出现的实体）
++         sentences = text.split('.')
++         for sentence in sentences:
++             mentioned = []
++             for e in entities:
++                 if e["name"] in sentence:
++                     mentioned.append(e)
++             # 同一句中提到的实体建立关系
++             for i, e1 in enumerate(mentioned):
++                 for e2 in mentioned[i+1:]:
++                     # 判断关系类型
++                     rel_type = self._infer_relation(sentence, e1, e2)
++                     if rel_type:
++                         relations.append({
++                             "source": e1["name"],
++                             "target": e2["name"],
++                             "type": rel_type,
++                             "weight": 1.0
++                         })
++                         })
++         # 基于动词的关系提取
++         verb_patterns = [
++             (r'(\w+)\s+(?:使用|采用)\s+(\w+)', "uses"),
++             (r'(\w+)\s+(?:开发|构建|实现)\s+(\w+)', "works_on"),
++             (r'(\w+)\s+(?:对|关注)\s+(\w+)', "interested_in"),
++             (r'(\w+)\s+(?:和|与)\s+(\w+)\s+(?:合作|一起)', "collaborates_with"),
++         for pattern, rel_type in verb_patterns:
++                 if len(m) >= 2:
++                     relations.append({
++                         "source": m[0].strip(),
++                         "target": m[1].strip(),
++                         "type": rel_type,
++                         "weight": 1.5  # 明确的关系权重更高
++         for r in relations:
++             key = (r["source"].lower(), r["target"].lower(), r["type"])
++             key = (r["source"].lower(), r["target"].lower(), r["type"])
++             key = (r["source"].lower(), r["target"].lower(), r["type"])
++                 unique.append(r)
++     def _infer_relation(self, context: str, e1: Dict, e2: Dict) -> Optional[str]:
++         """推断两个实体之间的关系类型"""
++         ctx_lower = context.lower()
++         # 基于上下文的关键词判断
++         if any(kw in ctx_lower for kw in ["使用", "采用", "基于", "技术栈"]):
++             return "uses"
++         if any(kw in ctx_lower for kw in ["开发", "做", "参与", "负责"]):
++             return "works_on"
++         if any(kw in ctx_lower for kw in ["喜欢", "偏好", "感兴趣"]):
++             return "interested_in"

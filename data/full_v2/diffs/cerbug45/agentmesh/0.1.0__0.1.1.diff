@@ -1,0 +1,2140 @@
+cerbug45/agentmesh  0.1.0 -> 0.1.1
+change_type: code   changelog: - Major internal restructuring: migrated all core source files from the top level to src/agentmesh/. - All example scripts moved from project root to examples/ directory. - Test files relocated to tests/ directory. - Updated packaging and references to support the new source layout. - Deprecated legacy top-level Python files; all code organization now follows standard Python packaging conventions.
+
+### 01_simple_chat.py  [code]
+- """
+- """
+- Example 1 – Simple Local Chat
+- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+- Two AI agents (Alice & Bob) exchange encrypted messages inside
+- a single Python process.  No server needed.
+- Run:
+-   python examples/01_simple_chat.py
+- from agentmesh import Agent, LocalHub
+- # ── 1. Create a hub ──────────────────────────────────────────────────────────
+- hub = LocalHub()
+- # ── 2. Create agents (keys are generated automatically) ──────────────────────
+- alice = Agent("alice", hub=hub)
+- bob   = Agent("bob",   hub=hub)
+- print(f"Alice fingerprint : {alice.fingerprint}")
+- print(f"Bob   fingerprint : {bob.fingerprint}")
+- print()
+- print()
+- print()
+- # ── 3. Register message handlers ─────────────────────────────────────────────
+- received: list = []
+- @bob.on_message
+- def bob_handler(msg):
+-     print(f"  [Bob  ← {msg.sender}] {msg.text}")
+-     received.append(msg)
+-     received.append(msg)
+- @alice.on_message
+- def alice_handler(msg):
+-     print(f"  [Alice← {msg.sender}] {msg.text}")
+- # ── 4. Send messages ──────────────────────────────────────────────────────────
+- print("Sending messages…")
+- alice.send("bob",   text="Hello Bob!  This is an encrypted message.")
+- bob.send("alice",  text="Hi Alice!   Got your message loud and clear.")
+- alice.send("bob",   text="Great!  Nobody else can read this 😎")
+- bob.send("alice",  text="End-to-end encryption FTW!")
+- print(f"✓ {len(received)} messages delivered and decrypted successfully.")
+- # ── 5. Show hub stats ─────────────────────────────────────────────────────────
+- print("Hub stats:", hub)
+- print("Alice status:", alice.status())
+
+### 02_multi_agent.py  [code]
+- """
+- """
+- Example 2 – Multi-Agent Group Chat
+- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+- Five AI agents (coordinator + 4 workers) exchange task assignments
+- and results over an encrypted hub.
+- Run:
+-   python examples/02_multi_agent.py
+- import json
+- from agentmesh import Agent, LocalHub
+- hub = LocalHub()
+- # ── Create agents ─────────────────────────────────────────────────────────────
+- coordinator = Agent("coordinator", hub=hub)
+- workers = [Agent(f"worker_{i}", hub=hub) for i in range(1, 5)]
+- all_logs: list = []
+- # ── Worker handler: receive task → reply with result ─────────────────────────
+- for worker in workers:
+-     @worker.on_message
+-     def handle_task(msg, w=worker):
+-         task   = msg.payload.get("task", "?")
+-         result = f"[{w.id}] completed: {task.upper()}"
+-         all_logs.append(result)
+-         w.send(msg.sender, type="result", text=result, task_id=msg.payload.get("task_id"))
+- # ── Coordinator handler: collect results ──────────────────────────────────────
+- results_received: list = []
+- @coordinator.on_message
+- def collect_results(msg):
+-     results_received.append(msg.payload)
+-     print(f"  ✓ Result from {msg.sender}: {msg.text}")
+- # ── Coordinator broadcasts tasks ──────────────────────────────────────────────
+- tasks = [
+-     ("worker_1", "analyse_sentiment"),
+-     ("worker_2", "summarise_document"),
+-     ("worker_3", "translate_text"),
+-     ("worker_4", "generate_embeddings"),
+- ]
+- print("Coordinator dispatching tasks…\n")
+- for idx, (worker_id, task_name) in enumerate(tasks):
+-     coordinator.send(worker_id, type="task", task=task_name, task_id=idx)
+- print()
+- print()
+- print(f"Tasks sent: {len(tasks)}")
+- print(f"Results received: {len(results_received)}")
+- # ── Show peer list from coordinator's perspective ─────────────────────────────
+- print("Peers visible to coordinator:", coordinator.list_peers())
+
+### 03_persistent_keys.py  [code]
+- """
+- """
+- Example 3 – Persistent Key Pairs
+- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+- Agents save their key-pairs to disk so they keep the same
+- cryptographic identity across restarts.
+- Run twice – the second run will load the saved keys:
+-   python examples/03_persistent_keys.py
+-   python examples/03_persistent_keys.py
+- import os
+- from pathlib import Path
+- from agentmesh import Agent, LocalHub
+- KEYS_DIR = Path(".agentmesh_keys")
+- KEYS_DIR.mkdir(exist_ok=True)
+- hub = LocalHub()
+- # Keys are saved/loaded from .agentmesh_keys/<agent_id>.json
+- alice = Agent("alice", hub=hub, keypair_path=KEYS_DIR / "alice.json")
+- bob   = Agent("bob",   hub=hub, keypair_path=KEYS_DIR / "bob.json")
+- print("Alice fingerprint:", alice.fingerprint)
+- print("Bob   fingerprint:", bob.fingerprint)
+- print()
+- print()
+- print()
+- print("(Run this script again – fingerprints will be identical!)")
+- # Quick round-trip test
+- got = []
+- bob.on_message(lambda m: got.append(m.text))
+- alice.send("bob", text="Persistent identity test!")
+- assert got[0] == "Persistent identity test!"
+- print(f"✓ Message delivered: {got[0]!r}")
+- print("Key files saved in:", KEYS_DIR.resolve())
+- for f in KEYS_DIR.iterdir():
+-     print(f"  {f.name}  ({f.stat().st_size} bytes)")
+
+### 04_llm_agents.py  [code]
+- """
+- """
+- Example 4 – LLM Agent Integration (OpenAI / Any API)
+- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+- Shows how to wrap a real LLM (OpenAI GPT / any API) inside
+- an AgentMesh agent so multiple LLMs can securely collaborate.
+- This example uses a mock LLM call so it runs without an API key.
+- Swap `mock_llm_call` for your real `openai.chat.completions.create(…)`.
+- Run:
+-   python examples/04_llm_agents.py
+- from agentmesh import Agent, LocalHub
+- # ── Mock LLM (replace with real openai / anthropic / etc.) ───────────────────
+- def mock_llm_call(system_prompt: str, user_message: str) -> str:
+-     """Pretend this is calling an LLM API."""
+-     return f"[LLM response to '{user_message[:40]}…']"
+- # ── Hub + agents ──────────────────────────────────────────────────────────────
+- hub = LocalHub()
+- researcher = Agent("researcher", hub=hub)
+- writer     = Agent("writer",     hub=hub)
+- reviewer   = Agent("reviewer",   hub=hub)
+- # ── Wire up LLM logic to each agent ──────────────────────────────────────────
+- @researcher.on_message
+- def on_research_request(msg):
+-     if msg.type == "task":
+-         topic    = msg.payload.get("topic", "")
+-         findings = mock_llm_call(
+-             system_prompt="You are a research agent.",
+-             user_message=f"Research this topic: {topic}",
+-         )
+-         )
+-         )
+-         )
+-         )
+-         )
+-         print(f"  [researcher] Findings: {findings}")
+-         researcher.send(
+-             "writer",
+-             type="findings",
+-             text=findings,
+-             topic=topic,
+-             original_task_id=msg.payload.get("task_id"),
+- @writer.on_message
+- def on_write_request(msg):
+-     if msg.type == "findings":
+-         draft = mock_llm_call(
+-             system_prompt="You are a writing agent.",
+-             user_message=f"Write a report about: {msg.payload.get('topic')}. Findings: {msg.text}",
+-         print(f"  [writer] Draft: {draft}")
+-         writer.send(
+-             "reviewer",
+-             type="draft",
+-             text=draft,
+-             topic=msg.payload.get("topic"),
+- @reviewer.on_message
+- def on_review_request(msg):
+-     if msg.type == "draft":
+-         review = mock_llm_call(
+-             system_prompt="You are a quality-review agent.",
+-             user_message=f"Review this draft: {msg.text}",
+-         print(f"  [reviewer] Review: {review}")
+-         reviewer.send(
+-             "researcher",
+-             type="done",
+-             text=f"Pipeline complete. Review: {review}",
+- final = []
+- researcher.on_message(lambda m: final.append(m) if m.type == "done" else None)
+- # ── Kick off the pipeline ──────────────────────────────────────────────────────
+- # Use a separate "client" agent to kick off the pipeline
+- print("Starting LLM pipeline…\n")
+- client = Agent("client", hub=hub)
+- client.send("researcher", type="task", topic="quantum computing", task_id=1)
+- # (In a real async app you'd await; here the LocalHub is synchronous)
+- print()
+- print("✓ Pipeline complete.  All messages encrypted end-to-end.")
+
+### __init__(1).py  [code]
+- """
+- """
+- AgentMesh
+- ━━━━━━━━━
+- WhatsApp-style encrypted messaging for AI agents.
+- Quick start
+- -----------
+- >>> from agentmesh import Agent, LocalHub
+- >>> hub = LocalHub()
+- >>> alice = Agent("alice", hub=hub)
+- >>> bob   = Agent("bob",   hub=hub)
+- >>> bob.on_message(lambda msg: print(f"[bob] ← {msg.sender}: {msg.text}"))
+- >>> alice.send("bob", text="Hello, Bob!")
+- GitHub: https://github.com/cerbug45/AgentMesh
+- from .agent import Agent, Message
+- from .hub import LocalHub, NetworkHub, NetworkHubServer
+- from .crypto import (
+-     AgentKeyPair,
+-     CryptoSession,
+-     CryptoError,
+-     perform_key_exchange,
+-     seal,
+-     unseal,
+- )
+- __version__ = "1.0.0"
+- __author__ = "cerbug45"
+- __license__ = "MIT"
+- __all__ = [
+-     # High-level
+-     "Agent",
+-     "Message",
+-     "LocalHub",
+-     "NetworkHub",
+-     "NetworkHubServer",
+-     # Crypto primitives (for advanced use)
+-     "AgentKeyPair",
+-     "CryptoSession",
+-     "CryptoError",
+-     "perform_key_exchange",
+-     "seal",
+-     "unseal",
+- ]
+
+### __init__.py  [code]
+- """
+- """
+- AgentMesh
+- ━━━━━━━━━
+- WhatsApp-style encrypted messaging for AI agents.
+- Quick start
+- -----------
+- >>> from agentmesh import Agent, LocalHub
+- >>> hub = LocalHub()
+- >>> alice = Agent("alice", hub=hub)
+- >>> bob   = Agent("bob",   hub=hub)
+- >>> bob.on_message(lambda msg: print(f"[bob] ← {msg.sender}: {msg.text}"))
+- >>> alice.send("bob", text="Hello, Bob!")
+- GitHub: https://github.com/cerbug45/AgentMesh
+- from .agent import Agent, Message
+- from .hub import LocalHub, NetworkHub, NetworkHubServer
+- from .crypto import (
+-     AgentKeyPair,
+-     CryptoSession,
+-     CryptoError,
+-     perform_key_exchange,
+-     seal,
+-     unseal,
+- )
+- __version__ = "1.0.0"
+- __author__ = "cerbug45"
+- __license__ = "MIT"
+- __all__ = [
+-     # High-level
+-     "Agent",
+-     "Message",
+-     "LocalHub",
+-     "NetworkHub",
+-     "NetworkHubServer",
+-     # Crypto primitives (for advanced use)
+-     "AgentKeyPair",
+-     "CryptoSession",
+-     "CryptoError",
+-     "perform_key_exchange",
+-     "seal",
+-     "unseal",
+- ]
+
+### agent.py  [code]
+- """
+- """
+- AgentMesh – Agent
+- ━━━━━━━━━━━━━━━━━
+- A self-contained AI agent identity that can:
+-   • Register to a Hub (broker) or run peer-to-peer
+-   • Establish encrypted sessions with other agents
+-   • Send / receive signed + encrypted messages
+-   • Auto-discover peers via the Hub
+-   • Persist its key-pair across restarts
+- from __future__ import annotations
+- import json
+- import time
+- import threading
+- import logging
+- from pathlib import Path
+- from typing import Callable, Dict, List, Optional, Any
+- from .crypto import (
+-     AgentKeyPair,
+-     CryptoSession,
+-     CryptoError,
+-     perform_key_exchange,
+-     seal,
+-     unseal,
+- )
+- from .transport import Transport, LocalTransport
+- logger = logging.getLogger("agentmesh.agent")
+- # ──────────────────────────────────────────────────────────────────────────────
+- # ──────────────────────────────────────────────────────────────────────────────
+- # ──────────────────────────────────────────────────────────────────────────────
+- # ──────────────────────────────────────────────────────────────────────────────
+- # ──────────────────────────────────────────────────────────────────────────────
+- # ──────────────────────────────────────────────────────────────────────────────
+- # Message model
+- class Message:
+-     """A decrypted, verified message received from a peer agent."""
+-     __slots__ = ("sender", "recipient", "payload", "timestamp", "raw_envelope")
+-     def __init__(
+-     def __init__(
+-         self,
+-         self,
+-         sender: str,
+-         recipient: str,
+-         payload: dict,
+-         timestamp: int,
+-         raw_envelope: dict,
+-     ):
+-     ):
+-         self.sender = sender
+-         self.recipient = recipient
+-         self.payload = payload
+-         self.timestamp = timestamp
+-         self.raw_envelope = raw_envelope
+-     def __repr__(self) -> str:
+-     def __repr__(self) -> str:
+-         return (
+-             f"Message(from={self.sender!r}, to={self.recipient!r}, "
+-             f"payload={self.payload!r})"
+-         )
+-         )
+-     @property
+-     @property
+-     @property
+-     @property
+-     def text(self) -> Optional[str]:
+-         """Convenience accessor for 'text' key in payload."""
+-         return self.payload.get("text")
+-     def type(self) -> str:
+-         """Convenience accessor for 'type' key in payload (default: 'message')."""
+-         return self.payload.get("type", "message")
+- # Agent
+- class Agent:
+-     """
+-     """
+-     An AI agent with a cryptographic identity.
+-     Quick-start
+-     -----------
+-     >>> from agentmesh import Agent, LocalHub
+-     >>> hub = LocalHub()
+-     >>> alice = Agent("alice", hub=hub)
+-     >>> bob   = Agent("bob",   hub=hub)
+-     >>> alice.on_message(lambda msg: print(f"Bob says: {msg.text}"))
+-     >>> bob.send("alice", text="Hello from Bob!")
+-     Parameters
+-     ----------
+-     agent_id : str
+-         Human-readable identifier for this agent.  Must be unique on the hub.
+-     hub : Hub-like object, optional
+-         A Hub instance (LocalHub or NetworkHub).  Required for peer discovery.
+-     keypair_path : str | Path, optional
+-         Path to a JSON file for persisting the key-pair.
+-         If the file exists the keys are loaded; otherwise new keys are generated
+-         and saved there.
+-     log_level : int, optional
+-         Logging level for this agent.  Default: logging.WARNING.
+-         agent_id: str,
+-         hub=None,
+-         keypair_path: Optional[str | Path] = None,
+-         log_level: int = logging.WARNING,
+-         self.id = agent_id
+-         self._hub = hub
+-         self._sessions: Dict[str, CryptoSession] = {}
+-         self._peer_bundles: Dict[str, dict] = {}
+-         self._handlers: List[Callable[[Message], Any]] = []
+-         self._lock = threading.Lock()
+-         logging.getLogger("agentmesh").setLevel(log_level)
+-         # Load or generate key-pair
+-         if keypair_path:
+-             self._keypair = _load_or_create_keypair(Path(keypair_path))
+-         else:
+-         else:
+-             self._keypair = AgentKeyPair()
+-         # Register with hub
+-         if self._hub is not None:
+-         if self._hub is not None:
+-             self._hub.register(self)
+-         logger.info(
+-             "Agent %r ready. Fingerprint: %s", self.id, self._keypair.fingerprint
+-     # ── Identity ──────────────────────────────────────────────────────────────
+-     def public_bundle(self) -> dict:
+-         """Public key bundle to share with peers."""
+-         bundle = self._keypair.public_bundle()
+-         bundle["agent_id"] = self.id
+-         return bundle
+-     def fingerprint(self) -> str:
+-         """Hex fingerprint of this agent's identity key."""
+-         return self._keypair.fingerprint
+-     # ── Session management ────────────────────────────────────────────────────
+-     def connect(self, peer_id: str) -> None:
+-         """
+-         """
+-         """
+-         """
+-         """
+-         """
+-         """
+-         """
+-         """
+-         """
+-         """
+-         """
+-         """
+-         """
+-         Establish (or refresh) an encrypted session with *peer_id*.
+-         Fetches the peer's public bundle from the hub and performs ECDH.
+-         if self._hub is None:
+-         if self._hub is None:
+-             raise RuntimeError("No hub configured – cannot auto-discover peers")
+-         bundle = self._hub.get_bundle(peer_id)
+-         if bundle is None:
+-             raise ValueError(f"Peer {peer_id!r} not found on hub")
+-         with self._lock:
+-         with self._lock:
+-             self._peer_bundles[peer_id] = bundle
+-             self._peer_bundles[peer_id] = bundle
+-             self._sessions[peer_id] = perform_key_exchange(self._keypair, bundle)
+-             self._sessions[peer_id] = perform_key_exchange(self._keypair, bundle)
+-         logger.debug("Session established: %s ↔ %s", self.id, peer_id)
+-     def connect_with_bundle(self, bundle: dict) -> None:
+-         Establish a session given an already-obtained public bundle.
+-         Useful for peer-to-peer mode (no hub).
+-         peer_id = bundle["agent_id"]
+-         logger.debug("Session (bundle) established: %s ↔ %s", self.id, peer_id)
+-     def _ensure_session(self, peer_id: str) -> CryptoSession:
+-         if peer_id not in self._sessions:
+-             self.connect(peer_id)
+-         return self._sessions[peer_id]
+-     # ── Sending ───────────────────────────────────────────────────────────────
+-     def send(self, recipient_id: str, *, text: str = "", **extra) -> None:
+-         Send an encrypted message to *recipient_id*.
+-         The message payload is a dict; you can pass arbitrary keyword args
+-         which will be merged in.  The special kwarg ``text=`` sets the
+-         human-readable body.
+-         Example
+-         -------
+-         >>> alice.send("bob", text="Hello!", priority="high")
+-         payload: dict = {"type": "message", "text": text}
+-         payload.update(extra)
+-         self.send_payload(recipient_id, payload)
+-     def send_payload(self, recipient_id: str, payload: dict) -> None:
+-         Low-level send: encrypt *payload* and deliver to *recipient_id*.
+-         session = self._ensure_session(recipient_id)
+-         envelope = seal(session, self._keypair, self.id, recipient_id, payload)
+-             self._hub.deliver(envelope)
+-             raise RuntimeError(
+-                 "No hub configured.  For P2P use, call "
+-                 "agent.send_envelope(recipient_agent, envelope) directly."
+-             )
+-             )
+-     def send_envelope(self, recipient_agent: "Agent", envelope: dict) -> None:
+-         Direct (P2P, no hub) delivery.  Calls recipient._receive() directly.
+-         Useful for testing or in-process setups.
+-         recipient_agent._receive(envelope)
+-     # ── Receiving ─────────────────────────────────────────────────────────────
+-     def _receive(self, envelope: dict) -> None:
+-         Internal: decrypt and dispatch an incoming envelope.
+-         Called by the hub or directly by a peer in P2P mode.
+-         sender_id = envelope.get("from", "")
+-         try:
+-             sender_bundle = self._peer_bundles.get(sender_id)
+-             if sender_bundle is None:
+-                 # Auto-fetch sender's bundle on first message
+-                 if self._hub is not None:
+-                     sender_bundle = self._hub.get_bundle(sender_id)
+-                     if sender_bundle:
+-                         with self._lock:
+-                             self._peer_bundles[sender_id] = sender_bundle
+-                             self._sessions[sender_id] = perform_key_exchange(
+-                                 self._keypair, sender_bundle
+-                             )
+-                 if sender_bundle is None:
+-                     raise CryptoError(f"Unknown sender: {sender_id!r}")
+-             session = self._sessions[sender_id]
+-             payload = unseal(session, envelope, sender_bundle)
+-             msg = Message(
+-                 sender=sender_id,
+-                 recipient=envelope.get("to", self.id),
+-                 payload=payload,
+-                 timestamp=envelope.get("ts", 0),
+-                 raw_envelope=envelope,
+-             self._dispatch(msg)
+-         except CryptoError as exc:
+-             logger.warning("CryptoError from %r: %s", sender_id, exc)
+-         except Exception as exc:
+-             logger.error("Unexpected error receiving from %r: %s", sender_id, exc)
+-     def _dispatch(self, msg: Message) -> None:
+-         for handler in self._handlers:
+-             try:
+-                 handler(msg)
+-             except Exception as exc:
+-                 logger.error("Handler error: %s", exc)
+-     # ── Handler registration ───────────────────────────────────────────────────
+-     def on_message(self, handler: Callable[[Message], Any]) -> "Agent":
+-         Register a callback for incoming messages.
+-         Can be used as a decorator:
+-         >>> @alice.on_message
+-         ... def handle(msg):
+-         ...     print(msg.text)
+-         Or called directly:
+-         >>> alice.on_message(lambda msg: print(msg.text))
+-         Returns self for chaining.
+-         self._handlers.append(handler)
+-         return self
+-     # ── Discovery ────────────────────────────────────────────────────────────
+-     def list_peers(self) -> List[str]:
+-         """Return IDs of all agents registered on the hub."""
+-             raise RuntimeError("No hub configured")
+-         return [p for p in self._hub.list_agents() if p != self.id]
+-     # ── Diagnostics ──────────────────────────────────────────────────────────
+-     def status(self) -> dict:
+-         return {
+-             "agent_id": self.id,
+-             "fingerprint": self.fingerprint,
+-             "active_sessions": list(self._sessions.keys()),
+-             "known_peers": list(self._peer_bundles.keys()),
+-             "handlers": len(self._handlers),
+-         }
+-         return f"Agent(id={self.id!r}, fingerprint={self.fingerprint[:19]}…)"
+- # Key persistence
+- def _load_or_create_keypair(path: Path) -> AgentKeyPair:
+-     if path.exists():
+-         with path.open() as fh:
+-             data = json.load(fh)
+-         logger.info("Loaded key-pair from %s", path)
+-         return AgentKeyPair.from_dict(data)
+-     kp = AgentKeyPair()
+-     path.parent.mkdir(parents=True, exist_ok=True)
+-     with path.open("w") as fh:
+-         json.dump(kp.to_dict(), fh, indent=2)
+-     logger.info("Generated new key-pair, saved to %s", path)
+-     return kp
+
+### crypto.py  [code]
+- """
+- """
+- AgentMesh Cryptography Engine
+- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+- Military-grade end-to-end encryption for AI agent communication.
+- Features:
+-   • X25519 Elliptic Curve Diffie-Hellman key exchange
+-   • AES-256-GCM authenticated encryption
+-   • Ed25519 digital signatures (message authenticity)
+-   • HKDF-SHA256 key derivation
+-   • Forward secrecy via ephemeral session keys
+-   • Message integrity + replay attack prevention
+- import os
+- import json
+- import time
+- import base64
+- import hashlib
+- import hmac
+- from typing import Tuple, Optional
+- from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
+- from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
+- from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+- from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+- from cryptography.hazmat.primitives import hashes, serialization
+- from cryptography.exceptions import InvalidTag
+- # ──────────────────────────────────────────────────────────────────────────────
+- # ──────────────────────────────────────────────────────────────────────────────
+- # ──────────────────────────────────────────────────────────────────────────────
+- # ──────────────────────────────────────────────────────────────────────────────
+- # ──────────────────────────────────────────────────────────────────────────────
+- # ──────────────────────────────────────────────────────────────────────────────
+- # ──────────────────────────────────────────────────────────────────────────────
+- # ──────────────────────────────────────────────────────────────────────────────
+- # ──────────────────────────────────────────────────────────────────────────────
+- # ──────────────────────────────────────────────────────────────────────────────
+- # ──────────────────────────────────────────────────────────────────────────────
+- # ──────────────────────────────────────────────────────────────────────────────
+- # ──────────────────────────────────────────────────────────────────────────────
+- # ──────────────────────────────────────────────────────────────────────────────
+- # Key Management
+- class AgentKeyPair:
+-     """
+-     """
+-     """
+-     """
+-     """
+-     """
+-     """
+-     """
+-     """
+-     """
+-     """
+-     """
+-     A complete cryptographic identity for an AI agent.
+-     Contains both an identity key (Ed25519) for signing and
+-     an exchange key (X25519) for ECDH key agreement.
+-     def __init__(
+-         self,
+-         identity_private: Optional[Ed25519PrivateKey] = None,
+-         exchange_private: Optional[X25519PrivateKey] = None,
+-     ):
+-         self.identity_private = identity_private or Ed25519PrivateKey.generate()
+-         self.exchange_private = exchange_private or X25519PrivateKey.generate()
+-         self.identity_public: Ed25519PublicKey = self.identity_private.public_key()
+-         self.exchange_public: X25519PublicKey = self.exchange_private.public_key()
+-     # ── Serialisation helpers ────────────────────────────────────────────────
+-     def public_bundle(self) -> dict:
+-         """Return the public half of this key-pair as a JSON-safe dict."""
+-         return {
+-         return {
+-             "identity_key": _b64(
+-                 self.identity_public.public_bytes(
+-                     serialization.Encoding.Raw, serialization.PublicFormat.Raw
+-                     serialization.Encoding.Raw, serialization.PublicFormat.Raw
+-                 )
+-                 )
+-                 )
+-                 )
+-             ),
+-             ),
+-             ),
+-             ),
+-             "exchange_key": _b64(
+-                 self.exchange_public.public_bytes(
+-         }
+-         }
+-         }
+-     def to_dict(self) -> dict:
+-         """Serialise the full key-pair (private + public) to a JSON-safe dict."""
+-             "identity_private": _b64(
+-                 self.identity_private.private_bytes(
+-                     serialization.Encoding.Raw,
+-                     serialization.Encoding.Raw,
+-                     serialization.PrivateFormat.Raw,
+-                     serialization.PrivateFormat.Raw,
+-                     serialization.NoEncryption(),
+-                     serialization.NoEncryption(),
+-             "exchange_private": _b64(
+-                 self.exchange_private.private_bytes(
+-     @classmethod
+-     def from_dict(cls, data: dict) -> "AgentKeyPair":
+-         """Restore a key-pair from a previously serialised dict."""
+-         return cls(
+-             identity_private=Ed25519PrivateKey.from_private_bytes(_db64(data["identity_private"])),
+-             exchange_private=X25519PrivateKey.from_private_bytes(_db64(data["exchange_private"])),
+-         )
+-         )
+-         )
+-     # ── Fingerprint ──────────────────────────────────────────────────────────
+-     @property
+-     def fingerprint(self) -> str:
+-         """
+-         """
+-         """
+-         """
+-         """
+-         """
+-         """
+-         """
+-         Human-readable hex fingerprint of the identity key.
+-         Agents can share fingerprints out-of-band to verify each other.
+-         raw = self.identity_public.public_bytes(
+-             serialization.Encoding.Raw, serialization.PublicFormat.Raw
+-         digest = hashlib.sha256(raw).hexdigest()
+-         # Format: XXXX:XXXX:XXXX:XXXX:XXXX:XXXX:XXXX:XXXX
+-         return ":".join(digest[i : i + 4] for i in range(0, 32, 4))
+- # Session (Shared Secret + Ratchet)
+- class CryptoSession:
+-     An established encrypted session between two agents.
+-     Derived from an ECDH shared secret + HKDF key derivation.
+-     Supports optional ratcheting for forward secrecy.
+-     def __init__(self, shared_key: bytes, initiator: bool = True):
+-         shared_key : 32-byte HKDF-derived secret (same value on both sides)
+-         initiator  : True for the "first" party (alphabetically lower agent_id).
+-                      Ensures send/recv key assignment is consistently mirrored.
+-         self._root_key = shared_key
+-         key_a = self._derive(shared_key, b"key_a")
+-         key_b = self._derive(shared_key, b"key_b")
+-         if initiator:
+-             self._send_key = key_a
+-             self._recv_key = key_b
+-         else:
+-             self._send_key = key_b
+-             self._recv_key = key_a
+-         self._message_counter = 0
+-         self._seen_nonces: set = set()
+-     # ── Encryption ───────────────────────────────────────────────────────────
+-     def encrypt(self, plaintext: bytes, aad: bytes = b"") -> dict:
+-         Encrypt a message and return a ciphertext envelope.
+-         Returns a dict with: ciphertext, nonce, counter, tag_included=True
+-         The nonce is unique per message; AAD covers agent IDs + timestamp.
+-         nonce = os.urandom(12)  # 96-bit nonce for AES-GCM
+-         aesgcm = AESGCM(self._send_key)
+-         # Build associated data: nonce + counter + caller-supplied aad
+-         counter_bytes = self._message_counter.to_bytes(8, "big")
+-         full_aad = nonce + counter_bytes + aad
+-         full_aad = nonce + counter_bytes + aad
+-         ciphertext = aesgcm.encrypt(nonce, plaintext, full_aad)
+-         envelope = {
+-             "v": 1,                         # protocol version
+-             "nonce": _b64(nonce),
+-             "counter": self._message_counter,
+-             "ciphertext": _b64(ciphertext),
+-             "aad": _b64(aad),
+-         self._message_counter += 1
+-         return envelope
+-     def decrypt(self, envelope: dict) -> bytes:
+-         Decrypt a received envelope.
+-         Raises CryptoError on any integrity / replay failure.
+-         try:
+-         try:
+-             nonce = _db64(envelope["nonce"])
+-             counter = envelope["counter"]
+-             ciphertext = _db64(envelope["ciphertext"])
+-             aad = _db64(envelope["aad"])
+-         except (KeyError, Exception) as exc:
+-             raise CryptoError(f"Malformed envelope: {exc}") from exc
+-         # Replay detection
+-         nonce_key = (nonce, counter)
+-         if nonce_key in self._seen_nonces:
+-             raise CryptoError("Replay attack detected – nonce reuse")
+-         self._seen_nonces.add(nonce_key)
+-         counter_bytes = counter.to_bytes(8, "big")
+-         aesgcm = AESGCM(self._recv_key)
+-             return aesgcm.decrypt(nonce, ciphertext, full_aad)
+-         except InvalidTag as exc:
+-             raise CryptoError("Authentication tag mismatch – message tampered") from exc
+-     # ── Helpers ──────────────────────────────────────────────────────────────
+-     @staticmethod
+-     def _derive(key: bytes, purpose: bytes) -> bytes:
+-         hkdf = HKDF(
+-             algorithm=hashes.SHA256(),
+-             length=32,
+-             salt=None,
+-             info=b"AgentMesh-v1-" + purpose,
+-         return hkdf.derive(key)
+- # Key Exchange (X3DH-lite)
+- def perform_key_exchange(
+-     my_keypair: AgentKeyPair,
+-     their_public_bundle: dict,
+- ) -> CryptoSession:
+-     Perform an ECDH key exchange given the remote agent's public bundle.
+-     Returns a ready-to-use CryptoSession.
+-     Uses X25519 + HKDF-SHA256.  Both sides must call this with the
+-     *other's* public bundle to arrive at the same shared secret.
+-     The 'initiator' role is determined by comparing identity key bytes
+-     so that both sides agree on send/recv direction automatically.
+-     # Deserialise remote keys
+-     their_exchange_raw = _db64(their_public_bundle["exchange_key"])
+-     their_exchange_pub = X25519PublicKey.from_public_bytes(their_exchange_raw)
+-     # ECDH
+-     raw_shared = my_keypair.exchange_private.exchange(their_exchange_pub)
+-     # Mix in both identity keys for domain separation
+-     my_identity_raw = my_keypair.identity_public.public_bytes(
+-         serialization.Encoding.Raw, serialization.PublicFormat.Raw
+-     )
+-     )
+-     )
+-     )
+-     their_identity_raw = _db64(their_public_bundle["identity_key"])
+-     # Deterministic ordering so both sides compute the same salt
+-     keys_sorted = sorted([my_identity_raw, their_identity_raw])
+-     salt = hashlib.sha256(keys_sorted[0] + keys_sorted[1]).digest()
+-     hkdf = HKDF(
+-         algorithm=hashes.SHA256(),
+-         length=32,
+-         salt=salt,
+-         info=b"AgentMesh-v1-session",
+-     shared_key = hkdf.derive(raw_shared)
+-     # Deterministic role: whoever has the lexicographically smaller identity
+-     # key bytes is the "initiator" – guarantees both sides pick opposite roles.
+-     initiator = my_identity_raw < their_identity_raw
+-     return CryptoSession(shared_key, initiator=initiator)
+- # Message Signing / Verification
+- def sign_message(private_key: Ed25519PrivateKey, message: bytes) -> str:
+-     """Sign a message and return the base64-encoded signature."""
+-     return _b64(private_key.sign(message))
+- def verify_signature(public_key_bytes: bytes, message: bytes, signature_b64: str) -> bool:
+-     Verify an Ed25519 signature.
+-     Returns True if valid, False otherwise (never raises).
+-     try:
+-         pub = Ed25519PublicKey.from_public_bytes(public_key_bytes)
+-         pub.verify(_db64(signature_b64), message)
+-         return True
+-     except Exception:
+-         return False
+- # Sealed Message (signed + encrypted in one call)
+- def seal(
+-     session: CryptoSession,
+-     session: CryptoSession,
+-     sender_keypair: AgentKeyPair,
+-     sender_id: str,
+-     recipient_id: str,
+-     payload: dict,
+- ) -> dict:
+- ) -> dict:
+-     High-level helper: sign then encrypt a payload dict.
+-     Returns a complete 'sealed message' dict ready for transport.
+-     timestamp = int(time.time() * 1000)  # milliseconds
+-     plaintext = json.dumps(payload, separators=(",", ":")).encode()
+-     # Signature covers: sender_id + recipient_id + timestamp + plaintext
+-     signing_input = (
+-     signing_input = (
+-         sender_id.encode() + b"|" +
+-         recipient_id.encode() + b"|" +
+-         str(timestamp).encode() + b"|" +
+-         plaintext
+-         plaintext
+-     signature = sign_message(sender_keypair.identity_private, signing_input)
+-     aad = json.dumps(
+-     aad = json.dumps(
+-         {"from": sender_id, "to": recipient_id, "ts": timestamp},
+-         separators=(",", ":"),
+-         separators=(",", ":"),
+-     ).encode()
+-     ).encode()
+-     envelope = session.encrypt(plaintext, aad)
+-     envelope["from"] = sender_id
+-     envelope["to"] = recipient_id
+-     envelope["ts"] = timestamp
+-     envelope["sig"] = signature
+-     return envelope
+- def unseal(
+-     envelope: dict,
+-     sender_public_bundle: dict,
+-     High-level helper: decrypt then verify a sealed message.
+-     Returns the original payload dict on success.
+-     Raises CryptoError on any failure.
+-         {"from": envelope["from"], "to": envelope["to"], "ts": envelope["ts"]},
+-     # Patch the aad field before decrypting (it was already baked in during seal)
+-     envelope_copy = dict(envelope)
+-     envelope_copy["aad"] = _b64(aad)
+-     plaintext = session.decrypt(envelope_copy)
+-     # Verify signature
+-         envelope["from"].encode() + b"|" +
+-         envelope["to"].encode() + b"|" +
+-         str(envelope["ts"]).encode() + b"|" +
+-     identity_bytes = _db64(sender_public_bundle["identity_key"])
+-     if not verify_signature(identity_bytes, signing_input, envelope["sig"]):
+-         raise CryptoError("Signature verification failed – sender cannot be trusted")
+
+### examples/01_simple_chat.py  [code]
++ """
++ """
++ Example 1 – Simple Local Chat
++ ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
++ Two AI agents (Alice & Bob) exchange encrypted messages inside
++ a single Python process.  No server needed.
++ Run:
++   python examples/01_simple_chat.py
++ from agentmesh import Agent, LocalHub
++ # ── 1. Create a hub ──────────────────────────────────────────────────────────
++ hub = LocalHub()
++ # ── 2. Create agents (keys are generated automatically) ──────────────────────
++ alice = Agent("alice", hub=hub)
++ bob   = Agent("bob",   hub=hub)
++ print(f"Alice fingerprint : {alice.fingerprint}")
++ print(f"Bob   fingerprint : {bob.fingerprint}")
++ print()
++ print()
++ print()
++ # ── 3. Register message handlers ─────────────────────────────────────────────
++ received: list = []
++ @bob.on_message
++ def bob_handler(msg):
++     print(f"  [Bob  ← {msg.sender}] {msg.text}")
++     received.append(msg)
++     received.append(msg)
++ @alice.on_message
++ def alice_handler(msg):
++     print(f"  [Alice← {msg.sender}] {msg.text}")
++ # ── 4. Send messages ──────────────────────────────────────────────────────────
++ print("Sending messages…")
++ alice.send("bob",   text="Hello Bob!  This is an encrypted message.")
++ bob.send("alice",  text="Hi Alice!   Got your message loud and clear.")
++ alice.send("bob",   text="Great!  Nobody else can read this 😎")
++ bob.send("alice",  text="End-to-end encryption FTW!")
++ print(f"✓ {len(received)} messages delivered and decrypted successfully.")
++ # ── 5. Show hub stats ─────────────────────────────────────────────────────────
++ print("Hub stats:", hub)
++ print("Alice status:", alice.status())
+
+### examples/02_multi_agent.py  [code]
++ """
++ """
++ Example 2 – Multi-Agent Group Chat
++ ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
++ Five AI agents (coordinator + 4 workers) exchange task assignments
++ and results over an encrypted hub.
++ Run:
++   python examples/02_multi_agent.py
++ import json
++ from agentmesh import Agent, LocalHub
++ hub = LocalHub()
++ # ── Create agents ─────────────────────────────────────────────────────────────
++ coordinator = Agent("coordinator", hub=hub)
++ workers = [Agent(f"worker_{i}", hub=hub) for i in range(1, 5)]
++ all_logs: list = []
++ # ── Worker handler: receive task → reply with result ─────────────────────────
++ for worker in workers:
++     @worker.on_message
++     def handle_task(msg, w=worker):
++         task   = msg.payload.get("task", "?")
++         result = f"[{w.id}] completed: {task.upper()}"
++         all_logs.append(result)
++         w.send(msg.sender, type="result", text=result, task_id=msg.payload.get("task_id"))
++ # ── Coordinator handler: collect results ──────────────────────────────────────
++ results_received: list = []
++ @coordinator.on_message
++ def collect_results(msg):
++     results_received.append(msg.payload)
++     print(f"  ✓ Result from {msg.sender}: {msg.text}")
++ # ── Coordinator broadcasts tasks ──────────────────────────────────────────────
++ tasks = [
++     ("worker_1", "analyse_sentiment"),
++     ("worker_2", "summarise_document"),
++     ("worker_3", "translate_text"),
++     ("worker_4", "generate_embeddings"),
++ ]
++ print("Coordinator dispatching tasks…\n")
++ for idx, (worker_id, task_name) in enumerate(tasks):
++     coordinator.send(worker_id, type="task", task=task_name, task_id=idx)
++ print()
++ print()
++ print(f"Tasks sent: {len(tasks)}")
++ print(f"Results received: {len(results_received)}")
++ # ── Show peer list from coordinator's perspective ─────────────────────────────
++ print("Peers visible to coordinator:", coordinator.list_peers())
+
+### examples/03_persistent_keys.py  [code]
++ """
++ """
++ Example 3 – Persistent Key Pairs
++ ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
++ Agents save their key-pairs to disk so they keep the same
++ cryptographic identity across restarts.
++ Run twice – the second run will load the saved keys:
++   python examples/03_persistent_keys.py
++   python examples/03_persistent_keys.py
++ import os
++ from pathlib import Path
++ from agentmesh import Agent, LocalHub
++ KEYS_DIR = Path(".agentmesh_keys")
++ KEYS_DIR.mkdir(exist_ok=True)
++ hub = LocalHub()
++ # Keys are saved/loaded from .agentmesh_keys/<agent_id>.json
++ alice = Agent("alice", hub=hub, keypair_path=KEYS_DIR / "alice.json")
++ bob   = Agent("bob",   hub=hub, keypair_path=KEYS_DIR / "bob.json")
++ print("Alice fingerprint:", alice.fingerprint)
++ print("Bob   fingerprint:", bob.fingerprint)
++ print()
++ print()
++ print()
++ print("(Run this script again – fingerprints will be identical!)")
++ # Quick round-trip test
++ got = []
++ bob.on_message(lambda m: got.append(m.text))
++ alice.send("bob", text="Persistent identity test!")
++ assert got[0] == "Persistent identity test!"
++ print(f"✓ Message delivered: {got[0]!r}")
++ print("Key files saved in:", KEYS_DIR.resolve())
++ for f in KEYS_DIR.iterdir():
++     print(f"  {f.name}  ({f.stat().st_size} bytes)")
+
+### examples/04_llm_agents.py  [code]
++ """
++ """
++ Example 4 – LLM Agent Integration (OpenAI / Any API)
++ ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
++ Shows how to wrap a real LLM (OpenAI GPT / any API) inside
++ an AgentMesh agent so multiple LLMs can securely collaborate.
++ This example uses a mock LLM call so it runs without an API key.
++ Swap `mock_llm_call` for your real `openai.chat.completions.create(…)`.
++ Run:
++   python examples/04_llm_agents.py
++ from agentmesh import Agent, LocalHub
++ # ── Mock LLM (replace with real openai / anthropic / etc.) ───────────────────
++ def mock_llm_call(system_prompt: str, user_message: str) -> str:
++     """Pretend this is calling an LLM API."""
++     return f"[LLM response to '{user_message[:40]}…']"
++ # ── Hub + agents ──────────────────────────────────────────────────────────────
++ hub = LocalHub()
++ researcher = Agent("researcher", hub=hub)
++ writer     = Agent("writer",     hub=hub)
++ reviewer   = Agent("reviewer",   hub=hub)
++ # ── Wire up LLM logic to each agent ──────────────────────────────────────────
++ @researcher.on_message
++ def on_research_request(msg):
++     if msg.type == "task":
++         topic    = msg.payload.get("topic", "")
++         findings = mock_llm_call(
++             system_prompt="You are a research agent.",
++             user_message=f"Research this topic: {topic}",
++         )
++         )
++         )
++         )
++         )
++         )
++         print(f"  [researcher] Findings: {findings}")
++         researcher.send(
++             "writer",
++             type="findings",
++             text=findings,
++             topic=topic,
++             original_task_id=msg.payload.get("task_id"),
++ @writer.on_message
++ def on_write_request(msg):
++     if msg.type == "findings":
++         draft = mock_llm_call(
++             system_prompt="You are a writing agent.",
++             user_message=f"Write a report about: {msg.payload.get('topic')}. Findings: {msg.text}",
++         print(f"  [writer] Draft: {draft}")
++         writer.send(
++             "reviewer",
++             type="draft",
++             text=draft,
++             topic=msg.payload.get("topic"),
++ @reviewer.on_message
++ def on_review_request(msg):
++     if msg.type == "draft":
++         review = mock_llm_call(
++             system_prompt="You are a quality-review agent.",
++             user_message=f"Review this draft: {msg.text}",
++         print(f"  [reviewer] Review: {review}")
++         reviewer.send(
++             "researcher",
++             type="done",
++             text=f"Pipeline complete. Review: {review}",
++ final = []
++ researcher.on_message(lambda m: final.append(m) if m.type == "done" else None)
++ # ── Kick off the pipeline ──────────────────────────────────────────────────────
++ # Use a separate "client" agent to kick off the pipeline
++ print("Starting LLM pipeline…\n")
++ client = Agent("client", hub=hub)
++ client.send("researcher", type="task", topic="quantum computing", task_id=1)
++ # (In a real async app you'd await; here the LocalHub is synchronous)
++ print()
++ print("✓ Pipeline complete.  All messages encrypted end-to-end.")
+
+### hub.py  [code]
+- """
+- """
+- AgentMesh – Hub (Message Broker)
+- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+- A Hub is the central router / directory-service for a group of agents.
+- Two implementations are provided:
+-   LocalHub   – in-process broker (perfect for single-process apps & testing)
+-   NetworkHub – TCP broker that spans processes / machines  (coming in v2)
+- The Hub never sees message *contents* – it only routes opaque encrypted
+- envelopes.  Agent discovery (public-key bundles) is the only plaintext
+- information stored.
+- from __future__ import annotations
+- import json
+- import logging
+- import socket
+- import threading
+- from typing import Dict, List, Optional
+- logger = logging.getLogger("agentmesh.hub")
+- # ──────────────────────────────────────────────────────────────────────────────
+- # ──────────────────────────────────────────────────────────────────────────────
+- # ──────────────────────────────────────────────────────────────────────────────
+- # ──────────────────────────────────────────────────────────────────────────────
+- # ──────────────────────────────────────────────────────────────────────────────
+- # ──────────────────────────────────────────────────────────────────────────────
+- # ──────────────────────────────────────────────────────────────────────────────
+- # ──────────────────────────────────────────────────────────────────────────────
+- # Base class / interface
+- class Hub:
+-     """Abstract hub interface.  Subclass and implement the three methods below."""
+-     def register(self, agent) -> None:          # pragma: no cover
+-         raise NotImplementedError
+-         raise NotImplementedError
+-         raise NotImplementedError
+-         raise NotImplementedError
+-     def get_bundle(self, agent_id: str) -> Optional[dict]:   # pragma: no cover
+-     def deliver(self, envelope: dict) -> None:  # pragma: no cover
+-     def list_agents(self) -> List[str]:         # pragma: no cover
+- # LocalHub  (in-process)
+- class LocalHub(Hub):
+-     """
+-     """
+-     """
+-     """
+-     """
+-     """
+-     In-process message hub.
+-     All agents registered here run in the *same* Python process.
+-     Messages are delivered synchronously in the caller's thread.
+-     Perfect for:
+-       • Unit tests
+-       • Multi-agent demos inside a single script
+-       • Jupyter notebooks
+-     Example
+-     -------
+-     >>> from agentmesh import Agent, LocalHub
+-     >>> hub = LocalHub()
+-     >>> alice = Agent("alice", hub=hub)
+-     >>> alice = Agent("alice", hub=hub)
+-     >>> bob   = Agent("bob",   hub=hub)
+-     >>> @bob.on_message
+-     ... def echo(msg):
+-     ...     bob.send(msg.sender, text=f"Echo: {msg.text}")
+-     >>> alice.send("bob", text="ping")
+-     def __init__(self):
+-         self._agents: Dict[str, object] = {}    # agent_id → Agent instance
+-         self._bundles: Dict[str, dict] = {}     # agent_id → public_bundle
+-         self._lock = threading.Lock()
+-         self._lock = threading.Lock()
+-         self._lock = threading.Lock()
+-         self._message_log: List[dict] = []      # optional audit log
+-     # ── Hub protocol ─────────────────────────────────────────────────────────
+-     # ── Hub protocol ─────────────────────────────────────────────────────────
+-     def register(self, agent) -> None:
+-     def register(self, agent) -> None:
+-         with self._lock:
+-         with self._lock:
+-         with self._lock:
+-         with self._lock:
+-         with self._lock:
+-             self._agents[agent.id] = agent
+-             self._bundles[agent.id] = agent.public_bundle
+-         logger.debug("Registered agent %r", agent.id)
+-     def get_bundle(self, agent_id: str) -> Optional[dict]:
+-     def get_bundle(self, agent_id: str) -> Optional[dict]:
+-         return self._bundles.get(agent_id)
+-     def deliver(self, envelope: dict) -> None:
+-     def deliver(self, envelope: dict) -> None:
+-         recipient_id = envelope.get("to")
+-             recipient = self._agents.get(recipient_id)
+-         if recipient is None:
+-             logger.warning("Delivery failed: agent %r not found", recipient_id)
+-             return
+-         self._message_log.append({"ts": envelope.get("ts"), "from": envelope.get("from"), "to": recipient_id})
+-         recipient._receive(envelope)
+-     def list_agents(self) -> List[str]:
+-     def list_agents(self) -> List[str]:
+-             return list(self._agents.keys())
+-     # ── Extras ───────────────────────────────────────────────────────────────
+-     def unregister(self, agent_id: str) -> None:
+-             self._agents.pop(agent_id, None)
+-             self._bundles.pop(agent_id, None)
+-         logger.debug("Unregistered agent %r", agent_id)
+-     def message_count(self) -> int:
+-         return len(self._message_log)
+-     def __repr__(self) -> str:
+-         return f"LocalHub(agents={list(self._agents.keys())})"
+- # NetworkHub  (TCP, cross-process)
+- class NetworkHub(Hub):
+-     A lightweight TCP hub server.
+-     Start it in one process (or its own script):
+-     >>> hub_server = NetworkHubServer(host="0.0.0.0", port=7700)
+-     >>> hub_server.start()   # blocks, or run in a thread
+-     Agents in *any* process on the network connect via NetworkHub:
+-     >>> from agentmesh import Agent, NetworkHub
+-     >>> hub = NetworkHub(host="localhost", port=7700)
+-     Protocol: newline-delimited JSON over TCP.
+-     Message types: REGISTER, GET_BUNDLE, DELIVER, LIST_AGENTS, BUNDLE_RESP, OK, ERROR
+-     def __init__(self, host: str = "localhost", port: int = 7700):
+-         self.host = host
+-         self.host = host
+-         self.port = port
+-         self.port = port
+-         self._sock: Optional[socket.socket] = None
+-     def _connect(self) -> socket.socket:
+-         s = socket.create_connection((self.host, self.port), timeout=5)
+-         s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+-         return s
+-     def _send_recv(self, msg: dict) -> dict:
+-             if self._sock is None:
+-                 self._sock = self._connect()
+-             try:
+-                 self._sock.sendall((json.dumps(msg) + "\n").encode())
+-                 data = b""
+-                 while not data.endswith(b"\n"):
+-                     chunk = self._sock.recv(65536)
+-                     if not chunk:
+-                         raise ConnectionError("Hub closed connection")
+-                     data += chunk
+-                 return json.loads(data.strip())
+-             except Exception:
+-                 self._sock = None
+-                 raise
+-         resp = self._send_recv({"cmd": "REGISTER", "bundle": agent.public_bundle})
+-         if resp.get("status") != "OK":
+-         if resp.get("status") != "OK":
+-             raise RuntimeError(f"Registration failed: {resp}")
+-         resp = self._send_recv({"cmd": "GET_BUNDLE", "agent_id": agent_id})
+-         return resp.get("bundle")
+-         resp = self._send_recv({"cmd": "DELIVER", "envelope": envelope})
+-             logger.warning("Delivery error: %s", resp)
+-         resp = self._send_recv({"cmd": "LIST_AGENTS"})
+-         return resp.get("agents", [])
+- # NetworkHubServer  (the TCP server side)
+- class NetworkHubServer:
+-     Standalone TCP hub server.
+-     Agents connect via NetworkHub client.
+-     The server stores bundles and forwards envelopes to connected agents.
+-     Run as a module:
+-         python -m agentmesh.hub_server --host 0.0.0.0 --port 7700
+-     def __init__(self, host: str = "0.0.0.0", port: int = 7700):
+-         self._bundles: Dict[str, dict] = {}
+-         self._agent_socks: Dict[str, socket.socket] = {}
+-     def start(self, block: bool = True) -> None:
+-         srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+-         srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+-         srv.bind((self.host, self.port))
+-         srv.listen(128)
+-         logger.info("NetworkHubServer listening on %s:%s", self.host, self.port)
+-         print(f"[AgentMesh Hub] Listening on {self.host}:{self.port}")
+-         if block:
+-             self._accept_loop(srv)
+-         else:
+-             t = threading.Thread(target=self._accept_loop, args=(srv,), daemon=True)
+-             t.start()
+-             t.start()
+-     def _accept_loop(self, srv: socket.socket) -> None:
+-         while True:
+-             conn, addr = srv.accept()
+-             t = threading.Thread(
+-                 target=self._handle_client, args=(conn, addr), daemon=True
+-             )
+-     def _handle_client(self, conn: socket.socket, addr) -> None:
+-         registered_id: Optional[str] = None
+-         buf = b""
+-         try:
+-             while True:
+-                 chunk = conn.recv(65536)
+-                 if not chunk:
+-                     break
+-                 buf += chunk
+-                 while b"\n" in buf:
+-                     line, buf = buf.split(b"\n", 1)
+-                     msg = json.loads(line)
+-                     resp = self._handle_message(msg, conn)
+-                     if resp:
+-                         conn.sendall((json.dumps(resp) + "\n").encode())
+-                     if msg.get("cmd") == "REGISTER":
+-                         registered_id = msg.get("bundle", {}).get("agent_id")
+-                         with self._lock:
+-                             self._agent_socks[registered_id] = conn
+-         except Exception as exc:
+-             logger.debug("Client %s disconnected: %s", addr, exc)
+-         finally:
+-             if registered_id:
+-                 with self._lock:
+-                     self._agent_socks.pop(registered_id, None)
+-             conn.close()
+-     def _handle_message(self, msg: dict, conn: socket.socket) -> Optional[dict]:
+-         cmd = msg.get("cmd")
+-         if cmd == "REGISTER":
+-             bundle = msg.get("bundle", {})
+-             agent_id = bundle.get("agent_id")
+-             with self._lock:
+-             with self._lock:
+-             with self._lock:
+-                 self._bundles[agent_id] = bundle
+-             logger.debug("Registered %r", agent_id)
+-             return {"status": "OK"}
+-             return {"status": "OK"}
+-         elif cmd == "GET_BUNDLE":
+-             agent_id = msg.get("agent_id")
+-             bundle = self._bundles.get(agent_id)
+-             return {"bundle": bundle}
+-         elif cmd == "DELIVER":
+-             envelope = msg.get("envelope", {})
+-             recipient_id = envelope.get("to")
+-                 recipient_sock = self._agent_socks.get(recipient_id)
+-             if recipient_sock:
+-                 try:
+-                     push = {"cmd": "INCOMING", "envelope": envelope}
+-                     recipient_sock.sendall((json.dumps(push) + "\n").encode())
+-                 except Exception as exc:
+-                     logger.warning("Push delivery failed: %s", exc)
+-                     return {"status": "ERROR", "reason": str(exc)}
+-         elif cmd == "LIST_AGENTS":
+-                 agents = list(self._bundles.keys())
+-             return {"agents": agents}
+-         return {"status": "ERROR", "reason": f"Unknown command: {cmd}"}
+
+### hub_server.py  [code]
+- """
+- """
+- AgentMesh Hub Server – standalone entry point.
+- Usage:
+-   python -m agentmesh.hub_server
+-   python -m agentmesh.hub_server --host 0.0.0.0 --port 7700
+- import argparse
+- import logging
+- from .hub import NetworkHubServer
+- logging.basicConfig(
+-     level=logging.INFO,
+-     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+- )
+- def main():
+-     parser = argparse.ArgumentParser(
+-         description="AgentMesh Hub Server – encrypted AI-agent message broker"
+-     )
+-     parser.add_argument("--host", default="0.0.0.0", help="Bind host (default: 0.0.0.0)")
+-     parser.add_argument("--port", type=int, default=7700, help="Bind port (default: 7700)")
+-     args = parser.parse_args()
+-     server = NetworkHubServer(host=args.host, port=args.port)
+-     server.start(block=True)
+- if __name__ == "__main__":
+-     main()
+
+### pyproject.toml  [code]
+- build-backend = "setuptools.backends.legacy:build"
+- version         = "1.0.0"
+- authors         = [{name = "cerbug45", url = "https://github.com/cerbug45"}]
+- where = ["."]
++ build-backend = "setuptools.build_meta"
++ version         = "1.1.0"
++ authors         = [
++     {name = "cerbug45"},
++     {name = "Zeki"},
++ ]
++ where = ["src"]
+
+### src/agentmesh/__init__.py  [code]
++ """
++ """
++ AgentMesh
++ ━━━━━━━━━
++ WhatsApp-style encrypted messaging for AI agents.
++ Quick start
++ -----------
++ >>> from agentmesh import Agent, LocalHub
++ >>> hub = LocalHub()
++ >>> alice = Agent("alice", hub=hub)
++ >>> bob   = Agent("bob",   hub=hub)
++ >>> bob.on_message(lambda msg: print(f"[bob] ← {msg.sender}: {msg.text}"))
++ >>> alice.send("bob", text="Hello, Bob!")
++ GitHub: https://github.com/cerbug45/AgentMesh
++ from .agent import Agent, Message
++ from .hub import LocalHub, NetworkHub, NetworkHubServer
++ from .crypto import (
++     AgentKeyPair,
++     CryptoSession,
++     CryptoError,
++     perform_key_exchange,
++     seal,
++     unseal,
++ )
++ __version__ = "1.0.0"
++ __author__ = "cerbug45"
++ __license__ = "MIT"
++ __all__ = [
++     # High-level
++     "Agent",
++     "Message",
++     "LocalHub",
++     "NetworkHub",
++     "NetworkHubServer",
++     # Crypto primitives (for advanced use)
++     "AgentKeyPair",
++     "CryptoSession",
++     "CryptoError",
++     "perform_key_exchange",
++     "seal",
++     "unseal",
++ ]
+
+### src/agentmesh/agent.py  [code]
++ """
++ """
++ AgentMesh – Agent
++ ━━━━━━━━━━━━━━━━━
++ A self-contained AI agent identity that can:
++   • Register to a Hub (broker) or run peer-to-peer
++   • Establish encrypted sessions with other agents
++   • Send / receive signed + encrypted messages
++   • Auto-discover peers via the Hub
++   • Persist its key-pair across restarts
++ from __future__ import annotations
++ import json
++ import time
++ import threading
++ import logging
++ from pathlib import Path
++ from typing import Callable, Dict, List, Optional, Any
++ from .crypto import (
++     AgentKeyPair,
++     CryptoSession,
++     CryptoError,
++     perform_key_exchange,
++     seal,
++     unseal,
++ )
++ from .transport import Transport, LocalTransport
++ logger = logging.getLogger("agentmesh.agent")
++ # ──────────────────────────────────────────────────────────────────────────────
++ # ──────────────────────────────────────────────────────────────────────────────
++ # ──────────────────────────────────────────────────────────────────────────────
++ # ──────────────────────────────────────────────────────────────────────────────
++ # Message model
++ class Message:
++     """A decrypted, verified message received from a peer agent."""
++     __slots__ = ("sender", "recipient", "payload", "timestamp", "raw_envelope")
++     def __init__(
++     def __init__(
++         self,
++         self,
++         sender: str,
++         recipient: str,
++         payload: dict,
++         timestamp: int,
++         raw_envelope: dict,
++     ):
++     ):
++         self.sender = sender
++         self.recipient = recipient
++         self.payload = payload
++         self.timestamp = timestamp
++         self.raw_envelope = raw_envelope
++     def __repr__(self) -> str:
++         return (
++             f"Message(from={self.sender!r}, to={self.recipient!r}, "
++             f"payload={self.payload!r})"
++         )
++     @property
++     @property
++     @property
++     @property
++     def text(self) -> Optional[str]:
++         """Convenience accessor for 'text' key in payload."""
++         return self.payload.get("text")
++     def type(self) -> str:
++         """Convenience accessor for 'type' key in payload (default: 'message')."""
++         return self.payload.get("type", "message")
++ # Agent
++ class Agent:
++     """
++     """
++     An AI agent with a cryptographic identity.
++         agent_id: str,
++         hub=None,
++         keypair_path: Optional[str | Path] = None,
++         log_level: int = logging.WARNING,
++         self.id = agent_id
++         self._hub = hub
++         self._sessions: Dict[str, CryptoSession] = {}
++         self._peer_bundles: Dict[str, dict] = {}
++         self._handlers: List[Callable[[Message], Any]] = []
++         self._lock = threading.Lock()
++         logging.getLogger("agentmesh").setLevel(log_level)
++         if keypair_path:
++             self._keypair = _load_or_create_keypair(Path(keypair_path))
++         else:
++             self._keypair = AgentKeyPair()
++         if self._hub is not None:
++         if self._hub is not None:
++             self._hub.register(self)
++     def public_bundle(self) -> dict:
++         bundle = self._keypair.public_bundle()
++         bundle["agent_id"] = self.id
++         return bundle
++     def fingerprint(self) -> str:
++         return self._keypair.fingerprint
++     def connect(self, peer_id: str) -> None:
++         if self._hub is None:
++             raise RuntimeError("No hub configured")
++         bundle = self._hub.get_bundle(peer_id)
++         if bundle is None:
++             raise ValueError(f"Peer {peer_id!r} not found")
++         with self._lock:
++             self._peer_bundles[peer_id] = bundle
++             self._sessions[peer_id] = perform_key_exchange(self._keypair, bundle)
++     def _ensure_session(self, peer_id: str) -> CryptoSession:
++         if peer_id not in self._sessions:
++             self.connect(peer_id)
++         return self._sessions[peer_id]
++     def send(self, recipient_id: str, *, text: str = "", **extra) -> None:
++         payload: dict = {"type": "message", "text": text}
++         payload.update(extra)
++         self.send_payload(recipient_id, payload)
++     def send_payload(self, recipient_id: str, payload: dict) -> None:
++         session = self._ensure_session(recipient_id)
++         envelope = seal(session, self._keypair, self.id, recipient_id, payload)
++             self._hub.deliver(envelope)
++     def _receive(self, envelope: dict) -> None:
++         sender_id = envelope.get("from", "")
++         try:
++             with self._lock:
++                 sender_bundle = self._peer_bundles.get(sender_id)
++                 if sender_bundle is None:
++                 if sender_bundle is None:
++                     if self._hub is not None:
++                         sender_bundle = self._hub.get_bundle(sender_id)
++                         if sender_bundle:
++                             self._peer_bundles[sender_id] = sender_bundle
++                             self._sessions[sender_id] = perform_key_exchange(
++                                 self._keypair, sender_bundle
++                             )
++                     raise CryptoError(f"Unknown sender: {sender_id!r}")
++                 session = self._sessions[sender_id]
++             payload = unseal(session, envelope, sender_bundle)
++             msg = Message(
++                 sender=sender_id,
++                 recipient=envelope.get("to", self.id),
++                 payload=payload,
++                 timestamp=envelope.get("ts", 0),
++                 raw_envelope=envelope,
++             )
++             self._dispatch(msg)
++         except Exception as exc:
++             logger.error("Receive error: %s", exc)
++     def _dispatch(self, msg: Message) -> None:
++         for handler in self._handlers:
++             try:
++                 handler(msg)
++             except Exception as exc:
++                 logger.error("Handler error: %s", exc)
++     def on_message(self, handler: Callable[[Message], Any]) -> "Agent":
++         self._handlers.append(handler)
++         return self
++     def list_peers(self) -> List[str]:
++         if self._hub is None: return []
++         return [p for p in self._hub.list_agents() if p != self.id]
++ def _load_or_create_keypair(path: Path) -> AgentKeyPair:
++     if path.exists():
++         with path.open() as fh:
++             data = json.load(fh)
++         return AgentKeyPair.from_dict(data)
++     kp = AgentKeyPair()
++     path.parent.mkdir(parents=True, exist_ok=True)
++     with path.open("w") as fh:
++         json.dump(kp.to_dict(), fh, indent=2)
++     return kp
+
+### src/agentmesh/crypto.py  [code]
++ """
++ """
++ AgentMesh Cryptography Engine
++ ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
++ Military-grade end-to-end encryption for AI agent communication.
++ Features:
++   • X25519 Elliptic Curve Diffie-Hellman key exchange
++   • AES-256-GCM authenticated encryption
++   • Ed25519 digital signatures (message authenticity)
++   • HKDF-SHA256 key derivation
++   • Forward secrecy via ephemeral session keys
++   • Message integrity + replay attack prevention
++ import os
++ import json
++ import time
++ import base64
++ import hashlib
++ import hmac
++ from typing import Tuple, Optional
++ from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
++ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
++ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
++ from cryptography.hazmat.primitives.kdf.hkdf import HKDF
++ from cryptography.hazmat.primitives import hashes, serialization
++ from cryptography.exceptions import InvalidTag
++ # ──────────────────────────────────────────────────────────────────────────────
++ # ──────────────────────────────────────────────────────────────────────────────
++ # ──────────────────────────────────────────────────────────────────────────────
++ # ──────────────────────────────────────────────────────────────────────────────
++ # ──────────────────────────────────────────────────────────────────────────────
++ # ──────────────────────────────────────────────────────────────────────────────
++ # ──────────────────────────────────────────────────────────────────────────────
++ # ──────────────────────────────────────────────────────────────────────────────
++ # ──────────────────────────────────────────────────────────────────────────────
++ # ──────────────────────────────────────────────────────────────────────────────
++ # ──────────────────────────────────────────────────────────────────────────────
++ # ──────────────────────────────────────────────────────────────────────────────
++ # ──────────────────────────────────────────────────────────────────────────────
++ # ──────────────────────────────────────────────────────────────────────────────
++ # Key Management
++ class AgentKeyPair:
++     """
++     """
++     """
++     """
++     """
++     """
++     """
++     """
++     """
++     """
++     """
++     """
++     A complete cryptographic identity for an AI agent.
++     Contains both an identity key (Ed25519) for signing and
++     an exchange key (X25519) for ECDH key agreement.
++     def __init__(
++         self,
++         identity_private: Optional[Ed25519PrivateKey] = None,
++         exchange_private: Optional[X25519PrivateKey] = None,
++     ):
++         self.identity_private = identity_private or Ed25519PrivateKey.generate()
++         self.exchange_private = exchange_private or X25519PrivateKey.generate()
++         self.identity_public: Ed25519PublicKey = self.identity_private.public_key()
++         self.exchange_public: X25519PublicKey = self.exchange_private.public_key()
++     # ── Serialisation helpers ────────────────────────────────────────────────
++     def public_bundle(self) -> dict:
++         """Return the public half of this key-pair as a JSON-safe dict."""
++         return {
++         return {
++             "identity_key": _b64(
++                 self.identity_public.public_bytes(
++                     serialization.Encoding.Raw, serialization.PublicFormat.Raw
++                     serialization.Encoding.Raw, serialization.PublicFormat.Raw
++                 )
++                 )
++                 )
++                 )
++             ),
++             ),
++             ),
++             ),
++             "exchange_key": _b64(
++                 self.exchange_public.public_bytes(
++         }
++         }
++         }
++     def to_dict(self) -> dict:
++         """Serialise the full key-pair (private + public) to a JSON-safe dict."""
++             "identity_private": _b64(
++                 self.identity_private.private_bytes(
++                     serialization.Encoding.Raw,
++                     serialization.Encoding.Raw,
++                     serialization.PrivateFormat.Raw,
++                     serialization.PrivateFormat.Raw,
++                     serialization.NoEncryption(),
++                     serialization.NoEncryption(),
++             "exchange_private": _b64(
++                 self.exchange_private.private_bytes(
++     @classmethod
++     def from_dict(cls, data: dict) -> "AgentKeyPair":
++         """Restore a key-pair from a previously serialised dict."""
++         return cls(
++             identity_private=Ed25519PrivateKey.from_private_bytes(_db64(data["identity_private"])),
++             exchange_private=X25519PrivateKey.from_private_bytes(_db64(data["exchange_private"])),
++         )
++         )
++         )
++     # ── Fingerprint ──────────────────────────────────────────────────────────
++     @property
++     def fingerprint(self) -> str:
++         """
++         """
++         """
++         """
++         """
++         """
++         """
++         """
++         Human-readable hex fingerprint of the identity key.
++         Agents can share fingerprints out-of-band to verify each other.
++         raw = self.identity_public.public_bytes(
++             serialization.Encoding.Raw, serialization.PublicFormat.Raw
++         digest = hashlib.sha256(raw).hexdigest()
++         # Format: XXXX:XXXX:XXXX:XXXX:XXXX:XXXX:XXXX:XXXX
++         return ":".join(digest[i : i + 4] for i in range(0, 32, 4))
++ # Session (Shared Secret + Ratchet)
++ class CryptoSession:
++     An established encrypted session between two agents.
++     Derived from an ECDH shared secret + HKDF key derivation.
++     Supports optional ratcheting for forward secrecy.
++     def __init__(self, shared_key: bytes, initiator: bool = True):
++         shared_key : 32-byte HKDF-derived secret (same value on both sides)
++         initiator  : True for the "first" party (alphabetically lower agent_id).
++                      Ensures send/recv key assignment is consistently mirrored.
++         self._root_key = shared_key
++         key_a = self._derive(shared_key, b"key_a")
++         key_b = self._derive(shared_key, b"key_b")
++         if initiator:
++             self._send_key = key_a
++             self._recv_key = key_b
++         else:
++             self._send_key = key_b
++             self._recv_key = key_a
++         self._message_counter = 0
++         self._seen_nonces: set = set()
++     # ── Encryption ───────────────────────────────────────────────────────────
++     def encrypt(self, plaintext: bytes, aad: bytes = b"") -> dict:
++         Encrypt a message and return a ciphertext envelope.
++         Returns a dict with: ciphertext, nonce, counter, tag_included=True
++         The nonce is unique per message; AAD covers agent IDs + timestamp.
++         nonce = os.urandom(12)  # 96-bit nonce for AES-GCM
++         aesgcm = AESGCM(self._send_key)
++         # Build associated data: nonce + counter + caller-supplied aad
++         counter_bytes = self._message_counter.to_bytes(8, "big")
++         full_aad = nonce + counter_bytes + aad
++         full_aad = nonce + counter_bytes + aad
++         ciphertext = aesgcm.encrypt(nonce, plaintext, full_aad)
++         envelope = {
++             "v": 1,                         # protocol version
++             "nonce": _b64(nonce),
++             "counter": self._message_counter,
++             "ciphertext": _b64(ciphertext),
++             "aad": _b64(aad),
++         self._message_counter += 1
++         return envelope
++     def decrypt(self, envelope: dict) -> bytes:
++         Decrypt a received envelope.
++         Raises CryptoError on any integrity / replay failure.
++         try:
++         try:
++             nonce = _db64(envelope["nonce"])
++             counter = envelope["counter"]
++             ciphertext = _db64(envelope["ciphertext"])
++             aad = _db64(envelope["aad"])
++         except (KeyError, Exception) as exc:
++             raise CryptoError(f"Malformed envelope: {exc}") from exc
++         # Replay detection
++         nonce_key = (nonce, counter)
++         if nonce_key in self._seen_nonces:
++             raise CryptoError("Replay attack detected – nonce reuse")
++         self._seen_nonces.add(nonce_key)
++         counter_bytes = counter.to_bytes(8, "big")
++         aesgcm = AESGCM(self._recv_key)
++             return aesgcm.decrypt(nonce, ciphertext, full_aad)
++         except InvalidTag as exc:
++             raise CryptoError("Authentication tag mismatch – message tampered") from exc
++     # ── Helpers ──────────────────────────────────────────────────────────────
++     @staticmethod
++     def _derive(key: bytes, purpose: bytes) -> bytes:
++         hkdf = HKDF(
++             algorithm=hashes.SHA256(),
++             length=32,
++             salt=None,
++             info=b"AgentMesh-v1-" + purpose,
++         return hkdf.derive(key)
++ # Key Exchange (X3DH-lite)
++ def perform_key_exchange(
++     my_keypair: AgentKeyPair,
++     their_public_bundle: dict,
++ ) -> CryptoSession:
++     Perform an ECDH key exchange given the remote agent's public bundle.
++     Returns a ready-to-use CryptoSession.
++     Uses X25519 + HKDF-SHA256.  Both sides must call this with the
++     *other's* public bundle to arrive at the same shared secret.
++     The 'initiator' role is determined by comparing identity key bytes
++     so that both sides agree on send/recv direction automatically.
++     # Deserialise remote keys
++     their_exchange_raw = _db64(their_public_bundle["exchange_key"])
++     their_exchange_pub = X25519PublicKey.from_public_bytes(their_exchange_raw)
++     # ECDH
++     raw_shared = my_keypair.exchange_private.exchange(their_exchange_pub)
++     # Mix in both identity keys for domain separation
++     my_identity_raw = my_keypair.identity_public.public_bytes(
++         serialization.Encoding.Raw, serialization.PublicFormat.Raw
++     )
++     )
++     )
++     )
++     their_identity_raw = _db64(their_public_bundle["identity_key"])
++     # Deterministic ordering so both sides compute the same salt
++     keys_sorted = sorted([my_identity_raw, their_identity_raw])
++     salt = hashlib.sha256(keys_sorted[0] + keys_sorted[1]).digest()
++     hkdf = HKDF(
++         algorithm=hashes.SHA256(),
++         length=32,
++         salt=salt,
++         info=b"AgentMesh-v1-session",
++     shared_key = hkdf.derive(raw_shared)
++     # Deterministic role: whoever has the lexicographically smaller identity
++     # key bytes is the "initiator" – guarantees both sides pick opposite roles.
++     initiator = my_identity_raw < their_identity_raw
++     return CryptoSession(shared_key, initiator=initiator)
++ # Message Signing / Verification
++ def sign_message(private_key: Ed25519PrivateKey, message: bytes) -> str:
++     """Sign a message and return the base64-encoded signature."""
++     return _b64(private_key.sign(message))
++ def verify_signature(public_key_bytes: bytes, message: bytes, signature_b64: str) -> bool:
++     Verify an Ed25519 signature.
++     Returns True if valid, False otherwise (never raises).
++     try:
++         pub = Ed25519PublicKey.from_public_bytes(public_key_bytes)
++         pub.verify(_db64(signature_b64), message)
++         return True
++     except Exception:
++         return False
++ # Sealed Message (signed + encrypted in one call)
++ def seal(
++     session: CryptoSession,
++     session: CryptoSession,
++     sender_keypair: AgentKeyPair,
++     sender_id: str,
++     recipient_id: str,
++     payload: dict,
++ ) -> dict:
++ ) -> dict:
++     High-level helper: sign then encrypt a payload dict.
++     Returns a complete 'sealed message' dict ready for transport.
++     timestamp = int(time.time() * 1000)  # milliseconds
++     plaintext = json.dumps(payload, separators=(",", ":")).encode()
++     # Signature covers: sender_id + recipient_id + timestamp + plaintext
++     signing_input = (
++     signing_input = (
++         sender_id.encode() + b"|" +
++         recipient_id.encode() + b"|" +
++         str(timestamp).encode() + b"|" +
++         plaintext
++         plaintext
++     signature = sign_message(sender_keypair.identity_private, signing_input)
++     aad = json.dumps(
++     aad = json.dumps(
++         {"from": sender_id, "to": recipient_id, "ts": timestamp},
++         separators=(",", ":"),
++         separators=(",", ":"),
++     ).encode()
++     ).encode()
++     envelope = session.encrypt(plaintext, aad)
++     envelope["from"] = sender_id
++     envelope["to"] = recipient_id
++     envelope["ts"] = timestamp
++     envelope["sig"] = signature
++     return envelope
++ def unseal(
++     envelope: dict,
++     sender_public_bundle: dict,
++     High-level helper: decrypt then verify a sealed message.
++     Returns the original payload dict on success.
++     Raises CryptoError on any failure.
++         {"from": envelope["from"], "to": envelope["to"], "ts": envelope["ts"]},
++     # Patch the aad field before decrypting (it was already baked in during seal)
++     envelope_copy = dict(envelope)
++     envelope_copy["aad"] = _b64(aad)
++     plaintext = session.decrypt(envelope_copy)
++     # Verify signature
++         envelope["from"].encode() + b"|" +
++         envelope["to"].encode() + b"|" +
++         str(envelope["ts"]).encode() + b"|" +
++     identity_bytes = _db64(sender_public_bundle["identity_key"])
++     if not verify_signature(identity_bytes, signing_input, envelope["sig"]):
++         raise CryptoError("Signature verification failed – sender cannot be trusted")
+
+### src/agentmesh/hub.py  [code]
++ """
++ """
++ AgentMesh – Hub (Message Broker)
++ ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
++ A Hub is the central router / directory-service for a group of agents.
++ Two implementations are provided:
++   LocalHub   – in-process broker (perfect for single-process apps & testing)
++   NetworkHub – TCP broker that spans processes / machines (v1.1)
++ The Hub never sees message *contents* – it only routes opaque encrypted
++ envelopes.  Agent discovery (public-key bundles) is the only plaintext
++ information stored.
++ from __future__ import annotations
++ import json
++ import logging
++ import socket
++ import threading
++ import queue
++ from typing import Dict, List, Optional
++ logger = logging.getLogger("agentmesh.hub")
++ # ──────────────────────────────────────────────────────────────────────────────
++ # ──────────────────────────────────────────────────────────────────────────────
++ # ──────────────────────────────────────────────────────────────────────────────
++ # ──────────────────────────────────────────────────────────────────────────────
++ # ──────────────────────────────────────────────────────────────────────────────
++ # ──────────────────────────────────────────────────────────────────────────────
++ # ──────────────────────────────────────────────────────────────────────────────
++ # ──────────────────────────────────────────────────────────────────────────────
++ # Base class / interface
++ class Hub:
++     """Abstract hub interface."""
++     def register(self, agent) -> None: raise NotImplementedError
++     def get_bundle(self, agent_id: str) -> Optional[dict]: raise NotImplementedError
++     def deliver(self, envelope: dict) -> None: raise NotImplementedError
++     def list_agents(self) -> List[str]: raise NotImplementedError
++ # LocalHub  (in-process)
++ class LocalHub(Hub):
++     """In-process message hub."""
++     def __init__(self):
++         self._agents: Dict[str, object] = {}
++         self._bundles: Dict[str, dict] = {}
++         self._lock = threading.Lock()
++         self._lock = threading.Lock()
++         self._lock = threading.Lock()
++         self._message_log: List[dict] = []
++     def register(self, agent) -> None:
++     def register(self, agent) -> None:
++         with self._lock:
++         with self._lock:
++         with self._lock:
++         with self._lock:
++             self._agents[agent.id] = agent
++             self._bundles[agent.id] = agent.public_bundle
++     def get_bundle(self, agent_id: str) -> Optional[dict]:
++     def get_bundle(self, agent_id: str) -> Optional[dict]:
++         return self._bundles.get(agent_id)
++     def deliver(self, envelope: dict) -> None:
++     def deliver(self, envelope: dict) -> None:
++         recipient_id = envelope.get("to")
++             recipient = self._agents.get(recipient_id)
++         if recipient:
++             recipient._receive(envelope)
++     def list_agents(self) -> List[str]:
++     def list_agents(self) -> List[str]:
++             return list(self._agents.keys())
++ # NetworkHub  (TCP, cross-process)
++ class NetworkHub(Hub):
++     """TCP Hub Client with background receiver thread."""
++     def __init__(self, host: str = "localhost", port: int = 7700):
++         self.host = host
++         self.host = host
++         self.port = port
++         self.port = port
++         self._sock = None
++         self._agent = None
++         self._pending_resps = queue.Queue()
++         self._running = False
++     def _connect(self):
++         self._sock = socket.create_connection((self.host, self.port), timeout=5)
++         self._sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
++         self._running = True
++         t = threading.Thread(target=self._recv_loop, daemon=True)
++         t.start()
++     def _recv_loop(self):
++         buf = b""
++         buf = b""
++         try:
++         try:
++             while self._running:
++                 data = self._sock.recv(65536)
++                 if not data: break
++                 if not data: break
++                 buf += data
++                 buf += data
++                 while b"\n" in buf:
++                 while b"\n" in buf:
++                     line, buf = buf.split(b"\n", 1)
++                     line, buf = buf.split(b"\n", 1)
++                     msg = json.loads(line)
++                     msg = json.loads(line)
++                     if msg.get("cmd") == "INCOMING":
++                         if self._agent:
++                             threading.Thread(
++                                 target=self._agent._receive,
++                                 args=(msg.get("envelope"),),
++                                 daemon=True
++                             ).start()
++                     else:
++                         self._pending_resps.put(msg)
++         except:
++             self._running = False
++     def _request(self, msg: dict) -> dict:
++             if not self._sock:
++                 self._connect()
++             self._sock.sendall((json.dumps(msg) + "\n").encode())
++             return self._pending_resps.get(timeout=10)
++         self._agent = agent
++         resp = self._request({"cmd": "REGISTER", "bundle": agent.public_bundle})
++         if resp.get("status") != "OK":
++             raise RuntimeError(f"Registration failed: {resp}")
++         resp = self._request({"cmd": "GET_BUNDLE", "agent_id": agent_id})
++         return resp.get("bundle")
++         self._request({"cmd": "DELIVER", "envelope": envelope})
++         resp = self._request({"cmd": "LIST_AGENTS"})
++         return resp.get("agents", [])
++ # NetworkHubServer
++ class NetworkHubServer:
++     """TCP Hub Server."""
++     def __init__(self, host: str = "0.0.0.0", port: int = 7700):
++         self._bundles = {}
++         self._agent_socks = {}
++         self._srv_sock = None
++     def start(self, block: bool = True):
++         self._srv_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
++         self._srv_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
++         self._srv_sock.bind((self.host, self.port))
++         self._srv_sock.listen(128)
++         if block:
++             self._accept_loop()
++         else:
++             threading.Thread(target=self._accept_loop, daemon=True).start()
++     def _accept_loop(self):
++         while True:
++             conn, addr = self._srv_sock.accept()
++             threading.Thread(target=self._handle_client, args=(conn,), daemon=True).start()
++     def _handle_client(self, conn):
++         agent_id = None
++             while True:
++                 data = conn.recv(65536)
++                     cmd = msg.get("cmd")
++                     if cmd == "REGISTER":
++                         agent_id = msg["bundle"]["agent_id"]
++                         with self._lock:
++                         with self._lock:
++                         with self._lock:
++                             self._bundles[agent_id] = msg["bundle"]
++                             self._agent_socks[agent_id] = conn
++                         conn.sendall(b'{"status": "OK"}\n')
++                         conn.sendall(b'{"status": "OK"}\n')
++                     elif cmd == "GET_BUNDLE":
++                         b = self._bundles.get(msg["agent_id"])
++                         conn.sendall((json.dumps({"bundle": b}) + "\n").encode())
++                     elif cmd == "DELIVER":
++                         target = msg["envelope"]["to"]
++                             s = self._agent_socks.get(target)
++                         if s:
++                             s.sendall((json.dumps({"cmd": "INCOMING", "envelope": msg["envelope"]}) + "\n").encode())
++                     elif cmd == "LIST_AGENTS":
++                             agents = list(self._bundles.keys())
++                         conn.sendall((json.dumps({"agents": agents}) + "\n").encode())
++         finally:
++             if agent_id:
++                 with self._lock:
++                     self._agent_socks.pop(agent_id, None)
++             conn.close()
+
+### src/agentmesh/hub_server.py  [code]
++ """
++ """
++ AgentMesh Hub Server – standalone entry point.
++ Usage:
++   python -m agentmesh.hub_server
++   python -m agentmesh.hub_server --host 0.0.0.0 --port 7700
++ import argparse
++ import logging
++ from .hub import NetworkHubServer
++ logging.basicConfig(
++     level=logging.INFO,
++     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
++ )
++ def main():
++     parser = argparse.ArgumentParser(
++         description="AgentMesh Hub Server – encrypted AI-agent message broker"
++     )
++     parser.add_argument("--host", default="0.0.0.0", help="Bind host (default: 0.0.0.0)")
++     parser.add_argument("--port", type=int, default=7700, help="Bind port (default: 7700)")
++     args = parser.parse_args()
++     server = NetworkHubServer(host=args.host, port=args.port)
++     server.start(block=True)
++ if __name__ == "__main__":
++     main()
+
+### src/agentmesh/transport.py  [code]
++ """
++ """
++ AgentMesh – Transport Layer
++ ━━━━━━━━━━━━━━━━━━━━━━━━━━
++ Pluggable transport interface.  Not used directly – the Hub implementations
++ handle transport internally.  Exposed here for extensibility.
++ class Transport:
++     """Base transport interface."""
++     def send(self, envelope: dict) -> None:
++     def send(self, envelope: dict) -> None:
++         raise NotImplementedError
++     def close(self) -> None:
++         pass
++ class LocalTransport(Transport):
++     """Dummy transport for in-process delivery (used by LocalHub)."""
++         pass  # LocalHub delivers directly to agent._receive()
+
+### tests/test_core.py  [code]
++ import unittest
++ import time
++ import threading
++ from agentmesh import Agent, LocalHub, NetworkHub, NetworkHubServer
++ class TestAgentMesh(unittest.TestCase):
++     def test_local_hub_encryption(self):
++         hub = LocalHub()
++         alice = Agent("alice", hub=hub)
++         bob = Agent("bob", hub=hub)
++         received = []
++         @bob.on_message
++         def handle(msg):
++             received.append(msg)
++         alice.send("bob", text="Hello Bob!")
++         time.sleep(0.5)
++         self.assertEqual(len(received), 1)
++         self.assertEqual(received[0].text, "Hello Bob!")
++         self.assertEqual(received[0].sender, "alice")
++     def test_network_hub(self):
++         host = "127.0.0.1"
++         port = 7791
++         server = NetworkHubServer(host=host, port=port)
++         server.start(block=False)
++         time.sleep(1.0)
++         try:
++             hub_alice = NetworkHub(host=host, port=port)
++             hub_bob = NetworkHub(host=host, port=port)
++             alice = Agent("alice_net", hub=hub_alice)
++             bob = Agent("bob_net", hub=hub_bob)
++             received = []
++             @bob.on_message
++             def handle(msg):
++                 received.append(msg)
++             alice.send("bob_net", text="Network Hello!")
++             # Wait for message
++             start = time.time()
++             while len(received) == 0 and time.time() - start < 3:
++                 time.sleep(0.1)
++             self.assertEqual(len(received), 1)
++             self.assertEqual(received[0].text, "Network Hello!")
++             self.assertEqual(received[0].sender, "alice_net")
++         finally:
++             pass # Server in thread will die with process
++ if __name__ == "__main__":
++     unittest.main()
+
+### transport.py  [code]
+- """
+- """
+- AgentMesh – Transport Layer
+- ━━━━━━━━━━━━━━━━━━━━━━━━━━
+- Pluggable transport interface.  Not used directly – the Hub implementations
+- handle transport internally.  Exposed here for extensibility.
+- class Transport:
+-     """Base transport interface."""
+-     def send(self, envelope: dict) -> None:
+-     def send(self, envelope: dict) -> None:
+-         raise NotImplementedError
+-     def close(self) -> None:
+-         pass
+- class LocalTransport(Transport):
+-     """Dummy transport for in-process delivery (used by LocalHub)."""
+-         pass  # LocalHub delivers directly to agent._receive()

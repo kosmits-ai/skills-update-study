@@ -1,0 +1,318 @@
+manu-xmint/lobstercash  0.0.15 -> 0.0.16
+change_type: instructions+docs   changelog: - Added two new reference files: `references/purchase-flow.md` and `references/purchase-flow-byo.md`, providing detailed flows for online purchases depending on browser automation availability. - Updated the purchase flow documentation to branch based on whether the built-in browser automation is enabled (`browser-enabled: true`) or not. - Clarified instructions for scenarios where browser automation is not available, including guidance for agents to use their own browser tooling or guide the us
+
+### SKILL.md  [instructions]
+- description: 'Use this skill when the user wants to spend money, make purchases, send crypto, pay for APIs, browse websites for shopping, complete checkout, or manage an AI agent''s payment wallet. Covers buying products online with credit cards (including browser-automated checkout), sending tokens, paying for x402 protocol APIs, checking balances, depositing funds, browsing available services, and signing on-chain transactions — all with secure guardrails, and appropriate human controls. Trigger on any spending, wallet, or shopping intent: "buy this", "pay for that", "send tokens", "how much do I have", "what can I buy", "top up my wallet", "get a card", "set up payments", "find me something to buy", "complete the checkout", or "browse that site" — even if the user doesn''t mention "lobster", "crypto", or "Solana" directly.'
+-   version: "0.0.15"
+- The Lobster Cash CLI (`lobstercash`) gives AI agents payment tools — a blockchain wallet, virtual cards for buying anything online, cloud browser automation for browsing sites and completing checkout, and x402 protocol support for paying APIs — all with human approval in the loop. Use `lobstercash <command> --help` for full flag details on any command.
+- ```bash
+- ```bash
+- ```bash
+- ```
+- ```
+- ```
+- - **A) Buy something online** (product, subscription, domain, service — always browser-automated) → [Buy something online](#a-buy-something-online)
+- #### A) Buy something online
+- Use when the user wants to purchase a product, subscription, domain, or any item from an online store. Purchases are **always browser-automated** via `purchase run` — Browser Use navigates the merchant's site, fills the checkout form, and stops at final review (or submits, when explicitly authorized). No manual checkout path.
+- The flow is: discover the real product and price first, then size a virtual card to that price (or reuse an existing one), then run the automated checkout.
+- ##### Step 1: Gather info from the conversation
+- Check what you already know from prior turns before asking:
+- - shipping address
+- - contact email
+- - phone (if the merchant might require it)
+- - product preferences (size, color, brand, quantity, exclusions)
+- Only ask the user for fields you don't already have. If they say a field isn't needed (e.g. "no phone" or "digital product, no address"), believe them and skip it. Never re-ask for info already in the conversation.
+- ##### Step 2: Discover the product and price (`purchase explore`)
+- **Ensure the wallet is set up first.** `purchase explore` and `purchase run` require an active wallet session and will exit with code 2 if one isn't configured — unlike `cards request` / `crypto request`, they do **not** bundle setup. Run `lobstercash status`:
+- - **Wallet configured** → continue.
+- - **Wallet not configured** → run `lobstercash setup`, share the approval URL with the user, and wait for them to confirm they approved before continuing. Don't try to bundle setup via `cards request` here — at this point you don't yet know the price, so you can't size the card correctly.
+- Pack everything into one natural-language `--description` and run explore. Share the live view URL with the user so they can watch.
+- lobstercash purchase explore \
+-   --description "<product, merchant or URL, shipping address, email, preferences>" \
+-   --merchant-country <XX>
+- Handle the response:
+- - `completed` → record `exploreId` and the discovered total, move on to Step 3.
+- - `needs_user_input` → ask the user the returned question, resume with `--explore-id <id> --answer "..."`.
+- - `running` → re-poll with `--explore-id <id>`.
+- **Never invent product URLs or category paths from training data.** Explore navigates the merchant's UI for you — that's the whole point. If the user didn't specify a merchant, do a web search first to ground the description in a real one (e.g. "best running socks to buy online" or "running socks site:nike.com").
+- For full flag list, description-writing guidance, resume/poll syntax, and output status definitions, see [purchase reference](references/purchase.md).
+- ##### Step 3: Check for an existing usable card (fork)
+- Before creating a new card, list current cards and look for one that already covers this purchase.
+- lobstercash cards list
+- > **Note:** Subscription / recurring cards are coming soon — for now every card is single-use. The matching rules below already account for this; period-based matching will become relevant once subscriptions ship.
+- Each card (order intent) carries these fields you can compare against:
+- - `phase` — only `active` is usable
+- - `mandates[type=maxAmount].value` — the spending cap (in `details.currency`, default USD)
+- - `mandates[type=maxAmount].details.period` — currently always absent (single-use). Will be `weekly | monthly | yearly` when subscriptions launch.
+- - `mandates[type=description].value` — what the user approved the card for (e.g. "AWS credits", "RHCP enamel pins")
+- - `mandates[type=prompt].value` — original natural-language request (richer context than description)
+- - `mandates[type=consumer].details.email` — consumer email scope (only matters if multi-user)
+- Fields **NOT** to rely on:
+- - **Remaining balance** — `cards list` only exposes the limit, not how much has been spent. Once subscription cards ship we won't be able to tell if this period's budget is already drained; trust the limit and let the merchant decline if exceeded.
+- - **Whether the card has already been charged** — single-use cards can't be reused once they've been charged successfully, but `cards list` doesn't expose charge history. If the card looks unused (no purchase you initiated against it), assume it's available; otherwise request a new one.
+- - `agentId` / `paymentMethodId` — internal bindings, not user-facing match signals.
+- A card is **usable for this purchase** when **all** of the following are true:
+- 1. `phase === active`
+- 2. `maxAmount.value >= rounded total` (rounded up to the nearest $5)
+- 3. `maxAmount.details.currency` matches the purchase currency (typically `USD`)
+- 4. The card hasn't already been used. Today every card is single-use, so a card you (or a previous turn) already charged successfully is no longer usable. _(Coming soon: when subscription cards launch, `maxAmount.details.period` will need to match the requested cadence — single-use purchase → no period; recurring purchase → same period.)_
+- 5. `description` (and `prompt` if present) is **semantically compatible** with the purchase. The user approved the card for a specific purpose — do not reuse a card whose description targets a different merchant or product category. Example: an existing "AWS credits" card must not be reused for "RHCP enamel pins". A generic description like "online shopping" can cover broader purchases — use judgment.
+- Fork:
+- - **Match found** → skip Step 3b and Step 4. Reuse its `card-id` and jump straight to **Step 5**. Tell the user briefly: "Reusing your existing $X card for [description]."
+- - **No match** → continue to Step 3b.
+- See [cards reference](references/cards.md) for the full `cards list` output format and field semantics.
+- ##### Step 3b: Request a new virtual card sized to the discovered total
+- Round the discovered total **up** to the nearest $5 so a small price drift at checkout doesn't decline the card (e.g. $47.23 → $50, $31.75 → $35). Tell the user the rounded amount and why.
+- lobstercash cards request --amount <rounded> --description "<short product name>"
+- Cards are currently single-use only. **Subscription / recurring cards are coming soon** — when they ship you'll be able to add `--period <weekly|monthly|yearly>` for recurring purchases. Until then, omit `--period` (or rely on the default) and request a fresh card per purchase.
+- This command bundles wallet setup if needed. See [cards request reference](references/cards-request.md) for output format.
+- ##### Step 4: Get user approval
+- The `cards request` command outputs an `approvalUrl`. Show it to the user:
+- > To create this card I need your approval. Open this link:
+- >
+- >
+- > [approvalUrl]
+- > Come back here when you've approved it.
+- **Do not proceed until the user confirms they approved.** Do not poll. After they confirm, run `lobstercash cards list` once to verify the new card is `active`, then continue.
+- ##### Step 5: Complete the purchase (`purchase run`)
+- Reuse the explore session — the browser is already parked on the cart, so the purchase agent picks up immediately without re-searching.
+- lobstercash purchase run \
+-   --card-id <card-id> \
+-   --explore-id <explore-id> \
+-   --description "<same description as explore>" \
+-   --max-total <rounded>
+- Share the live view URL with the user so they can watch the checkout. The agent will place the order automatically as long as the cart total stays at or below `--max-total`. Size `--max-total` to match what the user has approved.
+- Handle the response the same way as explore: `completed` → done; `needs_user_input` → ask and resume with `--purchase-id <id> --answer "..."`; `running` → re-poll with `--purchase-id <id>`.
+- For all run flags (`--constraint`, `--shipping-json`, `--contact-json`), the single-phase fallback (no `--explore-id`), and local `dev-mock-card` testing, see [purchase reference](references/purchase.md).
+- lobstercash cards list                                           # list cards (includes card-id, phase, mandates) — used in Step 3 of the buy flow to check for a reusable card
+- lobstercash purchase explore --description "<...>" --merchant-country <XX>                        # discover product + price (Step 2 of buy flow)
+- lobstercash purchase run --card-id <id> --explore-id <id> --description "<...>" --max-total <n>   # automated browser checkout (Step 5 of buy flow)
+- lobstercash cards reveal --card-id <id> --merchant-name "..." --merchant-url "https://..." --merchant-country US  # checkout credentials (manual sites only — not part of the standard buy flow)
+- - Read [purchase](references/purchase.md) if the user wants to buy something online — full flag reference, single-phase fallback, dev-mock-card, description-writing tips, and resume/poll syntax
+- - Read [cards request](references/cards-request.md) if the user wants to create a new virtual card for a purchase (Step 3b of the buy flow)
+- - Read [cards](references/cards.md) if the user needs to list existing cards or check whether one can be reused for a purchase (Step 3 of the buy flow)
+- - **Running `purchase explore` / `purchase run` before the wallet is set up:** Both purchase commands require an active wallet session and exit with code 2 otherwise — they do **not** bundle setup. Always run `lobstercash status` first; if the wallet isn't configured, run `lobstercash setup` and wait for user approval before calling `purchase explore`. (`cards request` and `crypto request` are different — they _do_ bundle setup, so don't run `setup` separately ahead of those.)
+- - **Hallucinating product URLs or paths:** Never guess URLs beyond the root domain — `/w/socks`, `/category/socks`, `/shop/socks` are all guesses, and URL structures change. Don't bake guessed paths into the `purchase explore --description`. Either give explore the merchant homepage (e.g. `nike.com`) and let Browser Use navigate the site's own UI, or ground the description with a real URL pulled from web search results.
+- - **Placing orders without user authorization:** `purchase run` always submits the order if the cart stays at or under `--max-total`, with no human approval at the review screen. Don't call it until the user has explicitly authorized this purchase, and size `--max-total` to match what they approved — it's the only guard against unexpected charges.
+- - **Skipping `purchase explore` and going straight to `purchase run`:** Always discover the real product and price first so you can size the card to the actual total. The single-phase `purchase run` fallback (no `--explore-id`) only applies when the user has already given you the exact price and a real merchant URL — see [purchase reference](references/purchase.md).
+- - **Requesting a new card without checking `cards list` first:** Always run `lobstercash cards list` after `purchase explore` and check whether an `active` card already covers this purchase (matching amount, currency, period, and purpose — see Section A Step 3). Reusing a usable card avoids spamming the user with another approval link.
+- - **Reusing a card whose description doesn't fit the purchase:** The user approved each card for a specific purpose. Don't reuse an "AWS credits" card to buy enamel pins — request a new card scoped to the new purpose instead.
+- - **Forgetting to share the live view URL:** Both `purchase explore` and `purchase run` return a live view URL. Always pass it to the user so they can watch the browser, especially before they confirm a final-review screen or answer a `needs_user_input` prompt.
+- - **Guessing answers to `needs_user_input`:** When `purchase explore` or `purchase run` returns `needs_user_input`, the agent has reached a required choice it can't make on its own (size, paid shipping speed, missing address field, etc.). Ask the user with the returned question and options, then resume the _same_ session with `--explore-id` / `--purchase-id` and `--answer`. Never invent an answer.
++ description: 'Use this skill when the user wants to spend money, make purchases, send crypto, pay for APIs, browse websites for shopping, complete checkout, or manage an AI agent''s payment wallet. Covers buying products online with credit cards (with browser-automated checkout when available, or driven by the agent''s own browser tooling otherwise), sending tokens, paying for x402 protocol APIs, checking balances, depositing funds, browsing available services, and signing on-chain transactions — all with secure guardrails, and appropriate human controls. Trigger on any spending, wallet, or shopping intent: "buy this", "pay for that", "send tokens", "how much do I have", "what can I buy", "top up my wallet", "get a card", "set up payments", "find me something to buy", "complete the checkout", or "browse that site" — even if the user doesn''t mention "lobster", "crypto", or "Solana" directly.'
++   version: "0.0.16"
++ The Lobster Cash CLI (`lobstercash`) gives AI agents payment tools — a blockchain wallet, virtual cards for buying anything online, optional cloud browser automation for browsing sites and completing checkout, and x402 protocol support for paying APIs — all with human approval in the loop. Use `lobstercash <command> --help` for full flag details on any command.
++ - **A) Buy something online** (product, subscription, domain, service) → [Buy something online](#a-buy-something-online)
++ ## A) Buy something online
++ Use when the user wants to purchase a product, subscription (not yet but comming soon), domain, or any item from an online store. The flow is the same either way: discover the product and price, size a virtual card, then drive checkout in a browser. What changes is **who drives the browser** for this install. Run:
++ lobstercash config get browser-enabled
++ - `browser-enabled: true` → Lobster Cash's built-in browser automation (`purchase explore` / `purchase run`) drives the merchant site for you. Follow [references/purchase-flow.md](references/purchase-flow.md).
++ - `browser-enabled: false` → Lobster Cash's built-in browser automation is **not** available for this install. Do not run `purchase explore` or `purchase run`. Follow [references/purchase-flow-byo.md](references/purchase-flow-byo.md) — the same flow, but you (the agent) drive the merchant site using whatever browser-automation tooling you already have available in this environment (your IDE's browser tool, an MCP browser server, OpenClaw, etc.), and use `cards reveal` to get the credentials to enter at checkout.
++ If `browser-enabled: false` and you have **no** browser-automation tooling available in this environment, tell the user you can't drive the browser yourself and offer to run the checkout manually: you'll get the card credentials with `cards reveal` and walk them through entering them at the merchant's checkout page themselves.
++ lobstercash config get browser-enabled                           # check which browser drives online purchases (used in Section A)
++ lobstercash cards list                                           # list cards (includes card-id, phase, mandates) — used in both purchase flows to check for a reusable card
++ lobstercash cards reveal --card-id <id> --merchant-name "..." --merchant-url "https://..." --merchant-country US  # checkout credentials (used by the BYO browser flow, and for manual checkout)
++ The `purchase explore` and `purchase run` commands exist only when `browser-enabled: true` is configured — see the relevant purchase-flow reference for usage.
++ - Read [purchase-flow](references/purchase-flow.md) if the user wants to buy something online and `browser-enabled: true` — full flow using Lobster Cash's built-in browser automation
++ - Read [purchase-flow-byo](references/purchase-flow-byo.md) if the user wants to buy something online and `browser-enabled: false` — same flow but the agent drives the browser with its own tooling
++ - Read [purchase](references/purchase.md) if you need flag-level reference for `purchase explore` / `purchase run` (browser-enabled only)
++ - Read [cards request](references/cards-request.md) if the user wants to create a new virtual card for a purchase
++ - Read [cards](references/cards.md) if the user needs to list existing cards, reveal credentials, or check whether a card can be reused for a purchase
++ - **Skipping the browser availability check before an online purchase:** Don't assume which purchase flow applies. When the user wants to buy something online, always run `lobstercash config get browser-enabled` first (Section A) before deciding which purchase-flow reference to load. The flag determines whether to use `purchase explore` / `purchase run` or to drive the browser yourself with `cards reveal` for credentials.
++ - **Calling `purchase explore` / `purchase run` when `browser-enabled: false`:** Those commands require the built-in browser automation. If the flag is `false`, follow [references/purchase-flow-byo.md](references/purchase-flow-byo.md) instead.
++ - **Running setup when the user wants to buy something:** If the user wants to make a purchase, don't run `setup` first — use `cards request` or `crypto request` which bundle setup automatically. Only use `lobstercash setup` when the user explicitly wants to link the agent to their wallet without buying anything.
+
+### references/purchase-flow-byo.md  [docs]
++ # Buy something online — bring-your-own browser flow
++ This is the purchase flow when **`browser-enabled: false`** (see [SKILL.md](../SKILL.md) Section A). It is the same end-to-end flow as [purchase-flow.md](purchase-flow.md), with one difference: **you (the agent) drive the merchant browser using whatever browser-automation tooling you already have available** in this environment (your IDE's browser tool, an MCP browser server, OpenClaw, Playwright/Puppeteer access, etc.). Lobster Cash still provides the virtual card, the user-approval flow, and `cards reveal` for credentials at checkout — it just doesn't drive the browser.
++ If you have **no** browser-automation tooling available in this environment, stop and offer to run the checkout manually with the user — you'll get the card credentials with `cards reveal` and walk them through entering them at the merchant's checkout page themselves.
++ The flow: discover the real product and price first (with your browser), size a virtual card to that price (or reuse an existing one), get user approval, then complete checkout (with your browser, using credentials from `cards reveal`).
++ ## Step 1: Gather info from the conversation
++ Check what you already know from prior turns before asking:
++ - shipping address
++ - contact email
++ - phone (if the merchant might require it)
++ - product preferences (size, color, brand, quantity, exclusions)
++ Only ask the user for fields you don't already have. If they say a field isn't needed (e.g. "no phone" or "digital product, no address"), believe them and skip it. Never re-ask for info already in the conversation.
++ ## Step 2: Discover the product and price (your browser tool)
++ Use **your own browser tooling** to navigate the merchant's site, locate the product the user wants, add it to the cart (or get to a quote/total page), and capture the **final total** including tax and shipping. You need a real, current total so the next step can size the virtual card correctly.
++ While you work, share progress with the user — what site you're on, what you found, when you've reached the cart total. They should be able to follow along.
++ What you must come away with before moving on:
++ - The product (name, variant/size/color if applicable, quantity)
++ - The merchant (real store name, canonical URL, country)
++ - The cart total in USD (or the purchase currency)
++ - A way to resume checkout later — keep your browser session/tab parked on the cart, or note the cart URL / re-buildable cart so you can return to it after card approval
++ If you don't know which merchant the user wants, do a web search first to ground yourself in a real merchant — don't guess URLs from training data. Same rule as the native flow: navigate the site's UI, don't bake guessed paths like `/category/socks` into anything.
++ If the merchant requires the user to sign in or answer a question that you can't decide on your own (size, paid shipping speed, etc.), pause and ask the user — don't invent answers.
++ ## Step 3: Check for an existing usable card (fork)
++ Before creating a new card, list current cards and look for one that already covers this purchase.
++ ```bash
++ ```bash
++ ```bash
++ lobstercash cards list
++ ```
++ ```
++ ```
++ > **Note:** Subscription / recurring cards are coming soon — for now every card is single-use. The matching rules below already account for this; period-based matching will become relevant once subscriptions ship.
++ Each card (order intent) carries these fields you can compare against:
++ - `phase` — only `active` is usable
++ - `mandates[type=maxAmount].value` — the spending cap (in `details.currency`, default USD)
++ - `mandates[type=maxAmount].details.period` — currently always absent (single-use). Will be `weekly | monthly | yearly` when subscriptions launch.
++ - `mandates[type=description].value` — what the user approved the card for (e.g. "AWS credits", "RHCP enamel pins")
++ - `mandates[type=prompt].value` — original natural-language request (richer context than description)
++ - `mandates[type=consumer].details.email` — consumer email scope (only matters if multi-user)
++ Fields **NOT** to rely on:
++ - **Remaining balance** — `cards list` only exposes the limit, not how much has been spent.
++ - **Whether the card has already been charged** — single-use cards can't be reused once they've been charged successfully, but `cards list` doesn't expose charge history. If the card looks unused (no purchase you initiated against it), assume it's available; otherwise request a new one.
++ - `agentId` / `paymentMethodId` — internal bindings, not user-facing match signals.
++ A card is **usable for this purchase** when **all** of the following are true:
++ 1. `phase === active`
++ 2. `maxAmount.value >= rounded total` (rounded up to the nearest $5)
++ 3. `maxAmount.details.currency` matches the purchase currency (typically `USD`)
++ 4. The card hasn't already been used. Today every card is single-use, so a card you (or a previous turn) already charged successfully is no longer usable.
++ 5. `description` (and `prompt` if present) is **semantically compatible** with the purchase. Don't reuse a card whose description targets a different merchant or product category.
++ Fork:
++ - **Match found** → skip Step 3b and Step 4. Reuse its `card-id` and jump straight to **Step 5**. Tell the user briefly: "Reusing your existing $X card for [description]."
++ - **No match** → continue to Step 3b.
++ See [cards reference](cards.md) for the full `cards list` output format and field semantics.
++ ## Step 3b: Request a new virtual card sized to the discovered total
++ Round the discovered total **up** to the nearest $5 so a small price drift at checkout doesn't decline the card (e.g. $47.23 → $50, $31.75 → $35). Tell the user the rounded amount and why.
++ lobstercash cards request --amount <rounded> --description "<short product name>"
++ Cards are currently single-use only. Subscription / recurring cards are coming soon — until then, omit `--period` (or rely on the default) and request a fresh card per purchase.
++ This command bundles wallet setup if needed. See [cards request reference](cards-request.md) for output format.
++ ## Step 4: Get user approval
++ The `cards request` command outputs an `approvalUrl`. Show it to the user:
++ > To create this card I need your approval. Open this link:
++ >
++ >
++ > [approvalUrl]
++ > Come back here when you've approved it.
++ **Do not proceed until the user confirms they approved.** Do not poll. After they confirm, run `lobstercash cards list` once to verify the new card is `active`, then continue.
++ ## Step 5: Complete the purchase (your browser tool + `cards reveal`)
++ Now the card is ready and the cart is parked. Two sub-steps:
++ ### 5a — Reveal the card credentials
++ lobstercash cards reveal \
++   --card-id <card-id> \
++   --merchant-name "<merchant name>" \
++   --merchant-url "<canonical merchant URL>" \
++   --merchant-country <XX>
++ This prints the card number, expiry month/year, and CVC for that specific merchant. **Treat the output as highly sensitive.** Do not log or paste it anywhere outside of the merchant's checkout form. Do not share these details with the user; just use them yourself in the browser.
++ See [cards reveal section in cards reference](cards.md#revealing-card-credentials-checkout) for full flag details and security notes.
++ ### 5b — Drive checkout with your browser tool
++ Return your browser to the parked cart (or rebuild it from the cart URL captured in Step 2) and complete the checkout form using the user's shipping/contact info from Step 1 and the revealed card details from Step 5a.
++ **Stop before final submit.** Reach the order-review screen and pause. Then ask the user to confirm: "Cart total is $X. Card ending in <last 4>. Shipping to <address>. Ready for me to place the order?" Only submit once the user has explicitly authorized this exact submission.
++ If the merchant total at checkout exceeds the card's hard cap, the card will decline. Don't try to charge more than the card limit — request a new card sized to the new total instead.
++ If the merchant asks for something you can't answer on your own (size choice, shipping option that costs extra, missing address field), pause and ask the user. Don't invent answers.
++ After the order is submitted, share the confirmation details (order number, total charged, ETA if shown) with the user.
++ ## Anti-patterns (BYO browser flow)
++ - **Calling `purchase explore` or `purchase run`:** They require `browser-enabled: true`. In this flow you drive the browser yourself.
++ - **Skipping price discovery:** Always discover the real product and price (Step 2) before requesting a card. Without it you can't size the card and the merchant will decline.
++ - **Hallucinating product URLs or paths:** Same rule as the native flow — never guess URLs beyond the root domain. Either start from the merchant homepage and let your browser tool navigate the site's own UI, or ground yourself in a real URL pulled from web search results.
++ - **Placing orders without user authorization:** The card's hard cap is a backstop, not a green light. Always stop at the order-review screen and ask the user to confirm before submitting.
++ - **Requesting a new card without checking `cards list` first:** Always run `lobstercash cards list` after Step 2 and check whether an `active` card already covers this purchase. Reusing a usable card avoids spamming the user with another approval link.
++ - **Reusing a card whose description doesn't fit the purchase:** The user approved each card for a specific purpose. Don't reuse an "AWS credits" card to buy enamel pins — request a new card scoped to the new purpose.
++ - **Sharing revealed card details with the user or logs:** `cards reveal` output is sensitive. Use the values in the merchant's checkout form, then forget them. Don't echo them back to the user.
++ - **Guessing merchant questions you can't answer:** Same as the native flow — when you hit a required choice you can't make on your own (size, shipping option, missing address field), pause and ask the user. Don't invent answers.
++ - **Pretending you have a browser tool when you don't:** If this environment has no browser-automation tooling available, don't bluff your way through Step 2 or Step 5. Stop and offer the user a manual checkout instead — get the credentials with `cards reveal` and walk them through entering them at the merchant's checkout themselves.
+
+### references/purchase-flow.md  [docs]
++ # Buy something online (browser-automated purchase flow)
++ This reference describes the end-to-end flow for buying products online with a virtual card and Lobster Cash's built-in Browser Use automation. It applies when **`browser-enabled: true`** for this CLI install (see [SKILL.md](../SKILL.md) Section A). If `browser-enabled: false`, follow [purchase-flow-byo.md](purchase-flow-byo.md) instead — same end-to-end flow, but you drive the merchant browser yourself.
++ Use when the user wants to purchase a product, subscription, domain, or any item from an online store. Purchases are **always browser-automated** via `purchase run` — Browser Use navigates the merchant's site, fills the checkout form, and stops at final review (or submits, when explicitly authorized).
++ The flow is: discover the real product and price first, then size a virtual card to that price (or reuse an existing one), then run the automated checkout.
++ ## Step 1: Gather info from the conversation
++ Check what you already know from prior turns before asking:
++ - shipping address
++ - contact email
++ - phone (if the merchant might require it)
++ - product preferences (size, color, brand, quantity, exclusions)
++ Only ask the user for fields you don't already have. If they say a field isn't needed (e.g. "no phone" or "digital product, no address"), believe them and skip it. Never re-ask for info already in the conversation.
++ ## Step 2: Discover the product and price (`purchase explore`)
++ **Ensure the wallet is set up first.** `purchase explore` and `purchase run` require an active wallet session and will exit with code 2 if one isn't configured — unlike `cards request` / `crypto request`, they do **not** bundle setup. Run `lobstercash status`:
++ - **Wallet configured** → continue.
++ - **Wallet not configured** → run `lobstercash setup`, share the approval URL with the user, and wait for them to confirm they approved before continuing. Don't try to bundle setup via `cards request` here — at this point you don't yet know the price, so you can't size the card correctly.
++ Pack everything into one natural-language `--description` and run explore. Share the live view URL with the user so they can watch.
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ lobstercash purchase explore \
++   --description "<product, merchant or URL, shipping address, email, preferences>" \
++   --merchant-country <XX>
++ ```
++ ```
++ ```
++ ```
++ ```
++ Handle the response:
++ - `completed` → record `exploreId` and the discovered total, move on to Step 3.
++ - `needs_user_input` → ask the user the returned question, resume with `--explore-id <id> --answer "..."`.
++ - `running` → re-poll with `--explore-id <id>`.
++ **Never invent product URLs or category paths from training data.** Explore navigates the merchant's UI for you — that's the whole point. If the user didn't specify a merchant, do a web search first to ground the description in a real one (e.g. "best running socks to buy online" or "running socks site:nike.com").
++ For full flag list, description-writing guidance, resume/poll syntax, and output status definitions, see [purchase reference](purchase.md).
++ ## Step 3: Check for an existing usable card (fork)
++ Before creating a new card, list current cards and look for one that already covers this purchase.
++ lobstercash cards list
++ > **Note:** Subscription / recurring cards are coming soon — for now every card is single-use. The matching rules below already account for this; period-based matching will become relevant once subscriptions ship.
++ Each card (order intent) carries these fields you can compare against:
++ - `phase` — only `active` is usable
++ - `mandates[type=maxAmount].value` — the spending cap (in `details.currency`, default USD)
++ - `mandates[type=maxAmount].details.period` — currently always absent (single-use). Will be `weekly | monthly | yearly` when subscriptions launch.
++ - `mandates[type=description].value` — what the user approved the card for (e.g. "AWS credits", "RHCP enamel pins")
++ - `mandates[type=prompt].value` — original natural-language request (richer context than description)
++ - `mandates[type=consumer].details.email` — consumer email scope (only matters if multi-user)
++ Fields **NOT** to rely on:
++ - **Remaining balance** — `cards list` only exposes the limit, not how much has been spent. Once subscription cards ship we won't be able to tell if this period's budget is already drained; trust the limit and let the merchant decline if exceeded.
++ - **Whether the card has already been charged** — single-use cards can't be reused once they've been charged successfully, but `cards list` doesn't expose charge history. If the card looks unused (no purchase you initiated against it), assume it's available; otherwise request a new one.
++ - `agentId` / `paymentMethodId` — internal bindings, not user-facing match signals.
++ A card is **usable for this purchase** when **all** of the following are true:
++ 1. `phase === active`
++ 2. `maxAmount.value >= rounded total` (rounded up to the nearest $5)
++ 3. `maxAmount.details.currency` matches the purchase currency (typically `USD`)
++ 4. The card hasn't already been used. Today every card is single-use, so a card you (or a previous turn) already charged successfully is no longer usable. _(Coming soon: when subscription cards launch, `maxAmount.details.period` will need to match the requested cadence — single-use purchase → no period; recurring purchase → same period.)_
++ 5. `description` (and `prompt` if present) is **semantically compatible** with the purchase. The user approved the card for a specific purpose — do not reuse a card whose description targets a different merchant or product category. Example: an existing "AWS credits" card must not be reused for "RHCP enamel pins". A generic description like "online shopping" can cover broader purchases — use judgment.
++ Fork:
++ - **Match found** → skip Step 3b and Step 4. Reuse its `card-id` and jump straight to **Step 5**. Tell the user briefly: "Reusing your existing $X card for [description]."
++ - **No match** → continue to Step 3b.
++ See [cards reference](cards.md) for the full `cards list` output format and field semantics.
++ ## Step 3b: Request a new virtual card sized to the discovered total
++ Round the discovered total **up** to the nearest $5 so a small price drift at checkout doesn't decline the card (e.g. $47.23 → $50, $31.75 → $35). Tell the user the rounded amount and why.
++ lobstercash cards request --amount <rounded> --description "<short product name>"
++ Cards are currently single-use only. **Subscription / recurring cards are coming soon** — when they ship you'll be able to add `--period <weekly|monthly|yearly>` for recurring purchases. Until then, omit `--period` (or rely on the default) and request a fresh card per purchase.
++ This command bundles wallet setup if needed. See [cards request reference](cards-request.md) for output format.
++ ## Step 4: Get user approval
++ The `cards request` command outputs an `approvalUrl`. Show it to the user:
++ > To create this card I need your approval. Open this link:
++ >
++ >
++ > [approvalUrl]
++ > Come back here when you've approved it.
++ **Do not proceed until the user confirms they approved.** Do not poll. After they confirm, run `lobstercash cards list` once to verify the new card is `active`, then continue.
++ ## Step 5: Complete the purchase (`purchase run`)
++ Reuse the explore session — the browser is already parked on the cart, so the purchase agent picks up immediately without re-searching.
++ lobstercash purchase run \
++   --card-id <card-id> \
++   --explore-id <explore-id> \
++   --description "<same description as explore>" \
++   --max-total <rounded>
++ Share the live view URL with the user so they can watch the checkout. The agent will place the order automatically as long as the cart total stays at or below `--max-total`. Size `--max-total` to match what the user has approved.
++ Handle the response the same way as explore: `completed` → done; `needs_user_input` → ask and resume with `--purchase-id <id> --answer "..."`; `running` → re-poll with `--purchase-id <id>`.
++ For all run flags (`--constraint`, `--shipping-json`, `--contact-json`), the single-phase fallback (no `--explore-id`), and local `dev-mock-card` testing, see [purchase reference](purchase.md).
++ ## Browser-related commands (Quick Reference)
++ lobstercash purchase explore --description "<...>" --merchant-country <XX>                        # discover product + price (Step 2)
++ lobstercash purchase run --card-id <id> --explore-id <id> --description "<...>" --max-total <n>   # automated browser checkout (Step 5)
++ lobstercash cards reveal --card-id <id> --merchant-name "..." --merchant-url "https://..." --merchant-country US  # checkout credentials (manual sites only — not part of the standard buy flow)
++ ## Browser-related references
++ - Read [purchase](purchase.md) for full flag reference, single-phase fallback, dev-mock-card, description-writing tips, and resume/poll syntax
++ - Read [cards request](cards-request.md) for creating a new virtual card for a purchase (Step 3b)
++ - Read [cards](cards.md) for listing existing cards and checking whether one can be reused (Step 3)
++ ## Anti-patterns (browser flow specific)
++ - **Running `purchase explore` / `purchase run` before the wallet is set up:** Both purchase commands require an active wallet session and exit with code 2 otherwise — they do **not** bundle setup. Always run `lobstercash status` first; if the wallet isn't configured, run `lobstercash setup` and wait for user approval before calling `purchase explore`. (`cards request` and `crypto request` are different — they _do_ bundle setup, so don't run `setup` separately ahead of those.)
++ - **Hallucinating product URLs or paths:** Never guess URLs beyond the root domain — `/w/socks`, `/category/socks`, `/shop/socks` are all guesses, and URL structures change. Don't bake guessed paths into the `purchase explore --description`. Either give explore the merchant homepage (e.g. `nike.com`) and let Browser Use navigate the site's own UI, or ground the description with a real URL pulled from web search results.
++ - **Placing orders without user authorization:** `purchase run` always submits the order if the cart stays at or under `--max-total`, with no human approval at the review screen. Don't call it until the user has explicitly authorized this purchase, and size `--max-total` to match what they approved — it's the only guard against unexpected charges.
++ - **Skipping `purchase explore` and going straight to `purchase run`:** Always discover the real product and price first so you can size the card to the actual total. The single-phase `purchase run` fallback (no `--explore-id`) only applies when the user has already given you the exact price and a real merchant URL — see [purchase reference](purchase.md).
++ - **Requesting a new card without checking `cards list` first:** Always run `lobstercash cards list` after `purchase explore` and check whether an `active` card already covers this purchase (matching amount, currency, period, and purpose — see Step 3). Reusing a usable card avoids spamming the user with another approval link.
++ - **Reusing a card whose description doesn't fit the purchase:** The user approved each card for a specific purpose. Don't reuse an "AWS credits" card to buy enamel pins — request a new card scoped to the new purpose instead.
++ - **Forgetting to share the live view URL:** Both `purchase explore` and `purchase run` return a live view URL. Always pass it to the user so they can watch the browser, especially before they confirm a final-review screen or answer a `needs_user_input` prompt.
++ - **Guessing answers to `needs_user_input`:** When `purchase explore` or `purchase run` returns `needs_user_input`, the agent has reached a required choice it can't make on its own (size, paid shipping speed, missing address field, etc.). Ask the user with the returned question and options, then resume the _same_ session with `--explore-id` / `--purchase-id` and `--answer`. Never invent an answer.

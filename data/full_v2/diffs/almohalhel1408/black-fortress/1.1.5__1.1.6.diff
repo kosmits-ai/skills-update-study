@@ -1,0 +1,77 @@
+almohalhel1408/black-fortress  1.1.5 -> 1.1.6
+change_type: instructions+docs+code   changelog: v1.1.6 — The Absolute Seal: CRITICAL FIX — Host environment leak patched. os.environ.copy() replaced with whitelist-only _build_safe_env(). subprocess.run now receives env= parameter. Only 9 safe variables pass through (PATH, DOCKER_BIN, PYTHONPATH, LANG, LC_ALL, LC_CTYPE, HOME, TMPDIR, TERM). All secrets (AWS_*, API keys, tokens) stripped. Transparency docs added.
+
+### README.md  [docs]
++ ### Host Environment Isolation (v1.1.6)
++ **The Problem:** Before v1.1.5, `black_fortress.py` used `os.environ.copy()` to build the subprocess environment. This leaked **all** host environment variables — including `AWS_SECRET_ACCESS_KEY`, `OPENAI_API_KEY`, `GITHUB_TOKEN`, and any other secrets — to every sub-script the orchestrator spawned.
++ **The Fix:** `_build_safe_env()` now constructs a minimal whitelist-only environment:
++ | Variable | Why it's allowed |
++ |---|---|
++ | `PATH` | Required to find executables (python, docker) |
++ | `DOCKER_BIN` | Set by orchestrator for Docker path resolution |
++ | `PYTHONPATH` | Python module resolution if configured |
++ | `LANG`, `LC_ALL`, `LC_CTYPE` | Locale — prevents encoding errors |
++ | `HOME` | Required by Python stdlib (tempfile, etc.) |
++ | `TMPDIR` | macOS temp directory override |
++ | `TERM` | Terminal type for subprocesses |
++ **Everything else is stripped.** `AWS_*`, `OPENAI_*`, `GITHUB_*`, `ANTHROPIC_*`, `X_*`, custom API keys, personal paths — all blocked. Sub-scripts see a sterile environment.
+
+### SKILL.md  [instructions]
+- version: 1.1.5
++ version: 1.1.6
++ ```
++ ```bash
++ **Verification:**
++ ### Host Environment Isolation (v1.1.6)
++ **The Problem:** Before v1.1.5, `black_fortress.py` used `os.environ.copy()` to build the subprocess environment. This leaked **all** host environment variables — including `AWS_SECRET_ACCESS_KEY`, `OPENAI_API_KEY`, `GITHUB_TOKEN`, and any other secrets — to every sub-script the orchestrator spawned.
++ **The Fix:** `_build_safe_env()` now constructs a minimal whitelist-only environment:
++ | Variable | Why it's allowed |
++ |---|---|
++ | `PATH` | Required to find executables (python, docker) |
++ | `DOCKER_BIN` | Set by orchestrator for Docker path resolution |
++ | `PYTHONPATH` | Python module resolution if configured |
++ | `LANG`, `LC_ALL`, `LC_CTYPE` | Locale — prevents encoding errors |
++ | `HOME` | Required by Python stdlib (tempfile, etc.) |
++ | `TMPDIR` | macOS temp directory override |
++ | `TERM` | Terminal type for subprocesses |
++ **Everything else is stripped.** `AWS_*`, `OPENAI_*`, `GITHUB_*`, `ANTHROPIC_*`, `X_*`, custom API keys, personal paths — all blocked. Sub-scripts see a sterile environment.
++ # Check what a subprocess would see (add a test print to any layer script)
++ python -c "import os; print([k for k in sorted(os.environ.keys())])"
++ # Should output only the whitelisted variables above
+
+### scripts/black_fortress.py  [code]
+-     """Run a layer script and capture its output."""
+-     env = os.environ.copy()
+-             cmd, capture_output=True, text=True, timeout=timeout
++ def _build_safe_env() -> dict:
++     """Build a minimal environment for subprocess execution.
++     Only whitelisted variables are passed. All host secrets (AWS keys,
++     API tokens, personal paths) are stripped to enforce Least Privilege.
++     See: Black-Fortress v1.1.6 — The Absolute Seal
++     """
++     """
++     WHITELIST = {
++         "PATH",           # Required to find executables (python, docker, etc.)
++         "DOCKER_BIN",     # Set by orchestrator for Docker path resolution
++         "PYTHONPATH",     # Allow Python module resolution if configured
++         "LANG",           # Locale — prevents encoding errors in subprocess output
++         "LC_ALL",         # Locale fallback
++         "LC_CTYPE",       # Character encoding
++         "HOME",           # Required by some Python stdlib operations (tempfile, etc.)
++         "TMPDIR",         # Temp directory override (macOS uses this)
++         "TERM",           # Terminal type for subprocesses that check it
++     }
++     safe_env = {}
++     for key in WHITELIST:
++         val = os.environ.get(key)
++         if val is not None:
++             safe_env[key] = val
++     # Ensure PATH is never empty (subprocesses would fail)
++     if "PATH" not in safe_env:
++         safe_env["PATH"] = "/usr/bin:/bin:/usr/local/bin"
++     return safe_env
++     """Run a layer script and capture its output.
++     Environment is scrubbed — only whitelisted variables are passed.
++     Host secrets (AWS_*, API keys, tokens) never reach subprocesses.
++     env = _build_safe_env()
++             cmd, capture_output=True, text=True, timeout=timeout, env=env

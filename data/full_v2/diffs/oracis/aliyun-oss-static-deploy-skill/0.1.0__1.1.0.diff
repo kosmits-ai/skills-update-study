@@ -1,0 +1,823 @@
+oracis/aliyun-oss-static-deploy-skill  0.1.0 -> 1.1.0
+change_type: instructions+docs+code   changelog: v1.1.0: unify slug to aliyun-oss-static-deploy-skill (keep -skill suffix to match SkillHub/GitHub); add deploy_oss.py/build_static.py/verify_deploy.py; align SKILL.md & manifest name fields
+
+### .gitignore  [code]
+- __pycache__/
+- *.py[cod]
+- *.egg-info/
+- .venv/
+- venv/
+- .DS_Store
+- Thumbs.db
+- .env
+- *.pem
+- *.key
+- state.json
+
+### SKILL.md  [instructions]
+- name: aliyun-oss-static-deploy
+- TOKEN=$(grep -o "gho_[A-Za-z0-9]*" ~/.git-credentials)
+- curl -s https://<域名>/data.js | wc -c        # 与本地构建产物字节数一致
++ name: aliyun-oss-static-deploy-skill
++ version: 1.1.0
++ category: 开发编程
++ platforms: [linux, windows, macos]
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ # ~/.git-credentials 每行形如 https://<user>:<token>@github.com
++ # 坑：别假设 token 前缀是 gho_ —— 那是 gh 自己的 OAuth token；PAT 是 40 位裸串，
++ # grep -o "gho_..." 会取到空值，后面所有请求 401 却看不出原因。用 python 取：
++ TOKEN=$(python -c "
++ import os,re
++ for l in open(os.path.expanduser('~/.git-credentials'),encoding='utf-8'):
++     m=re.match(r'https://[^:]+:([^@]+)@github\.com', l.strip())
++     if m: print(m.group(1)); break
++ ")
++ **顺带一个本地 git 的坑**：`gh auth status` 经常是「未登录」，而全局配置里
++ `credential.https://github.com.helper=!gh auth git-credential` 会让 `git push` 直接报
++ `could not read Username ... terminal prompts disabled`。修法是给仓库加一条更局部的
++ credential helper，让它回落到 `~/.git-credentials`：
++ git config credential.https://github.com.helper store   # 写进 .git/config，压过全局的 gh helper
++ **回写验证要看内容，不要看字节数。** 数据每天都在涨，`wc -c` 对不上分不出是「没部署」
++ 还是「部署了但数据变了」。找一个只有新版才有的**语义标记**去判：
++ curl --noproxy '*' -s "https://<bucket>.oss-<region>.aliyuncs.com/data.json" | head -c 200
++ # 或直接断言某个字段，例如 jq -e '.schema_version' >/dev/null && echo DEPLOYED
++ 触发 dispatch 到产物更新通常 1～3 分钟；轮询时带上 `Cache-Control: no-cache`，
++ 否则会一直读到边缘缓存里的旧对象。
++ ## 4.5 三个反复踩到的部署细节
++ **（1）别默认传 `dist/`：先问「这份产物是要给外人看的吗」**
++ 有些站有两份构建：内部完整版（含未核实/未公开的数据）和对外发布版。
++ 默认目录往往是前者。上线前确认一次：
++ python scripts/build_static.py --site-url https://<域名> --no-inbox --out public   # 对外那份
++ python scripts/deploy_oss.py --bucket <桶> --region cn-hongkong --dir public \
++ python scripts/deploy_oss.py --bucket <桶> --region cn-hongkong --dir public \
++     --setup-website --verify-public                                                # 注意 --dir
++ 把对外那份加进 `.gitignore`（如 `public/`），避免哪天顺手 `git add -A` 把不带治理的
++ 中间产物推上去。
++ **（2）部署脚本里的「连通性探针」别写成 `read(400)`**
++ 只探前 400 字节然后打印「HTTP 200 400 字节」，日志读起来像首页只有 400 字节，
++ 部署完一眼扫过去会以为传坏了（实际 `index.html` 是 15 KB）。要么读全量再报长度，
++ 要么干脆别打字节数，只打状态码。
++ **（3）region 填错的表现是「指定 endpoint」报错**
++ dry-run 报 `AccessDenied ... must be addressed using the specified endpoint`
++ = 桶不在这个 region，换地域重试即可，不是权限问题。先用 `--check` 列一遍账号下的桶。
++ ## 4.6 写一个语义校验脚本，别每次手敲 curl
++ 把验收固化成 `scripts/verify_deploy.py`，覆盖：首页 / 所有详情页 / 404 页 / 数据文件 /
++ sitemap / robots / 静态资源。断言的是这些不会因为数据增长而失效的东西：
++ - `site.title`、`site.url`、`generated_at`（能定位到「传的是哪次构建」）
++ - `cases` 条数、`inbox` 是否为 0（公开版不应该含未核实数据）
++ - 每个详情页 HTTP 200 且字节数 > 20000（正文是否真的内联，禁用 JS 也能读）
++ - 根路径不以 `<?xml` 开头（确认静态托管生效）
++ 案例数会涨，所以条数做成参数（`--expect-cases`），别写死在断言里。
++ **一个容易误判为失效的点**：预渲染的列表页里链接常常是相对路径（`./slug.html`），
++ 这样根目录部署和子目录部署都能用。校验时别拿绝对路径去匹配，否则会误报。
++ 脚本已实现（`scripts/verify_deploy.py`，纯 stdlib）：
++ python scripts/verify_deploy.py --base-url https://<域名> \
++ python scripts/verify_deploy.py --base-url https://<域名> \
++ python scripts/verify_deploy.py --base-url https://<域名> \
++     --xml-root-is-fail --forbid-text '<?xml' \
++     --expect-text 'generated_at' --expect-text '本次构建标记'
++     --pages-file pages.txt --min-bytes 20000 --check-seo
++     --data-json data.json --expect-cases 42 --expect-json-field site.url
++ `--xml-root-is-fail` 对应「根路径不以 `<?xml` 开头」那条（静态托管是否真生效）；
++ `data.json` 若含 `inbox` 字段，脚本会自动断言其为 0（公开版不该夹带未核实数据）。
++ # 内容对不对：断言语义标记，别比字节数
++ curl --noproxy '*' -s https://<域名>/data.json \
++   | python -c "import sys,json; d=json.load(sys.stdin); print(d['generated_at'], len(d['cases']))"
++ 上面那条绝对不要写成 `curl .../data.js | wc -c` 去跟本地产物比字节数——
++ `data.js`/`data.json` 每天重新生成，比不出来是「没部署」还是「数据变了」。
++ 只有 `app.js`、`style.css` 这种内容稳定的文件适合比大小。
++ | `AccessDenied ... must be addressed using the specified endpoint` | 填的 region 不对，桶不在这个地域（换 region，不是权限问题） |
++ | 日志显示「HTTP 200 400 字节」但文件有 15 KB | 那是 `read(400)` 的探针长度，不是真实大小，见 §4.5(2) |
++ | 校验脚本报「列表页缺链接」 | 列表页用的是相对路径 `./slug.html`，别按绝对路径匹配 |
++ | oss2 报 `ProxyError` / `Tunnel connection failed: 502` | 本机 `HTTP(S)_PROXY` 指向本地代理，Python 会走它而 `curl --noproxy` 不会；`unset` 代理变量即可，见 §4.7 |
++ ## 4.7 本机代理会把 oss2 搞挂（本地跑部署脚本的头号故障）
++ 本机常驻一个本地代理（形如 `http://127.0.0.1:3777`），且 `HTTP_PROXY/HTTPS_PROXY` 已导出。
++ `curl` 可以靠 `--noproxy '*'` 绕开，但 **Python 的 oss2（底层 requests）会老实读这两个环境变量**，
++ 代理一抽风就报：
++ RequestError: ... ProxyError('Unable to connect to proxy',
++     OSError('Tunnel connection failed: 502 Bad Gateway'))
++ **迷惑点**：`curl --noproxy '*'` 直连明明是 200，脚本却连不上；而且**时好时坏**
++ （同一条命令第一次成功、隔几分钟再跑就 502）。所以别去怀疑 bucket 权限或 region。
++ 排查顺序：
++ 1. `env | grep -i proxy` —— 确认代理变量存在；
++ 2. `curl --noproxy '*' -o /dev/null -w "%{http_code}" <url>` —— 确认直连是通的；
++ 3. 两者不一致 → 就是代理的锅。
++ 修法（**已内置到脚本**，了解原理即可）：`deploy_oss.py` / `verify_deploy.py` 启动时会主动
++ 清掉 `HTTP(S)_PROXY` 等变量并打印一行提示，正常情況下**不用再手动 unset**：
++ python scripts/deploy_oss.py --bucket <桶> --file index.html --verify
++ [..] 已清除代理环境变量（本机代理会搞挂 oss2）：HTTP_PROXY, HTTPS_PROXY
++ 要保留代理（例如必须走代理才能出网）就加 `--keep-proxy`；
++ 只想放行 OSS 域名则保留代理并设 `no_proxy="oss-cn-hongkong.aliyuncs.com"`。
++ ## 4.8 两个部署脚本的用法（scripts/ 下已实现）
++ `deploy_oss.py`（依赖 `oss2`）：
++ python scripts/deploy_oss.py --check                     # 先列账号下的桶定位名字/地域
++     --setup-website --verify-public --verify             # 整目录上线（推荐）
++ python scripts/deploy_oss.py --bucket <桶> --file fixed.html --key index.html \
++     --verify --expect '语义标记'                          # 单文件热更新
++ python scripts/deploy_oss.py --bucket <桶> --dir dist --dry-run   # 只打印计划
++ 要点：
++ - `--region` 写 `cn-hongkong` 或 `oss-cn-hongkong` 都行，脚本自动补前缀；
++   内部 endpoint 用**完整** `https://oss-cn-hongkong.aliyuncs.com`——`oss2.Service(auth, ...)`
++   第二个参数必须是完整 endpoint，**传 region 短名会报 `RequestError: HTTPConnectionPool`**，
++   看起来像网络/权限故障，实际是参数用错（这条踩过）。
++ - Content-Type 按扩展名查表（OSS 不猜类型）；html/json/xml 用 `no-cache`，js/css 用 `max-age=300`。
++ - 覆盖同名对象前**自动备份**旧版本到 `~/.oss-deploy-backup/<桶>/<key>.<时间戳>`（`--no-backup` 可关）。
++ - `--verify` 是回读 **md5 比对**，不是比字节数；再加 `--expect '某串'` 做语义标记断言。
++ - `--dry-run` 会跳过回读校验（对象根本没上传，回读必然 404，不要误判为失败）。
++ `build_static.py`（零依赖，整理**对外产物**）：
++ python scripts/build_static.py --src dist --out public --site-url https://<域名>
++ python scripts/build_static.py --src . --out public --no-inbox --exclude "*.bak,staging/"
++ python scripts/build_static.py --src dist --out public --dry-run
++ 默认就排除源码 / 密钥 / `.env*` / VCS / node_modules，并替换 `__SITE_URL__` `{{SITE_URL}}` 占位符；
++ `--no-inbox` 额外剔除 `inbox/` 等未核实数据（对外版不能带）。收尾会校验入口页存在、
++ 产物里不含密钥或未核实数据。**运行即打印排除清单**，建议扫一眼再上传。
++ GitHub Actions 在云端、没有这个代理，**不受影响**——别把这段写进工作流。
++ 反过来也成立：CI 报连接失败时，不要拿本地代理经验去解释。
+
+### manifest.yaml  [code]
+- name: aliyun-oss-static-deploy
+- version: 1.0.0
+- category: 效率工具
+- description: 把纯静态站点（dist/web/out/build）部署到阿里云 OSS：自动建桶（默认香港免备案）、上传并按扩展名设置 Content-Type 与 Cache-Control、配置静态网站托管（index/404）、关闭默认开启的 BlockPublicAccess 解除匿名 403、添加 CNAME 绑定自定义域名、用 Let's Encrypt DNS-01 签发或复用通配证书并推送到 OSS/FC 启用 HTTPS，最后打通 GitHub Actions 自动部署（含 RAM 最小权限子账号、PyNaCl 加密写 Secret）与证书每日自动续期。内置踩坑对照表：BlockPublicAccess 403、MalformedXML、DomainNameNotResolved、CNAME 指错导致证书不生效等。
++ name: aliyun-oss-static-deploy-skill
++ version: 1.1.0
++ category: 开发编程
++ description: 把纯静态站点（dist/web/out/build）部署到阿里云 OSS：自动建桶（默认香港免备案）、上传并按扩展名设置 Content-Type 与 Cache-Control、配置静态网站托管（index/404）、关闭默认开启的 BlockPublicAccess 解除匿名 403、添加 CNAME 绑定自定义域名、用 Let's Encrypt DNS-01 签发或复用通配证书并推送到 OSS/FC 启用 HTTPS，最后打通 GitHub Actions 自动部署（含 RAM 最小权限子账号、PyNaCl 加密写 Secret）与证书每日自动续期。内置踩坑对照表：BlockPublicAccess 403、MalformedXML、DomainNameNotResolved、CNAME 指错导致证书不生效等。v1.1.0 新增三个零/低依赖辅助脚本：deploy_oss.py（整目录/单文件上传、静态托管、公开访问、覆盖前自动备份、回读 md5+语义标记校验）、build_static.py（整理对外产物：剔除源码/密钥/未核实数据、替换 URL 占位符）、verify_deploy.py（对真实线上 URL 做语义验收）。
+
+### scripts/build_static.py  [code]
++ #!/usr/bin/env python3
++ # -*- coding: utf-8 -*-
++ """把源站整理成一份**对外发布**的静态产物目录（零第三方依赖，纯 stdlib）。
++ 存在的理由：很多站有两份产物——内部完整版（含草稿/未核实/敏感数据）和对外发布版。
++ 默认目录往往是前者，直接传上去就把没治理过的数据暴露了。本脚本干的是
++ 「挑选 + 清洗 + 校验」这一步，产出物再交给 deploy_oss.py 上传。
++ 做什么：
++     1. 复制 --src 到 --out，跳过源码、密钥、VCS、内部草稿等绝不该上线的文件
++     2. 替换站点 URL 占位符：__SITE_URL__ / {{SITE_URL}} / %SITE_URL%
++     3. --no-inbox 额外剔除未核实/待审数据目录（对外版不该含未核实数据）
++     4. 收尾校验：必须有入口页；打印产物清单供人工核对
++ 用法：
++     python build_static.py --out public
++     python build_static.py --src web --out public --site-url https://demo.example.com
++     python build_static.py --src dist --out public --no-inbox --exclude "*.bak,staging/"
++     python build_static.py --src dist --out public --dry-run   # 只看会做什么
++ 退出码：0 成功；1 校验失败
++ """
++ import argparse
++ import fnmatch
++ import os
++ import shutil
++ import sys
++ from datetime import datetime
++ try:
++     sys.stdout.reconfigure(encoding="utf-8")
++ except Exception:
++     pass
++ # 绝不该出现在对外产物里的东西
++ NEVER_EXCLUDE_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv",
++                       ".idea", ".vscode", ".github", ".svn", ".DS_Store",
++                       "private", "drafts", ".internal", ".cache"}
++ NEVER_INCLUDE_FILES = {".env", ".gitignore", ".npmrc", ".netrc", "docker-compose.yml",
++                        "Dockerfile", "Makefile", "package.json", "package-lock.json",
++                        "yarn.lock", "pnpm-lock.yaml", "poetry.lock", "requirements.txt",
++                        "manifest.yaml", "SKILL.md", "README.md", "LICENSE"}
++ NEVER_INCLUDE_GLOB = [
++     "*.py", "*.pyc", "*.pyo", "*.ps1", "*.bat", "*.sh", "*.sql", "*.sqlite",
++     "*.db", "*.pem", "*.key", "*.p12", "*.pfx", "id_rsa*", ".env.*",
++     "*.bak", "*.tmp", "*.orig", "*.local.*",
++ ]
++ # --no-inbox 时要剔除的「未核实/待审」数据
++ INBOX_DIRS = {"inbox", "review", "pending", "staging", "_drafts", "unverified"}
++ INBOX_GLOB = ["inbox*", "*_inbox*", "*_pending*", "*_unverified*", "*.review.*"]
++ URL_PLACEHOLDERS = ["__SITE_URL__", "{{SITE_URL}}", "%SITE_URL%", "{SITE_URL}"]
++ TEXT_EXT = {".html", ".htm", ".css", ".js", ".json", ".xml", ".txt", ".md",
++             ".svg", ".yml", ".yaml", ".csv", ".map"}
++ def log(msg):
++     print("[%s] %s" % (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), msg), flush=True)
++ def matches(name, patterns):
++     low = name.lower()
++     for p in patterns:
++         if fnmatch.fnmatch(low, p.lower()):
++             return True
++     return False
++ def should_skip(rel_path, is_dir, args):
++     """返回排除原因，不排除则返回 None。"""
++     parts = rel_path.replace("\\", "/").split("/")
++     base = parts[-1]
++     for d in parts[:-1]:
++         if d in NEVER_EXCLUDE_DIRS:
++             return "版本控制/依赖/私有目录: %s" % d
++         if args.no_inbox and d.lower() in INBOX_DIRS:
++             return "未核实目录(--no-inbox): %s" % d
++     if is_dir:
++         return None
++     if base in NEVER_INCLUDE_FILES:
++         return "不该上线的文件: %s" % base
++     if matches(base, NEVER_INCLUDE_GLOB):
++         return "源码/密钥/备份: %s" % base
++     if args.no_inbox and matches(base, INBOX_GLOB):
++         return "未核实数据(--no-inbox): %s" % base
++     if parts[0] == ".git":
++         return "VCS 元数据"
++     # 用户自定义排除：支持按路径 glob 匹配
++     for p in args.exclude_list:
++         if fnmatch.fnmatch(rel_path.replace("\\", "/"), p) or \
++            fnmatch.fnmatch(base, p) or fnmatch.fnmatch(base, p.rstrip("/")):
++             return "用户 --exclude: %s" % p
++     return None
++ def replace_placeholders(text, site_url):
++     for ph in URL_PLACEHOLDERS:
++         text = text.replace(ph, site_url)
++     # 常见的相对占位（(site.url) 之类）
++     return text
++ def copy_tree(src, out, args):
++     copied, skipped, cleaned = [], [], []
++     root = os.path.abspath(src)
++     dest = os.path.abspath(out)
++     if os.path.exists(dest):
++         if not args.force:
++             log("✗ 输出目录已存在：%s（加 --force 覆盖，或用新目录避免混淆）" % dest)
++             sys.exit(1)
++         shutil.rmtree(dest)
++     for dirpath, dirnames, filenames in os.walk(root):
++         rel_dir = os.path.relpath(dirpath, root)
++         rel_dir = "" if rel_dir == "." else rel_dir
++         dirnames[:] = sorted(d for d in dirnames
++                              if not should_skip(os.path.join(rel_dir, d) if rel_dir else d,
++                                                 True, args))
++         os.makedirs(os.path.join(dest, rel_dir) if rel_dir else dest, exist_ok=True)
++         for fn in sorted(filenames):
++             rel = os.path.join(rel_dir, fn) if rel_dir else fn
++             reason = should_skip(rel, False, args)
++             if reason:
++                 skipped.append((rel, reason))
++                 continue
++             s = os.path.join(dirpath, fn)
++             d = os.path.join(dest, rel)
++             ext = os.path.splitext(fn)[1].lower()
++             if args.site_url and ext in TEXT_EXT:
++                 try:
++                     text = open(s, "r", encoding="utf-8").read()
++                     new = replace_placeholders(text, args.site_url)
++                     if new != text:
++                         cleaned.append(rel)
++                     if not args.dry_run:
++                         open(d, "w", encoding="utf-8", newline="").write(new)
++                     copied.append(rel)
++                     continue
++                 except (UnicodeDecodeError, OSError):
++                     pass  # 二进制或非 utf-8，走普通复制
++             if not args.dry_run:
++                 shutil.copy2(s, d)
++             copied.append(rel)
++     return copied, skipped, cleaned
++ def main():
++     ap = argparse.ArgumentParser(description="整理对外发布的静态产物")
++     ap.add_argument("--src", default=".", help="源目录，默认当前目录")
++     ap.add_argument("--out", required=True, help="输出目录（建议 public/，并加进 .gitignore）")
++     ap.add_argument("--site-url", default="", help="站点绝对 URL，用于替换 URL 占位符")
++     ap.add_argument("--index", default="index.html", help="入口页文件名，默认 %(default)s")
++     ap.add_argument("--exclude", default="", help="额外排除 glob，逗号分隔")
++     ap.add_argument("--no-inbox", action="store_true",
++                     help="剔除未核实/待审数据目录与文件")
++     ap.add_argument("--force", action="store_true", help="输出目录已存在时覆盖")
++     ap.add_argument("--dry-run", action="store_true", help="只打印计划，不写文件")
++     args = ap.parse_args()
++     args.exclude_list = [p.strip() for p in args.exclude.split(",") if p.strip()]
++     src = os.path.abspath(args.src)
++     if not os.path.isdir(src):
++         log("✗ 源目录不存在：%s" % src); sys.exit(1)
++     log("源=%s  输出=%s  %s" % (src, os.path.abspath(args.out),
++                                 "[dry-run]" if args.dry_run else ""))
++     if not args.no_inbox:
++         log("! 未加 --no-inbox：产物会保留草稿/待核实数据。对外发布请确认这是你要的。")
++     copied, skipped, cleaned = copy_tree(src, args.out, args)
++     log("复制 %d 个文件%s" % (len(copied), ""
++                              if not cleaned else "，其中 %d 个做了 URL 占位符替换" % len(cleaned)))
++     if skipped:
++         log("排除 %d 项：" % len(skipped))
++         for rel, reason in skipped[:15]:
++             log("   - %-45s %s" % (rel, reason))
++         if len(skipped) > 15:
++             log("   ... 还有 %d 项" % (len(skipped) - 15))
++     # 收尾校验：必须有入口页；也顺便提醒别把内部数据混进来
++     problems = []
++     if args.index not in copied and not any(
++             c.endswith("/" + args.index) or c == args.index for c in copied):
++         problems.append("产物里找不到入口页 %s" % args.index)
++     for bad in copied:
++         low = bad.lower()
++         if args.no_inbox and ("inbox" in low or "unverified" in low or "_pending" in low):
++             problems.append("产物中仍疑似含未核实数据：%s" % bad)
++         if low.endswith((".pem", ".key", ".p12", ".pfx")) or low.startswith(".env"):
++             problems.append("产物中疑似含密钥/环境变量：%s" % bad)
++     if problems:
++         for p in problems:
++             log("✗ %s" % p)
++         sys.exit(1)
++     log("✓ 产物就绪：%s" % os.path.abspath(args.out))
++     log("  下一步：python deploy_oss.py --bucket <桶> --region cn-hongkong "
++         "--dir %s --setup-website --verify-public --verify" % args.out)
++ if __name__ == "__main__":
++     main()
+
+### scripts/deploy_oss.py  [code]
++ #!/usr/bin/env python3
++ # -*- coding: utf-8 -*-
++ """把静态站产物部署到阿里云 OSS（建桶/上传/静态托管/公开访问/校验）。
++ 支持两种输入：
++     --dir  <目录>    上传整个目录（推荐，配合 build_static.py 的对外产物）
++     --file <文件>    上传单个文件（默认对象名 = 文件名，可用 --key 覆盖）
++ 依赖：
++     pip install oss2
++ 环境变量（只从这里读，绝不落盘、绝不打印）：
++     ALIBABA_CLOUD_ACCESS_KEY_ID / ALIBABA_CLOUD_ACCESS_KEY_SECRET
++ 用法：
++     python deploy_oss.py --check                                    # 列账号下所有桶
++     python deploy_oss.py --bucket my-site-hk --region cn-hongkong --dir public \
++         --setup-website --verify-public --verify                    # 整目录上线
++     python deploy_oss.py --bucket my-site-hk --file index.html --key index.html \
++         --verify --expect 'schema_version'                          # 单文件更新
++     python deploy_oss.py --bucket my-site-hk --dir dist --dry-run   # 只看不传
++ 退出码：0 成功；1 失败
++ """
++ import argparse
++ import hashlib
++ import os
++ import sys
++ import time
++ from datetime import datetime
++ try:
++     sys.stdout.reconfigure(encoding="utf-8")
++ except Exception:
++     pass
++ DEFAULT_REGION = "cn-hongkong"
++ # OSS 不猜 Content-Type，猜错浏览器行为很怪（css 变 plain 直接不生效）
++ CONTENT_TYPES = {
++     ".html": "text/html; charset=utf-8", ".htm": "text/html; charset=utf-8",
++     ".css": "text/css; charset=utf-8",   ".js": "application/javascript; charset=utf-8",
++     ".mjs": "application/javascript; charset=utf-8",
++     ".json": "application/json; charset=utf-8",
++     ".map": "application/json; charset=utf-8",
++     ".svg": "image/svg+xml", ".png": "image/png", ".jpg": "image/jpeg",
++     ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp",
++     ".ico": "image/x-icon", ".woff": "font/woff", ".woff2": "font/woff2",
++     ".ttf": "font/ttf", ".otf": "font/otf", ".txt": "text/plain; charset=utf-8",
++     ".xml": "application/xml; charset=utf-8", ".pdf": "application/pdf",
++     ".md": "text/markdown; charset=utf-8",
++ }
++ DEFAULT_CT = "application/octet-stream"
++ # html / 数据文件改完要立刻生效；js/css 基本不变，给 5 分钟省回源
++ CACHE_HTML = "no-cache"
++ CACHE_ASSET = "public, max-age=300"
++ HTML_EXT = {".html", ".htm", ".json", ".xml", ".txt"}
++ PROXY_KEYS = ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy",
++               "ALL_PROXY", "all_proxy"]
++ def log(msg):
++     print("[%s] %s" % (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), msg), flush=True)
++ def norm_region(region):
++     """region 短名 -> endpoint 用的地域标识。
++     SKILL 里习惯写 cn-hongkong，而 endpoint 需要 oss-cn-hongkong，这里统一补前缀。
++     """
++     """
++     """
++     region = (region or DEFAULT_REGION).strip()
++     return region if region.startswith("oss-") else "oss-" + region
++ def endpoint_of(region):
++     return "https://%s.aliyuncs.com" % norm_region(region)
++ def strip_proxy():
++     """本机常驻代理会让 oss2 报 Tunnel connection failed: 502，且时好时坏。
++     curl 可以 --noproxy 绕开，但 oss2（底层 requests）会老实读这些环境变量。
++     本地手动跑脚本前必须清掉；GitHub Actions 在云端本来就没有，不受影响。
++     removed = [k for k in PROXY_KEYS if os.environ.pop(k, None) is not None]
++     if removed:
++         log("已清除代理环境变量（本机代理会搞挂 oss2）：%s" % ", ".join(removed))
++ def content_type_for(path):
++     return CONTENT_TYPES.get(os.path.splitext(path)[1].lower(), DEFAULT_CT)
++ def cache_control_for(path):
++     ext = os.path.splitext(path)[1].lower()
++     return CACHE_HTML if ext in HTML_EXT else CACHE_ASSET
++ def md5_of(data):
++     return hashlib.md5(data).hexdigest()
++ def get_bucket(bucket, region):
++     import oss2
++     import oss2
++     import oss2
++     ak = os.environ.get("ALIBABA_CLOUD_ACCESS_KEY_ID")
++     ak = os.environ.get("ALIBABA_CLOUD_ACCESS_KEY_ID")
++     sk = os.environ.get("ALIBABA_CLOUD_ACCESS_KEY_SECRET")
++     sk = os.environ.get("ALIBABA_CLOUD_ACCESS_KEY_SECRET")
++     if not ak or not sk:
++     if not ak or not sk:
++         log("✗ 缺少环境变量 ALIBABA_CLOUD_ACCESS_KEY_ID / ALIBABA_CLOUD_ACCESS_KEY_SECRET")
++         log("  （AK 只从环境变量读，不要写进任何文件、也不要提交到 git）")
++         sys.exit(1)
++         sys.exit(1)
++         sys.exit(1)
++         sys.exit(1)
++         sys.exit(1)
++     auth = oss2.Auth(ak, sk)
++     auth = oss2.Auth(ak, sk)
++     return oss2.Bucket(auth, endpoint_of(region), bucket, connect_timeout=30)
++ def do_check(args):
++         log("✗ 缺少 AK 环境变量"); sys.exit(1)
++     # Service 的第二个参数是完整 endpoint，不是 region 短名；传短名会报
++     # RequestError: HTTPConnectionPool ... 看起来像网络/权限故障，其实是用错了参数
++     svc = oss2.Service(auth, endpoint_of(args.region), connect_timeout=30)
++     log("账号下的桶（endpoint=%s）：" % endpoint_of(args.region))
++     try:
++     try:
++     try:
++     try:
++     try:
++     try:
++     try:
++         for b in svc.list_buckets().buckets:
++             log("  %-40s %s" % (b.name, getattr(b, "location", "?")))
++     except Exception as e:
++     except Exception as e:
++     except Exception as e:
++     except Exception as e:
++     except Exception as e:
++         log("✗ 列举失败：%s" % e)
++ def backup_object(b, key, backup_dir):
++     """覆盖前先把线上原对象拉下来，留回滚基线。"""
++         head = b.head_object(key)
++         exists = True
++     except Exception:
++         exists = False
++     if not exists:
++         log("  对象 %s 不存在，无需备份" % key)
++         return None
++         return None
++     dest_dir = backup_dir or os.path.join(
++         os.path.expanduser("~"), ".oss-deploy-backup", b.bucket_name)
++     os.makedirs(dest_dir, exist_ok=True)
++     ts = time.strftime("%Y%m%d-%H%M%S")
++     safe = key.replace("/", "__")
++     dest = os.path.join(dest_dir, "%s.%s" % (safe, ts))
++     b.get_object_to_file(key, dest)
++     data = open(dest, "rb").read()
++     log("  已备份旧版本 -> %s (md5=%s, %d 字节)" % (dest, md5_of(data), len(data)))
++     return dest
++ def upload_one(b, src_path, key, args):
++     data = open(src_path, "rb").read()
++     headers = {
++         "Content-Type": content_type_for(src_path),
++         "Cache-Control": cache_control_for(src_path),
++     }
++     if args.dry_run:
++     if args.dry_run:
++         log("  [dry-run] PUT %s <- %s (%d 字节, %s)"
++             % (key, src_path, len(data), headers["Content-Type"]))
++     if not args.no_backup:
++         backup_object(b, key, args.backup_dir)
++     r = b.put_object(key, data, headers=headers)
++     log("  ✓ %s <- %s (%d 字节, md5=%s, http=%s)"
++         % (key, os.path.basename(src_path), len(data), md5_of(data), r.status))
++     return r
++ def verify_object(b, key, local_path, expect):
++     """验收：比 md5 而不是比字节数；可选再做语义标记断言。"""
++         remote = b.get_object(key).read()
++         log("  ✗ 回读失败：%s" % e)
++         return False
++         return False
++         return False
++     if local_path and os.path.exists(local_path):
++         local = open(local_path, "rb").read()
++         rm, lm = md5_of(remote), md5_of(local)
++         ok = rm == lm
++         log("  %s md5 比对：线上=%s 本地=%s" % ("✓" if ok else "✗", rm, lm))
++         if not ok:
++             return False
++             return False
++     if expect:
++         try:
++             text = remote.decode("utf-8", "ignore")
++         except Exception:
++             text = ""
++         found = all(m in text for m in expect)
++         for m in expect:
++             log("  %s 语义标记：%s" % ("✓" if m in text else "✗", m))
++         if not found:
++     return True
++     return True
++ def setup_website(b, index, error):
++         b.put_bucket_website(oss2.models.BucketWebsite(index, error))
++         got = b.get_bucket_website()
++         log("  ✓ 静态网站托管已设置：Index=%s Error=%s"
++             % (got.index_file, getattr(got, "error_file", "")))
++         log("    （不设的话访问域名根路径返回的是 XML 对象列表而不是首页）")
++         log("  ✗ 设置静态托管失败：%s" % e)
++ def verify_public(b, region):
++     """新建桶默认 BlockPublicAccess=true：匿名访问 403，且 PutBucketPolicy 也被拒。
++     改 ACL 没用，必须关掉桶级阻止公共访问。
++         r = b.get_bucket_public_access_block()
++         enabled = bool(getattr(r, "block_public_access", True))
++         log("  BlockPublicAccess = %s" % enabled)
++         if enabled:
++             b.delete_bucket_public_access_block()
++             r2 = b.get_bucket_public_access_block()
++             enabled2 = bool(getattr(r2, "block_public_access", True))
++             log("  已关闭桶级阻止公共访问 -> %s" % enabled2)
++             if enabled2:
++                 log("  ✗ 关闭失败，可能需要账号级权限")
++                 return False
++         else:
++         else:
++         else:
++             log("  ✓ 桶未阻止公共访问")
++         log("  ! 查询/关闭 BlockPublicAccess 失败：%s" % e)
++         log("    （oss2 < 2.16 无此 API，可改用 curl/scp 直发 DELETE ?publicAccessBlock）")
++     # 匿名探测
++     import urllib.request
++     url = "https://%s.%s.aliyuncs.com/%s" % (
++         b.bucket_name, norm_region(region), "index.html")
++         req = urllib.request.Request(url, headers={"User-Agent": "deploy-verify"})
++         with urllib.request.urlopen(req, timeout=20) as resp:
++             log("  ✓ 匿名访问 %s -> HTTP %s" % (url, resp.status))
++             return True
++         code = getattr(e, "code", "")
++         log("  %s 匿名访问 %s -> %s" % ("✓" if code == 200 else "!", url, e))
++         return code == 200
++ def verify_and_report(b, pairs, args):
++     """回读校验。dry-run 时对象并未真正上传，回读必然 404，直接跳过而不是误报失败。"""
++     if not args.verify:
++         return
++         return
++         return
++         log("  [dry-run] 跳过回读校验（对象未真正上传）")
++     ok = all(verify_object(b, k, local, args.expect) for local, k in pairs)
++     log("✓ 校验通过" if ok else "✗ 校验失败")
++     if not ok:
++ def main():
++     ap = argparse.ArgumentParser(description="静态站部署到阿里云 OSS")
++     ap.add_argument("--bucket", help="OSS Bucket 名")
++     ap.add_argument("--region", default=DEFAULT_REGION,
++                     help="地域，cn-hongkong 或 oss-cn-hongkong 均可，默认 %(default)s")
++     src = ap.add_mutually_exclusive_group()
++     src.add_argument("--dir", help="上传整个目录")
++     src.add_argument("--file", help="上传单个文件")
++     ap.add_argument("--key", default="", help="--file 时指定对象名，默认用文件名")
++     ap.add_argument("--index", default="index.html", help="静态托管首页，默认 %(default)s")
++     ap.add_argument("--error", default="404.html", help="静态托管错误页，默认 %(default)s")
++     ap.add_argument("--prefix", default="", help="对象名前缀，如 site/")
++     ap.add_argument("--setup-website", action="store_true", help="配置静态网站托管")
++     ap.add_argument("--verify-public", action="store_true",
++                     help="关闭桶级阻止公共访问并匿名验证")
++     ap.add_argument("--verify", action="store_true", help="上传后回读 md5 校验")
++     ap.add_argument("--expect", action="append", default=[],
++                     help="语义标记，可重复；例如 --expect 'schema_version'")
++     ap.add_argument("--check", action="store_true", help="只列账号下的桶")
++     ap.add_argument("--dry-run", action="store_true", help="只打印将要执行的操作")
++     ap.add_argument("--backup-dir", default="", help="旧版本备份目录")
++     ap.add_argument("--no-backup", action="store_true", help="关闭自动备份")
++     ap.add_argument("--keep-proxy", action="store_true",
++                     help="保留代理环境变量（默认清除，见脚本顶部说明）")
++     args = ap.parse_args()
++         import oss2  # noqa: F401
++     except ImportError:
++         log("✗ 缺少依赖：pip install oss2")
++     if not args.keep_proxy:
++         strip_proxy()
++     region = args.region
++     log("地域=%s  endpoint=%s" % (norm_region(region), endpoint_of(region)))
++     if args.check:
++         do_check(args)
++     if not args.bucket or not (args.dir or args.file):
++         log("✗ 需要 --bucket 且 --dir 或 --file 之一（或 --check）")
++     b = get_bucket(args.bucket, norm_region(region))
++     log("桶=%s" % args.bucket)
++     if args.dir:
++         root = os.path.abspath(args.dir)
++         if not os.path.isdir(root):
++             log("✗ 目录不存在：%s" % root); sys.exit(1)
++         if not os.path.exists(os.path.join(root, args.index)):
++             log("! 目录里没有 %s，若为子路径部署请确认 --prefix" % args.index)
++         uploaded = []
++         for dirpath, dirnames, filenames in os.walk(root):
++             dirnames[:] = [d for d in dirnames if d not in (".git", "node_modules", "__pycache__")]
++             for fn in sorted(filenames):
++                 if fn.startswith("."):
++                     continue
++                 full = os.path.join(dirpath, fn)
++                 rel = os.path.relpath(full, root).replace("\\", "/")
++                 upload_one(b, full, args.prefix + rel, args)
++                 uploaded.append((full, args.prefix + rel))
++         log("共 %d 个对象" % len(uploaded))
++         verify_and_report(b, uploaded, args)
++     else:
++         src_path = os.path.abspath(args.file)
++         if not os.path.exists(src_path):
++             log("✗ 文件不存在：%s" % src_path); sys.exit(1)
++         key = args.key or os.path.basename(src_path)
++         upload_one(b, src_path, args.prefix + key, args)
++         verify_and_report(b, [(src_path, args.prefix + key)], args)
++     if args.setup_website:
++         if not args.dry_run:
++         if not args.dry_run:
++             setup_website(b, args.index, args.error)
++             log("  [dry-run] 会设置静态托管：Index=%s Error=%s" % (args.index, args.error))
++     if args.verify_public:
++             verify_public(b, region)
++             log("  [dry-run] 会关闭 BlockPublicAccess 并匿名验证")
++     log("完成。自定义域名若走 CDN，记得刷新目录缓存 /")
+
+### scripts/verify_deploy.py  [code]
++ #!/usr/bin/env python3
++ # -*- coding: utf-8 -*-
++ """部署后的语义验收：对着真实线上 URL 断言，而不是比字节数。
++ 为什么需要：数据每天都在涨，比 `wc -c` 分不清是「没部署」还是「部署了但数据变了」。
++ 这里断言的都是**不会因为数据增长而失效**的东西——根路径是否返回 XML（静态托管是否生效）、
++ 入口页是否含本次构建的标记、详情页是否真内联了正文、公开版有没有夹带未核实数据。
++ 零第三方依赖（纯 stdlib urllib）。
++ 用法：
++     python verify_deploy.py --base-url https://demo.example.com
++     python verify_deploy.py --base-url https://demo.example.com \
++         --expect-text 'schema_version' --expect-text 'generated_at' \
++         --forbid-text '<?xml' --min-bytes 20000
++     python verify_deploy.py --base-url https://d.example.com \
++     python verify_deploy.py --base-url https://d.example.com \
++         --pages-file pages.txt --check-seo
++         --data-json data.json --expect-cases 42
++ 退出码：0 全部通过；1 有失败项
++ """
++ import argparse
++ import json
++ import os
++ import sys
++ import urllib.error
++ import urllib.request
++ from datetime import datetime
++ try:
++     sys.stdout.reconfigure(encoding="utf-8")
++ except Exception:
++     pass
++ PROXY_KEYS = ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy",
++               "ALL_PROXY", "all_proxy"]
++ def log(msg):
++     print("[%s] %s" % (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), msg), flush=True)
++ def fetch(url, timeout=20):
++     """返回 (status, body_bytes)。缓存友好：显式要求源站别给旧对象。"""
++     req = urllib.request.Request(url, headers={
++         "User-Agent": "verify-deploy/1.0",
++         "Cache-Control": "no-cache",
++         "Pragma": "no-cache",
++     })
++     try:
++         with urllib.request.urlopen(req, timeout=timeout) as r:
++             return r.status, r.read()
++     except urllib.error.HTTPError as e:
++         try:
++             body = e.read()
++         except Exception:
++             body = b""
++         return e.code, body
++     except Exception as e:
++         return 0, str(e).encode()
++ def main():
++     ap = argparse.ArgumentParser(description="静态站部署后的语义验收")
++     ap.add_argument("--base-url", required=True, help="站点根 URL，如 https://demo.example.com")
++     ap.add_argument("--index", default="/", help="入口页路径，默认 /")
++     ap.add_argument("--pages", default="", help="要检查的路径，逗号分隔")
++     ap.add_argument("--pages-file", default="", help="要检查的路径清单文件，每行一个")
++     ap.add_argument("--expect-text", action="append", default=[],
++                     help="入口页必须包含的字符串（语义标记），可重复")
++     ap.add_argument("--forbid-text", action="append", default=[],
++                     help="入口页禁止出现的字符串，可重复")
++     ap.add_argument("--xml-root-is-fail", action="store_true",
++                     help="根路径返回 XML 即判失败（静态托管是否真正生效）")
++     ap.add_argument("--min-bytes", type=int, default=0, help="页面最小字节数")
++     ap.add_argument("--data-json", default="", help="要校验的数据文件路径，如 data.json")
++     ap.add_argument("--expect-cases", type=int, default=-1,
++                     help="期望的数据条数；案例数会涨，请从外部传入而不是写死")
++     ap.add_argument("--expect-json-field", action="append", default=[],
++                     help="数据文件必须存在的字段，可重复")
++     ap.add_argument("--check-seo", action="store_true", help="顺带校验 robots.txt / sitemap.xml")
++     ap.add_argument("--keep-proxy", action="store_true",
++                     help="保留代理环境变量（默认清除，本机代理会让 urllib 报 502）")
++     args = ap.parse_args()
++     if not args.keep_proxy:
++         removed = [k for k in PROXY_KEYS if os.environ.pop(k, None) is not None]
++         if removed:
++             log("已清除代理环境变量：%s" % ", ".join(removed))
++     base = args.base_url.rstrip("/")
++     fails, checks = [], 0
++     # 1) 入口页
++     url = base + args.index
++     status, body = fetch(url)
++     text = body.decode("utf-8", "ignore")
++     log("入口页 %s -> HTTP %s (%d 字节)" % (url, status, len(body)))
++     checks += 1
++     if status != 200:
++         fails.append("入口页状态码 %s（期望 200）" % status)
++     if args.xml_root_is_fail:
++         checks += 1
++         checks += 1
++         checks += 1
++         checks += 1
++         checks += 1
++         if text.lstrip().startswith("<?xml"):
++             fails.append("根路径返回 XML 对象列表 —— 静态网站托管没生效")
++             log("  ✗ 返回的是 XML（静态托管未生效）")
++         else:
++         else:
++             log("  ✓ 非 XML，静态托管生效")
++     for t in args.expect_text:
++         ok = t in text
++         log("  %s 必须包含：%s" % ("✓" if ok else "✗", t))
++         if not ok:
++         if not ok:
++         if not ok:
++             fails.append("入口页缺少语义标记：%s" % t)
++     for t in args.forbid_text:
++         ok = t not in text
++         log("  %s 禁止出现：%s" % ("✓" if ok else "✗", t))
++             fails.append("入口页出现了不该有的内容：%s" % t)
++     # 2) 详情页
++     pages = [p.strip() for p in args.pages.split(",") if p.strip()]
++     if args.pages_file:
++         pages += [l.strip() for l in open(args.pages_file, encoding="utf-8")
++                   if l.strip() and not l.startswith("#")]
++     pages = [p if p.startswith("/") else "/" + p for p in pages]
++     for p in pages:
++         st, bb = fetch(base + p)
++         ok = st == 200 and (args.min_bytes <= 0 or len(bb) >= args.min_bytes)
++         note = "" if ok else "（状态码 %s / %d 字节）" % (st, len(bb))
++         log("  %s %s -> HTTP %s (%d 字节) %s" % ("✓" if ok else "✗", p, st, len(bb), note))
++             fails.append("页面 %s 校验失败：HTTP %s, %d 字节" % (p, st, len(bb)))
++     # 3) 数据文件
++     if args.data_json:
++         path = args.data_json if args.data_json.startswith("/") else "/" + args.data_json
++         st, bb = fetch(base + path)
++         log("数据文件 %s -> HTTP %s (%d 字节)" % (path, st, len(bb)))
++         if st != 200:
++             fails.append("数据文件 %s 不可用：HTTP %s" % (path, st))
++             try:
++                 d = json.loads(bb.decode("utf-8"))
++                 log("  ✓ JSON 可解析")
++                 for f in args.expect_json_field:
++                     checks += 1
++                     ok = f in d or isinstance(d, dict) and f in d.get("site", {})
++                     log("  %s 字段存在：%s" % ("✓" if ok else "✗", f))
++                     if not ok:
++                         fails.append("数据文件缺少字段：%s" % f)
++                 if isinstance(d, dict):
++                     # 常见命名都照顾到，找不到就跳过而不是误报
++                     n = None
++                     for key in ("cases", "items", "records", "posts", "count"):
++                         if isinstance(d.get(key), list):
++                             n = len(d[key]); k = key; break
++                     if n is not None:
++                         log("  ℹ %s 条数 = %d" % (k, n))
++                         if args.expect_cases >= 0:
++                             checks += 1
++                             ok = n == args.expect_cases
++                             log("  %s 条数断言（期望 %d）" % ("✓" if ok else "✗", args.expect_cases))
++                             if not ok:
++                                 fails.append("%s 条数 %d != 期望 %d" % (k, n, args.expect_cases))
++                     # 公开版不该夹带未核实数据
++                     inbox = d.get("inbox")
++                     if inbox is not None:
++                         checks += 1
++                         ok = (inbox == 0 or (isinstance(inbox, list) and len(inbox) == 0))
++                         log("  %s 公开版 inbox 为空" % ("✓" if ok else "✗"))
++                         if not ok:
++                             fails.append("公开产物里含未核实数据 inbox=%s" % inbox)
++             except Exception as e:
++                 fails.append("数据文件 JSON 解析失败：%s" % e)
++                 log("  ✗ JSON 解析失败：%s" % e)
++     # 4) SEO 附件
++     if args.check_seo:
++         for p in ("/robots.txt", "/sitemap.xml"):
++             checks += 1
++             st, bb = fetch(base + p)
++             ok = st == 200
++             # 没有 robots/sitemap 不算致命错误，只提示
++             log("  %s %s -> HTTP %s" % ("✓" if ok else "!", p, st))
++             if not ok:
++                 log("    （%s 缺失不算致命，按需补）" % p)
++     log("———— 共 %d 项检查 ————" % checks)
++     if fails:
++         for f in fails:
++             log("✗ %s" % f)
++         log("验收失败：%d 项不通过" % len(fails))
++         sys.exit(1)
++     log("✓ 验收通过")
++ if __name__ == "__main__":
++     main()

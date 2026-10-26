@@ -1,0 +1,957 @@
+yiming1001/web-collection  1.1.7 -> 1.1.8
+change_type: instructions+code   changelog: Unify CLI parameters, streamline the skill, and add first-run defaults with recommended setup.
+
+### SKILL.md  [instructions]
+- description: Browser plugin data collection via a local bridge, in strict synchronous closed-loop mode. Default bridge base URL is http://127.0.0.1:19820; always query task status on the same base URL used for collect, and do not reply to the user until the closed-loop script exits with a final result.
+- Use the bridge API plus browser extension to collect data from Douyin, TikTok, and Xiaohongshu.
+- ## Browser Choice
+- This skill should use the user's usual browser environment, not the isolated OpenClaw-managed browser.
+- Hard rules:
+- Hard rules:
+- Hard rules:
+- 1. Prefer the existing Chrome browser with the collection extension already installed and signed in.
+- 2. Do not launch or rely on the isolated `openclaw` browser profile for this skill.
+- 3. Prefer the local bridge plus browser extension flow over the generic OpenClaw browser tool.
+- 4. If browser tool usage is absolutely required, explicitly use `profile="chrome"` and require an attached tab via the Chrome relay.
+- 5. Never assume the isolated `openclaw` browser profile has the user's cookies, login sessions, or extension state.
+- ## Account and Profile Guardrails
+- This skill must preserve the user's day-to-day Chrome account environment.
+- 1. Treat "Chrome" as the user's normal signed-in Chrome profile, including their usual Google account and website login state.
+- 2. Do not silently fall back to another browser profile, another Chrome profile, or the isolated `openclaw` profile.
+- 3. When switching platforms within the same conversation, do not assume the previous platform's browser attachment is still correct.
+- 4. Before a Xiaohongshu, Douyin, or TikTok run after a platform switch, re-check that the active environment is still the user's normal Chrome environment.
+- 5. If the run depends on an attached tab or relay state, require a fresh attached tab in Chrome for the target platform rather than reusing stale attachment assumptions.
+- 6. If you cannot verify that the run is using the user's normal Chrome environment, stop and ask the user to re-attach the Chrome tab instead of continuing.
+- Practical interpretation:
+- - "Use the daily Google account" means "use the user's already signed-in normal Chrome session", not a fresh browser context.
+- - If Chrome relay or browser status was checked for another platform earlier in the thread, that check is stale after a platform change.
+- - For Xiaohongshu specifically, always prefer a fresh confirmation of the normal Chrome session before collecting.
+- ## Fast Unified Entry (recommended)
+- When user intent is "采集 + 导出 + 返回链接", start with the bundled wrapper:
+- ```bash
+- ```bash
+-   --keyword "小龙虾AI助手" \
+-   --max-items 10 \
+-   --max-items 10 \
+- Rules for speed:
+- 1. Do not hand-write ad-hoc `curl` status checks before the first run.
+- 2. Start with `scripts/run.sh` immediately.
+- 3. Default to synchronous closed-loop execution. Do not split the task into `start -> running -> process poll -> final reply`.
+- 4. Reply only after the script exits with a final result.
+- 5. Reply result fields first: `表格链接`, `状态`, `导出状态`, `采集条数`.
+- `run.sh` uses the bundled closed-loop script and defaults to `http://127.0.0.1:19820`.
+- When available, it auto-detects the packaged macOS connector command under `/Library/Application Support/meixi-connector/...`.
+- ## Closed-Loop Behavior
+- Use the bundled script:
+- {baseDir}/scripts/collect_and_export_loop.sh
+- It enforces the full loop:
+- 1. Check `pluginConnected=true`
+- 2. Wait idle (`running=0 && exporting=0`)
+- 3. Start `POST /api/collect`
+- 4. Handle `TASK_RUNNING` with `stop -> wait idle -> retry`
+- 5. Poll by `taskId` until `completed` or `error`
+- 6. If export is requested, require `export.status=completed` and `export.tableUrl`
+- If bridge is not already running, use `--ensure-bridge` plus `--bridge-cmd` to auto-start it.
+- Do not hand-write follow-up status polls against a different port. Reuse the same `--base-url` for collect, status, and stop. The default is `http://127.0.0.1:19820`.
+- ## Strict Sync Mode
+- This skill should run in synchronous closed-loop mode by default.
+- 1. Do not reply to the user while the collection script is still running.
+- 2. Do not switch to `process poll`, `sessionId`, or ad-hoc follow-up checks unless the user explicitly asks for progress-first behavior.
+- 3. Do not send an intermediate "任务已发起" style answer by default.
+- 4. Always wait for the closed-loop script to exit and return final JSON before replying.
+- 5. If the execution environment requires an explicit tool timeout, set it high enough for the full loop. Prefer at least `1200` seconds, and use `1800` seconds for slower platforms.
+- 6. When the task succeeds, the final reply must include the table link first when `export.tableUrl` exists, followed by a short analysis of the results.
+- If a command returns only a running handle instead of final JSON, treat that as the wrong execution mode and rerun with the direct closed-loop command.
+- ## Final Reply Contract
+- When the task succeeds:
+- 1. If `export.tableUrl` exists, include it in the final reply.
+- 2. Include a short analysis after the link:
+-    - what the results mostly contain
+-    - whether the keyword meaning matches the user's likely intent
+-    - 1 to 3 notable examples
+- 3. Keep the analysis short and useful.
+- When the task completes without `export.tableUrl`:
+- 1. Explicitly say that the collection finished but no table link was exported.
+- 2. Include the reason if `export.error` exists.
+- 3. Do not imply export succeeded.
+- Recommended success structure:
+- - `表格链接`
+- - `状态`
+- - `导出状态`
+- - `采集条数`
+- - `简短分析`
+- ## Prerequisites
+- 1. Chrome is open and the collection extension is enabled.
+- 2. Bridge server is running. On packaged macOS installs, prefer:
+- '/Library/Application Support/meixi-connector/runtime/node' \
+-   '/Library/Application Support/meixi-connector/connector/connector-server.js'
+- If you are running from a source checkout instead of the packaged connector, use your local checkout path, for example:
+- node /path/to/web_collection/bridge/bridge-server.js
+- ## Quick Start
+- ### Option A: payload file
+- cat >/tmp/web-collect.json <<'JSON'
+- {
+-   "platform": "douyin",
+-   "method": "videoKeyword",
+-   "keywords": ["美食探店"],
+-   "maxItems": 10,
+-   "feature": "video",
+-   "mode": "search",
+-   "interval": 300,
+-   "fetchDetail": true,
+-   "detailSpeed": "fast",
+-   "autoExport": true,
+-   "exportMode": "personal"
+- }
+- JSON
+- {baseDir}/scripts/collect_and_export_loop.sh \
+- {baseDir}/scripts/collect_and_export_loop.sh \
+-   --payload-file /tmp/web-collect.json \
+-   --base-url http://127.0.0.1:19820 \
+-   --base-url http://127.0.0.1:19820 \
+-   --ensure-bridge \
+-   --ensure-bridge \
+-   --bridge-cmd "'/Library/Application Support/meixi-connector/runtime/node' '/Library/Application Support/meixi-connector/connector/connector-server.js'" \
+-   --force-stop-before-start
+- ### Option B: direct flags
+-   --method videoKeyword \
+-   --keyword "美食探店" \
+-   --feature video \
+-   --mode search \
+-   --interval 300 \
+-   --fetch-detail true \
+-   --detail-speed fast \
+-   --auto-export true \
+-   --export-mode personal \
+-   --bridge-cmd "'/Library/Application Support/meixi-connector/runtime/node' '/Library/Application Support/meixi-connector/connector/connector-server.js'"
+- When invoking from an agent tool runner, use a blocking exec with a generous timeout.
+- Do not use a background session unless the user explicitly asks for incremental progress updates.
+- ## Script Options
+- {baseDir}/scripts/collect_and_export_loop.sh --help
+- Common runtime flags:
+- - `--base-url` default `http://127.0.0.1:19820`
+- - `--poll-sec` default `3`
+- - `--timeout-sec` default `1200`
+- - `--start-retries` default `3`
+- - `--idle-timeout-sec` default `180`
+- - `--ensure-bridge` auto-start bridge if `/api/status` is unreachable
+- - `--bridge-cmd` bridge startup command, required with `--ensure-bridge` if auto-detection is not available
+- - `--bridge-ready-timeout-sec` default `30`
+- - `--bridge-log` default `/tmp/web-collection-bridge.log`
+- - `--force-stop-before-start`
+- ## Platform Methods
+- ### Douyin (`platform=douyin`)
+- - `videoKeyword` (keywords)
+- - `creatorKeyword` (keywords)
+- - `creatorKeyword` (keywords)
+- - `creatorLink` (links)
+- - `creatorLink` (links)
+- - `creatorVideo` (links)
+- - `videoComment` (links)
+- - `videoInfo` (links)
+- - `videoLink` (links)
+- ### TikTok (`platform=tiktok`)
+- - `keywordSearch` (keywords)
+- - `keywordSearch` (keywords)
+- - `userVideo` (links)
+- - `tiktokComment` (links)
+- - `tiktokCreatorKeyword` (keywords)
+- - `tiktokCreatorLink` (links)
+- ### Xiaohongshu (`platform=xiaohongshu`)
+- - `creatorNote` (links)
+- - `noteLink` (links)
+- - `noteComment` (links)
+- ### `pluginConnected=false`
+- - Check bridge process and port.
+- - Reload extension at `chrome://extensions`.
+- - Recheck `GET /api/status`.
+- ### status query returns nothing
+- - Check that you are querying the same base URL used by the collect command.
+- - Default bridge URL is `http://127.0.0.1:19820`.
+- - Do not switch to ad-hoc ports for `/api/tasks/<taskId>` unless the run explicitly used that port.
+- ### `TASK_RUNNING`
+- - The script auto-recovers with `POST /api/stop` and retry.
+- - If it still fails, run once with `--force-stop-before-start`.
+- - If `running` stays stuck after `POST /api/stop`, restart the connector and browser extension, then retry.
+- ### the agent replied before the task finished
+- - That is the wrong execution mode for this skill.
+- - Rerun with the direct closed-loop script and wait for exit.
+- - Do not use split-phase `start + process poll + intermediate reply` unless the user explicitly asked for progress updates.
+- ### stuck at `exporting`
+- - Verify Feishu export config and permissions in extension settings.
+- - Ensure extension build supports export callback.
+- - Inspect task detail `error` and `export` fields.
+- ### task completed but the reply missed the table link
+- - Treat that as an invalid final response.
+- - Rerun the final formatting step from the completed JSON.
+- - If `export.tableUrl` exists, it must be included.
+- ## Manual API Fallback
+- Use only when debugging. For normal runs, prefer the bundled script.
+- curl -s http://127.0.0.1:19820/api/status
+- curl -s -X POST http://127.0.0.1:19820/api/collect -H 'Content-Type: application/json' -d '{...}'
+- curl -s http://127.0.0.1:19820/api/tasks/<taskId>
+- curl -s -X POST http://127.0.0.1:19820/api/stop
++ description: Browser plugin data collection via a local bridge, in strict synchronous closed-loop mode. Use for Douyin, TikTok, Xiaohongshu, Amazon, and Bilibili collection tasks.
++ Use this skill for browser-extension collection tasks on:
++ - Douyin
++ - TikTok
++ - Xiaohongshu
++ - Amazon
++ - Bilibili
++ ## Core Rules
++ 1. Use the user's normal Chrome environment, not the isolated `openclaw` browser profile.
++ 2. Prefer the local bridge + plugin flow over generic browser tooling.
++ 3. Default to synchronous closed-loop execution.
++ 4. Do not reply before the collection script finishes.
++ 5. Use the same base URL for collect, status, and stop.
++ ## First-Time Setup
++ This skill uses one preferences file:
++ `$OPENCLAW_STATE_DIR/skill-state/web-collection/preferences.json`
++ Fallback:
++ `$HOME/.openclaw/skill-state/web-collection/preferences.json`
++ Helper script:
++ {baseDir}/scripts/export_preference.sh show
++ {baseDir}/scripts/export_preference.sh check
++ {baseDir}/scripts/export_preference.sh apply-recommended
++ {baseDir}/scripts/export_preference.sh apply-recommended
++ {baseDir}/scripts/export_preference.sh set-key defaultExportMode csv
++ Required defaults:
++ - `defaultExportMode`
++ - `defaultMaxItems`
++ - `defaultFetchDetail`
++ - `defaultDetailSpeed`
++ `run.sh` enforces this. If these are incomplete, collection must not start.
++ ### First-run flow
++ On first use:
++ 1. Briefly explain the four required defaults:
++    - 导出方式
++    - 默认采集条数
++    - 是否默认采集详情
++    - 默认采集速度
++ 2. Ask only one question first:
++    - `推荐配置`
++    - `自己配置`
++ 3. If the user chooses `推荐配置`, run:
++ 4. If the user chooses `自己配置`, ask for all four values in one message, not one by one.
++ 5. Only continue when `check` passes.
++ Preferred quick-reply prompt:
++ ```text
++ ```text
++ 第一次使用网页采集，需要先完成默认配置。
++ 这些配置包括：
++ - 导出方式
++ - 默认采集条数
++ - 是否默认采集详情
++ - 默认采集速度
++ 你可以直接用推荐配置，也可以自己配置。
++ [[quick_replies: 推荐配置, 自己配置]]
++ Preferred custom-config prompt:
++ 好，我们一次性把默认配置定好。请直接按下面格式回复：
++ 导出方式：CSV / 多维表格
++ 默认采集条数：10 / 20 / 50 / 100
++ 是否默认采集详情：是 / 否
++ 默认采集速度：fast / medium / slow
++ 说明：
++ - 多维表格：适合查看、筛选、分享
++ - CSV：适合本地保存
++ - 采集详情：开启后结果更完整，但一般更慢
++ - 采集速度：推荐 fast
++ Recommended defaults:
++ - 导出方式：`多维表格`
++ - 采集条数：`20`
++ - 采集详情：`true`
++ - 采集速度：`fast`
++ ## Export Behavior
++ - `bitable`
++   - run with `--export-target bitable`
++   - expect `export.tableUrl` on success
++ - `csv`
++   - run with `--export-target csv`
++   - do not require a table link in the final reply
++ ## Entry Point
++ Preferred wrapper:
++ bash {baseDir}/scripts/run.sh ...
++ The wrapper:
++ - applies stored preferences
++ - enforces required setup
++ - prefers the connector repo's real bridge loop when available
++ - falls back to the bundled loop only if needed
++ ## Common Commands
++ Douyin keyword search:
++ bash {baseDir}/scripts/run.sh \
++ bash {baseDir}/scripts/run.sh \
++   --keyword "AI" \
++   --ensure-bridge
++   --ensure-bridge
++ Amazon keyword search:
++   --platform amazon \
++   --keyword "Chinese porcelain" \
++ Bilibili keyword search:
++   --platform bilibili \
++   --keyword "古董" \
++ ## Platform Defaults
++ Wrapper defaults:
++ - `douyin` => `videoKeyword`
++ - `tiktok` => `keywordSearch`
++ - `xiaohongshu` => `keywordSearch`
++ - `amazon` => `keywordSearch`
++ - `bilibili` => `keywordSearch`
++ Supported methods:
++ - `douyin`: `videoKeyword`, `creatorKeyword`, `creatorLink`, `creatorVideo`, `videoComment`, `videoInfo`, `videoLink`
++ - `tiktok`: `keywordSearch`, `userVideo`, `tiktokComment`, `tiktokCreatorKeyword`, `tiktokCreatorLink`
++ - `xiaohongshu`: `keywordSearch`, `creatorNote`, `creatorLink`, `creatorKeyword`, `noteLink`, `noteComment`
++ - `amazon`: `keywordSearch`, `productLink`, `productReview`
++ - `bilibili`: `keywordSearch`, `videoInfo`, `creatorVideo`, `bilibiliComment`
++ ## Closed Loop
++ The loop must:
++ 1. verify `pluginConnected=true`
++ 2. wait for idle state
++ 3. start `/api/collect`
++ 4. handle `TASK_RUNNING` via `stop -> wait idle -> retry`
++ 5. poll `/api/tasks/<taskId>` until `completed` or `error`
++ 6. if export is required, verify the expected export result
++ ## Final Reply
++ When successful:
++ 1. If export mode is `bitable` and `export.tableUrl` exists, include the table link first.
++ 2. If export mode is `csv`, explicitly say export mode is CSV.
++ 3. Then include:
++    - status
++    - export status
++    - collected count
++    - short analysis
++ When `bitable` export is expected but no table link exists, explicitly say export did not finish correctly.
++ - `pluginConnected=false`
++   - Chrome/plugin is not connected to the bridge
++ - bridge/status mismatch
++   - ensure collect, status, and stop all use the same base URL
++ - `TASK_RUNNING`
++   - use stop + retry, or `--force-stop-before-start`
++ - long record output hiding key fields
++   - trust the connector loop's compact summary output rather than raw task JSON
+
+### scripts/export_preference.sh  [code]
++ #!/usr/bin/env bash
++ set -euo pipefail
++ resolve_state_dir() {
++   if [[ -n "${OPENCLAW_STATE_DIR:-}" ]]; then
++     printf '%s\n' "$OPENCLAW_STATE_DIR"
++     return 0
++     return 0
++     return 0
++   fi
++   fi
++   fi
++   printf '%s\n' "${HOME}/.openclaw"
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ resolve_preferences_path() {
++   local state_dir
++   local state_dir
++   state_dir="$(resolve_state_dir)"
++   state_dir="$(resolve_state_dir)"
++   printf '%s\n' "${state_dir}/skill-state/web-collection/preferences.json"
++ resolve_legacy_export_mode_path() {
++   printf '%s\n' "${state_dir}/skill-state/web-collection/export-mode.json"
++ read_preferences_json() {
++   local pref_path="$1"
++   local pref_path="$1"
++   local pref_path="$1"
++   local pref_path="$1"
++   local legacy_path="$2"
++   local legacy_path="$2"
++   local legacy_path="$2"
++   local legacy_path="$2"
++   if [[ -f "$pref_path" ]]; then
++     cat "$pref_path"
++   if [[ -f "$legacy_path" ]]; then
++     cat "$legacy_path"
++   printf '{}\n'
++ normalize_key() {
++   local key="${1:-}"
++   case "$key" in
++   case "$key" in
++     export|exportMode|defaultExportMode|"")
++       printf '%s\n' "defaultExportMode"
++       ;;
++       ;;
++       ;;
++       ;;
++       ;;
++       ;;
++       ;;
++       ;;
++       ;;
++       ;;
++       ;;
++       ;;
++       ;;
++       ;;
++       ;;
++       ;;
++       ;;
++       ;;
++       ;;
++       ;;
++       ;;
++       ;;
++       ;;
++       ;;
++     platform|defaultPlatform)
++       printf '%s\n' "defaultPlatform"
++     maxItems|defaultMaxItems)
++       printf '%s\n' "defaultMaxItems"
++     fetchDetail|defaultFetchDetail)
++       printf '%s\n' "defaultFetchDetail"
++     detailSpeed|defaultDetailSpeed)
++       printf '%s\n' "defaultDetailSpeed"
++     bridgeUrl|defaultBridgeUrl)
++       printf '%s\n' "defaultBridgeUrl"
++     *)
++     *)
++       printf '%s\n' "$key"
++   esac
++   esac
++   esac
++ validate_key_value() {
++   local key="$1"
++   local key="$1"
++   local key="$1"
++   local key="$1"
++   local value="$2"
++   local value="$2"
++     defaultExportMode)
++       [[ "$value" == "csv" || "$value" == "bitable" ]] || {
++         echo "invalid export mode: $value (expected csv or bitable)" >&2
++         exit 1
++         exit 1
++         exit 1
++         exit 1
++         exit 1
++       }
++       }
++       }
++     defaultPlatform)
++       case "$value" in
++       case "$value" in
++       case "$value" in
++         douyin|tiktok|xiaohongshu|amazon|bilibili) ;;
++         *)
++         *)
++         *)
++           echo "invalid platform: $value" >&2
++           exit 1
++           exit 1
++           exit 1
++           ;;
++           ;;
++           ;;
++       esac
++       esac
++       esac
++     defaultMaxItems)
++       [[ "$value" =~ ^[0-9]+$ ]] || {
++         echo "invalid max items: $value (expected integer)" >&2
++     defaultFetchDetail)
++         true|false) ;;
++           echo "invalid fetchDetail: $value (expected true or false)" >&2
++     defaultDetailSpeed)
++         slow|medium|fast) ;;
++           echo "invalid detailSpeed: $value (expected slow, medium, or fast)" >&2
++     defaultBridgeUrl)
++       [[ -n "$value" ]] || {
++         echo "invalid bridgeUrl: empty" >&2
++ print_value() {
++   local pref_path="$2"
++   local pref_path="$2"
++   local legacy_path="$3"
++   local legacy_path="$3"
++   node -e '
++   node -e '
++   node -e '
++   node -e '
++ const fs = require("node:fs");
++ const fs = require("node:fs");
++ const fs = require("node:fs");
++ const fs = require("node:fs");
++ const prefPath = process.argv[1];
++ const prefPath = process.argv[1];
++ const prefPath = process.argv[1];
++ const prefPath = process.argv[1];
++ const legacyPath = process.argv[2];
++ const legacyPath = process.argv[2];
++ const legacyPath = process.argv[2];
++ const legacyPath = process.argv[2];
++ const key = process.argv[3];
++ const key = process.argv[3];
++ const key = process.argv[3];
++ const read = (filePath) => {
++ const read = (filePath) => {
++ const read = (filePath) => {
++ const read = (filePath) => {
++   try {
++   try {
++   try {
++   try {
++     return JSON.parse(fs.readFileSync(filePath, "utf8"));
++     return JSON.parse(fs.readFileSync(filePath, "utf8"));
++     return JSON.parse(fs.readFileSync(filePath, "utf8"));
++     return JSON.parse(fs.readFileSync(filePath, "utf8"));
++   } catch {
++   } catch {
++   } catch {
++   } catch {
++     return null;
++     return null;
++     return null;
++     return null;
++   }
++   }
++   }
++   }
++ };
++ };
++ };
++ };
++ };
++ const data = read(prefPath) ?? read(legacyPath) ?? {};
++ const data = read(prefPath) ?? read(legacyPath) ?? {};
++ const data = read(prefPath) ?? read(legacyPath) ?? {};
++ const data = read(prefPath) ?? read(legacyPath) ?? {};
++ const value = data[key];
++ if (value === undefined || value === null) {
++   process.exit(0);
++ if (typeof value === "object") {
++   process.stdout.write(JSON.stringify(value));
++ } else {
++   process.stdout.write(String(value));
++ ' "$pref_path" "$legacy_path" "$key"
++ ' "$pref_path" "$legacy_path" "$key"
++ write_value() {
++   local pref_path="$3"
++   local legacy_path="$4"
++   mkdir -p "$(dirname "$pref_path")"
++   mkdir -p "$(dirname "$pref_path")"
++ const rawValue = process.argv[4];
++ let value = rawValue;
++ if (rawValue === "true") value = true;
++ else if (rawValue === "false") value = false;
++ else if (/^[0-9]+$/.test(rawValue)) value = Number(rawValue);
++ data[key] = value;
++ data.updatedAt = new Date().toISOString();
++ data.updatedAt = new Date().toISOString();
++ data.updatedBy = "user";
++ data.updatedBy = "user";
++ const tempPath = `${prefPath}.tmp-${process.pid}`;
++ const tempPath = `${prefPath}.tmp-${process.pid}`;
++ fs.writeFileSync(tempPath, JSON.stringify(data, null, 2) + "\n", "utf8");
++ fs.writeFileSync(tempPath, JSON.stringify(data, null, 2) + "\n", "utf8");
++ fs.renameSync(tempPath, prefPath);
++ fs.renameSync(tempPath, prefPath);
++ ' "$pref_path" "$legacy_path" "$key" "$value"
++ unset_value() {
++ delete data[key];
++ show_preferences() {
++   read_preferences_json "$pref_path" "$legacy_path"
++ check_required_preferences() {
++ const required = [
++   "defaultExportMode",
++   "defaultMaxItems",
++   "defaultFetchDetail",
++   "defaultDetailSpeed",
++ ];
++ const missing = required.filter((key) => data[key] === undefined || data[key] === null || data[key] === "");
++ const result = {
++   complete: missing.length === 0,
++   missing,
++   preferences: data,
++ process.stdout.write(JSON.stringify(result, null, 2) + "\n");
++ process.exit(missing.length === 0 ? 0 : 1);
++ ' "$pref_path" "$legacy_path"
++ apply_recommended_preferences() {
++   write_value "defaultExportMode" "bitable" "$pref_path" "$legacy_path"
++   write_value "defaultMaxItems" "20" "$pref_path" "$legacy_path"
++   write_value "defaultFetchDetail" "true" "$pref_path" "$legacy_path"
++   write_value "defaultDetailSpeed" "fast" "$pref_path" "$legacy_path"
++   show_preferences "$pref_path" "$legacy_path"
++ usage() {
++   cat <<'EOF'
++ Usage:
++   export_preference.sh path
++   export_preference.sh show
++   export_preference.sh check
++   export_preference.sh get [key]
++   export_preference.sh set <csv|bitable>
++   export_preference.sh apply-recommended
++   export_preference.sh set-key <key> <value>
++   export_preference.sh unset-key <key>
++   export_preference.sh clear
++ Supported keys:
++   defaultExportMode   csv | bitable
++   defaultPlatform     douyin | tiktok | xiaohongshu | amazon | bilibili
++   defaultMaxItems     integer
++   defaultFetchDetail  true | false
++   defaultDetailSpeed  slow | medium | fast
++   defaultBridgeUrl    string
++ EOF
++ main() {
++   local cmd="${1:-}"
++   local pref_path legacy_path key value
++   pref_path="$(resolve_preferences_path)"
++   legacy_path="$(resolve_legacy_export_mode_path)"
++   case "$cmd" in
++     path)
++       printf '%s\n' "$pref_path"
++     show)
++       show_preferences "$pref_path" "$legacy_path"
++     check)
++       check_required_preferences "$pref_path" "$legacy_path"
++     get)
++       key="$(normalize_key "${2:-}")"
++       key="$(normalize_key "${2:-}")"
++       key="$(normalize_key "${2:-}")"
++       print_value "$key" "$pref_path" "$legacy_path"
++     set)
++       value="${2:-}"
++       key="defaultExportMode"
++       validate_key_value "$key" "$value"
++       validate_key_value "$key" "$value"
++       write_value "$key" "$value" "$pref_path" "$legacy_path"
+
+### scripts/run.sh  [code]
+- KEYWORD=""
+-   run.sh --keyword "<关键词>" [--max-items 10] [--ensure-bridge] [--bridge-cmd '<cmd>']
+-   WEB_COLLECTION_BRIDGE_URL  default: http://127.0.0.1:19820
+-   WEB_COLLECTION_BRIDGE_CMD  optional bridge start command
+-       KEYWORD="${2:-}"
+- if [[ -z "$KEYWORD" ]]; then
+-   echo "--keyword is required" >&2
+- CMD=(
+-   bash "$SKILL_DIR/scripts/collect_and_export_loop.sh"
+-   --platform douyin
+-   --method videoKeyword
+-   --keyword "$KEYWORD"
+-   --max-items "$MAX_ITEMS"
+-   --feature video
+-   --mode search
+-   --interval 300
+-   --fetch-detail true
+-   --detail-speed fast
+-   --auto-export true
+-   --export-mode personal
+-   CMD+=(--ensure-bridge)
+-     CMD+=(--bridge-cmd "$BRIDGE_CMD")
+- "${CMD[@]}"
++ set -euo pipefail
++ # Unified entry for local/cloud deployment.
++ # - local: run the bundled closed loop against the local bridge
++ # - remote: if WEB_COLLECTION_REMOTE_SSH is set, run on collector host via SSH
++ PLATFORM="douyin"
++ METHOD=""
++ KEYWORDS=()
++ LINKS=()
++ FEATURE=""
++ MODE=""
++ INTERVAL_VAL=""
++ FETCH_DETAIL=""
++ DETAIL_SPEED=""
++ DETAIL_DELAY=""
++ REPLY_LEVEL=""
++ AUTO_EXPORT=""
++ EXPORT_MODE=""
++ EXPORT_TARGET=""
++ TABLE_NAME=""
++ FIELDS_JSON=""
++ FILTERS_JSON=""
++ REMOTE_SSH="${WEB_COLLECTION_REMOTE_SSH:-}"
++ REMOTE_WORKDIR="${WEB_COLLECTION_REMOTE_WORKDIR:-/Users/zhym/coding/web_pluging/web_collection}"
++ HAS_PLATFORM_ARG="false"
++ HAS_MAX_ITEMS_ARG="false"
++ HAS_FETCH_DETAIL_ARG="false"
++ HAS_DETAIL_SPEED_ARG="false"
++ HAS_BASE_URL_ARG="false"
++ HAS_EXPORT_TARGET_ARG="false"
++   cat <<'EOF'
++   cat <<'EOF'
++   run.sh [options]
++ Common examples:
++   run.sh --keyword "小龙虾AI助手" --max-items 10 --ensure-bridge
++   run.sh --platform amazon --keyword "Chinese antiques" --max-items 20 --ensure-bridge
++   run.sh --platform amazon --method productLink --link "https://www.amazon.com/dp/B0..." --ensure-bridge
++   run.sh --platform amazon --method productReview --link "https://www.amazon.com/dp/B0..." --filters-json '{"sortBy":"recent"}' --ensure-bridge
++   run.sh --platform bilibili --keyword "古董" --max-items 20 --ensure-bridge
++   run.sh --platform bilibili --method videoInfo --link "https://www.bilibili.com/video/BV..." --ensure-bridge
++   run.sh --keyword "小龙虾" --export-target csv --max-items 20 --ensure-bridge
++   run.sh --keyword "小龙虾" --export-target bitable --max-items 20 --ensure-bridge
++ Options:
++   --platform <name>              default: douyin
++   --method <name>                optional; default depends on platform
++   --keyword <text>               repeatable
++   --link <url>                   repeatable
++   --max-items <n>                default: 10
++   --feature <name>               optional override
++   --mode <name>                  optional override
++   --interval <n>                 optional override
++   --fetch-detail <true|false>    optional override
++   --detail-speed <text>          optional override
++   --detail-delay <n>             optional override
++   --reply-level <n>              optional override
++   --auto-export <true|false>     optional override
++   --export-mode <name>           optional override
++   --export-target <csv|bitable>  override stored export preference for this run
++   --table-name <text>            optional
++   --fields-json <json-array>     optional
++   --filters-json <json-object>   optional
++   --base-url <url>               optional override, same as WEB_COLLECTION_BRIDGE_URL
++   --ensure-bridge
++   --bridge-cmd '<cmd>'
++   WEB_COLLECTION_BRIDGE_URL       default: http://127.0.0.1:19820
++   WEB_COLLECTION_BRIDGE_CMD       optional bridge start command
++   WEB_COLLECTION_REMOTE_SSH       optional, e.g. user@collector-host
++   WEB_COLLECTION_REMOTE_WORKDIR   default: /Users/zhym/coding/web_pluging/web_collection
++ EOF
++ EOF
++ EOF
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++     --platform)
++       PLATFORM="${2:-}"
++       HAS_PLATFORM_ARG="true"
++       shift 2
++       shift 2
++       shift 2
++       shift 2
++       shift 2
++       shift 2
++       shift 2
++       shift 2
++       shift 2
++       shift 2
++       shift 2
++       shift 2
++       shift 2
++       shift 2
++       shift 2
++       shift 2
++       shift 2
++       ;;
++       ;;
++       ;;
++       ;;
++       ;;
++       ;;
++       ;;
++       ;;
++       ;;
++       ;;
++       ;;
++       ;;
++       ;;
++       ;;
++       ;;
++       ;;
++       ;;
++       ;;
++       ;;
++       ;;
++       ;;
++       ;;
++     --method)
++       METHOD="${2:-}"
++       KEYWORDS+=("${2:-}")
++     --link)
++       LINKS+=("${2:-}")
++       HAS_MAX_ITEMS_ARG="true"
++     --feature)
++       FEATURE="${2:-}"
++     --mode)
++       MODE="${2:-}"
++     --interval)
++       INTERVAL_VAL="${2:-}"
++     --fetch-detail)
++       FETCH_DETAIL="${2:-}"
++       HAS_FETCH_DETAIL_ARG="true"
++     --detail-speed)
++       DETAIL_SPEED="${2:-}"
++       HAS_DETAIL_SPEED_ARG="true"
++     --detail-delay)
++       DETAIL_DELAY="${2:-}"
++     --reply-level)
++       REPLY_LEVEL="${2:-}"
++     --auto-export)
++       AUTO_EXPORT="${2:-}"
++     --export-mode)
++       EXPORT_MODE="${2:-}"
++     --export-target)
++       EXPORT_TARGET="${2:-}"
++       HAS_EXPORT_TARGET_ARG="true"
++     --table-name)
++       TABLE_NAME="${2:-}"
++     --fields-json)
++       FIELDS_JSON="${2:-}"
++     --filters-json)
++       FILTERS_JSON="${2:-}"
++     --base-url|--bridge-url)
++       BRIDGE_URL="${2:-}"
++       HAS_BASE_URL_ARG="true"
++     *)
++   esac
++   esac
++   esac
++ die() {
++   echo "$*" >&2
++ normalize_bool_or_empty() {
++   local raw="${1:-}"
++   local lower
++   if [[ -z "$raw" ]]; then
++     echo ""
++     return 0
++     return 0
++     return 0
++     return 0
++     return 0
++     return 0
++     return 0
++   fi
++   fi
++   fi
++   fi
++   fi
++   fi
++   fi
++   fi
++   fi
++   fi
++   fi
++   fi
++   fi
++   fi
++   fi
++   fi
++   lower="$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]')"
++   case "$lower" in
++     true|1|yes|y) echo "true" ;;
++     false|0|no|n) echo "false" ;;
++     *) die "invalid boolean value: $raw" ;;
++ json_array_from_lines() {
++   if [[ $# -eq 0 ]]; then
++     echo "[]"
++   printf '%s\n' "$@" | node -e 'const fs=require("fs"); const arr=fs.readFileSync(0,"utf8").split(/\n/).filter(Boolean); process.stdout.write(JSON.stringify(arr));'
++ resolve_export_pref_script() {
++   printf '%s\n' "$SKILL_DIR/scripts/export_preference.sh"
++ resolve_preference_value() {
++   local key="${1:-}"
++   local pref_script
++   local pref_script
++   pref_script="$(resolve_export_pref_script)"
++   pref_script="$(resolve_export_pref_script)"
++   if [[ ! -x "$pref_script" ]]; then
++   if [[ ! -x "$pref_script" ]]; then
++   "$pref_script" get "$key" || true
++ apply_export_target() {
++   local target="${1:-}"
++   if [[ -z "$target" ]]; then
++   case "$target" in
++     csv)
++       AUTO_EXPORT="true"
++       AUTO_EXPORT="true"
++       EXPORT_MODE="csv"
++     bitable)
++       EXPORT_MODE="personal"
++       die "invalid --export-target: $target (expected csv or bitable)"
++ apply_stored_preferences() {
++   local pref_platform pref_max_items pref_fetch_detail pref_detail_speed pref_bridge_url
++   pref_platform="$(resolve_preference_value defaultPlatform)"
++   pref_max_items="$(resolve_preference_value defaultMaxItems)"
++   pref_fetch_detail="$(resolve_preference_value defaultFetchDetail)"
++   pref_detail_speed="$(resolve_preference_value defaultDetailSpeed)"
++   pref_bridge_url="$(resolve_preference_value defaultBridgeUrl)"
++   [[ "$HAS_PLATFORM_ARG" == "true" || -z "$pref_platform" ]] || PLATFORM="$pref_platform"
++   [[ "$HAS_MAX_ITEMS_ARG" == "true" || -z "$pref_max_items" ]] || MAX_ITEMS="$pref_max_items"
++   [[ "$HAS_FETCH_DETAIL_ARG" == "true" || -z "$pref_fetch_detail" ]] || FETCH_DETAIL="$pref_fetch_detail"
++   [[ "$HAS_DETAIL_SPEED_ARG" == "true" || -z "$pref_detail_speed" ]] || DETAIL_SPEED="$pref_detail_speed"
++   [[ "$HAS_BASE_URL_ARG" == "true" || -z "$pref_bridge_url" ]] || BRIDGE_URL="$pref_bridge_url"
++ preferences_are_effectively_complete() {
++   [[ -n "${AUTO_EXPORT:-}" && -n "${EXPORT_MODE:-}" && -n "${MAX_ITEMS:-}" && -n "${FETCH_DETAIL:-}" && -n "${DETAIL_SPEED:-}" ]]
++ ensure_required_preferences() {
++     die "missing preference helper: $pref_script"
++   if preferences_are_effectively_complete; then
++   if "$pref_script" check >/dev/null 2>&1; then
++   die "web-collection setup incomplete: ask the user to choose 推荐配置 or 自己配置 first, then persist all required defaults (export mode, max items, fetch detail, detail speed)"
++ route_config_rows() {
++ douyin|videoKeyword|keywords|video|search|300|true|fast
++ douyin|creatorKeyword|keywords|account|search|||
++ douyin|creatorLink|links|account|account|||
++ douyin|creatorVideo|links|video|account|||
++ douyin|videoComment|links|comment|video_detail|||
++ douyin|videoInfo|links|video|video_detail|||
++ douyin|videoLink|links|video|video_detail|||
++ tiktok|keywordSearch|keywords|video|search|||
++ tiktok|userVideo|links|video|userVideo|||
++ tiktok|tiktokComment|links|comment|video_detail|||
++ tiktok|tiktokCreatorKeyword|keywords|account|search|||
++ tiktok|tiktokCreatorLink|links|account|account|||
++ xiaohongshu|keywordSearch|keywords|note|search|||
++ xiaohongshu|creatorNote|links|note|account|||
++ xiaohongshu|creatorLink|links|account|account|||
++ xiaohongshu|creatorKeyword|keywords|account|search|||
++ xiaohongshu|noteLink|links|note|note|||
++ xiaohongshu|noteComment|links|comment|note|||
++ amazon|keywordSearch|keywords|product|search|||
++ amazon|productLink|links|product|product_detail|||
++ amazon|productReview|links|comment|product_detail|||
++ bilibili|keywordSearch|keywords|video|search|||
++ bilibili|videoInfo|links|video|video_detail|||
++ bilibili|creatorVideo|links|video|account|||
++ bilibili|bilibiliComment|links|comment|video_detail|||
++ default_method_rows() {
++ douyin|videoKeyword
++ tiktok|keywordSearch
++ xiaohongshu|keywordSearch
++ amazon|keywordSearch
++ bilibili|keywordSearch
++ lookup_route_config() {
++   local platform="$1"
++   local platform="$1"
++   local method="$2"
++   while IFS='|' read -r row_platform row_method row_input row_feature row_mode row_interval row_fetch_detail row_detail_speed; do
++     if [[ "$row_platform" == "$platform" && "$row_method" == "$method" ]]; then
++       printf '%s|%s|%s|%s|%s|%s\n' \
++         "$row_input" "$row_feature" "$row_mode" "$row_interval" "$row_fetch_detail" "$row_detail_speed"
++       return 0
++       return 0
++     fi
++     fi
++     fi
++     fi
++   done < <(route_config_rows)
++   return 1

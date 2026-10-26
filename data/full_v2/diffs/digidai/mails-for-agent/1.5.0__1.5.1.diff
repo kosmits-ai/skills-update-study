@@ -1,0 +1,241 @@
+digidai/mails-for-agent  1.5.0 -> 1.5.1
+change_type: instructions   changelog: Fix missing type parameter in extract API examples
+
+### SKILL.md  [instructions]
+- # mails — Email for AI Agents
+- You can send emails, receive emails, search your inbox, and extract verification codes. Deploy on your own domain with Cloudflare (free tier). Full control, no third-party dependency.
+- **Capabilities:** send (with attachments), receive, inbox search (FTS5), verification code extraction (EN/ZH/JA/KO), email deletion, webhook notifications, email threading, auto labels (newsletter/notification/code/personal), structured data extraction (orders, shipping, calendar, receipts).
+- ## Onboarding (follow these steps in order)
+- ### Step 1: Install
+- ```bash
+- ```bash
+- ```bash
+- npm install -g mails-agent
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- Verify: `mails version` should print a version number.
+- ### Step 2: Deploy your Worker
+- You need a Cloudflare Worker to receive and send emails. This requires: a domain on Cloudflare + a Resend account.
+- cd worker
+- bun install
+- wrangler d1 create mails
+- # Edit wrangler.toml — paste the database_id from the output above
+- wrangler d1 execute mails --file=schema.sql
+- wrangler secret put AUTH_TOKEN           # strong random token for API auth
+- wrangler secret put RESEND_API_KEY       # your re_... key from Resend
+- wrangler deploy
+- Then set up Cloudflare Email Routing:
+- 1. Cloudflare Dashboard → your domain → **Email** → **Email Routing** → Enable
+- 2. **Routing rules** → **Catch-all** → **Send to a Worker** → select your Worker
+- ### Step 3: Configure the CLI
+- mails config set worker_url https://mails-worker.your-subdomain.workers.dev
+- mails config set worker_token YOUR_AUTH_TOKEN
+- mails config set mailbox agent@yourdomain.com
+- mails config set default_from agent@yourdomain.com
+- Verify: `mails config` should show all four values.
+- ### Step 4: Test receiving — check your inbox
+- Your mailbox is ready to receive emails. Check it:
+- mails inbox
+- Expected: `No emails found.` (empty inbox is normal for a new mailbox).
+- ### Step 5: Send an email
+- mails send --to user@example.com --subject "Hello" --body "World"
+- Verify: `Sent via worker (id: ...)` confirms the email was sent. The sender address is your configured `default_from`.
+- ### Step 6: Test search and verification code
+- Search your inbox:
+- mails inbox --query "test"
+- Wait for a verification code:
+- mails code --to agent@yourdomain.com --timeout 30
+- This long-polls for up to 30 seconds. When an email with a verification code arrives, it prints the code to stdout. If no code arrives, it exits with code 1.
+- ### Onboarding complete
+- You now have:
+- - `~/.mails/config.json` with your worker_url, worker_token, mailbox, and default_from
+- - A working email address on your own domain that receives emails
+- - The ability to send and search emails
+- ## CLI Reference
+- mails send                Send an email (with optional attachments)
+- mails inbox               List or search received emails
+- mails code                Wait for a verification code
+- mails config              View or modify configuration
+- mails help                Show help
+- mails version             Show version
+- ### send
+- mails send --to user@example.com --subject "Subject" --body "Plain text body"
+- mails send --to user@example.com --subject "Subject" --html "<h1>HTML body</h1>"
+- mails send --from "Name <email>" --to user@example.com --subject "Subject" --body "Text"
+- mails send --to user@example.com --subject "Report" --body "See attached" --attach report.pdf
+- mails send --to user@example.com --subject "Files" --body "Two files" --attach a.txt --attach b.csv
+- Uses `default_from` from config if `--from` is not specified. Send priority: `worker_url` (via Worker /api/send) > `resend_api_key` (direct Resend).
+- ### inbox
+- mails inbox                                  # List recent emails
+- mails inbox --mailbox agent@yourdomain.com   # Specify mailbox
+- mails inbox --query "password reset"         # Search emails
+- mails inbox --query "invoice" --direction inbound --limit 10
+- mails inbox --label notification             # Filter by label
+- mails inbox --threads                        # List conversation threads
+- mails inbox <email-id>                       # Show full email details (with attachments)
+- ### code
+- mails code --to agent@yourdomain.com              # Wait 30s (default)
+- mails code --to agent@yourdomain.com --timeout 60 # Wait 60s
+- Prints the verification code to stdout (for piping: `CODE=$(mails code --to ...)`). Details go to stderr. Exits with code 1 if no code received within timeout.
+- ### config
+- mails config                    # Show all
+- mails config set <key> <value>  # Set a value
+- mails config get <key>          # Get a value
+- mails config path               # Show config file path
+- Config file: `~/.mails/config.json`
+- | Key | Set by | Description |
+- |-----|--------|-------------|
+- | `mailbox` | manual | Your receiving address |
+- | `worker_url` | manual | Worker URL (enables remote provider) |
+- | `worker_token` | manual | Auth token for Worker |
+- | `resend_api_key` | manual | Resend API key for sending emails |
+- | `default_from` | manual | Default sender address |
+- | `storage_provider` | manual | `sqlite` or `remote` (auto-detected) |
+- ## SDK (Programmatic Usage)
+- ```typescript
+- import { send, getInbox, searchInbox, waitForCode } from 'mails-agent'
+- // Send an email
+- const result = await send({
+-   to: 'user@example.com',
+-   to: 'user@example.com',
+-   subject: 'Hello',
+-   text: 'World',
+- })
+- })
+- })
+- // Send with attachment
+- await send({
+-   subject: 'Report',
+-   text: 'See attached',
+-   attachments: [{ path: './report.pdf' }],
+- // List inbox
+- const emails = await getInbox('agent@yourdomain.com', { limit: 10 })
+- // Search inbox
+- const results = await searchInbox('agent@yourdomain.com', {
+-   query: 'password reset',
+-   direction: 'inbound',
+-   limit: 5,
+- // Wait for verification code
+- const code = await waitForCode('agent@yourdomain.com', { timeout: 30 })
+- if (code) console.log(code.code) // "123456"
+- ## API (Direct HTTP)
+- For agents that prefer raw HTTP over the CLI/SDK. All endpoints are on your Worker.
+- # Send email (via Worker's RESEND_API_KEY)
+- curl -X POST -H "Authorization: Bearer YOUR_AUTH_TOKEN" \
+-   "https://your-worker.example.com/api/send" \
+-   -d '{"to":["user@example.com"],"subject":"Hello","text":"World"}'
+- # List inbox
+- curl -H "Authorization: Bearer YOUR_AUTH_TOKEN" \
+- curl -H "Authorization: Bearer YOUR_AUTH_TOKEN" \
+- curl -H "Authorization: Bearer YOUR_AUTH_TOKEN" \
+- curl -H "Authorization: Bearer YOUR_AUTH_TOKEN" \
+-   "https://your-worker.example.com/api/inbox?to=agent@yourdomain.com"
+- # Search inbox (uses FTS5 full-text search)
+-   "https://your-worker.example.com/api/inbox?to=agent@yourdomain.com&query=invoice"
+- # Wait for verification code
+-   "https://your-worker.example.com/api/code?to=agent@yourdomain.com&timeout=30"
+- # Get current user info
+-   "https://your-worker.example.com/api/me"
+- Worker API endpoints:
+- | `POST /api/extract` | Extract structured data (order, shipping, calendar, receipt, code) |
+- ## Links
+- - npm: https://www.npmjs.com/package/mails-agent
+- - GitHub: https://github.com/Digidai/mails
++ ---
++ name: Mails for Agent
++ description: "Send and receive emails via HTTP API. Use when the agent needs to: sign up for services and enter verification codes, monitor an inbox for incoming messages, send notifications or reports, search emails by keyword, download attachments, view conversation threads, filter by label, extract structured data, or interact with any email-based workflow."
++ version: 1.5.0
++ metadata:
++   openclaw:
++     requires:
++       env:
++         - MAILS_API_URL
++         - MAILS_AUTH_TOKEN
++         - MAILS_MAILBOX
++       bins:
++         - curl
++       primaryEnv: MAILS_AUTH_TOKEN
++ # Email Skill
++ You have the email address `$MAILS_MAILBOX`. Use `curl` with `$MAILS_API_URL` and `$MAILS_AUTH_TOKEN`.
++ ## API Reference
++ ### Inbox
++ # List recent emails
++ curl -s -H "Authorization: Bearer $MAILS_AUTH_TOKEN" "$MAILS_API_URL/api/inbox"
++ # Search / filter / paginate
++ curl -s -H "Authorization: Bearer $MAILS_AUTH_TOKEN" "$MAILS_API_URL/api/inbox?query=keyword&direction=inbound&limit=10&offset=0"
++ # Filter by label (newsletter, notification, code, personal)
++ curl -s -H "Authorization: Bearer $MAILS_AUTH_TOKEN" "$MAILS_API_URL/api/inbox?label=notification"
++ Response: `{ "emails": [{ "id", "from_address", "from_name", "subject", "code", "direction", "status", "received_at", "has_attachments", "attachment_count" }] }`
++ ### Read Email
++ curl -s -H "Authorization: Bearer $MAILS_AUTH_TOKEN" "$MAILS_API_URL/api/email?id=EMAIL_ID"
++ Returns full email with `body_text`, `body_html`, headers, metadata, and attachments list.
++ ### Conversation Threads
++ # List conversation threads
++ curl -s -H "Authorization: Bearer $MAILS_AUTH_TOKEN" "$MAILS_API_URL/api/threads?to=$MAILS_MAILBOX"
++ # Get all emails in a thread
++ curl -s -H "Authorization: Bearer $MAILS_AUTH_TOKEN" "$MAILS_API_URL/api/thread?id=THREAD_ID&to=$MAILS_MAILBOX"
++ ### Wait for Verification Code
++ # Long-poll up to 60s; returns { "code": "483920" } or { "code": null }
++ curl -s -H "Authorization: Bearer $MAILS_AUTH_TOKEN" "$MAILS_API_URL/api/code?timeout=60"
++ # Only codes received after a timestamp
++ curl -s -H "Authorization: Bearer $MAILS_AUTH_TOKEN" "$MAILS_API_URL/api/code?timeout=60&since=2025-01-01T00:00:00Z"
++ ### Send Email
++ curl -s -X POST \
++ curl -s -X POST \
++   -H "Authorization: Bearer $MAILS_AUTH_TOKEN" \
++   -H "Authorization: Bearer $MAILS_AUTH_TOKEN" \
++   -H "Content-Type: application/json" \
++   "$MAILS_API_URL/api/send" \
++   -d "{\"from\":\"$MAILS_MAILBOX\",\"to\":[\"recipient@example.com\"],\"subject\":\"Subject\",\"text\":\"Content\"}"
++ Send fields:
++ | Field | Required | Description |
++ |-------|----------|-------------|
++ | from | Yes | Must be `$MAILS_MAILBOX` |
++ | to | Yes | Array of recipients (max 50) |
++ | subject | Yes | Max 998 characters |
++ | text | text or html | Plain text body (max 500KB) |
++ | html | text or html | HTML body (max 1MB) |
++ | reply_to | No | Reply-to address |
++ | headers | No | Custom headers object |
++ | attachments | No | Array of `{ filename, content (base64), content_type?, content_id? }` |
++ ### Extract Structured Data
++ # Extract structured data from an email (type: order, shipping, calendar, receipt, code)
++   "$MAILS_API_URL/api/extract" \
++   -d "{\"email_id\":\"EMAIL_ID\",\"type\":\"order\"}"
++ ### Delete Email
++ curl -s -X DELETE -H "Authorization: Bearer $MAILS_AUTH_TOKEN" "$MAILS_API_URL/api/email?id=EMAIL_ID"
++ ### Download Attachment
++ curl -s -H "Authorization: Bearer $MAILS_AUTH_TOKEN" "$MAILS_API_URL/api/attachment?id=ATTACHMENT_ID" -o filename.pdf
++ ### Status / Health
++ curl -s -H "Authorization: Bearer $MAILS_AUTH_TOKEN" "$MAILS_API_URL/api/me"
++ # Returns: { "worker": "mails-worker", "mailbox": "...", "send": true }
++ curl -s "$MAILS_API_URL/health"   # No auth required
++ ## API Endpoints
++ | `POST /api/extract` | Extract structured data. Body: `{ email_id, type }` where type is order/shipping/calendar/receipt/code |
++ ## Common Flows
++ **Sign up for a service:**
++ 1. Fill form with `$MAILS_MAILBOX`, submit
++ 2. `curl -s -H "Authorization: Bearer $MAILS_AUTH_TOKEN" "$MAILS_API_URL/api/code?timeout=60"`
++ 3. Enter the `code` from the response
++ **Process inbox:**
++ 1. `GET /api/inbox` -- list emails
++ 2. `GET /api/email?id=<id>` -- read details
++ 3. `DELETE /api/email?id=<id>` -- clean up after processing
++ **View conversation threads:**
++ 1. `GET /api/threads?to=$MAILS_MAILBOX` -- list threads
++ 2. `GET /api/thread?id=<id>&to=$MAILS_MAILBOX` -- get thread details
++ **Filter by category:**
++ 1. `GET /api/inbox?label=newsletter` -- filter by label
++ 2. Available labels: newsletter, notification, code, personal
++ **Extract structured data:**
++ 1. `POST /api/extract` with `{"email_id":"EMAIL_ID","type":"order"}` (type: order, shipping, calendar, receipt, code)
++ 2. Returns structured data: order details, shipping info, calendar events, receipts, or codes
++ ## Constraints
++ - `from` must match `$MAILS_MAILBOX` (enforced server-side)
++ - Verification codes: 4-8 alphanumeric characters (EN/ZH/JA/KO)
++ - Code wait timeout max 55 seconds
++ - Search uses FTS5 full-text search

@@ -1,0 +1,519 @@
+yiming1001/web-collection  1.2.3 -> 1.2.3-beta.1
+change_type: instructions+docs+code   changelog: **Summary:** Improves environment variable handling, strictly separates local/cloud logic, and introduces new checks and documentation.  - Added `scripts/preflight_check.sh` to validate required defaults, skipping prompts when config is set via environment variables. - Now strictly separates local (`scripts/collect_and_export_loop.sh`) and cloud (`scripts/cloud_dispatch_loop.sh`) send-command scripts—never mixes the two. - Improved setup logic: never asks users for configuration if already prese
+
+### SKILL.md  [instructions]
+- metadata: { "openclaw": { "emoji": "🕸️", "requires": { "bins": ["curl", "node"] } } }
+- 3. Default to synchronous closed-loop execution.
+- 4. Do not reply before the collection script finishes.
+- 5. Choose one execution mode first:
+-    - `local`: talk to the local bridge directly
+-    - `cloud`: call the cloud connector dispatch API, which forwards to the user's connected local connector
+- 6. In `cloud` mode, do not rewrite the collection payload. Only wrap it in:
+- ```
+-   - `defaultCloudDeviceId`
+-   - `defaultCloudToken`
+- 1. Determine the execution mode first:
+-    - `local`
+-    - `cloud`
+- 2. If the mode is `cloud`, collect these values first:
+-    - cloud URL is fixed and does not need user input
+- Preferred mode prompt:
+- ```text
+- 第一次使用网页采集，需要先确认运行环境。
+- 请选择：
+- - 本地
+- - 云端
+- [[quick_replies: 本地, 云端]]
+- - prefers the connector repo's real local bridge loop when available
+- - falls back to the bundled local loop only if needed
++ For complex or ambiguous requests, read [references/learning-guide.md](references/learning-guide.md) before deciding what to ask or run.
++ 3. Never ask for configuration that is already present in environment variables.
++ 4. Local and cloud use the same recommended defaults and overall collection flow.
++ 5. Cloud adds only two extra required values: `id` and `token`.
++ 6. Default to synchronous closed-loop execution.
++ 7. Do not reply before the collection script finishes.
++ 8. Choose one execution mode first:
++    - `local`: talk to the local bridge directly and only run the local send-command script
++    - `cloud`: call the cloud connector dispatch API and only run the cloud send-command script
++ 9. In `cloud` mode, do not rewrite the collection payload. Only wrap it in:
++   - `defaultCloudDeviceId` only when it is not already provided by environment variables
++   - `defaultCloudToken` only when it is not already provided by environment variables
++ 1. Determine the execution mode first.
++ 2. If the mode is `cloud`, collect these values only when they are not already available from environment variables or stored preferences:
++ - runs `scripts/preflight_check.sh` first
++ - local mode dispatches only through `scripts/collect_and_export_loop.sh`
++ - cloud mode dispatches only through `scripts/cloud_dispatch_loop.sh`
++ - never mixes the local and cloud send-command scripts
++ ## Bundled Resources
++ - `scripts/preflight_check.sh`
++   - validates required defaults before dispatch
++   - treats environment-variable configuration as already satisfied and never asks for it
++ - `scripts/run.sh`
++   - chooses exactly one dispatch path based on `connection-mode`
++   - never mixes local and cloud send-command scripts
++ - `scripts/collect_and_export_loop.sh`
++   - local-only send-command script
++ - `scripts/cloud_dispatch_loop.sh`
++   - cloud-only send-command script
++ - `scripts/export_preference.sh`
++   - stores reusable defaults and masks cloud token in human-readable output
++ - `references/learning-guide.md`
++   - compact guidance for complex requests and asking rules
+
+### agents/openai.yaml  [code]
++ interface:
++   display_name: "Web Collection"
++   short_description: "Run local or cloud browser collection flows"
++   default_prompt: "Use $web-collection to run a browser data collection task through the correct local or cloud flow."
+
+### references/learning-guide.md  [docs]
++ # Web Collection Learning Guide
++ Use one unified rule set:
++ 1. Never ask for configuration that is already present in environment variables.
++ 2. Local and cloud share the same recommended defaults and overall collection flow.
++ 3. Cloud only adds two extra required values: `id` and `token`.
++ 4. Local mode may only call `scripts/collect_and_export_loop.sh`.
++ 5. Cloud mode may only call `scripts/cloud_dispatch_loop.sh`.
++ ## Asking Rules
++ Ask only for user-facing defaults that are still missing after checking:
++ - `defaultExportMode`
++ - `defaultMaxItems`
++ - `defaultFetchDetail`
++ - `defaultDetailSpeed`
++ - `defaultCloudDeviceId` in cloud mode only
++ - `defaultCloudToken` in cloud mode only
++ Do not ask for:
++ - `WEB_COLLECTION_CONNECTION_MODE`
++ - `WEB_COLLECTION_BRIDGE_URL`
++ - `WEB_COLLECTION_CLOUD_BASE_URL`
++ - `WEB_COLLECTION_CLOUD_DEVICE_ID` when already present
++ - `WEB_COLLECTION_CLOUD_TOKEN` when already present
++ - `WEB_COLLECTION_BRIDGE_CMD`
++ ## Shared Flow
++ 1. Run `scripts/preflight_check.sh`
++ 2. Persist any user-provided defaults if this turn supplies them
++ 3. Ask only for missing user-facing values
++ 4. Build the payload
++ 5. Dispatch through the mode-specific script only
+
+### scripts/export_preference.sh  [code]
+- const mode = typeof data.defaultConnectionMode === "string" && data.defaultConnectionMode
+-   : "local";
+-   required.push("defaultCloudDeviceId", "defaultCloudToken");
++   }
++   }
++ const envMode = typeof process.env.WEB_COLLECTION_CONNECTION_MODE === "string" && process.env.WEB_COLLECTION_CONNECTION_MODE
++   ? process.env.WEB_COLLECTION_CONNECTION_MODE
++   : "";
++   : "";
++   : "";
++ const mode = envMode || (typeof data.defaultConnectionMode === "string" && data.defaultConnectionMode
++   : "local");
++ const envCloudDeviceId = typeof process.env.WEB_COLLECTION_CLOUD_DEVICE_ID === "string"
++   ? process.env.WEB_COLLECTION_CLOUD_DEVICE_ID
++ const envCloudToken = typeof process.env.WEB_COLLECTION_CLOUD_TOKEN === "string"
++   ? process.env.WEB_COLLECTION_CLOUD_TOKEN
++   if (!(typeof data.defaultCloudDeviceId === "string" && data.defaultCloudDeviceId) && !envCloudDeviceId) {
++     required.push("defaultCloudDeviceId");
++   if (!(typeof data.defaultCloudToken === "string" && data.defaultCloudToken) && !envCloudToken) {
++     required.push("defaultCloudToken");
++   envConfig: {
++     cloudDeviceIdPresent: Boolean(envCloudDeviceId),
++     cloudTokenPresent: Boolean(envCloudToken),
++   },
+
+### scripts/preflight_check.sh  [code]
++ #!/usr/bin/env bash
++ set -euo pipefail
++ SKILL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
++ PREFERENCE_SCRIPT="$SKILL_DIR/scripts/export_preference.sh"
++ DEFAULT_BRIDGE_URL="${WEB_COLLECTION_BRIDGE_URL:-http://127.0.0.1:19820}"
++ DEFAULT_CLOUD_BASE_URL="${WEB_COLLECTION_CLOUD_BASE_URL:-https://i-sync.cn}"
++ CONFIG_JSON=""
++ CONFIG_FILE=""
++ WRITE_PREFERENCES="false"
++ PROBE_BRIDGE="false"
++ FORMAT="json"
++ QUIET_SUCCESS="false"
++ MODE="local"
++ usage() {
++   cat <<'EOF'
++ Usage:
++   preflight_check.sh [options]
++ Options:
++   --config-json <json>      Inline config and/or defaults
++   --config-file <path>      Read config JSON from file
++   --write-preferences       Persist provided defaults before checking
++   --probe-bridge            Probe local /api/status when mode=local
++   --mode <local|cloud>      Execution mode, default: local
++   --format <json|text>      Output format, default: json
++   --quiet-success           Print nothing when ready
++   -h, --help
++ EOF
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ die() {
++   echo "$*" >&2
++   exit 1
++ while [[ $# -gt 0 ]]; do
++   case "$1" in
++     --config-json)
++       CONFIG_JSON="${2:-}"
++       shift 2
++       shift 2
++       shift 2
++       shift 2
++       ;;
++       ;;
++       ;;
++       ;;
++       ;;
++       ;;
++       ;;
++       ;;
++       ;;
++     --config-file)
++       CONFIG_FILE="${2:-}"
++     --write-preferences)
++       WRITE_PREFERENCES="true"
++       shift 1
++       shift 1
++       shift 1
++     --probe-bridge)
++       PROBE_BRIDGE="true"
++     --mode)
++       MODE="${2:-local}"
++     --format)
++       FORMAT="${2:-json}"
++     --quiet-success)
++       QUIET_SUCCESS="true"
++     -h|--help)
++       usage
++       exit 0
++     *)
++       die "unknown arg: $1"
++   esac
++ done
++ [[ "$FORMAT" == "json" || "$FORMAT" == "text" ]] || die "invalid --format: $FORMAT"
++ [[ "$MODE" == "local" || "$MODE" == "cloud" ]] || die "invalid --mode: $MODE"
++ if [[ -n "$CONFIG_FILE" ]]; then
++   [[ -f "$CONFIG_FILE" ]] || die "config file not found: $CONFIG_FILE"
++   CONFIG_JSON="$(cat "$CONFIG_FILE")"
++ fi
++ fi
++ fi
++ fi
++ fi
++ fi
++ fi
++ fi
++ if [[ -z "$CONFIG_JSON" ]]; then
++   CONFIG_JSON='{}'
++ normalize_config_json() {
++   node -e '
++   node -e '
++ const raw = JSON.parse(process.argv[1] || "{}");
++ const defaults = raw.defaults && typeof raw.defaults === "object" ? raw.defaults : {};
++ const preferences = raw.preferences && typeof raw.preferences === "object" ? raw.preferences : {};
++ const merged = { ...raw, ...preferences, ...defaults };
++ const normalizeBoolean = (value) => {
++   if (value === undefined || value === null || value === "") return "";
++   if (value === undefined || value === null || value === "") return "";
++   if (value === undefined || value === null || value === "") return "";
++   if (value === undefined || value === null || value === "") return "";
++   if (value === undefined || value === null || value === "") return "";
++   if (typeof value === "boolean") return value ? "true" : "false";
++   const lower = String(value).trim().toLowerCase();
++   const lower = String(value).trim().toLowerCase();
++   if (["true", "1", "yes", "y", "是"].includes(lower)) return "true";
++   if (["false", "0", "no", "n", "否"].includes(lower)) return "false";
++   return value;
++   return value;
++ };
++ };
++ };
++ };
++ };
++ };
++ };
++ };
++ };
++ };
++ };
++ const normalizeExportMode = (value) => {
++   if (["bitable", "personal", "多维表格"].includes(lower)) return "bitable";
++   if (["csv"].includes(lower)) return "csv";
++ const normalizeMode = (value) => {
++   return String(value).trim().toLowerCase();
++ const normalizeString = (value) => {
++   return String(value).trim();
++ const normalizeNumber = (value) => {
++   const n = Number(value);
++   return Number.isFinite(n) ? String(n) : value;
++ const normalizeStringArray = (value) => {
++   if (value === undefined || value === null || value === "") return [];
++   if (Array.isArray(value)) return value.map((item) => String(item));
++   return [String(value)];
++ process.stdout.write(JSON.stringify({
++ process.stdout.write(JSON.stringify({
++   defaults: {
++     defaultConnectionMode: normalizeMode(
++       merged.defaultConnectionMode ?? merged.connectionMode ?? merged.mode
++     ),
++     ),
++     ),
++     defaultExportMode: normalizeExportMode(
++       merged.defaultExportMode ?? merged.exportTarget ?? merged.exportMode
++     defaultMaxItems: normalizeNumber(merged.defaultMaxItems ?? merged.maxItems),
++     defaultFetchDetail: normalizeBoolean(merged.defaultFetchDetail ?? merged.fetchDetail),
++     defaultDetailSpeed: normalizeMode(merged.defaultDetailSpeed ?? merged.detailSpeed),
++     defaultPlatform: normalizeMode(merged.defaultPlatform ?? merged.platform),
++     defaultBridgeUrl: normalizeString(merged.defaultBridgeUrl ?? merged.baseUrl ?? merged.bridgeUrl),
++     defaultCloudBaseUrl: normalizeString(merged.defaultCloudBaseUrl ?? merged.cloudBaseUrl),
++     defaultCloudDeviceId: normalizeString(merged.defaultCloudDeviceId ?? merged.cloudDeviceId ?? merged.id),
++     defaultCloudToken: normalizeString(merged.defaultCloudToken ?? merged.cloudToken ?? merged.token),
++   },
++   },
++   },
++   },
++   runtime: {
++     platform: normalizeMode(merged.platform),
++     method: normalizeString(merged.method),
++     keywords: normalizeStringArray(merged.keywords),
++     links: normalizeStringArray(merged.links),
++     baseUrl: normalizeString(merged.baseUrl ?? merged.defaultBridgeUrl ?? merged.bridgeUrl),
++     cloudBaseUrl: normalizeString(merged.cloudBaseUrl ?? merged.defaultCloudBaseUrl),
++     cloudDeviceId: normalizeString(merged.cloudDeviceId ?? merged.defaultCloudDeviceId ?? merged.id),
++     cloudToken: normalizeString(merged.cloudToken ?? merged.defaultCloudToken ?? merged.token),
++     exportTarget: normalizeExportMode(
++       merged.exportTarget ?? merged.defaultExportMode ?? merged.exportMode
++ }));
++ ' "$CONFIG_JSON"
++ NORMALIZED_CONFIG="$(normalize_config_json)"
++ write_preferences_from_config() {
++   local normalized_json="$1"
++   local normalized_json="$1"
++   local rows
++   rows="$(node -e '
++ const normalized = JSON.parse(process.argv[1]);
++ const normalized = JSON.parse(process.argv[1]);
++ const defaults = normalized.defaults || {};
++ const defaults = normalized.defaults || {};
++ const order = [
++   "defaultConnectionMode",
++   "defaultExportMode",
++   "defaultExportMode",
++   "defaultMaxItems",
++   "defaultMaxItems",
++   "defaultFetchDetail",
++   "defaultFetchDetail",
++   "defaultDetailSpeed",
++   "defaultDetailSpeed",
++   "defaultPlatform",
++   "defaultBridgeUrl",
++   "defaultCloudBaseUrl",
++   "defaultCloudDeviceId",
++   "defaultCloudToken",
++ ];
++ ];
++ ];
++ for (const key of order) {
++   const value = defaults[key];
++   if (value === undefined || value === null || value === "") continue;
++   process.stdout.write(`${key}\t${String(value)}\n`);
++ ' "$normalized_json")"
++   if [[ -z "$rows" ]]; then
++     return 0
++   fi
++   fi
++   while IFS=$'\t' read -r key value; do
++     [[ -n "$key" && -n "$value" ]] || continue
++     "$PREFERENCE_SCRIPT" set-key "$key" "$value" >/dev/null
++   done <<<"$rows"
++ if [[ "$WRITE_PREFERENCES" == "true" ]]; then
++   [[ -x "$PREFERENCE_SCRIPT" ]] || die "missing preference helper: $PREFERENCE_SCRIPT"
++   write_preferences_from_config "$NORMALIZED_CONFIG"
++ build_summary_json() {
++   PREF_SCRIPT="$PREFERENCE_SCRIPT" DEFAULT_BRIDGE_URL="$DEFAULT_BRIDGE_URL" DEFAULT_CLOUD_BASE_URL="$DEFAULT_CLOUD_BASE_URL" node -e '
++ const { execFileSync } = require("node:child_process");
++ const fs = require("node:fs");
++ const mode = process.argv[2];
++ const skillDir = process.argv[3];
++ const getPref = (key) => {
++   try {
++     return execFileSync(process.env.PREF_SCRIPT, ["get", key], {
++       encoding: "utf8",
++       stdio: ["ignore", "pipe", "ignore"],
++     }).trim();
++   } catch {
++     return "";
++   }
++ const runtime = normalized.runtime || {};
++ const envConfig = {
++   bridgeUrl: process.env.WEB_COLLECTION_BRIDGE_URL || "",
++   cloudBaseUrl: process.env.WEB_COLLECTION_CLOUD_BASE_URL || process.env.DEFAULT_CLOUD_BASE_URL || "",
++   cloudDeviceId: process.env.WEB_COLLECTION_CLOUD_DEVICE_ID || "",
++   cloudToken: process.env.WEB_COLLECTION_CLOUD_TOKEN || "",
++ const stored = {
++   defaultExportMode: getPref("defaultExportMode"),
++   defaultMaxItems: getPref("defaultMaxItems"),
++   defaultFetchDetail: getPref("defaultFetchDetail"),
++   defaultDetailSpeed: getPref("defaultDetailSpeed"),
++   defaultPlatform: getPref("defaultPlatform"),
++   defaultBridgeUrl: getPref("defaultBridgeUrl"),
++   defaultCloudBaseUrl: getPref("defaultCloudBaseUrl"),
++   defaultCloudDeviceId: getPref("defaultCloudDeviceId"),
++   defaultCloudToken: getPref("defaultCloudToken"),
++ const effective = {
++   defaultExportMode: defaults.defaultExportMode || stored.defaultExportMode || "",
++   defaultMaxItems: defaults.defaultMaxItems || stored.defaultMaxItems || "",
++   defaultFetchDetail: defaults.defaultFetchDetail || stored.defaultFetchDetail || "",
++   defaultDetailSpeed: defaults.defaultDetailSpeed || stored.defaultDetailSpeed || "",
++   defaultPlatform: defaults.defaultPlatform || stored.defaultPlatform || "",
++   defaultBridgeUrl: runtime.baseUrl || envConfig.bridgeUrl || defaults.defaultBridgeUrl || stored.defaultBridgeUrl || process.env.DEFAULT_BRIDGE_URL || "",
++   defaultCloudBaseUrl: runtime.cloudBaseUrl || envConfig.cloudBaseUrl || defaults.defaultCloudBaseUrl || stored.defaultCloudBaseUrl || process.env.DEFAULT_CLOUD_BASE_URL || "",
++   defaultCloudDeviceId: runtime.cloudDeviceId || envConfig.cloudDeviceId || defaults.defaultCloudDeviceId || stored.defaultCloudDeviceId || "",
++   defaultCloudToken: runtime.cloudToken || envConfig.cloudToken || defaults.defaultCloudToken || stored.defaultCloudToken || "",
++ const required = [
++ if (mode === "cloud") {
++   required.push("defaultCloudDeviceId", "defaultCloudToken");
++ const missingDefaults = required.filter((key) => !effective[key]);
++ const scriptList = [
++   "scripts/preflight_check.sh",
++   "scripts/run.sh",
++   "scripts/export_preference.sh",
++   mode === "cloud" ? "scripts/cloud_dispatch_loop.sh" : "scripts/collect_and_export_loop.sh",
++ const scriptChecks = Object.fromEntries(
++   scriptList.map((relativePath) => {
++     const fullPath = `${skillDir}/${relativePath}`;
++     let exists = false;
++     let executable = false;
++     try {
++     try {
++       const stat = fs.statSync(fullPath);
++       exists = stat.isFile();
++       executable = (stat.mode & 0o111) !== 0;
++     } catch {}
++     return [relativePath, { exists, executable }];
++   })
++   })
++ );
++ );
++ const binChecks = Object.fromEntries(
++   ["bash", "curl", "node"].map((bin) => {
++       const path = execFileSync("bash", ["-lc", `command -v ${bin}`], {
++         encoding: "utf8",
++         stdio: ["ignore", "pipe", "ignore"],
++       }).trim();
++       return [bin, { ok: Boolean(path), path }];
++     } catch {
++       return [bin, { ok: false, path: "" }];
++     }
++   ready: Object.values(scriptChecks).every((item) => item.exists && item.executable)
++     && Object.values(binChecks).every((item) => item.ok)
++     && missingDefaults.length === 0,
++   needsUserDefaults: missingDefaults.length > 0,
++   mode,
++   missingDefaults,
+
+### scripts/run.sh  [code]
+- set -euo pipefail
+- # - local: run the bundled closed loop against the local bridge
+- # - cloud: dispatch through the cloud connector API to a connected local connector
+- # - remote: legacy path; if WEB_COLLECTION_REMOTE_SSH is set, run on collector host via SSH
+- REMOTE_SSH="${WEB_COLLECTION_REMOTE_SSH:-}"
+- REMOTE_WORKDIR="${WEB_COLLECTION_REMOTE_WORKDIR:-/Users/zhym/coding/web_pluging/web_collection}"
+-   WEB_COLLECTION_REMOTE_SSH       optional, e.g. user@collector-host
+-   WEB_COLLECTION_REMOTE_WORKDIR   default: /Users/zhym/coding/web_pluging/web_collection
+- EOF
+-     return 0
+-   fi
+-   fi
+-   local connector_loop="$REMOTE_WORKDIR/bridge/collect_and_export_loop.sh"
+-   local bundled_loop="$SKILL_DIR/scripts/collect_and_export_loop.sh"
+-   if [[ -f "$connector_loop" ]]; then
+-     printf '%s\n' "$connector_loop"
+-   printf '%s\n' "$bundled_loop"
+- fi
+- elif [[ -n "$REMOTE_SSH" ]]; then
+-   echo "[web-collection] mode=remote host=$REMOTE_SSH bridge=$BRIDGE_URL" >&2
+-   PAYLOAD_JSON_B64="$(printf '%s' "$PAYLOAD_JSON" | base64)"
+-   ssh "$REMOTE_SSH" \
+-     BRIDGE_URL="$BRIDGE_URL" \
+-     REMOTE_WORKDIR="$REMOTE_WORKDIR" \
+-     ENSURE_BRIDGE="$ENSURE_BRIDGE" \
+-     BRIDGE_CMD="$BRIDGE_CMD" \
+-     PAYLOAD_JSON_B64="$PAYLOAD_JSON_B64" \
+-     'bash -s' <<'EOF'
+- cd "$REMOTE_WORKDIR"
+- payload_file="$(mktemp)"
+- node -e 'const fs=require("fs"); fs.writeFileSync(process.argv[1], Buffer.from(process.env.PAYLOAD_JSON_B64 || "", "base64").toString("utf8"));' "$payload_file"
+- cmd=(
+-   bash ./bridge/collect_and_export_loop.sh
+-   --payload-file "$payload_file"
+-   --force-stop-before-start
+-   --base-url "$BRIDGE_URL"
+- )
+- if [[ "$ENSURE_BRIDGE" == "true" ]]; then
+-   cmd+=(--ensure-bridge)
+-   if [[ -n "$BRIDGE_CMD" ]]; then
+-     cmd+=(--bridge-cmd "$BRIDGE_CMD")
+- "${cmd[@]}"
+- rm -f "$payload_file"
++ # - local: run the local send-command script
++ # - cloud: run the cloud send-command script
++ }
++ }
++   keywords_json="$(json_array_from_lines "${KEYWORDS[@]-}")"
++   links_json="$(json_array_from_lines "${LINKS[@]-}")"
++   node -e '
++ const parseJSON = (value, fallback) => {
++   if (!value) return fallback;
++ };
++ };
++ const set = (key, value) => {
++   if (value === "" || value === undefined || value === null) return;
++ const keywords = parseJSON(process.env.keywords_json, []);
++ const links = parseJSON(process.env.links_json, []);
++ set("platform", process.env.PLATFORM);
++ set("method", process.env.METHOD);
++ '
++ build_preflight_config_json() {
++   local keywords_json links_json
++   export CONNECTION_MODE PLATFORM METHOD MAX_ITEMS FETCH_DETAIL DETAIL_SPEED EXPORT_TARGET BRIDGE_URL CLOUD_BASE_URL CLOUD_DEVICE_ID CLOUD_TOKEN keywords_json links_json
++ const config = {};
++   try { return JSON.parse(value); } catch { return fallback; }
++   config[key] = value;
++ set("connectionMode", process.env.CONNECTION_MODE);
++ if (Array.isArray(keywords) && keywords.length > 0) config.keywords = keywords;
++ if (Array.isArray(links) && links.length > 0) config.links = links;
++ set("defaultMaxItems", process.env.MAX_ITEMS ? Number(process.env.MAX_ITEMS) : "");
++ set("defaultFetchDetail", process.env.FETCH_DETAIL);
++ set("defaultDetailSpeed", process.env.DETAIL_SPEED);
++ set("defaultBridgeUrl", process.env.BRIDGE_URL);
++ set("defaultCloudBaseUrl", process.env.CLOUD_BASE_URL);
++ set("defaultCloudDeviceId", process.env.CLOUD_DEVICE_ID);
++ set("defaultCloudToken", process.env.CLOUD_TOKEN);
++ set("exportTarget", process.env.EXPORT_TARGET);
++ process.stdout.write(JSON.stringify(config));
++ run_preflight_check() {
++   local preflight_script config_json
++   preflight_script="$SKILL_DIR/scripts/preflight_check.sh"
++   [[ -x "$preflight_script" ]] || die "missing preflight helper: $preflight_script"
++   config_json="$(build_preflight_config_json)"
++   "$preflight_script" \
++     --config-json "$config_json" \
++     --mode "$CONNECTION_MODE" \
++     --format json \
++     --quiet-success >/dev/null
++   echo "[web-collection] preflight ok" >&2
++   printf '%s\n' "$SKILL_DIR/scripts/collect_and_export_loop.sh"
++ run_preflight_check

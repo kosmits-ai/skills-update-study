@@ -1,0 +1,169 @@
+falderebet/dirigera-control  1.0.1 -> 1.0.2
+change_type: instructions+code   changelog: ## 2026-02-04 - Token Generation Enhancement   ### Added                                                                                                                   - **`scripts/generate_token_wrapper.py`** - New wrapper script for non-interactive token generation                           - Automatically polls Dirigera API for token without requiring ENTER key press                                              - Waits up to 120 seconds for physical button press on hub                     
+
+### SKILL.md  [instructions]
+- Run the included token generator with the hub IP address:
+- When prompted:
+- 1. Press the action button on the bottom of the Dirigera hub.
+- 2. Press `ENTER` in the terminal.
+- 3. Copy the printed token for use in `dirigera.Hub(...)`.
++ ```python
++ ```python
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```bash
++ ```bash
++ ```bash
++ **IMPORTANT**: Token generation REQUIRES PHYSICAL USER ACTION. Follow this workflow:
++ #### Step 1: Start Token Generation Script
++ Run the wrapper script in the background. It will automatically wait for the button press:
++ python scripts/generate_token_wrapper.py <dirigera-ip-address> &
++ The token will be saved to `dirigera_token.txt` by default. To specify a custom location:
++ python scripts/generate_token_wrapper.py <dirigera-ip-address> --output /path/to/token.txt &
++ #### Step 2: **END YOUR TURN AND INFORM THE USER**
++ **CRITICAL**: After starting the script, you MUST:
++ 1. **End your turn immediately** - do not wait or continue processing
++ 2. Tell the user: "I've started the token generation process. Please press the ACTION BUTTON on the bottom of your Dirigera hub now. Let me know when you've pressed it."
++ #### Step 3: Wait for User Confirmation
++ The user will:
++ 1. Physically press the button on their Dirigera hub
++ 2. Reply to you confirming they pressed it (e.g., "Done" or "Pressed")
++ The script will automatically detect the button press and save the token to the file.
++ #### Step 4: Retrieve the Saved Token
++ After the user confirms, read the token from the file:
++ from pathlib import Path
++ token = Path("dirigera_token.txt").read_text().strip()
++ Or from a custom location:
++ TOKEN=$(cat /path/to/token.txt)
++ Then use the token to connect:
++ import dirigera
++ hub = dirigera.Hub(token=token, ip_address="<dirigera-ip>")
++ #### Alternative: Manual Command
++ For manual use (not recommended for agents):
++ This requires interactive terminal access and doesn't save output automatically.
+
+### scripts/generate_token_wrapper.py  [code]
++ #!/usr/bin/env python3
++ """
++ """
++ Wrapper for generate-token that automatically waits for button press and saves output.
++ This script starts the token generation process and automatically waits for the
++ button press on the Dirigera hub, then saves the token to a file.
++ Usage:
++   python scripts/generate_token_wrapper.py <dirigera-ip-address>
++   python scripts/generate_token_wrapper.py <dirigera-ip-address> --output /path/to/token.txt
++ import argparse
++ import sys
++ import time
++ from pathlib import Path
++ try:
++     import requests
++     from requests.packages.urllib3.exceptions import InsecureRequestWarning
++     requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
++ except ImportError:
++     print("Error: requests library not found. Install with: pip install requests")
++     sys.exit(1)
++ def generate_token(ip_address: str, timeout: int = 120) -> str:
++     """
++     """
++     Generate a token by waiting for the button press on the Dirigera hub.
++     This function will keep trying until the button is pressed or timeout is reached.
++     url = f"https://{ip_address}:8443/v1/oauth/token"
++     # Generate a code verifier (required for OAuth PKCE flow)
++     import hashlib
++     import base64
++     import secrets
++     code_verifier = base64.urlsafe_b64encode(secrets.token_bytes(32)).decode('utf-8').rstrip('=')
++     # The dirigera hub expects this specific payload
++     payload = {
++         "code": "authorization_code",
++         "name": "claude-agent",
++         "grant_type": "authorization_code",
++         "code_verifier": code_verifier
++     }
++     print(f"Waiting for button press on Dirigera hub at {ip_address}...")
++     print(f"Timeout: {timeout} seconds")
++     print()
++     print()
++     start_time = time.time()
++     attempt = 0
++     while time.time() - start_time < timeout:
++         attempt += 1
++         try:
++             response = requests.post(
++                 url,
++                 json=payload,
++                 verify=False,
++                 timeout=5
++             )
++             if response.status_code == 200:
++                 data = response.json()
++                 if "access_token" in data:
++                     print(f"\n✓ Token generated successfully after {attempt} attempts!")
++                     return data["access_token"]
++             # If we get a 4xx error, the button hasn't been pressed yet
++             if response.status_code in [400, 401, 403]:
++                 elapsed = int(time.time() - start_time)
++                 remaining = timeout - elapsed
++                 print(f"\rWaiting... ({elapsed}s elapsed, {remaining}s remaining)", end="", flush=True)
++                 time.sleep(2)
++                 continue
++             # Other errors
++             print(f"\nUnexpected response: {response.status_code}")
++             print(response.text)
++             time.sleep(2)
++             time.sleep(2)
++         except requests.exceptions.Timeout:
++             print(f"\rConnection timeout, retrying... ({int(time.time() - start_time)}s)", end="", flush=True)
++             time.sleep(1)
++         except requests.exceptions.ConnectionError as e:
++             print(f"\nConnection error: {e}")
++             print("Make sure the hub IP is correct and the hub is powered on.")
++             return None
++         except Exception as e:
++             print(f"\nError: {e}")
++     print(f"\n\nTimeout reached after {timeout} seconds.")
++     print("The button was not pressed in time.")
++     return None
++ def main() -> int:
++     parser = argparse.ArgumentParser(
++         description="Generate Dirigera token and save to file (auto-waits for button press)"
++     )
++     )
++     )
++     parser.add_argument("ip_address", help="Dirigera hub IP address")
++     parser.add_argument(
++     parser.add_argument(
++         "--output",
++         default="dirigera_token.txt",
++         help="Output file path (default: dirigera_token.txt in current directory)",
++         "--timeout",
++         type=int,
++         default=120,
++         help="Timeout in seconds to wait for button press (default: 120)",
++     args = parser.parse_args()
++     output_path = Path(args.output)
++     print("=" * 60)
++     print("=" * 60)
++     print("=" * 60)
++     print("DIRIGERA TOKEN GENERATION")
++     print(f"\nHub IP: {args.ip_address}")
++     print(f"Output file: {output_path.absolute()}")
++     print("\n" + "=" * 60)
++     print("NEXT STEP: Press the ACTION BUTTON on the bottom of your")
++     print("Dirigera hub within the next 120 seconds.")
++     token = generate_token(args.ip_address, timeout=args.timeout)
++     if not token:
++         print("\nFailed to generate token.")
++         return 1
++     # Save to file
++     output_path.write_text(token + "\n")
++     print(f"\n✓ Token saved to: {output_path.absolute()}")
++     print(f"\nTo use this token:")
++     print(f'  In Python: token = Path("{output_path}").read_text().strip()')
++     return 0
++ if __name__ == "__main__":
++     sys.exit(main())

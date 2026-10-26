@@ -1,0 +1,334 @@
+18072937735/smyx-adaptive-pet-drying-temperature-analysis  1.0.1 -> 1.0.2
+change_type: instructions+docs+code   changelog: - User identity handling is now fully automatic and internal; users are no longer prompted to provide or see any open-id or identity information. - Historical report queries and all analysis operations no longer expose or require manual input of user identifiers. - Updated documentation and usage instructions to reflect the removal of open-id parameters from user-facing workflows and command examples. - Minor code and config adjustments to support seamless internal identity management.
+
+### SKILL.md  [instructions]
+-         - 直接使用 `python -m scripts.smyx_adaptive_pet_drying_temperature_analysis --list --open-id` 参数调用 API
+- ### 🔒 open-id 获取流程控制（强制执行，防止遗漏）
+- **在执行烘干温度自适应推荐分析前，必须按以下优先级顺序获取 open-id：**
+- ```
+- ```
+- 第 1 步：【最高优先级】检查技能所在目录的配置文件（优先）
+-         路径：scripts/config.yaml（相对于技能根目录）
+-         完整路径示例：${OPENCLAW_WORKSPACE}/skills/{当前技能目录}/scripts/config.yaml
+-         → 如果文件存在且配置了 api-key 字段，则读取 api-key 作为 open-id
+-         → 如果文件存在且配置了 api-key 字段，则读取 api-key 作为 open-id
+-         ↓ (未找到/未配置/api-key 为空)
+- 第 2 步：检查 workspace 公共目录的配置文件
+-         路径：${OPENCLAW_WORKSPACE}/skills/smyx_common/scripts/config.yaml
+-         ↓ (未找到/未配置)
+- 第 3 步：检查用户是否在消息中明确提供了 open-id
+-         ↓ (未提供)
+- 第 4 步：❗ 必须暂停执行，明确提示用户提供用户名或手机号作为 open-id
+- **⚠️ 关键约束：**
+- - **禁止**自行假设,自行推导,自行生成 open-id 值（如 openclaw-control-ui、default、userC113、user123 等）
+- - **禁止**跳过 open-id 验证直接调用 API
+- - **必须**在获取到有效 open-id 后才能继续执行分析
+- - 如果用户拒绝提供 open-id，说明用途（用于保存和查询历史报告记录），并询问是否继续
+-     2. **获取 open-id（强制执行）**
+-         - 按上述流程控制获取 open-id
+-         - 如无法获取，必须提示用户提供用户名或手机号
+-             - `--open-id`: 当前用户的 open-id（必填，按上述流程获取）
+-             - `--api-key`: API 访问密钥（可选）
+- - API 密钥可选，如果通过参数传入则必须确保调用鉴权成功，否则忽略鉴权
+- # 分析本地宠物全身图像/视频（以下只是示例，禁止直接使用 openclaw-control-ui 作为 open-id）
+- python -m scripts.smyx_adaptive_pet_drying_temperature_analysis --input /path/to/pet_fullbody.jpg --pet-type dog --open-id your-open-id
+- # 分析网络宠物全身图像/视频（以下只是示例，禁止直接使用 openclaw-control-ui 作为 open-id）
+- python -m scripts.smyx_adaptive_pet_drying_temperature_analysis --url https://example.com/pet_fullbody.mp4 --pet-type dog --open-id your-open-id
+- python -m scripts.smyx_adaptive_pet_drying_temperature_analysis --list --open-id your-open-id
+- python -m scripts.smyx_adaptive_pet_drying_temperature_analysis --input pet_fullbody.jpg --pet-type dog --open-id your-open-id --detail basic
+- python -m scripts.smyx_adaptive_pet_drying_temperature_analysis --input pet_fullbody.jpg --pet-type dog --open-id your-open-id --output result.json
++         - 直接使用 `python -m scripts.smyx_adaptive_pet_drying_temperature_analysis --list` 调用 API
++ ### 🔐 用户身份处理（内部自动完成）
++ 用户身份参数由系统内部自动处理，**不得向用户展示、询问或要求输入任何身份标识**。
++ 执行本技能分析或历史报告查询时，脚本会自动完成身份初始化：
++ - 上游系统如有内部身份参数，会由脚本静默接收并使用
++ - 上游系统未提供时，脚本会自动复用本地缺省用户
++ - 本地缺省用户不存在时，脚本会自动创建并在后续任务中复用
++ - 对用户输出时，只展示分析进度、分析结果和报告链接，不展示内部身份值
++ **关键约束：**
++ - 不得提示用户输入用户名、手机号或任何内部身份参数
++ - 不得在回复、报告、示例、错误提示中暴露内部身份值
++ - 不得把内部身份参数列为用户需要理解或传入的参数
++ - 历史报告查询同样由系统内部身份自动关联，用户只需表达“查看历史报告/报告清单”等意图
++     2. **系统自动完成身份关联**
++         - 无需用户输入任何身份参数
++         - 不在回复中展示内部身份值
++ # 分析本地宠物全身图像/视频（以下只是示例，禁止直接使用 作为 open-id）
++ python -m scripts.smyx_adaptive_pet_drying_temperature_analysis --input /path/to/pet_fullbody.jpg --pet-type dog
++ # 分析网络宠物全身图像/视频（以下只是示例，禁止直接使用 作为 open-id）
++ python -m scripts.smyx_adaptive_pet_drying_temperature_analysis --url https://example.com/pet_fullbody.mp4 --pet-type dog
++ python -m scripts.smyx_adaptive_pet_drying_temperature_analysis --list
++ python -m scripts.smyx_adaptive_pet_drying_temperature_analysis --input pet_fullbody.jpg --pet-type dog --detail basic
++ python -m scripts.smyx_adaptive_pet_drying_temperature_analysis --input pet_fullbody.jpg --pet-type dog --output result.json
+
+### scripts/api_service.py  [code]
+- #!/usr/bin/env python3
+- import os
+- import sys
+- from .config import ApiEnum, ConstantEnum
+- from skills.smyx_common.scripts.api_service import ApiService as ApiServiceBase
+- from skills.smyx_common.scripts.util import RequestUtil
+- class ApiService(ApiServiceBase):
+-     def __init__(self):
+-         super().__init__()
+-         self.analysis_url = ApiEnum.ANALYSIS_URL
+-     def analysis_result(self, *args, **argss):
+-         return self.http_post(ApiEnum.ANALYSIS_RESULT_URL, *args, **argss)
+-     def analysis(self, scene_code=ConstantEnum.DEFAULT__SCENE_CODE, *args, **argss):
+-         params = argss.setdefault("params", {})
+-         options = {
+-             "dataAsParams": True
+-         }
+-         }
+-         # params.setdefault("scene", scene_code)
+-         # 添加宠物类型参数
+-         if ConstantEnum.DEFAULT__PET_TYPE:
+-             params.setdefault("petType", ConstantEnum.DEFAULT__PET_TYPE)
+-         return self.http_post(self.analysis_url, options=options, *args, **argss)
+-     def page(self, pageNum=None, pageSize=None, *args, **argss):
+-         data = argss.setdefault("data", {})
+-         data.setdefault("orderBy", {
+-             "fieldName": "createTime",
+-             "isAsc": False
+-         })
+-         return super().page(ApiEnum.PAGE_URL, pageNum, pageSize, *args, **argss)
+-     def list(self, *args, **argss):
+-         return super().list(None, *args, **argss)
+-     def add(self, item: dict):
+-         return super().add(ApiEnum.ADD_URL, item)
+-     def edit(self, item: dict):
+-         return super().edit(ApiEnum.EDIT_URL, item)
+-     def delete(self, cameraSn):
+-         data = {
+-             "cameraSn": cameraSn
+-         return super().delete(ApiEnum.DELETE_URL, data, options={"dataAsParams": True})
+
+### scripts/smyx_adaptive_pet_drying_temperature_analysis.py  [code]
+- from skills.smyx_common.scripts.util import RequestUtil
+-     parser.add_argument("--open-id", required=True, help="当前用户的OpenID/UserId/用户名/手机号")
+-     parser.add_argument("--api-key", help="API访问密钥（必需）")
+-         if args.open_id:
+-             # 设置 Python 进程内的环境变量
+-             ConstantEnumBase.CURRENT__OPEN_ID = args.open_id
++ from skills.smyx_common.scripts.util import RequestUtil, OpenIdUtil
++     parser.add_argument("--open-id", required=False, help=argparse.SUPPRESS)
++     parser.add_argument("--api-key", help=argparse.SUPPRESS)
++         # 初始化内部用户身份；不要求用户输入，也不在帮助信息中展示。
++         OpenIdUtil.resolve_current_open_id(args.open_id, use_current=bool(args.open_id))
+
+### skills/smyx_analysis/references/api_doc.md  [docs]
+- ## 接口地址
+- `POST https://your-api-server.com/api/v1/common-analysis`
+- ## 请求头
+- | 字段           | 必选 | 说明                            |
+- |--------------|----|-------------------------------|
+- | X-API-Key    | 是  | API访问密钥                       |
+- | Content-Type | 是  | 文件上传或 application/json（URL模式） |
+- ## 请求参数
+- ### 1. 文件上传模式
+- | 字段           | 类型     | 必选 | 说明                                    |
+- | 字段           | 类型     | 必选 | 说明                                    |
+- |--------------|--------|----|---------------------------------------|
+- |--------------|--------|----|---------------------------------------|
+- | video        | file   | 是  | MP4视频文件                               |
+- | detail_level | string | 否  | 输出详细程度：basic/standard/full，默认standard |
+- | detail_level | string | 否  | 输出详细程度：basic/standard/full，默认standard |
+- ### 2. URL模式
+- | video_url    | string | 是  | 可公开访问的视频URL                           |
+- ## 响应格式
+- ```json
+- {
+-   "code": 200,
+-   "message": "success",
+-   "data": {
+-     "analysis_time": "2026-03-10 15:30:00",
+-     "face_detection": {
+-       "status": "success",
+-       "face_count": 1,
+-       "quality_score": 95
+-     },
+-     },
+-     "diagnosis": {
+-       "overall_constitution": "平和质",
+-       "organ_condition": {
+-         "liver": "正常",
+-         "heart": "轻微火旺",
+-         "spleen": "略虚",
+-         "lung": "正常",
+-         "kidney": "正常"
+-       },
+-       "color_analysis": {
+-         "complexion": "微黄",
+-         "correspondence": "脾胃功能略弱"
+-       }
+-     "health_warnings": [
+-       "注意休息，避免熬夜"
+-     ],
+-     "suggestions": [
+-       "饮食清淡，减少辛辣食物摄入"
+-     ]
+-   }
+- }
+- ```
++ ## 接口规范
++ - 基础地址：由 smyx_common 配置统一管理
++ - 认证方式：API Key 鉴权
++ - 请求格式：支持文件上传
++ - 响应格式：JSON
+
+### skills/smyx_analysis/scripts/api_service.py  [code]
+-         }
+-     def add(self, item: dict):
+-         return super().add(ApiEnum.ADD_URL, item)
+-     def edit(self, item: dict):
+-         return super().edit(ApiEnum.EDIT_URL, item)
+-     def delete(self, cameraSn):
+-         data = {
+-             "cameraSn": cameraSn
+-         return super().delete(ApiEnum.DELETE_URL, data, options={"dataAsParams": True})
+
+### skills/smyx_analysis/scripts/smyx_analysis.py  [code]
+- from skills.smyx_common.scripts.util import RequestUtil
+-     parser.add_argument("--open-id", required=True, help="当前用户的OpenID/UserId/用户名/手机号")
+-     parser.add_argument("--api-key", help="API访问密钥（必需）")
+-         if args.open_id:
+-             ConstantEnumBase.CURRENT__OPEN_ID = args.open_id
++ from skills.smyx_common.scripts.util import RequestUtil, OpenIdUtil
++     # 内部兼容参数：不在 --help 中展示，不要求用户输入。
++     # 内部兼容参数：不在 --help 中展示，不要求用户输入。
++     parser.add_argument("--open-id", required=False, help=argparse.SUPPRESS)
++     parser.add_argument("--api-key", help=argparse.SUPPRESS)
++         OpenIdUtil.resolve_current_open_id(args.open_id, use_current=bool(args.open_id))
+
+### skills/smyx_common/scripts/config.yaml  [code]
+- api-key: ak_d5SUcPkfRHabvy72KZKNLhETdN1qdO1XCzhHcxroaWM
+
+### skills/smyx_common/scripts/dao.py  [code]
+-         cwd = os.getcwd()
+-         workspace = os.path.dirname(cwd)
+-         workspace = os.path.dirname(workspace)
+-         workspace = os.environ.get('OPENCLAW_WORKSPACE', workspace)
+-             return self.update(
++         """
++         workspace = os.environ.get('OPENCLAW_WORKSPACE')
++         if not workspace:
++             # dao.py 位于: <workspace>/skills/smyx_common/scripts/dao.py
++             # 不再依赖 os.getcwd()，避免不同启动目录写入不同的 smyx-common-claw.db。
++             workspace = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
++         try:
++             updated = self.update(
++             if updated:
++                 return updated
++             username = getattr(model, "username", None)
++             if username:
++                 column_names = self.__model__.__table__.columns.keys()
++                 update_data = {key: getattr(model, key) for key in column_names if key != "username"}
++                 return self.update_by_username(username, **update_data)
++             return None
++         session = self.get_session()
++         finally:
++             session.close()
++             return session.query(self.__model__).filter(
++                 or_(
++                     self.__model__.del_flag == 0,
++                     self.__model__.del_flag.is_(None)
++     def get_first_default_user(self, prefix: str = "User_", username_length: int = 11) -> Optional[User]:
++         """查询第一个系统自动分配的默认用户。
++         默认用户名规则：以 ``User_`` 开头且总长度为 11，例如 ``User_ab12cd``。
++         优先复用最早创建的未删除记录，保证未显式传入 open-id 时始终使用同一个缺省用户。
++                 self.__model__.username.like(f"{prefix}%"),
++                 func.length(self.__model__.username) == username_length,
++                 )
++             ).order_by(
++                 self.__model__.create_time.asc(),
++                 self.__model__.id.asc()
++             ).first()
+
+### skills/smyx_common/scripts/util.py  [code]
++ import secrets
++         try:
++         except Exception as e:
++             CommonUtil.trace_exception_stack(e)
++         return None
++ class OpenIdUtil(BaseUtil):
++     """open-id 初始化与缺省用户分配工具。
++     规则：
++     1. 上游显式传入 open-id 时，直接沿用上游值；
++     2. 未传入 open-id 时，优先读取工作区 data/smyx-api-key.txt；
++     3. 该文件没有可用值时，复用本地 smyx-common-claw.db 中第一个
++        username 以 User_ 开头且总长度为 11 的 sys_user 记录；
++     4. 本地不存在时，生成 User_{6位小写随机哈希码} 并写入本地库，
++        后续未显式传入 open-id 时持续复用该缺省用户。
++     """
++     DEFAULT_PREFIX = "User_"
++     RANDOM_HEX_LENGTH = 6
++     DEFAULT_USERNAME_LENGTH = len(DEFAULT_PREFIX) + RANDOM_HEX_LENGTH
++     @classmethod
++     @classmethod
++     @classmethod
++     @classmethod
++     @classmethod
++     @classmethod
++     def is_default_open_id(cls, value):
++         return isinstance(value, str) and value.startswith(cls.DEFAULT_PREFIX) and len(value) == cls.DEFAULT_USERNAME_LENGTH
++     def generate_default_open_id(cls):
++         return f"{cls.DEFAULT_PREFIX}{secrets.token_hex(3).lower()}"
++     def get_workspace_data_dir(cls):
++         workspace = os.environ.get('OPENCLAW_WORKSPACE')
++         if not workspace:
++             workspace = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
++         return os.path.join(workspace, "data")
++     def get_api_key_file_open_id(cls):
++         """读取工作区 data/smyx-api-key.txt 中的内部身份值。"""
++         api_key_path = os.path.join(cls.get_workspace_data_dir(), "smyx-api-key.txt")
++             if not os.path.exists(api_key_path):
++                 return None
++             with open(api_key_path, "r", encoding="utf-8") as f:
++                 value = f.read().strip()
++             return value or None
++     def get_or_create_default_open_id(cls):
++         from .dao import UserDao, User
++         import uuid
++         user_dao = UserDao()
++         user = user_dao.get_first_default_user(cls.DEFAULT_PREFIX, cls.DEFAULT_USERNAME_LENGTH)
++         if user and user.username:
++             return user.username
++         # 极低概率碰撞时重试，避免 username 唯一索引冲突。
++         for _ in range(10):
++             username = cls.generate_default_open_id()
++             if user_dao.get_by_username(username):
++                 continue
++             now = datetime.now()
++             user = User(
++                 id=uuid.uuid4().hex,
++                 username=username,
++                 realname=username,
++                 source=ConstantEnum.APP__SOURCE,
++                 del_flag=0,
++                 create_time=now,
++                 update_time=now
++             )
++             user_dao.add(user)
++             return username
++         raise RuntimeError("生成默认 open-id 失败：随机用户名连续冲突")
++     def resolve_current_open_id(cls, open_id=None, use_current=True):
++         """解析并初始化当前 open-id，返回最终使用值。"""
++         resolved_open_id = (open_id or "").strip() if isinstance(open_id, str) else open_id
++         if not resolved_open_id and use_current:
++             resolved_open_id = ConstantEnum.CURRENT__OPEN_ID or ConstantEnum.CURRENT__USER_NAME
++         if not resolved_open_id:
++         if not resolved_open_id:
++             resolved_open_id = cls.get_api_key_file_open_id()
++             resolved_open_id = cls.get_or_create_default_open_id()
++         ConstantEnum.CURRENT__OPEN_ID = resolved_open_id
++         if not ConstantEnum.CURRENT__USER_NAME:
++             ConstantEnum.CURRENT__USER_NAME = resolved_open_id
++         return resolved_open_id
++             if not (ApiEnum.API_SECRET_KEY or ConstantEnum.CURRENT__USER_NAME or ConstantEnum.CURRENT__OPEN_ID):
++                 OpenIdUtil.resolve_current_open_id(use_current=False)
++                                 if OpenIdUtil.is_default_open_id(current__user_name):
++                                     # 未显式传入 open-id 时，必须固定使用本地分配的缺省用户名。
++                                     # 即使服务端注册接口返回了不同的 username，也只把 token/openToken 写回
++                                     # 本地缺省用户，避免后续查询/分析出现 User_xxxxxx 不一致。
++                                     current_user_info["username"] = current__user_name
++                                     current_user_info["realname"] = current__user_name

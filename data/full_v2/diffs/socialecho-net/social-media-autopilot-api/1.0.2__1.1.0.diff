@@ -1,0 +1,1497 @@
+socialecho-net/social-media-autopilot-api  1.0.2 -> 1.1.0
+change_type: instructions+code   changelog: **Expanded functionality and endpoints for SocialEcho social media management.**  - New endpoints: add support for upload URL retrieval, Reddit communities, Pinterest boards, and article publishing. - New scripts: `upload-url.js`, `reddit-communities.js`, `pinterest-boards.js`, `publish-article.js` with example payload. - Renamed package and commands for improved clarity and broader coverage. - Updated documentation to reflect new features, sample commands, response codes, and OpenAPI spec locat
+
+### SKILL.md  [instructions]
+- name: social-media-autopilot
+- description: Social media autopilot API skill for querying team, account list, article list, and report endpoints using team API key. Use for integration checks and data pulls.
+- # Social media autopilot
+-    - `--team-id` (optional)
+- `--team-id` is optional for most calls but can be required by report queries depending on server rules.
+- cd social-media-autopilot
+- - Success is defined as: HTTP 200 and response JSON `code == 200`.
+- - External API rate limit: maximum `120 requests / minute` per API key.
+- - If calling in loops or automation, keep request rate below limit and add retry/backoff on throttle responses.
+- - Scripts print response body and exit with non-zero status on failure.
+- - Use `--base-url https://api-dev.socialecho.net` for dev environment.
+- - OpenAPI spec: `openapi.yaml` (Swagger/OpenAPI 3.0.3, LLM-friendly descriptions and field semantics).
++ name: socialecho-social-media-management-agent
++ description: SocialEcho social media management API skill for querying team, accounts, articles, reports, upload URL, Reddit communities, Pinterest boards, and publishing posts using team API key. Use for integration checks and data pulls.
++ # SocialEcho Social Media Management Agent
++    - `--team-id` (optional; maps to `X-Team-Id` when set)
++ ```bash
++ cd socialecho-skills
++ ```
++ 查询与报表（OpenAPI 约定为 **GET + JSON body**，脚本用 Node 原生 `http(s)` 发送）：
++ 上传与发布相关：
++ ./upload-url.js --api-key YOUR_KEY
++ ./reddit-communities.js --api-key YOUR_KEY --account-id 163751
++ ./pinterest-boards.js --api-key YOUR_KEY --account-id 163751
++ ./publish-article.js --api-key YOUR_KEY --payload ./publish-payload.example.json
++ `publish-article` 的请求体字段以仓库内 `openapi.json` / `openapi.yaml` 中 `POST /v1/publish/article` 为准；请准备完整 JSON 文件并通过 `--payload` 传入。
++ - 成功判定：HTTP `200` 且响应 JSON 的 `code` 为 `200` 或 `0`（与当前对外接口约定一致）。
++ - 外部 API 限流：单 Key 建议不超过 **120 次/分钟**；循环调用请加节流与退避。
++ - 规范文件：仓库根目录同步的 `默认模块.openapi.json` 与 skill 内 `openapi.json` / `openapi.yaml` 内容一致（便于 Clawhub / GitHub 与 Agent 阅读）。
+
+### account.js  [code]
+- import { buildRequestOptions, callApi, parseArgs, printAndExit } from "./client.js";
+- const page = args.page ?? 1;
+- const type = args.type ?? 1;
+- const result = await callApi("/v1/account", { page, type }, options);
++ import { buildRequestOptions, callJsonGet, parseArgs, printAndExit } from "./client.js";
++ const page = Number(args.page ?? 1);
++ const type = Number(args.type ?? 1);
++ const result = await callJsonGet("/v1/account", { page, type }, options);
+
+### article.js  [code]
+- import { buildRequestOptions, callApi, parseArgs, parseCsvIds, printAndExit } from "./client.js";
+- const page = args.page ?? 1;
+- const accountIds = parseCsvIds(args["account-ids"]);
+- const result = await callApi("/v1/article", {
+-   page,
+-   account_ids: accountIds
+- }, options);
++ import { buildRequestOptions, callJsonGet, parseArgs, parseCsvIdsToArray, printAndExit } from "./client.js";
++ const page = Number(args.page ?? 1);
++ const accountIds = parseCsvIdsToArray(args["account-ids"]);
++ const body = { page };
++ if (accountIds) body.account_ids = accountIds;
++ const result = await callJsonGet("/v1/article", body, options);
+
+### client.js  [code]
+-   }
+-   }
+- function buildQuery(params) {
+-   const usp = new URLSearchParams();
+-   for (const [k, v] of Object.entries(params)) {
+-     if (v === undefined || v === null || v === "") continue;
+-     usp.set(k, String(v));
+-   return usp.toString();
+-     baseUrl: getOption(args, "base-url", false, "https://api.socialecho.net"),
+-   const { apiKey, baseUrl, teamId, lang } = options;
+-   const qs = buildQuery(params);
+-   const url = `${baseUrl}${path}${qs ? `?${qs}` : ""}`;
+-   if (teamId) headers["X-Team-Id"] = teamId;
+-   const resp = await fetch(url, { method: "GET", headers });
+-   const status = resp.status;
+-   let body;
+-   try {
+-     body = await resp.json();
+-   } catch {
+-     body = { parse_error: true };
+-   const ok = status === 200 && body?.code === 200;
+-   return { ok, status, body, url };
++ import http from "node:http";
++ import https from "node:https";
++ import { URL } from "node:url";
++     }
++ }
++ }
++ }
++ }
++ }
++     baseUrl: getOption(args, "base-url", false, "https://api.socialecho.net").replace(/\/+$/, ""),
++ export function buildHeaders(options) {
++   const { apiKey, teamId, lang } = options;
++   if (teamId) headers["X-Team-Id"] = String(teamId);
++   return headers;
++ function requestJson(method, urlString, bodyObject, baseHeaders) {
++   return new Promise((resolve, reject) => {
++     const u = new URL(urlString);
++     const isHttps = u.protocol === "https:";
++     const lib = isHttps ? https : http;
++     const bodyBuf = Buffer.from(JSON.stringify(bodyObject ?? {}), "utf8");
++     const headers = {
++       ...baseHeaders,
++       "Content-Type": "application/json",
++       "Content-Length": String(bodyBuf.length)
++     };
++     };
++     const opts = {
++       hostname: u.hostname,
++       port: u.port || (isHttps ? 443 : 80),
++       path: `${u.pathname}${u.search}`,
++       method,
++       headers
++     const req = lib.request(opts, (res) => {
++       const chunks = [];
++       res.on("data", (c) => chunks.push(c));
++       res.on("end", () => {
++         const text = Buffer.concat(chunks).toString("utf8");
++         let body;
++         try {
++           body = text ? JSON.parse(text) : {};
++         } catch {
++           body = { parse_error: true, raw: text };
++         }
++         resolve({ status: res.statusCode ?? 0, body });
++       });
++     });
++     req.on("error", reject);
++     if (method === "GET" || method === "POST") {
++       req.write(bodyBuf);
++     req.end();
++   });
++ export function isBusinessOk(body) {
++   const c = body?.code;
++   return c === 200 || c === 0;
++ /**
++  * OpenAPI 导出为 GET + JSON body；浏览器 fetch 对 GET body 支持差，故用 node:http(s) 发送。
++  */
++ export async function callJsonGet(path, body, options) {
++   const { baseUrl } = options;
++   const { baseUrl } = options;
++   const url = `${baseUrl}${path.startsWith("/") ? path : `/${path}`}`;
++   const url = `${baseUrl}${path.startsWith("/") ? path : `/${path}`}`;
++   const h = buildHeaders(options);
++   const h = buildHeaders(options);
++   const { status, body: respBody } = await requestJson("GET", url, body, h);
++   const ok = status === 200 && isBusinessOk(respBody);
++   const ok = status === 200 && isBusinessOk(respBody);
++   return { ok, status, body: respBody, url };
++   return { ok, status, body: respBody, url };
++ export async function callJsonPost(path, body, options) {
++   const { status, body: respBody } = await requestJson("POST", url, body, h);
++ /** @deprecated 与 callJsonGet 相同，保留旧名 */
++   return callJsonGet(path, params, options);
++     .split(",")
++     .map((x) => x.trim())
++     .filter(Boolean)
++ export function parseCsvIdsToArray(raw) {
++   if (!raw) return undefined;
++   const arr = String(raw)
++     .map((x) => Number(x))
++     .filter((n) => !Number.isNaN(n));
++   return arr.length ? arr : undefined;
+
+### openapi.json  [code]
+-   "openapi": "3.0.3",
+-     "title": "SocialEcho External API",
+-     "version": "1.1.0",
+-     "description": "SocialEcho 对外 API（面向自动化平台与 Agent 集成）。\n\n典型场景：\n- 在 n8n / Zapier / Dify / Agent CLI 中拉取团队、账号、贴文与报表数据。\n- 通过 Team API Key 做服务间调用（无登录态 Cookie）。\n\n成功判定（建议 LLM / Agent 统一遵循）：\n1. HTTP 状态码必须为 200\n2. 响应 JSON 的 `code` 必须为 200\n3. 其余情况都视为失败并进入重试/告警分支\n\n频率限制：\n- 单个 API Key：最多 120 次请求 / 分钟\n- 建议在工作流中增加节流与指数退避（例如 1s, 2s, 4s）\n"
+-     {
+-     {
+-     {
+-     {
+-     {
+-     },
+-     },
+-     },
+-       "url": "https://api-dev.socialecho.net",
+-       "description": "Development"
+-     }
+-   ],
+-   ],
+-       "bearerAuth": []
+-   "tags": [
+-       "name": "Team",
+-       "description": "团队基础信息"
+-       "name": "Account",
+-       "description": "社媒账号列表"
+-       "name": "Article",
+-       "description": "贴文列表"
+-       "name": "Report",
+-       "description": "数据报表"
+-         "tags": [
+-         "tags": [
+-         "tags": [
+-         "tags": [
+-           "Team"
+-         ],
+-         ],
+-         ],
+-         ],
+-         ],
+-         ],
+-         ],
+-         ],
+-         "operationId": "getTeamInfo",
+-         "summary": "获取当前 API Key 可访问的团队信息",
+-         "description": "返回当前 Team API Key 对应团队的基础信息。\n\nLLM 调用建议：\n- 如果请求头里传了 `X-Team-Id`，优先按该团队上下文返回。\n- 如果不传 `X-Team-Id`，由服务端按 API Key 默认团队处理。\n",
+-             "$ref": "#/components/parameters/XLang"
+-             "$ref": "#/components/parameters/XLang"
+-             "$ref": "#/components/parameters/XLang"
+-             "$ref": "#/components/parameters/XLang"
+-           },
+-           },
+-           },
+-           },
+-           },
+-           },
+-           },
+-           },
+-           },
+-           },
+-           },
+-           },
+-           },
+-           },
+-           },
+-           },
+-           },
+-           },
+-           },
+-           },
+-           },
+-           },
+-           },
+-           },
+-           },
+-           },
+-           },
+-           },
+-           },
+-           },
+-           },
+-           },
+-           },
+-           },
+-           },
+-           },
+-           },
+-           },
+-           },
+-           },
+-           },
+-           },
+-           },
+-           },
+-           },
+-           },
+-           },
+-           },
+-           },
+-           },
+-           },
+-           },
+-           },
+-           },
+-           },
+-           },
+-           },
+-           },
+-           },
+-           },
+-           },
+-           },
+-           },
+-             "$ref": "#/components/parameters/XTeamId"
+-             "$ref": "#/components/parameters/XTeamId"
+-             "$ref": "#/components/parameters/XTeamId"
+-             "$ref": "#/components/parameters/XTeamId"
+-             "description": "成功（业务成功时 `code=200`）",
+-             "description": "成功（业务成功时 `code=200`）",
+-             "description": "成功（业务成功时 `code=200`）",
+-             "description": "成功（业务成功时 `code=200`）",
+-                   "$ref": "#/components/schemas/ApiResponseTeam"
+-                 "examples": {
+-                 "examples": {
+-                 "examples": {
+-                 "examples": {
+-                   "ok": {
+-                   "ok": {
+-                   "ok": {
+-                     "value": {
+-                     "value": {
+-                     "value": {
+-                     "value": {
+-                     "value": {
+-                       "code": 200,
+-                       "code": 200,
+-                       "code": 200,
+-                       "code": 200,
+-                       "code": 200,
+-                       "message": "success",
+-                       "message": "success",
+-                       "message": "success",
+-                       "message": "success",
+-                       "message": "success",
+-                       "data": {
+-                       "data": {
+-                       "data": {
+-                       "data": {
+-                       "data": {
+-                         "id": 1024,
+-                         "code": "TEAM_ABC123",
+-                         "title": "SocialEcho QA Team",
+-                         "timezone": "Asia/Shanghai"
+-                       }
+-                       }
+-                       }
+-                       }
+-                     }
+-                     }
+-           "401": {
+-           "401": {
+-           "401": {
+-           "401": {
+-             "$ref": "#/components/responses/Unauthorized"
+-             "$ref": "#/components/responses/Unauthorized"
+-             "$ref": "#/components/responses/Unauthorized"
+-             "$ref": "#/components/responses/Unauthorized"
+-           "429": {
+-           "429": {
+-           "429": {
+-           "429": {
+-             "$ref": "#/components/responses/TooManyRequests"
+-             "$ref": "#/components/responses/TooManyRequests"
+-             "$ref": "#/components/responses/TooManyRequests"
+-             "$ref": "#/components/responses/TooManyRequests"
+-         }
+-         }
+-         }
+-         }
+-         }
+-         }
+-         }
+-         }
+-         }
+-         }
+-         }
+-         }
+-           "Account"
+-         "operationId": "listAccounts",
+-         "summary": "获取社媒账号列表",
+-         "description": "返回账号列表（支持分页），用于发布、监控、互动等模块的账号选择器。\n\n参数语义：\n- `type=1`：自有账号（已授权账号）\n- `type=2`：竞品账号\n",
+-             "name": "page",
+-             "name": "page",
+-             "in": "query",
+-             "in": "query",
+-             "in": "query",
+-             "in": "query",
+-             "in": "query",
+-             "in": "query",
+-             "in": "query",
+-             "in": "query",
+-             "in": "query",
+-             "description": "页码，从 1 开始",
+-             "description": "页码，从 1 开始",
+-             "schema": {
+-             "schema": {
+-               "minimum": 1,
+-               "minimum": 1,
+-               "default": 1
+-               "default": 1
+-               "default": 1
+-               "default": 1
+-             },
+-             },
+-             },
+-             },
+-             "example": 1
+-             "example": 1
+-             "example": 1
+-             "example": 1
+-             "name": "type",
+-             "description": "账号类型。1=自有账号，2=竞品账号",
+-               "enum": [
+-               "enum": [
+-               "enum": [
+-                 1,
+-                 1,
+-                 2
+-                 2
+-               ],
+-               ],
+-               ],
+-                   "$ref": "#/components/schemas/ApiResponseAccountList"
+-                         "page": 1,
+-                         "page": 1,
+-                         "per_page": 10,
+-                         "per_page": 10,
+-                         "total": 2,
+-                         "list": [
+-                         "list": [
+-                           {
+-                           {
+-                           {
+-                           {
+-                           {
+-                             "id": 163751,
+-                             "title": "esprit.vert.medic",
+-                             "app": "Instagram",
+-                             "type": 1,
+-                             "type": 1,
+-                             "status": "normal",
+-                             "status": "normal",
+-                             "account": "@esprit.vert.medic",
+-                             "authorization_at": "2026-03-30 09:34:44"
+-                           },
+-                             "id": 163956,
+-                             "title": "TestEnv-TestPag2",
+-                             "app": "Facebook",
+-                             "account": "TestEnv-TestPag2",
+-                             "authorization_at": "2026-03-30 09:35:10"
+-                           }
+-                           }
+-                         ]
+-                         ]
+-                         ]
+-           "400": {
+-           "400": {
+-           "400": {
+-             "$ref": "#/components/responses/BadRequest"
+-             "$ref": "#/components/responses/BadRequest"
+-             "$ref": "#/components/responses/BadRequest"
+-           "Article"
+-         "operationId": "listArticles",
+-         "summary": "获取贴文列表",
+-         "description": "按团队与账号范围返回贴文列表（支持分页）。\n\n参数语义：\n- `account_ids`：用于筛选账号范围。\n- 推荐传 CSV（例如 `163956,163955,28`），便于各类工作流工具拼装。\n- 若你的 HTTP 客户端习惯数组，也可尝试 `account_ids[]=163956&account_ids[]=163955`。\n",
+-             "name": "account_ids",
+-             "name": "account_ids",
+-             "description": "账号 ID 列表（CSV 格式，逗号分隔）",
+-             "description": "账号 ID 列表（CSV 格式，逗号分隔）",
+-               "type": "string"
+-               "type": "string"
+-             "example": "163956,163955,28"
+-             "example": "163956,163955,28"
+-                   "$ref": "#/components/schemas/ApiResponseArticleList"
+-                         "total": 1,
+-                             "id": 987654,
+-                             "uuid": "tE-9LwdHfNk",
+-                             "app": "YouTube",
+-                             "account_id": 163751,
+-                             "content": "Example article content",
+-                             "created_at": "2026-03-24 10:05:01",
+-                             "url": "https://www.youtube.com/watch?v=tE-9LwdHfNk",
+-                             "reports": {
+-                               "exposure": 1021,
+-                               "like": 40,
+-                               "comment": 14,
+-                               "share": 0
+-                             }
+-           "Report"
+-         "operationId": "getReport",
+-         "summary": "获取报表数据",
+-         "description": "在指定时间范围内返回报表统计结果（可按 day / app / account 聚合）。\n\n参数语义（核心）：\n- `start_date` / `end_date`：查询窗口，格式 `YYYY-MM-DD`。\n- `time_type`：\n  - `1` = 仅统计日期范围内新增贴文的数据\n  - `2` = 统计日期范围内可见的历史全部贴文数据\n- `group`：\n  - 不传/空字符串 = 汇总总量\n  - `day` = 按天\n  - `app` = 按平台\n  - `account` = 按账号\n",
+-             "name": "start_date",
++   "openapi": "3.0.1",
++     "title": "SocialEcho 对外 API",
++     "description": "对外 HTTP 接口模块。认证：HTTP Bearer（Team API Key）。成功判定：HTTP 200 且响应 JSON 的 code 为 0 或 200（以服务端为准）。单 Key 建议不超过 120 请求/分钟。",
++     "version": "1.1.0"
++   },
++   "tags": [],
++     "/v1/upload/url": {
++       "get": {
++       "get": {
++       "get": {
++         "summary": "获取OSS上传的URL",
++         "deprecated": false,
++         "deprecated": false,
++         "deprecated": false,
++         "deprecated": false,
++         "deprecated": false,
++         "deprecated": false,
++         "deprecated": false,
++         "deprecated": false,
++         "description": "",
++         "description": "",
++         "description": "",
++         "description": "",
++         "description": "",
++         "description": "",
++         "description": "",
++         "description": "",
++         "tags": [],
++         "tags": [],
++         "tags": [],
++         "tags": [],
++         "tags": [],
++         "tags": [],
++         "tags": [],
++         "tags": [],
++         "parameters": [
++           {
++             "name": "X-Lang",
++             "name": "X-Lang",
++             "name": "X-Lang",
++             "name": "X-Lang",
++             "name": "X-Lang",
++             "in": "header",
++             "in": "header",
++             "in": "header",
++             "in": "header",
++             "in": "header",
++             "in": "header",
++             "in": "header",
++             "in": "header",
++             "in": "header",
++             "in": "header",
++             "description": "zh_CN/en",
++             "description": "zh_CN/en",
++             "description": "zh_CN/en",
++             "description": "zh_CN/en",
++             "description": "zh_CN/en",
++             "example": "zh_CN",
++             "example": "zh_CN",
++             "example": "zh_CN",
++             "example": "zh_CN",
++             "example": "zh_CN",
++               "type": "string",
++               "type": "string",
++               "default": "zh_CN"
++               "default": "zh_CN"
++               "default": "zh_CN"
++               "default": "zh_CN"
++               "default": "zh_CN"
++             }
++             }
++             }
++             }
++             }
++             }
++             }
++             }
++             "name": "X-Team-Id",
++             "name": "X-Team-Id",
++             "name": "X-Team-Id",
++             "name": "X-Team-Id",
++             "name": "X-Team-Id",
++             "description": "",
++             "description": "",
++             "description": "",
++             "description": "",
++             "description": "",
++             "description": "",
++             "description": "",
++             "description": "",
++             "description": "",
++             "description": "",
++             "description": "",
++             "description": "",
++             "description": "",
++             "example": "{{TeamId}}",
++             "example": "{{TeamId}}",
++             "example": "{{TeamId}}",
++             "example": "{{TeamId}}",
++             "example": "{{TeamId}}",
++               "type": "integer",
++               "default": "{{TeamId}}"
++               "default": "{{TeamId}}"
++               "default": "{{TeamId}}"
++               "default": "{{TeamId}}"
++               "default": "{{TeamId}}"
++           }
++           }
++           }
++           }
++         "requestBody": {
++         "requestBody": {
++         "requestBody": {
++         "requestBody": {
++         "requestBody": {
++         "requestBody": {
++         "requestBody": {
++         "requestBody": {
++           "content": {
++           "content": {
++           "content": {
++           "content": {
++           "content": {
++           "content": {
++           "content": {
++             "application/json": {
++             "application/json": {
++             "application/json": {
++             "application/json": {
++             "application/json": {
++             "application/json": {
++             "application/json": {
++             "application/json": {
++               "schema": {
++               "schema": {
++               "schema": {
++               "schema": {
++               "schema": {
++               "schema": {
++               "schema": {
++               "schema": {
++                 "type": "object",
++                 "type": "object",
++                 "type": "object",
++                 "type": "object",
++                 "type": "object",
++                 "type": "object",
++                 "type": "object",
++                 "type": "object",
++                 "properties": {}
++                 "properties": {}
++               },
++               },
++               },
++               },
++               },
++               },
++               },
++               },
++               "examples": {}
++               "examples": {}
++               "examples": {}
++               "examples": {}
++               "examples": {}
++               "examples": {}
++               "examples": {}
++               "examples": {}
++         },
++         },
++         },
++         },
++         },
++         "responses": {
++         "responses": {
++         "responses": {
++         "responses": {
++           "200": {
++           "200": {
++           "200": {
++           "200": {
++             "content": {
++             "content": {
++             "content": {
++             "content": {
++               "application/json": {
++               "application/json": {
++               "application/json": {
++               "application/json": {
++                 "schema": {
++                 "schema": {
++                 "schema": {
++                 "schema": {
++                   "type": "object",
++                   "type": "object",
++                   "type": "object",
++                   "type": "object",
++                   "type": "object",
++                   "type": "object",
++                   "type": "object",
++                   "type": "object",
++                   "properties": {}
++                   "properties": {}
++                   "properties": {}
++                   "properties": {}
++                   "properties": {}
++                 }
++                 }
++                 }
++                 }
++                 }
++                 }
++               }
++               }
++               }
++               }
++             "headers": {}
++             "headers": {}
++             "headers": {}
++             "headers": {}
++             "headers": {}
++             "headers": {}
++             "headers": {}
++             "headers": {}
++         "security": [
++         "security": [
++         "security": [
++         "security": [
++         "security": [
++         "security": [
++         "security": [
++         "security": [
++             "bearer": []
++             "bearer": []
++             "bearer": []
++             "bearer": []
++             "bearer": []
++             "bearer": []
++             "bearer": []
++             "bearer": []
++         ]
++         ]
++         ]
++         ]
++         ]
++         ]
++         ]
++         ]
++       }
++     "/v1/reddit/communities": {
++         "summary": "获取Reddit的社区",
++                 "properties": {
++                 "properties": {
++                 "properties": {
++                 "properties": {
++                 "properties": {
++                 "properties": {
++                   "account_id": {
++                   "account_id": {
++                   "account_id": {
++                     "type": "integer",
++                     "type": "integer",
++                     "type": "integer",
++                     "type": "integer",
++                     "type": "integer",
++                     "type": "integer",
++                     "type": "integer",
++                     "type": "integer",
++                     "title": "帐户ID"
++                     "title": "帐户ID"
++                     "title": "帐户ID"
++                     "title": "帐户ID"
++                   }
++                   }
++                 "required": [
++                 "required": [
++                 "required": [
++                 "required": [
++                   "account_id"
++                   "account_id"
++                 ]
++                 ]
++                 ]
++                 ]
++     "/v1/pinterest/boards": {
++         "summary": "获取Pinterest的图版",
++     "/v1/publish/article": {
++       "post": {
++         "summary": " 发布贴文",
++                   },
++                   },
++                   },
++                   },
++                   },
++                   },
++                   },
++                   },
++                   },
++                   },
++                   },
++                   },
+
+### openapi.yaml  [code]
+- openapi: 3.0.3
+-   title: SocialEcho External API
+-   description: |
+-     SocialEcho 对外 API（面向自动化平台与 Agent 集成）。
+-     典型场景：
+-     - 在 n8n / Zapier / Dify / Agent CLI 中拉取团队、账号、贴文与报表数据。
+-     - 通过 Team API Key 做服务间调用（无登录态 Cookie）。
+-     成功判定（建议 LLM / Agent 统一遵循）：
+-     1. HTTP 状态码必须为 200
+-     2. 响应 JSON 的 `code` 必须为 200
+-     3. 其余情况都视为失败并进入重试/告警分支
+-     频率限制：
+-     - 单个 API Key：最多 120 次请求 / 分钟
+-     - 建议在工作流中增加节流与指数退避（例如 1s, 2s, 4s）
+-   - url: https://api.socialecho.net
+-     description: Production
+-   - url: https://api-dev.socialecho.net
+-     description: Development
+-   - bearerAuth: []
+- tags:
+-   - name: Team
+-     description: 团队基础信息
+-   - name: Account
+-     description: 社媒账号列表
+-   - name: Article
+-     description: 贴文列表
+-   - name: Report
+-     description: 数据报表
+-       tags: [Team]
+-       operationId: getTeamInfo
+-       summary: 获取当前 API Key 可访问的团队信息
+-       description: |
+-       description: |
+-       description: |
+-       description: |
+-       description: |
+-         返回当前 Team API Key 对应团队的基础信息。
+-         LLM 调用建议：
+-         - 如果请求头里传了 `X-Team-Id`，优先按该团队上下文返回。
+-         - 如果不传 `X-Team-Id`，由服务端按 API Key 默认团队处理。
+-         - $ref: '#/components/parameters/XLang'
+-         - $ref: '#/components/parameters/XLang'
+-         - $ref: '#/components/parameters/XLang'
+-         - $ref: '#/components/parameters/XLang'
+-         - $ref: '#/components/parameters/XTeamId'
+-         - $ref: '#/components/parameters/XTeamId'
+-         - $ref: '#/components/parameters/XTeamId'
+-         - $ref: '#/components/parameters/XTeamId'
+-           description: 成功（业务成功时 `code=200`）
+-           description: 成功（业务成功时 `code=200`）
+-           description: 成功（业务成功时 `code=200`）
+-           description: 成功（业务成功时 `code=200`）
+-                 $ref: '#/components/schemas/ApiResponseTeam'
+-               examples:
+-               examples:
+-               examples:
+-               examples:
+-                 ok:
+-                 ok:
+-                 ok:
+-                   value:
+-                   value:
+-                   value:
+-                   value:
+-                   value:
+-                     code: 200
+-                     code: 200
+-                     code: 200
+-                     code: 200
+-                     code: 200
+-                     message: success
+-                     message: success
+-                     message: success
+-                     message: success
+-                     message: success
+-                     data:
+-                     data:
+-                     data:
+-                     data:
+-                     data:
+-                       id: 1024
+-                       code: TEAM_ABC123
+-                       title: SocialEcho QA Team
+-                       timezone: Asia/Shanghai
+-         '401':
+-         '401':
+-         '401':
+-         '401':
+-           $ref: '#/components/responses/Unauthorized'
+-           $ref: '#/components/responses/Unauthorized'
+-           $ref: '#/components/responses/Unauthorized'
+-           $ref: '#/components/responses/Unauthorized'
+-         '429':
+-         '429':
+-         '429':
+-         '429':
+-           $ref: '#/components/responses/TooManyRequests'
+-           $ref: '#/components/responses/TooManyRequests'
+-           $ref: '#/components/responses/TooManyRequests'
+-           $ref: '#/components/responses/TooManyRequests'
+-       tags: [Account]
+-       operationId: listAccounts
+-       summary: 获取社媒账号列表
+-         返回账号列表（支持分页），用于发布、监控、互动等模块的账号选择器。
+-         参数语义：
+-         参数语义：
+-         - `type=1`：自有账号（已授权账号）
+-         - `type=2`：竞品账号
+-         - name: page
+-         - name: page
+-           in: query
+-           in: query
+-           in: query
+-           in: query
+-           in: query
+-           in: query
+-           in: query
+-           in: query
+-           in: query
+-           description: 页码，从 1 开始
+-           description: 页码，从 1 开始
+-           schema:
+-           schema:
+-           schema:
+-           schema:
+-           schema:
+-           schema:
+-           schema:
+-           schema:
+-           schema:
+-           schema:
+-           schema:
+-           schema:
+-             type: integer
+-             type: integer
+-             type: integer
+-             type: integer
+-             minimum: 1
+-             minimum: 1
+-             default: 1
+-             default: 1
+-             default: 1
+-             default: 1
+-           example: 1
+-           example: 1
+-           example: 1
+-           example: 1
+-         - name: type
+-           description: 账号类型。1=自有账号，2=竞品账号
+-             enum: [1, 2]
+-             enum: [1, 2]
+-                 $ref: '#/components/schemas/ApiResponseAccountList'
+-                       page: 1
+-                       page: 1
+-                       per_page: 10
+-                       per_page: 10
+-                       total: 2
+-                       list:
+-                       list:
+-                         - id: 163751
+-                           title: esprit.vert.medic
+-                           app: Instagram
+-                           type: 1
+-                           type: 1
+-                           status: normal
+-                           status: normal
+-                           account: "@esprit.vert.medic"
+-                           authorization_at: '2026-03-30 09:34:44'
+-                         - id: 163956
+-                           title: TestEnv-TestPag2
+-                           app: Facebook
+-                           account: TestEnv-TestPag2
+-                           authorization_at: '2026-03-30 09:35:10'
+-         '400':
+-         '400':
+-         '400':
+-           $ref: '#/components/responses/BadRequest'
+-           $ref: '#/components/responses/BadRequest'
+-           $ref: '#/components/responses/BadRequest'
+-       tags: [Article]
+-       operationId: listArticles
+-       summary: 获取贴文列表
+-         按团队与账号范围返回贴文列表（支持分页）。
+-         - `account_ids`：用于筛选账号范围。
+-         - 推荐传 CSV（例如 `163956,163955,28`），便于各类工作流工具拼装。
+-         - 若你的 HTTP 客户端习惯数组，也可尝试 `account_ids[]=163956&account_ids[]=163955`。
+-         - name: account_ids
+-         - name: account_ids
+-           description: 账号 ID 列表（CSV 格式，逗号分隔）
+-           description: 账号 ID 列表（CSV 格式，逗号分隔）
+-             type: string
+-             type: string
+-             type: string
+-             type: string
+-             type: string
+-           example: '163956,163955,28'
+-           example: '163956,163955,28'
+-                 $ref: '#/components/schemas/ApiResponseArticleList'
+-                       total: 1
+-                         - id: 987654
+-                           uuid: tE-9LwdHfNk
+-                           app: YouTube
+-                           account_id: 163751
+-                           content: Example article content
+-                           created_at: '2026-03-24 10:05:01'
+-                           url: https://www.youtube.com/watch?v=tE-9LwdHfNk
+-                           reports:
+-                             exposure: 1021
+-                             like: 40
+-                             comment: 14
+-                             share: 0
+-       tags: [Report]
+-       operationId: getReport
+-       summary: 获取报表数据
+-         在指定时间范围内返回报表统计结果（可按 day / app / account 聚合）。
+-         参数语义（核心）：
+-         - `start_date` / `end_date`：查询窗口，格式 `YYYY-MM-DD`。
+-         - `time_type`：
+-           - `1` = 仅统计日期范围内新增贴文的数据
+-           - `2` = 统计日期范围内可见的历史全部贴文数据
+-         - `group`：
+-           - 不传/空字符串 = 汇总总量
+-           - `day` = 按天
+-           - `app` = 按平台
+-           - `account` = 按账号
+-         - name: start_date
+-           required: true
+-           required: true
+-           description: 开始日期，格式 `YYYY-MM-DD`
+-             format: date
+-             format: date
+-           example: '2026-01-01'
+-         - name: end_date
+-           description: 结束日期，格式 `YYYY-MM-DD`
+-           example: '2026-03-24'
+-         - name: time_type
+-           description: 时间口径。1=新增贴文，2=历史全量贴文
+-         - name: group
+-           description: 聚合维度（空=总量，day/app/account=分组）
+-             enum: ['', day, app, account]
+-             default: ''
+-           example: day
+-                 $ref: '#/components/schemas/ApiResponseReport'
+-                 total:
+-                       scope:
+-                       scope:
+-                         start_date: '2026-01-01'
+-                         start_date: '2026-01-01'
+-                         end_date: '2026-03-24'
+-                         time_type: 1
+-                         time_type: 1
+-                         group: ''
+-                       totals:
+-                         exposure: 120345
+-                         like: 4512
+-                         comment: 893
+-                         share: 326
+-                 grouped_by_day:
+-                         end_date: '2026-01-03'
+-                         group: day
+-                       rows:
+-                         - key: '2026-01-01'
+-                           exposure: 1200
+-                           like: 50
+-                           comment: 20
+-                           share: 8
+-                         - key: '2026-01-02'
+-                           exposure: 1100
+-                           like: 45
+-                           comment: 18
+-                           share: 7
+-     bearerAuth:
+-       bearerFormat: API Key
+-         Team API Key（示例：`Authorization: Bearer se_xxx`）。
+-         先在 SocialEcho 团队管理中创建 API Key，再用于服务端调用。
+-   parameters:
+-     XLang:
+-       name: X-Lang
+-       in: header
+-       in: header
+-       required: false
+-       required: false
+-       description: 返回语言。`zh_CN` 或 `en`。默认 `zh_CN`
+-       schema:
+-       schema:
+-         type: string
+-         enum: [zh_CN, en]
+-         default: zh_CN
+-       example: zh_CN
+-     XTeamId:
+-       name: X-Team-Id
+-       description: 目标团队 ID。多团队账号建议显式传入，避免上下文歧义
+-         type: integer
+-       example: 1024
+-   responses:
+-     BadRequest:
+-       description: 参数错误（HTTP 400）
+-       content:
+-       content:
+-       content:
++ openapi: 3.0.1
++   title: SocialEcho 对外 API
++   description: 对外 HTTP 接口模块。认证：HTTP Bearer（Team API Key）。成功判定：HTTP 200 且响应 JSON 的
++     code 为 0 或 200（以服务端为准）。单 Key 建议不超过 120 请求/分钟。
++ - url: https://api.socialecho.net
++   description: Production
++ tags: []
++   /v1/upload/url:
++     get:
++     get:
++     get:
++       summary: 获取OSS上传的URL
++       deprecated: false
++       deprecated: false
++       deprecated: false
++       deprecated: false
++       deprecated: false
++       deprecated: false
++       deprecated: false
++       deprecated: false
++       description: ''
++       description: ''
++       description: ''
++       description: ''
++       description: ''
++       description: ''
++       description: ''
++       description: ''
++       tags: []
++       tags: []
++       tags: []
++       tags: []
++       tags: []
++       tags: []
++       tags: []
++       tags: []
++       parameters:
++       - name: X-Lang
++       - name: X-Lang
++       - name: X-Lang
++       - name: X-Lang
++       - name: X-Lang
++         in: header
++         in: header
++         in: header
++         in: header
++         in: header
++         in: header
++         in: header
++         in: header
++         in: header
++         in: header
++         description: zh_CN/en
++         description: zh_CN/en
++         description: zh_CN/en
++         description: zh_CN/en
++         description: zh_CN/en
++         example: zh_CN
++         example: zh_CN
++         example: zh_CN
++         example: zh_CN
++         example: zh_CN
++         schema:
++         schema:
++         schema:
++         schema:
++         schema:
++         schema:
++         schema:
++         schema:
++         schema:
++         schema:
++           default: zh_CN
++           default: zh_CN
++           default: zh_CN
++           default: zh_CN
++           default: zh_CN
++       - name: X-Team-Id
++       - name: X-Team-Id
++       - name: X-Team-Id
++       - name: X-Team-Id
++       - name: X-Team-Id
++         description: ''
++         description: ''
++         description: ''
++         description: ''
++         description: ''
++         example: '{{TeamId}}'
++         example: '{{TeamId}}'
++         example: '{{TeamId}}'
++         example: '{{TeamId}}'
++         example: '{{TeamId}}'
++           default: '{{TeamId}}'
++           default: '{{TeamId}}'
++           default: '{{TeamId}}'
++           default: '{{TeamId}}'
++           default: '{{TeamId}}'
++       requestBody:
++       requestBody:
++       requestBody:
++       requestBody:
++       requestBody:
++       requestBody:
++       requestBody:
++       requestBody:
++         content:
++         content:
++         content:
++         content:
++         content:
++         content:
++         content:
++           application/json:
++           application/json:
++           application/json:
++           application/json:
++           application/json:
++           application/json:
++           application/json:
++           application/json:
++             schema:
++             schema:
++             schema:
++             schema:
++             schema:
++             schema:
++             schema:
++             schema:
++               type: object
++               type: object
++               type: object
++               type: object
++               type: object
++               type: object
++               type: object
++               type: object
++               properties: {}
++               properties: {}
++             examples: {}
++             examples: {}
++             examples: {}
++             examples: {}
++             examples: {}
++             examples: {}
++             examples: {}
++             examples: {}
++       responses:
++       responses:
++       responses:
++       responses:
++         '200':
++         '200':
++         '200':
++         '200':
++           description: ''
++           description: ''
++           description: ''
++           description: ''
++           description: ''
++           description: ''
++           description: ''
++           description: ''
++           content:
++           content:
++           content:
++           content:
++             application/json:
++             application/json:
++             application/json:
++             application/json:
++               schema:
++               schema:
++               schema:
++               schema:
++                 type: object
++                 type: object
++                 type: object
++                 type: object
++                 type: object
++                 type: object
++                 type: object
++                 type: object
++                 properties: {}
++                 properties: {}
++                 properties: {}
++                 properties: {}
++                 properties: {}
++           headers: {}
++           headers: {}
++           headers: {}
++           headers: {}
++           headers: {}
++           headers: {}
++           headers: {}
++           headers: {}
++       security:
++       security:
++       security:
++       security:
++       security:
++       security:
++       security:
++       security:
++       - bearer: []
++       - bearer: []
++       - bearer: []
++       - bearer: []
++       - bearer: []
++       - bearer: []
++       - bearer: []
++       - bearer: []
++   /v1/reddit/communities:
++       summary: 获取Reddit的社区
++               properties:
++               properties:
++               properties:
++               properties:
++               properties:
++               properties:
++                 account_id:
++                 account_id:
++                 account_id:
++                   type: integer
++                   type: integer
++                   type: integer
++                   type: integer
++                   type: integer
++                   type: integer
++                   type: integer
++                   type: integer
++                   title: 帐户ID
++                   title: 帐户ID
++                   title: 帐户ID
++                   title: 帐户ID
++               required:
++               required:
++               required:
++               required:
++               - account_id
++               - account_id
++               - account_id
++   /v1/pinterest/boards:
++       summary: 获取Pinterest的图版
++   /v1/publish/article:
++     post:
++       summary: ' 发布贴文'
++                 type:
++                 type:
++                   type: string
++                   type: string
++                   type: string
++                   type: string
++                   type: string
++                   type: string
++                   title: 发布类型
++                   description: "Facebook(reels,post,stories) \nYouTube(shorts,video)\
++                     \ \nInstagram(reels,post,stories)\nX(short_post,long_post) \n\
++                     LinkedIn(post)\nTikTok(video,photo)\nPinterest(post)\nReddit(text,link,media)"
++                 status:
++                   title: 状态
++                   description: 0=草稿,1=发布
++                 scheduled_at:
++                   title: 定时时间
++                   description: 如果状态=1,定时时间可以填写，如果不填写，是立马发布
++                 comment:
++                   type: array
++                   type: array
++                   type: array
++                   type: array
++                   items:
++                   items:
++                   items:
++                   items:
++                     type: string
++                     type: string
++                     type: string
++                     type: string
++                   title: 评论
++                 content:
++                   title: 内容
++                 extra:
++                   type: object
++                   properties:
++                     title:
++                       type: string
++                       type: string
++                       type: string
++                       description: YouTube标题,Pinterest标题,Reddit标题
++                     category_id:
++                       description: Pinterest图版ID,Reddit社区ID
++                     link:
++                       description: Reddit链接地址,Pinterest链接地址
++                     draft:
++                       type: boolean
++                       description: TikTok是否保存草稿草稿（true=是,false=否）
++                     flair:
++                       type: object
++                       properties:
++                         uuid:
++                           type: string
+
+### package.json  [code]
+-   "name": "social-media-autopilot",
+-   "version": "1.0.2",
+-   "description": "CLI helpers for Social media autopilot external APIs",
+-     "socialecho-report": "./report.js"
+-     "report": "node ./report.js"
++   "name": "socialecho-social-media-management-agent",
++   "version": "1.1.0",
++   "description": "CLI helpers for SocialEcho social media management external APIs",
++     "socialecho-report": "./report.js",
++     "socialecho-upload-url": "./upload-url.js",
++     "socialecho-reddit-communities": "./reddit-communities.js",
++     "socialecho-pinterest-boards": "./pinterest-boards.js",
++     "socialecho-publish-article": "./publish-article.js"
++     "upload-url.js",
++     "reddit-communities.js",
++     "pinterest-boards.js",
++     "publish-article.js",
++     "publish-payload.example.json",
++     "report": "node ./report.js",
++     "upload-url": "node ./upload-url.js",
++     "reddit-communities": "node ./reddit-communities.js",
++     "pinterest-boards": "node ./pinterest-boards.js",
++     "publish-article": "node ./publish-article.js"
+
+### pinterest-boards.js  [code]
++ #!/usr/bin/env node
++ import { buildRequestOptions, callJsonGet, getOption, parseArgs, printAndExit } from "./client.js";
++ const args = parseArgs(process.argv);
++ const options = buildRequestOptions(args);
++ const accountId = Number(getOption(args, "account-id"));
++ if (Number.isNaN(accountId)) {
++   console.error("Usage: ./pinterest-boards.js --api-key <key> --account-id <int> [--base-url ...] [--team-id ...] [--lang ...]");
++   process.exit(2);
++ }
++ const result = await callJsonGet("/v1/pinterest/boards", { account_id: accountId }, options);
++ printAndExit(result);
+
+### publish-article.js  [code]
++ #!/usr/bin/env node
++ import fs from "node:fs";
++ import { buildRequestOptions, callJsonPost, getOption, parseArgs, printAndExit } from "./client.js";
++ const args = parseArgs(process.argv);
++ const options = buildRequestOptions(args);
++ const payloadPath = getOption(args, "payload");
++ let body;
++ try {
++   const raw = fs.readFileSync(payloadPath, "utf8");
++   body = JSON.parse(raw);
++ } catch (e) {
++   console.error(`Failed to read/parse --payload JSON file: ${payloadPath}`);
++   console.error(e?.message || e);
++   process.exit(2);
++ }
++ const result = await callJsonPost("/v1/publish/article", body, options);
++ printAndExit(result);
+
+### publish-payload.example.json  [code]
++ {
++   "account_id": 163751,
++   "type": "post",
++   "status": 0,
++   "scheduled_at": "",
++   "comment": [],
++   "content": "示例内容",
++   "extra": {
++     "title": "示例标题",
++     "category_id": "",
++     "link": "",
++     "draft": false,
++     "flair": {
++       "uuid": "replace-with-reddit-flair-uuid",
++       "title": "replace-with-reddit-flair-title"
++     }
++     }
++   },
++   "attachments": [
++     {
++       "url": "https://example.com/uploaded-file.jpg"
++   ]
++ }
+
+### reddit-communities.js  [code]
++ #!/usr/bin/env node
++ import { buildRequestOptions, callJsonGet, getOption, parseArgs, printAndExit } from "./client.js";
++ const args = parseArgs(process.argv);
++ const options = buildRequestOptions(args);
++ const accountId = Number(getOption(args, "account-id"));
++ if (Number.isNaN(accountId)) {
++   console.error("Usage: ./reddit-communities.js --api-key <key> --account-id <int> [--base-url ...] [--team-id ...] [--lang ...]");
++   process.exit(2);
++ }
++ const result = await callJsonGet("/v1/reddit/communities", { account_id: accountId }, options);
++ printAndExit(result);
+
+### report.js  [code]
+- import { buildRequestOptions, callApi, parseArgs, parseCsvIds, printAndExit } from "./client.js";
+-   console.error("Usage: ./report.js --api-key <key> --start-date YYYY-MM-DD --end-date YYYY-MM-DD [--base-url https://api.socialecho.net] [--team-id 123] [--lang zh_CN] [--time-type 1] [--group day] [--account-ids 1,2]");
+- const result = await callApi("/v1/report", {
+-   time_type: args["time-type"] ?? 1,
+-   group: args.group ?? "",
+-   account_ids: parseCsvIds(args["account-ids"])
+- }, options);
++ import { buildRequestOptions, callJsonGet, parseArgs, parseCsvIdsToArray, printAndExit } from "./client.js";
++   console.error(
++     "Usage: ./report.js --api-key <key> --start-date YYYY-MM-DD --end-date YYYY-MM-DD [--base-url https://api.socialecho.net] [--team-id 123] [--lang zh_CN] [--time-type 1] [--group day] [--account-ids 1,2]"
++   );
++ const accountIds = parseCsvIdsToArray(args["account-ids"]);
++ const body = {
++   time_type: Number(args["time-type"] ?? 1),
++   group: args.group ?? ""
++ };
++ if (accountIds) body.account_ids = accountIds;
++ const result = await callJsonGet("/v1/report", body, options);
+
+### team.js  [code]
+- import { buildRequestOptions, callApi, parseArgs, printAndExit } from "./client.js";
+- const result = await callApi("/v1/team", {}, options);
++ import { buildRequestOptions, callJsonGet, parseArgs, printAndExit } from "./client.js";
++ const result = await callJsonGet("/v1/team", {}, options);
+
+### upload-url.js  [code]
++ #!/usr/bin/env node
++ import { buildRequestOptions, callJsonGet, parseArgs, printAndExit } from "./client.js";
++ const args = parseArgs(process.argv);
++ const options = buildRequestOptions(args);
++ const result = await callJsonGet("/v1/upload/url", {}, options);
++ printAndExit(result);

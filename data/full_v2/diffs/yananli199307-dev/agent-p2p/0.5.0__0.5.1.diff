@@ -1,0 +1,510 @@
+yananli199307-dev/agent-p2p  0.5.0 -> 0.5.1
+change_type: docs+code   changelog: v0.5.1: 完整 P2P 通信系统 - 包含留言审批、离线同步、心跳机制
+
+### CONFIG.md  [docs]
++ # Agent P2P Skill 配置指南
++ ## 环境变量配置
++ 在使用 Agent P2P Skill 前，需要配置以下环境变量：
++ ### 必需的环境变量
++ ```bash
++ ```bash
++ ```bash
++ # Portal 配置
++ export AGENTP2P_API_KEY="你的API Key"
++ export AGENTP2P_HUB_URL="https://你的域名.com"
++ # OpenClaw 配置
++ export OPENCLAW_GATEWAY_URL="http://127.0.0.1:18789"
++ export OPENCLAW_HOOKS_TOKEN="你的hooks token"
++ ```
++ ```
++ ```
++ ### 获取配置信息
++ **1. API Key**
++ - 部署 Portal 后，在管理后台获取
++ - 或运行：`python3 scripts/get_api_key.py`
++ **2. Hub URL**
++ - 你的 Portal 域名
++ - 例如：`https://agent.example.com`
++ **3. OpenClaw Gateway URL**
++ - 通常是 `http://127.0.0.1:18789`
++ - 如果不同，检查 `~/.openclaw/openclaw.json`
++ **4. Hooks Token**
++ - 在 `~/.openclaw/openclaw.json` 中查找
++ - 路径：`hooks.token`
++ ### 配置文件方式
++ 也可以将配置写入 `~/.openclaw/gateway.env`：
++ # Agent P2P 配置
++ AGENTP2P_API_KEY=你的API Key
++ AGENTP2P_HUB_URL=https://你的域名.com
++ OPENCLAW_GATEWAY_URL=http://127.0.0.1:18789
++ OPENCLAW_HOOKS_TOKEN=你的hooks token
++ ### 启动 Bridge
++ 配置完成后，启动 Bridge：
++ cd ~/.openclaw/workspace/skills/agent-p2p
++ python3 skill/start.py start
++ ## 故障排除
++ ### Bridge 无法连接 Portal
++ 1. 检查 API Key 是否正确
++ 2. 检查 Portal 地址是否可访问
++ 3. 查看日志：`tail -f skill/bridge.log`
++ ### 收不到消息
++ 1. 检查 WebSocket 连接状态
++ 2. 确认 OpenClaw Gateway 是否运行
++ 3. 检查 hooks token 是否正确
++ ### 消息发送失败
++ 1. 确认对方 Portal 地址正确
++ 2. 确认对方 API Key 正确
++ 3. 检查网络连接
+
+### DEPLOY.md  [docs]
+- | VPS IP | 部署服务器 | 43.156.110.184 |
+- | 域名 | 访问 Portal | agentportalp2p.com |
+- | 邮箱 | SSL 证书申请 | user@example.com |
+-   --host 43.156.110.184 \
+-   --domain agentportalp2p.com \
+-   --email user@example.com
++ | VPS IP | 部署服务器 | <你的VPS_IP> |
++ | 域名 | 访问 Portal | <你的域名> |
++ | 邮箱 | SSL 证书申请 | <你的邮箱> |
++   --host YOUR_VPS_IP \
++   --domain your-domain.com \
++   --email your@email.com
+
+### README.md  [docs]
++ **方式 1：手动配置（推荐）**
++ # 你的 Portal 配置（从管理后台获取）
++ # OpenClaw 配置
++ OPENCLAW_GATEWAY_URL=http://127.0.0.1:18789
++ OPENCLAW_HOOKS_TOKEN=你的hooks token
++ **方式 2：Agent 自动配置**
++ 告诉 Agent 你的配置信息：
++ - Portal URL：https://your-domain.com
++ - API Key：从管理后台获取
++ - Gateway URL：http://127.0.0.1:18789（默认）
++ - Hooks Token：从 ~/.openclaw/openclaw.json 获取
++ Agent 会自动配置并启动 Bridge。
++ 详细配置说明参见 [CONFIG.md](CONFIG.md)
+
+### agent_daemon.py  [code]
+- #!/usr/bin/env python3
+- """
+- """
+- OpenClaw Agent - Portal WebSocket 客户端（常驻）
+- 实时接收 Portal 推送，通知用户
+- import asyncio
+- import websockets
+- import json
+- import os
+- import sys
+- # 配置
+- PORTAL_URL = "https://agentportalp2p.com"
+- API_KEY = "ap2p_c-cc3wp-38P9zR5tAEnbt9Iji5ABmAjgUxslYOUNPi0"
+- NOTIFY_FILE = os.path.expanduser("~/.agent_p2p_realtime.json")
+- async def connect_and_listen():
+-     """连接 Portal 并监听消息"""
+-     ws_url = PORTAL_URL.replace('https://', 'wss://').replace('http://', 'ws://')
+-     ws_url = f"{ws_url}/ws/agent?api_key={API_KEY}"
+-     print(f"[Agent P2P] Connecting to {PORTAL_URL}...", flush=True)
+-     while True:
+-         try:
+-             async with websockets.connect(ws_url) as ws:
+-                 print("[Agent P2P] ✅ Connected!", flush=True)
+-                 # 发送 sync_request 获取离线消息
+-                 await ws.send(json.dumps({"type": "sync_request"}))
+-                 while True:
+-                     try:
+-                         msg = await ws.recv()
+-                         data = json.loads(msg)
+-                         msg_type = data.get("type")
+-                         if msg_type == "new_guest_message":
+-                             content = data.get('content', '')
+-                             content = data.get('content', '')
+-                             print(f"[Agent P2P] 📩 New guest message: {content[:50]}...", flush=True)
+-                             save_notification("guest_message", content)
+-                         elif msg_type == "new_message":
+-                             from_portal = data.get('from', '')
+-                             print(f"[Agent P2P] 📩 New message from {from_portal}: {content[:50]}...", flush=True)
+-                             save_notification("message", content, from_portal)
+-                             # 确认收到
+-                             msg_id = data.get('id')
+-                             if msg_id:
+-                                 await ws.send(json.dumps({
+-                                     "type": "ack",
+-                                     "message_ids": [msg_id]
+-                                 }))
+-                         elif msg_type == "sync_response":
+-                             messages = data.get('messages', [])
+-                             if messages:
+-                                 print(f"[Agent P2P] 📦 Synced {len(messages)} offline messages", flush=True)
+-                                 for msg in messages:
+-                                     save_notification("message", msg.get('content', ''), msg.get('from', ''))
+-                     except websockets.exceptions.ConnectionClosed:
+-                         print("[Agent P2P] Connection closed, reconnecting...", flush=True)
+-                         break
+-                     except Exception as e:
+-                         print(f"[Agent P2P] Error: {e}", flush=True)
+-         except Exception as e:
+-             print(f"[Agent P2P] Connection failed: {e}, retrying in 5s...", flush=True)
+-             await asyncio.sleep(5)
+- def save_notification(msg_type, content, sender=""):
+-     """保存通知到文件"""
+-     try:
+-     try:
+-         import time
+-         notification = {
+-             "type": msg_type,
+-             "content": content,
+-             "sender": sender,
+-             "timestamp": time.time()
+-         }
+-         notifications = []
+-         if os.path.exists(NOTIFY_FILE):
+-             try:
+-                 with open(NOTIFY_FILE, 'r') as f:
+-                     notifications = json.load(f)
+-             except:
+-                 notifications = []
+-         notifications.append(notification)
+-         notifications = notifications[-100:]
+-         with open(NOTIFY_FILE, 'w') as f:
+-             json.dump(notifications, f, ensure_ascii=False)
+-     except Exception as e:
+-         print(f"[Agent P2P] Save failed: {e}", flush=True)
+- if __name__ == '__main__':
+-         asyncio.run(connect_and_listen())
+-     except KeyboardInterrupt:
+-         print("[Agent P2P] Stopped", flush=True)
+-         sys.exit(0)
+
+### openclaw_agent.py  [code]
+- #!/usr/bin/env python3
+- """
+- """
+- OpenClaw Agent - Portal WebSocket 客户端
+- 主动连接 Portal，接收实时推送
+- import asyncio
+- import websockets
+- import json
+- import os
+- # Portal 配置
+- PORTAL_URL = "https://agentportalp2p.com"
+- API_KEY = "ap2p_c-cc3wp-38P9zR5tAEnbt9Iji5ABmAjgUxslYOUNPi0"  # 使用你给 OpenClaw 的 Key
+- # 通知文件路径
+- NOTIFY_FILE = os.path.expanduser("~/.agent_p2p_notify.json")
+- async def connect_to_portal():
+-     """连接 Portal WebSocket"""
+-     ws_url = PORTAL_URL.replace('https://', 'wss://').replace('http://', 'ws://')
+-     ws_url = f"{ws_url}/ws/agent?api_key={API_KEY}"
+-     print(f"[OpenClaw Agent] Connecting to {ws_url[:60]}...")
+-     async with websockets.connect(ws_url) as websocket:
+-         print("[OpenClaw Agent] Connected to Portal")
+-         # 发送同步请求
+-         await websocket.send(json.dumps({
+-             "type": "sync_request"
+-         }))
+-         while True:
+-             try:
+-             try:
+-                 message = await websocket.recv()
+-                 data = json.loads(message)
+-                 msg_type = data.get("type")
+-                 if msg_type == "pong":
+-                     pass  # 心跳响应
+-                 elif msg_type == "new_guest_message":
+-                     content = data.get('content', '')
+-                     content = data.get('content', '')
+-                     print(f"[OpenClaw Agent] New guest message: {content[:50]}...")
+-                     # 保存通知
+-                     # 保存通知
+-                     save_notification("guest_message", content)
+-                 elif msg_type == "new_message":
+-                     from_portal = data.get('from', '')
+-                     print(f"[OpenClaw Agent] New message from {from_portal}: {content[:50]}...")
+-                     save_notification("message", content, from_portal)
+-                     # 确认收到
+-                     msg_id = data.get('id')
+-                     if msg_id:
+-                         await websocket.send(json.dumps({
+-                             "type": "ack",
+-                             "message_ids": [msg_id]
+-                         }))
+-                 elif msg_type == "sync_response":
+-                     messages = data.get('messages', [])
+-                     if messages:
+-                         print(f"[OpenClaw Agent] Synced {len(messages)} offline messages")
+-                         for msg in messages:
+-                             save_notification("message", msg.get('content', ''), msg.get('from', ''))
+-             except Exception as e:
+-                 print(f"[OpenClaw Agent] Error: {e}")
+-                 await asyncio.sleep(5)
+- def save_notification(msg_type, content, sender=""):
+-     """保存通知到文件"""
+-     try:
+-         notification = {
+-             "type": msg_type,
+-             "content": content,
+-             "sender": sender,
+-             "timestamp": asyncio.get_event_loop().time()
+-         }
+-         # 读取现有通知
+-         notifications = []
+-         if os.path.exists(NOTIFY_FILE):
+-                 with open(NOTIFY_FILE, 'r') as f:
+-                     notifications = json.load(f)
+-             except:
+-                 notifications = []
+-         # 添加新通知
+-         notifications.append(notification)
+-         notifications = notifications[-100:]
+-         # 写入文件
+-         with open(NOTIFY_FILE, 'w') as f:
+-             json.dump(notifications, f, ensure_ascii=False)
+-         print(f"[OpenClaw Agent] Notification saved: {content[:50]}...")
+-     except Exception as e:
+-         print(f"[OpenClaw Agent] Save failed: {e}")
+- if __name__ == '__main__':
+-     asyncio.run(connect_to_portal())
+
+### openclaw_agent_daemon.py  [code]
+- #!/usr/bin/env python3
+- """
+- """
+- OpenClaw Agent - Portal WebSocket 客户端
+- 常驻后台，接收 Portal 实时推送
+- import asyncio
+- import websockets
+- import json
+- import os
+- import time
+- # 配置
+- PORTAL_URL = "https://agentportalp2p.com"
+- API_KEY = "ap2p_c-cc3wp-38P9zR5tAEnbt9Iji5ABmAjgUxslYOUNPi0"
+- # 通知文件
+- NOTIFY_FILE = os.path.expanduser("~/.agent_p2p_notify.json")
+- async def connect_and_listen():
+-     """连接 Portal 并监听消息"""
+-     ws_url = PORTAL_URL.replace('https://', 'wss://').replace('http://', 'ws://')
+-     ws_url = f"{ws_url}/ws/agent?api_key={API_KEY}"
+-     print(f"[{time.strftime('%H:%M:%S')}] [Agent] Connecting to Portal...")
+-     async with websockets.connect(ws_url) as ws:
+-         print(f"[{time.strftime('%H:%M:%S')}] [Agent] Connected!")
+-         # 发送 sync_request 获取离线消息
+-         await ws.send(json.dumps({"type": "sync_request"}))
+-         while True:
+-             try:
+-             try:
+-                 msg = await asyncio.wait_for(ws.recv(), timeout=30)
+-                 data = json.loads(msg)
+-                 msg_type = data.get("type")
+-                 if msg_type == "pong":
+-                     pass
+-                 elif msg_type == "new_guest_message":
+-                     content = data.get('content', '')
+-                     content = data.get('content', '')
+-                     print(f"[{time.strftime('%H:%M:%S')}] [Agent] New guest message: {content[:50]}...")
+-                     save_notification("guest_message", content)
+-                 elif msg_type == "new_message":
+-                     from_portal = data.get('from', '')
+-                     print(f"[{time.strftime('%H:%M:%S')}] [Agent] New message from {from_portal}: {content[:50]}...")
+-                     save_notification("message", content, from_portal)
+-                     # 确认收到
+-                     msg_id = data.get('id')
+-                     if msg_id:
+-                         await ws.send(json.dumps({
+-                             "type": "ack",
+-                             "message_ids": [msg_id]
+-                         }))
+-                 elif msg_type == "sync_response":
+-                     messages = data.get('messages', [])
+-                     if messages:
+-                         print(f"[{time.strftime('%H:%M:%S')}] [Agent] Synced {len(messages)} offline messages")
+-                         for msg in messages:
+-                             save_notification("message", msg.get('content', ''), msg.get('from', ''))
+-             except asyncio.TimeoutError:
+-                 # 发送 ping 保持连接
+-                 await ws.send(json.dumps({"type": "ping"}))
+-             except Exception as e:
+-                 print(f"[{time.strftime('%H:%M:%S')}] [Agent] Error: {e}")
+-                 break
+- def save_notification(msg_type, content, sender=""):
+-     """保存通知到文件"""
+-     try:
+-         notification = {
+-             "type": msg_type,
+-             "content": content,
+-             "sender": sender,
+-             "timestamp": time.time()
+-         }
+-         notifications = []
+-         if os.path.exists(NOTIFY_FILE):
+-                 with open(NOTIFY_FILE, 'r') as f:
+-                     notifications = json.load(f)
+-             except:
+-                 notifications = []
+-         notifications.append(notification)
+-         notifications = notifications[-100:]
+-         with open(NOTIFY_FILE, 'w') as f:
+-             json.dump(notifications, f, ensure_ascii=False)
+-     except Exception as e:
+-         print(f"[{time.strftime('%H:%M:%S')}] [Agent] Save failed: {e}")
+- async def main():
+-     """主循环 - 断线重连"""
+-     while True:
+-         try:
+-             await connect_and_listen()
+-         except Exception as e:
+-             print(f"[{time.strftime('%H:%M:%S')}] [Agent] Connection failed: {e}")
+-         print(f"[{time.strftime('%H:%M:%S')}] [Agent] Reconnecting in 5 seconds...")
+-         await asyncio.sleep(5)
+- if __name__ == '__main__':
+-     asyncio.run(main())
+
+### skill/bridge.py  [code]
+-         """格式化通知文本"""
+-             return f'📨 收到新留言: {content[:100]}'
+-             return f'💬 收到来自 {sender} 的消息: {content[:100]}'
+-                 'timestamp': datetime.now().isoformat()
+-                 'timestamp': datetime.now().isoformat()
++                 'timestamp': datetime.now().isoformat(),
++                 'timestamp': datetime.now().isoformat(),
++         """格式化通知文本（飞书风格）"""
++             content = notification.get('content', '')
++             return f'''📨 **收到新留言**
++ {content[:200]}
++ {content[:200]}
++ ---
++ ---
++ 💡 回复 "查看留言" 查看详情，或 "回复 [内容]" 直接回复'''
++             return f'''💬 **收到来自 {sender} 的消息**
++ 💡 回复 "回复 [内容]" 直接回复消息'''
++         elif msg_type == 'system':
++             return f'🔔 **系统通知**: {content}'
++             return
++         # 处理 Portal 的心跳 ping，回复 pong 保持连接
++         if msg_type == 'ping':
++             logger.debug('收到ping，回复pong')
++             if self.ws:
++                 await self.ws.send(json.dumps({'type': 'pong'}))
++             msg_id = data.get('id')
++             msg_id = data.get('id')
++                 'message_id': msg_id,
++                 'message_id': msg_id,
++                 'priority': 'normal',
++                 'actions': ['查看', '回复', '忽略']
++             # 发送确认
++             if msg_id and self.ws:
++                 await self.ws.send(json.dumps({
++                     'type': 'ack',
++                     'message_ids': [msg_id]
++                 }))
++             from_name = data.get('from_name', from_portal)
++                 'sender_name': from_name,
++                 'priority': 'high',
++                 'actions': ['回复', '查看历史']
++                 message_ids = []
++                     message_ids.append(msg.get('id'))
++                 # 发送 ack 确认收到离线消息
++                 if message_ids and self.ws:
++                     await self.ws.send(json.dumps({
++                         'type': 'ack',
++                         'message_ids': message_ids
++                     }))
++                     logger.info(f'已确认 {len(message_ids)} 条离线消息')
++             else:
++                 logger.debug('没有离线消息需要同步')
+
+### skill_status.json  [code]
+- {"status": "error", "message": "", "timestamp": "2026-03-31T00:27:58.004818", "hub_url": "https://agentportalp2p.com"}
++ {"status": "connected", "message": "WebSocket 连接成功", "timestamp": "2026-03-31T14:48:40.921051", "hub_url": "https://agentportalp2p.com"}
+
+### src/main.py  [code]
+-     # 广播新留言给所有连接的 Agent
+-         "content": request.content[:100],  # 只发送前100字符
+-         "created_at": get_now().isoformat()
+-     # 发送 OpenClaw 通知
+-     await notify_openclaw(f"新留言: {request.content[:100]}", "guest_message")
+-     """更新留言状态（同意/拒绝）"""
+-     if status not in ['approved', 'rejected']:
+-         raise HTTPException(status_code=400, detail="Invalid status")
+-         SET status = ?, is_read = TRUE
+-     ''', (status, message_id))
+-     return {"status": "updated"}
++     conn = sqlite3.connect(DATABASE_PATH)
++     cursor = conn.cursor()
++     cursor.execute('''
++     conn.commit()
++     conn.close()
++     """
++     """
++         conn.close()
++         cursor.execute('''
++         cursor.execute('''
++     # 广播新留言给所有连接的 Agent（通知主人，不自动处理）
++         "message_id": message_id,
++         "content": request.content[:100],
++         "created_at": get_now().isoformat(),
++         "requires_approval": True  # 标记需要主人审批
++     # 发送 OpenClaw 通知（提示主人需要审批）
++     await notify_openclaw(
++         f"📨 收到新留言（等待审批）:\n{request.content[:200]}\n\n"
++         f"回复以下指令处理:\n"
++         f"- 同意添加: 同意 {message_id}\n"
++         f"- 拒绝添加: 拒绝 {message_id}\n"
++         f"- 仅标记已读: 已读 {message_id}",
++         "guest_message"
++     )
++     return {
++     }
++     """更新留言状态（approved/rejected/read）"""
++     data = await request.json()
++     if status not in ['approved', 'rejected', 'read']:
++         raise HTTPException(status_code=400, detail="Invalid status. Must be 'approved', 'rejected', or 'read'")
++     # read 状态只标记已读，不改变 status 字段
++     if status == 'read':
++             UPDATE guest_messages
++             UPDATE guest_messages
++             SET is_read = TRUE
++             WHERE id = ?
++             WHERE id = ?
++         ''', (message_id,))
++     else:
++         # approved/rejected 更新状态并标记已读
++             SET status = ?, is_read = TRUE
++         ''', (status, message_id))
++     return {"status": "updated", "message_id": message_id, "new_status": status}
++ @app.post("/api/guest/messages/{message_id}/approve")
++ async def approve_guest_message(message_id: int, request: Request):
++     主人审批留言：同意添加联系人并生成 API Key
++     需要传入对方的 Portal URL 和联系信息
++     portal_url = data.get('portal_url')
++     agent_name = data.get('agent_name', 'Unknown')
++     user_name = data.get('user_name', 'Unknown')
++     if not portal_url:
++         raise HTTPException(status_code=400, detail="portal_url is required")
++     # 检查留言是否存在
++     cursor.execute('SELECT id FROM guest_messages WHERE id = ?', (message_id,))
++     if not cursor.fetchone():
++         raise HTTPException(status_code=404, detail="Message not found")
++     # 生成 API Key
++     my_api_key = generate_api_key()
++     # 保存联系人
++         INSERT OR REPLACE INTO contacts
++         (portal_url, display_name, agent_name, user_name, my_api_key, their_api_key, is_verified, created_at)
++         VALUES (?, ?, ?, ?, ?, ?, TRUE, ?)
++     ''', (
++         portal_url,
++         f"{agent_name} ({user_name})",
++         agent_name,
++         user_name,
++         my_api_key,
++         None,  # their_api_key 暂时为空，等待对方提供
++         get_now().strftime('%Y-%m-%d %H:%M:%S')
++     ))
++     # 更新留言状态为 approved
++         SET status = 'approved', is_read = TRUE
++     ''', (message_id,))
++         "status": "approved",
++         "api_key": my_api_key,
++         "message": f"已添加联系人，请将此 API Key 发送给对方: {my_api_key}"
++             # 抛出异常，让调用者知道发送失败
++             raise Exception(f"No active WebSocket connection for {portal_url}")

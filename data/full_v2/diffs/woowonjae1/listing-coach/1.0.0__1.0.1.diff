@@ -1,0 +1,110 @@
+woowonjae1/listing-coach  1.0.0 -> 1.0.1
+change_type: instructions+code   changelog: - Updated the description and usage documentation for clarity and English localization. - Refined query extraction: limit to 20 words, preserve important original phrases. - Clarified the skill as a strict pass-through—final output must match retrieved result exactly, with no alterations or summaries. - Added detailed contract to prevent modification, formatting, or supplemental explanation of retrieved results. - Expanded supported use cases to include expired listing scripts, FSBO scripts, obj
+
+### SKILL.md  [instructions]
+- description: 查询火山引擎知识库，原样返回结果。
+- ## 使用方法
+- 用 shell 工具运行以下命令，将用户问题作为参数传入：
+- ```
+- ```
+- node ~/.openclaw/skills/listing-coach/scripts/query.mjs "<用户问题>"
+- Windows 用：
+- node "$env:USERPROFILE\.openclaw\skills\listing-coach\scripts\query.mjs" "<用户问题>"
+- 将命令的 stdout **原样输出**给用户，不改写、不总结。命令失败时输出 stderr 内容。
+- ## 规则
+- - 每次只运行一次脚本
+- - 不使用模型记忆编造答案
+- - 知识库无结果时原样输出"知识库中未找到相关内容。"
++ description: Query the configured real estate Listing Coach knowledge base and return the exact retrieval output. Use when the user asks to use listing coach/listing-coach, asks for listing scripts, expired listing scripts, FSBO scripts, objection scripts, or real estate listing coaching language.
++ This is a pass-through retrieval skill. The tool/Read result is the final user-facing answer.
++ ## Workflow
++ 1. Extract a concise query from the user's request, no more than 20 words. Preserve important English phrases.
++ 2. Run exactly once:
++ node "$env:USERPROFILE\.openclaw\workspace\skills\listing-coach\scripts\query.mjs" "<query>"
++ 3. If stdout is a file path, read that file.
++ 4. If stdout is direct text such as `No results found.`, use stdout itself as the result.
++ 5. Reply to the user with the result text exactly.
++ ## Final Response Contract
++ - Treat the Read output as the final answer, not as context for writing a new answer.
++ - The final assistant message must equal the result text. Do not add, remove, translate, summarize, select, reorder, reformat, explain, introduce, conclude, wrap in a code block, or add labels such as "according to listing coach".
++ - Do not answer the user's original question from your own knowledge.
++ - Preserve all headings, numbering, scores, source lines, body text, and blank lines.
++ - If the result contains numbered result sections, include every section present.
++ - Before sending the final message, check that the first line, last line, and result-section count match the result text. If they do not match, output the result text again exactly.
+
+### agents/openai.yaml  [code]
+-   display_name: "Volcengine Knowledge Chat"
+-   short_description: "Ask the configured Ark knowledge base."
+-   default_prompt: "Use $volcengine-knowledge-chat to ask the configured Volcengine knowledge service."
++   display_name: "Listing Coach"
++   short_description: "Return exact real estate listing script matches from the configured knowledge base."
++   default_prompt: "Use $listing-coach to retrieve listing coach scripts and paste the result exactly."
+
+### scripts/query.mjs  [code]
+- // 调火山引擎知识库，输出 generated_answer + Source 行到 stdout
+-   headers: {
+-     'Authorization': `Bearer ${API_KEY}`,
+-     'Content-Type': 'application/json',
+-   },
+- const data = await res.json();
+- const inner = data?.data ?? data;
+- let answer = (inner?.generated_answer ?? inner?.answer ?? '')
+-   .replace(/<reference\b[^>]*><\/reference>/g, '')
+-   .trim();
+- const seen = new Set();
+- const docNames = [];
+- for (const item of (inner?.result_list ?? [])) {
+-   const name = item?.doc_info?.doc_name ?? item?.doc_info?.title ?? item?.chunk_title;
+-   if (name && !seen.has(name)) { seen.add(name); docNames.push(name); }
+-   if (docNames.length >= 3) break;
+- if (answer && docNames.length) answer += `\n\nSource: ${docNames.join('; ')}`;
+- process.stdout.write((answer || '知识库中未找到相关内容。') + '\n');
++ import { randomUUID } from 'node:crypto';
++ import { writeFileSync } from 'node:fs';
++ import { tmpdir } from 'node:os';
++ import { join } from 'node:path';
++ }
++ const startedAt = Date.now();
++   headers: { 'Authorization': `Bearer ${API_KEY}`, 'Content-Type': 'application/json' },
++ const raw = await res.text();
++ const elapsedSec = ((Date.now() - startedAt) / 1000).toFixed(2);
++ let data;
++ try {
++   data = JSON.parse(raw);
++ } catch {
++   data = null;
++   process.stderr.write(raw + '\n');
++ const resultList = data?.data?.result_list ?? [];
++ // Token usage, mirroring the official console's "共使用 N tokens".
++ const tu = data?.data?.token_usage ?? {};
++ const totalTokens =
++   (tu?.embedding_token_usage?.total_tokens ?? 0) + (tu?.rerank_token_usage ?? 0);
++ // Header + ranked result cards, matching the official console's layout.
++ const lines = [];
++ lines.push('检索结果');
++ lines.push(`总耗时 ${elapsedSec} s | 共使用 ${totalTokens} tokens | Request ID: ${data?.request_id ?? '-'}`);
++ lines.push('');
++ if (!resultList.length) {
++   lines.push('（无检索结果 / No results found.）');
++ } else {
++   for (let i = 0; i < resultList.length; i++) {
++     const item = resultList[i];
++     const docName = item?.doc_info?.doc_name ?? 'Unknown';
++     const chunkTitle = (item?.chunk_title ?? '').trim();
++     const score = typeof item?.score === 'number' ? item.score.toFixed(4) : '-';
++     const content = (item?.content ?? '').trim();
++     lines.push('---');
++     lines.push(`NO.${i + 1} | 召回分数 ${score}`);
++     if (chunkTitle) lines.push(`**${chunkTitle}**`);
++     lines.push('');
++     lines.push('');
++     lines.push('');
++     if (content) lines.push(content);
++     lines.push(`📄 来源: ${docName}`);
++   }
++ const outFile = join(
++   tmpdir(),
++   `listing-coach-result-${Date.now()}-${process.pid}-${randomUUID()}.md`,
++ );
++ writeFileSync(outFile, lines.join('\n') + '\n', { encoding: 'utf8', flag: 'wx' });
++ process.stdout.write(outFile + '\n');

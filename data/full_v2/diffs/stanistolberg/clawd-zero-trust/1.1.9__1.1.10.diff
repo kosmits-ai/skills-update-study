@@ -1,0 +1,835 @@
+stanistolberg/clawd-zero-trust  1.1.9 -> 1.1.10
+change_type: instructions+docs+code   changelog: **Breaking release with enhanced verification, auditing, and refresh features. See notes for upgrade requirements.**  - ⚠️ First apply after upgrade requires `--force` or `bash scripts/release-gate.sh --reset-hash` action; update unattended workflows accordingly. - Adds egress profile status (`--status`) and audit log (`--audit-log`) modes for easier monitoring of outbound blocks and profile history. - Introduces IP snapshot auto-refresh (`--refresh`), efficiently updating only changed IPs after
+
+### README.md  [docs]
+- # clawd-zero-trust v1.2.0
+- This skill locks it down. Every outbound connection is whitelisted by DNS-resolved IP. Every plugin is explicitly allowed. Every model gets only the tools it needs. If something breaks the rules, traffic gets dropped — not logged and forgotten.
+- - **Port 22 lockdown:** SSH egress restricted to GitHub CIDRs only (for deploy key git push)
+- - **Port 80 conditional:** Only allows HTTP egress if Tailscale DERP fallback actually needs it
+- - **Hardening config externalized:** `hardening.json` survives OpenClaw updates (no more jq-patching openclaw.json)
+- - **Transactional apply:** Auto-rollback if connectivity checks fail post-apply
+- # Preview hardening changes (dry-run)
+- bash scripts/harden.sh
+- # Apply hardening
+- # Apply egress (with auto-rollback on failure)
+- - **Fix 2:** Conditional port 80/tcp — runtime check via `tailscale netcheck`, skip if DERP doesn't need it
+- - **Fix 3:** Port 22/tcp restricted to 4 GitHub SSH CIDRs with `api.github.com/meta` drift detection
+- - **Fix 5:** Hardening config externalized to `hardening.json` — shallow-merge into openclaw.json post-deploy
+- - Multi-model security audit: Opus 4.6 + GPT 5.3 + Sonnet 4.6 (3-model consensus required)
+- - Purged leaked credentials from git history
+- ### v1.1.6 (2026-02-21)
+- - Release gate script (shellcheck + validate + package + verify)
+- - Scanner false-positive remediation (no eval, documented agentsandbox.co)
+- - flush_zt_rules to prevent UFW rule accumulation
+- - Bug fixes from dual-model audits (GPT 5.3 + Sonnet 4.6)
+-   egress-filter.sh   # Core egress policy (UFW rules)
+-   harden.sh          # OpenClaw config hardening
+-   audit.sh           # Security audit checker
+-   release-gate.sh    # Pre-release validation
+- hardening.json       # Externalized hardening overrides
++ # clawd-zero-trust v1.3.0
++ This skill locks it down. Every outbound connection is whitelisted by DNS-resolved IP. Every plugin is explicitly allowed. Every model gets only the tools it needs. If something breaks the rules, traffic gets dropped and logged — not forgotten.
++ - **Egress violation logging:** Parse UFW/journalctl for blocked outbound connections — surface "14 blocked attempts to 52.34.12.8:443 in last 24h"
++ - **IP auto-refresh:** Re-resolve provider DNS, diff against applied rules, apply only delta changes (transactional with `iptables-save`/`iptables-restore` rollback)
++ - **Provider verification:** Protocol-aware post-apply checks for every entry in `providers.txt` (HTTPS/SMTP/IMAP/SSH/UDP)
++ - **Plugin integrity hashing:** SHA-256 snapshot of every plugin's entry point — detect supply chain tampering or post-compromise modification
++ - **Transactional apply:** `iptables-save`/`iptables-restore` rollback if connectivity checks fail
++ - **Port 22 lockdown:** SSH egress restricted to GitHub CIDRs only
++ # Apply egress policy (with auto-rollback on failure)
++ # Check current status (read-only)
++ bash scripts/egress-filter.sh --status
++ # View blocked egress attempts (last 24h)
++ bash scripts/egress-filter.sh --audit-log
++ # Refresh provider IPs (delta only, transactional)
++ bash scripts/egress-filter.sh --refresh
++ # Verify all providers post-apply
++ bash scripts/egress-filter.sh --verify-all
++ # Plugin integrity snapshot + verify
++ bash scripts/plugin-integrity.sh --snapshot
++ bash scripts/plugin-integrity.sh --verify
++ bash scripts/plugin-integrity.sh --drift
++ # Apply hardening config
++ > ⚠️ **v1.3.0 breaking change:** First apply after upgrade requires `--force` (script hash changed). Run `bash scripts/egress-filter.sh --apply --force` or `bash scripts/release-gate.sh --reset-hash` to reset the trusted baseline.
++ ## Dependencies
++ `ufw`, `curl`, `openssl`, `nc` (netcat-openbsd), `dig`, `python3`, `iptables`
++   egress-filter.sh     # Core egress policy — UFW rules, audit-log, refresh, verify-all
++   plugin-integrity.sh  # Plugin SHA-256 hashing — snapshot, verify, drift detection
++   harden.sh            # OpenClaw config hardening
++   audit.sh             # Security audit checker
++   plp-config.sh        # PLP tool profile configuration
++   whitelist.sh         # Dynamic domain whitelisting
++   release-gate.sh      # Pre-release validation gate
++ config/
++   providers.txt        # Allowlisted domains + ports
++ hardening.json         # Externalized hardening overrides
++   plugin-hashes.json   # Plugin integrity baseline
++   applied-ips.json     # Per-domain IP snapshot for delta refresh
++ ### v1.3.0 (2026-02-25)
++ - **New:** `--audit-log` — parse UFW/journalctl for blocked outbound connections (last 24h)
++ - **New:** `--refresh` — re-resolve provider DNS, apply delta UFW rules (transactional with `iptables-save`/`iptables-restore`)
++ - **New:** `--verify-all` — protocol-aware verification of every `providers.txt` entry post-apply
++ - **New:** `--status` — read-only egress profile status (version, last applied, provider count, UFW state)
++ - **New:** `plugin-integrity.sh` — SHA-256 plugin hashing (`--snapshot`, `--verify`, `--drift`)
++ - 5-round Opus 4.6 dev / GPT 5.3 audit loop — 26 issues found and fixed, zero remaining findings
++ - Fully transactional `--refresh` with explicit `_refresh_failed()` + `iptables-restore` (no ERR trap reliance)
++ - Fixed-string `grep -F` throughout — zero regex on untrusted input
++ - `timeout 5s` on every external probe
++ - `require_root()` in all mutating functions
++ - Python-driven plugin snapshot/verify (NUL-delimited, atomic JSON write)
++ - ⚠️ **Breaking:** First apply after upgrade requires `--force`
++ ### v1.2.0 (2026-02-24)
++ - Whitelist engine: dynamic domain whitelisting via `whitelist.sh` + `config/providers.txt`
++ - Versioned firewall profile state with hash verification
++ - Multi-model security audit: Opus 4.6 + GPT 5.3 + Sonnet 4.6
++ - Conditional port 80/tcp via `tailscale netcheck`
++ - Port 22/tcp restricted to GitHub SSH CIDRs
++ - Hardening config externalized to `hardening.json`
+
+### SKILL.md  [instructions]
+- version: "1.2.0"
+- # clawd-zero-trust (v1.2.0)
+- bash /home/claw/.openclaw/workspace/skills/clawd-zero-trust/scripts/egress-filter.sh --dry-run
+- bash /home/claw/.openclaw/workspace/skills/clawd-zero-trust/scripts/egress-filter.sh --apply
+- bash /home/claw/.openclaw/workspace/skills/clawd-zero-trust/scripts/egress-filter.sh --canary
+- # Verify endpoints only
+- bash /home/claw/.openclaw/workspace/skills/clawd-zero-trust/scripts/egress-filter.sh --verify
+- bash /home/claw/.openclaw/workspace/skills/clawd-zero-trust/scripts/egress-filter.sh --reset
+- ### 4) Dynamic Whitelisting (MAX USER-FRIENDLY API)
+- bash /home/claw/.openclaw/workspace/skills/clawd-zero-trust/scripts/whitelist.sh <domain> <port>
+- ### 5) Release Gate (v1.2.0)
+- State file:
+- `/home/claw/.openclaw/workspace/skills/clawd-zero-trust/.state/egress-profile.json`
+- Tracked fields:
+- - `profileVersion`
+- - `scriptHash`
+- - `lastAppliedAt`
+- - `lastResult`
++ version: "1.3.0"
++ # clawd-zero-trust (v1.3.0)
++ > ⚠️ **BREAKING (v1.3.0):** First apply after upgrade requires `--force` or run `bash scripts/release-gate.sh --reset-hash` to reset trusted baseline. Unattended/cron apply workflows must be updated.
++ ## Dependencies
++ The following binaries are required. Install with `apt` on Debian/Ubuntu:
++ | Binary | Package | Required For |
++ |--------|---------|-------------|
++ | `ufw` | `ufw` | All mutating operations (`--apply`, `--canary`, `--reset`, `--refresh`) |
++ | `curl` | `curl` | Endpoint verification (`--verify`, `--verify-all`) |
++ | `openssl` | `openssl` | SMTP/IMAP verification in `--verify-all` |
++ | `nc` | `netcat-openbsd` | TCP/UDP port checks in `--verify-all` |
++ | `dig` | `dnsutils` | DNS resolution for provider IPs |
++ | `python3` | `python3` | JSON parsing, log aggregation, state management |
++ Read-only modes (`--verify`, `--audit-log`, `--status`) do not require root. Mutating modes (`--apply`, `--canary`, `--reset`, `--refresh`) require root privileges.
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ bash scripts/egress-filter.sh --dry-run
++ bash scripts/egress-filter.sh --apply
++ bash scripts/egress-filter.sh --canary
++ # Verify critical endpoints only (Telegram, GitHub, Anthropic, OpenAI)
++ bash scripts/egress-filter.sh --verify
++ bash scripts/egress-filter.sh --reset
++ ### 4) Egress Profile Status (v1.3.0)
++ # Print current egress profile status (read-only, no root required)
++ bash scripts/egress-filter.sh --status
++ Displays: profile version, last applied timestamp, last result, provider count from `providers.txt`, and current UFW state. Read-only. No root required for core status output. UFW active state is best-effort — may show 'unknown' if sudo is unavailable on your system.
++ ### 5) Egress Violation Audit Log (v1.3.0)
++ # View blocked outbound traffic from the last 24 hours
++ bash scripts/egress-filter.sh --audit-log
++ Parses `/var/log/ufw.log` and `journalctl -k` for `[UFW BLOCK]` entries with outbound markers (`OUT=`, `DPT=`). Aggregates by destination IP + port and prints a summary table with counts, first-seen, and last-seen timestamps. During `--apply`, a UFW LOG rule (`ZT:egress-violation`) is automatically inserted to capture future violations.
++ ### 6) IP Snapshot Auto-Refresh (v1.3.0)
++ # Re-resolve DNS and apply only changed IPs (delta) to UFW
++ bash scripts/egress-filter.sh --refresh
++ Re-resolves all domains in `config/providers.txt`, diffs against the last-applied IP snapshot (`.state/applied-ips.json`), and applies only the delta rules. Transactional: backs up UFW rules before applying, verifies critical endpoints after, and rolls back on failure. The IP snapshot is saved automatically after every `--apply` and `--canary`.
++ ### 7) Per-Provider Verification (v1.3.0)
++ # Protocol-aware verification of ALL providers in providers.txt
++ bash scripts/egress-filter.sh --verify-all
++ Detects the appropriate protocol from port number and runs the matching check:
++ - **443** → HTTPS `curl` (status code check)
++ - **587/465/25** → SMTP `openssl s_client` (STARTTLS/TLS)
++ - **993/143** → IMAP `openssl s_client` (TLS/STARTTLS)
++ - **41641** → UDP `nc -zu` (Tailscale WireGuard)
++ - **22** → TCP `nc -z` (SSH)
++ - **other** → TCP `nc -z` (generic fallback)
++ Each check runs with a hard `timeout 5s` wrapper (enforced at OS level, not just socket timeout). Automatically called after `--apply` and `--canary`. Available standalone for on-demand verification. Requires: `curl`, `openssl`, `nc (netcat-openbsd)`.
++ ### 8) Plugin Integrity Hashing (v1.3.0)
++ # Snapshot current plugin hashes
++ bash scripts/plugin-integrity.sh --snapshot
++ # Verify plugin integrity against stored hashes
++ bash scripts/plugin-integrity.sh --verify
++ # Check plugins against hardening.json allowlist
++ bash scripts/plugin-integrity.sh --drift
++ # Combine checks
++ bash scripts/plugin-integrity.sh --verify --drift
++ Monitors plugin file integrity via SHA-256 hashing of each plugin's JS entry point (`dist/index.js` → `index.js` → `*.js` fallback). Detects unauthorized modifications, new/removed plugins, and drift from the `hardening.json` allowlist.
++ ### 9) Dynamic Whitelisting (MAX USER-FRIENDLY API)
++ bash scripts/whitelist.sh <domain> <port>
++ ### 10) Release Gate (v1.2.0)
++ State files (in `.state/`):
++ | File | Purpose |
++ |------|---------|
++ | `egress-profile.json` | Script hash, version, last apply result |
++ | `applied-ips.json` | Per-domain IP snapshot for `--refresh` delta |
++ | `plugin-hashes.json` | SHA-256 hashes for plugin integrity verification |
++ ## HARD REQUIREMENT: Self-Update Prevention
++ **NEVER run `openclaw update`, `openclaw upgrade`, `npm install -g openclaw`, or `npm update -g openclaw` without explicit Founder approval.**
++ These commands are blocked in `denyCommands`. On 2026-02-24, a self-update during an audit caused a 10,450+ crash-loop by deprecating a plugin. System stability > latest version. Always:
++ 1. Present update details + changelog to Founder first
++ 2. Backup config: `cp openclaw.json openclaw.json.pre-update`
++ 3. Only update after explicit approval
++ 4. Run `openclaw doctor --fix` + `openclaw status` after
++ ## MANDATORY: Update Proposal Format
++ When you detect that an OpenClaw update is available (via update-scout-daily or any other means), you MUST ALWAYS propose it in exactly this format — no exceptions:
++ 📦 **OpenClaw update available: vOLD → vNEW**
++ To apply safely, SSH in and run:
++ openclaw update
++ /home/claw/.openclaw/workspace/scripts/post-update-repair.sh
++ The repair script restores all symlinks, cleans config, restarts the gateway, and runs a 6-point smoke test automatically. No other steps needed.
++ NEVER say "I will run the update for you" or attempt to run it yourself. The update MUST be executed by the Founder via SSH.
+
+### hardening.json  [code]
+-   "version": "1.2.0",
++   "version": "1.3.0",
+
+### scripts/egress-filter.sh  [code]
+- PROFILE_VERSION="1.2.0"
+- RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
+-   --dry-run   Preview only (default)
+-   --apply     Apply policy transactionally. Auto-rollback on failed post-checks.
+-   --canary    Apply policy in canary phase, verify for ${CANARY_SECONDS}s, then commit.
+-   --verify    Verify critical endpoints (Telegram, GitHub, Anthropic, OpenAI)
+-   --reset     Roll back to permissive outgoing policy
+-   --force     Bypass script hash mismatch gate on apply/canary
+-   --trust     Explicitly acknowledge first-run trust (required on first --apply/--canary
+-               when no prior profile exists). Inspect scripts before passing this flag.
+-     --dry-run) DRY_RUN=1 ;;
+-     --apply)   APPLY_MODE=1; DRY_RUN=0 ;;
+-     --canary)  CANARY_MODE=1; DRY_RUN=0 ;;
+-     --reset)   RESET_MODE=1 ;;
+-     --verify)  VERIFY_MODE=1 ;;
+-     --force)   FORCE_MODE=1 ;;
+-     --trust)   TRUST_MODE=1 ;;
+-     -h|--help) usage; exit 0 ;;
+- check_dep dig dnsutils
+- check_dep ufw ufw
+- check_dep curl curl
+-   http_code=$(curl -s --max-time 10 --max-redirs 5 \
+-   if ! sudo ufw status 2>/dev/null | grep -q "^Status: active"; then
+-   api_cidrs="$(curl -fsSL --max-time 10 https://api.github.com/meta 2>/dev/null | \
+- echo -e "To apply:  bash $0 --apply"
+- echo -e "To canary: bash $0 --canary"
+- echo -e "To verify: bash $0 --verify"
+- echo -e "To reset:  bash $0 --reset"
++ # =============================================================================
++ # =============================================================================
++ # =============================================================================
++ # =============================================================================
++ # =============================================================================
++ # =============================================================================
++ # =============================================================================
++ # =============================================================================
++ # =============================================================================
++ # =============================================================================
++ # v1.3.0: Four improvements:
++ #         [IMP-1] --audit-log: Parse UFW logs for blocked egress, aggregate
++ #                 by IP+port, print summary table. UFW LOG rule on --apply.
++ #         [IMP-3] --refresh: Re-resolve DNS, diff against applied IPs,
++ #                 apply only delta rules transactionally.
++ #         [IMP-4] --verify-all: Per-provider protocol-aware verification
++ #                 (HTTPS/SMTP/IMAP/UDP/SSH). Auto-called after --apply.
++ AUDIT_LOG_MODE=0
++ REFRESH_MODE=0
++ VERIFY_ALL_MODE=0
++ STATUS_MODE=0
++ # [FINDING-7 v1.3.0-r2] Global temp file tracking + cleanup trap
++ # [NEW-1 v1.3.0-r3] EXIT-only global trap — no global ERR trap.
++ # ERR traps are scoped locally to critical mutation sections only.
++ TEMP_FILES=()
++ cleanup_all_temps() {
++   for tf in "${TEMP_FILES[@]:-}"; do
++     [ -n "$tf" ] && rm -f "$tf" 2>/dev/null
++   done
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ trap 'cleanup_all_temps' EXIT
++ # Create a tracked temp file and return its path
++ make_temp() {
++   local t
++   t="$(mktemp "${1:-/tmp/zt-egress.XXXXXX}")"
++   TEMP_FILES+=("$t")
++   echo "$t"
++ PROFILE_VERSION="1.3.0"
++ APPLIED_IPS_FILE="$STATE_DIR/applied-ips.json"
++ RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
++                 [--audit-log] [--refresh] [--verify-all] [--status]
++   --dry-run      Preview only (default)
++   --apply        Apply policy transactionally. Auto-rollback on failed post-checks.
++   --canary       Apply policy in canary phase, verify for ${CANARY_SECONDS}s, then commit.
++   --verify       Verify critical endpoints (Telegram, GitHub, Anthropic, OpenAI)
++   --reset        Roll back to permissive outgoing policy
++   --force        Bypass script hash mismatch gate on apply/canary
++   --trust        Explicitly acknowledge first-run trust (required on first --apply/--canary
++                  when no prior profile exists). Inspect scripts before passing this flag.
++ v1.3.0 additions:
++   --audit-log    Parse UFW blocked-egress logs (last 24h). Aggregated by IP+port.
++   --refresh      Re-resolve DNS for all providers, apply only delta IP changes to UFW.
++   --verify-all   Protocol-aware verification of ALL providers (HTTPS/SMTP/IMAP/SSH/UDP).
++   --status       Print current egress profile status (version, last apply, provider count, UFW state).
++     --dry-run)    DRY_RUN=1 ;;
++     --apply)      APPLY_MODE=1; DRY_RUN=0 ;;
++     --canary)     CANARY_MODE=1; DRY_RUN=0 ;;
++     --reset)      RESET_MODE=1 ;;
++     --verify)     VERIFY_MODE=1 ;;
++     --force)      FORCE_MODE=1 ;;
++     --trust)      TRUST_MODE=1 ;;
++     --audit-log)  AUDIT_LOG_MODE=1 ;;
++     --refresh)    REFRESH_MODE=1; DRY_RUN=0 ;;
++     --verify-all) VERIFY_ALL_MODE=1 ;;
++     --status)     STATUS_MODE=1 ;;
++     -h|--help)    usage; exit 0 ;;
++   esac
++ fi
++ fi
++ fi
++ fi
++ fi
++     exit 1
++   fi
++   fi
++   fi
++   fi
++   fi
++   fi
++   fi
++   fi
++   fi
++   fi
++   fi
++   fi
++   fi
++   fi
++   fi
++   fi
++   fi
++   fi
++   fi
++   fi
++   fi
++   fi
++   fi
++   fi
++ # [FINDING-8 v1.3.0-r2] Require root for mutating operations
++ require_root() {
++   if [ "${EUID:-$(id -u)}" -ne 0 ]; then
++     echo -e "${RED}[ERROR]${NC} This operation requires root privileges. Re-run with sudo."
++ # Core dependencies always required
++ # UFW-dependent modes need dig, ufw, curl
++ # Standalone read-only modes (--audit-log, --verify-all) only need curl/python
++ if [ "$AUDIT_LOG_MODE" -eq 1 ] && [ "$APPLY_MODE" -eq 0 ] && [ "$CANARY_MODE" -eq 0 ] && \
++    [ "$RESET_MODE" -eq 0 ] && [ "$REFRESH_MODE" -eq 0 ] && [ "$VERIFY_ALL_MODE" -eq 0 ] && \
++    [ "$VERIFY_MODE" -eq 0 ]; then
++   # audit-log only — no ufw/dig/curl needed
++   :
++ elif [ "$VERIFY_ALL_MODE" -eq 1 ] && [ "$APPLY_MODE" -eq 0 ] && [ "$CANARY_MODE" -eq 0 ] && \
++      [ "$RESET_MODE" -eq 0 ] && [ "$REFRESH_MODE" -eq 0 ]; then
++      [ "$RESET_MODE" -eq 0 ] && [ "$REFRESH_MODE" -eq 0 ]; then
++      [ "$RESET_MODE" -eq 0 ] && [ "$REFRESH_MODE" -eq 0 ]; then
++      [ "$RESET_MODE" -eq 0 ] && [ "$REFRESH_MODE" -eq 0 ]; then
++   # [FINDING-1 v1.3.0-r2] verify-all needs curl + openssl + nc
++   check_dep curl curl
++   check_dep curl curl
++   check_dep curl curl
++   check_dep openssl openssl
++   check_dep openssl openssl
++   check_dep nc netcat-openbsd
++   check_dep nc netcat-openbsd
++ elif [ "$VERIFY_MODE" -eq 1 ] && [ "$APPLY_MODE" -eq 0 ] && [ "$CANARY_MODE" -eq 0 ] && \
++   # verify needs curl
++ else
++   check_dep dig dnsutils
++   check_dep ufw ufw
++   # [FINDING-1 v1.3.0-r2] --apply/--canary auto-call verify_all_providers, which needs openssl+nc
++   if [ "$DRY_RUN" -eq 1 ]; then
++     return 0
++     return 0
++     return 0
++     return 0
++ import json, sys
++ import json, sys
++   # [F-13 v1.3.0-r3] timeout 15s wrapper (defense-in-depth vs DNS hangs)
++   http_code=$(timeout 15s curl -s --max-time 10 --max-redirs 5 \
++     return 1
++     return 1
++     return 1
++     return 1
++     return 1
++     return 1
++     return 1
++     return 1
++     return 1
++   return 0
++   return 0
++   return 0
++   return 0
++   return 0
++   return 0
++   local failed=0
++   if [ "$failed" -gt 0 ]; then
++ # [IMP-4 v1.3.0] Per-provider protocol-aware verification
++ # Detects protocol from port number and runs the appropriate check:
++ #   443        → HTTPS curl
++ #   587/465/25 → SMTP openssl s_client
++ #   993/143    → IMAP openssl s_client
++ #   41641      → UDP nc
++ #   22         → SSH nc (TCP)
++ #   other      → TCP nc fallback
++ verify_provider() {
++   local domain="$1"
++   local port="$2"
++   local vp_timeout=5
++   local result
++   case "$port" in
++     443)
++       # HTTPS: curl with status code check
++       # [FINDING-13 v1.3.0-r2] timeout 5s wrapper on curl
++       local http_code
++       http_code=$(timeout 5s curl -s --max-time "$vp_timeout" --max-redirs 3 \
++         -o /dev/null -w '%{http_code}' "https://${domain}/" 2>/dev/null) || true
++       if [ "$http_code" = "000" ] || [ -z "$http_code" ]; then
++         echo -e "  ${RED}❌ ${domain}:${port}${NC} (HTTPS — TIMEOUT/NO_CONNECT)"
++         return 1
++       fi
++       fi
++       fi
++       fi
++       fi
++       fi
++       fi
++       fi
++       fi
++       fi
++       fi
++       fi
++       fi
++       echo -e "  ${GREEN}✅ ${domain}:${port}${NC} (HTTPS — HTTP $http_code)"
++       return 0
++       return 0
++       return 0
++       ;;
++       ;;
++       ;;
++       ;;
++       ;;
++       ;;
++     587|465|25)
++       # SMTP: openssl s_client (STARTTLS for 587/25, direct TLS for 465)
++       if ! command -v openssl >/dev/null 2>&1; then
++       if ! command -v openssl >/dev/null 2>&1; then
++         echo -e "  ${YELLOW}⚠️  ${domain}:${port}${NC} (SMTP — openssl not found, skipped)"
++         return 0
++         return 0
++         return 0
++         return 0
++         return 0
++         return 0
++       local ssl_opts=""
++       local ssl_opts=""
++       if [ "$port" = "587" ] || [ "$port" = "25" ]; then
++         ssl_opts="-starttls smtp"
++       # [NEW-1 v1.3.0-r4] Exit-code-based TLS check — no regex on untrusted output.
++       # [NEW-1 v1.3.0-r4] Exit-code-based TLS check — no regex on untrusted output.
++       # openssl s_client exits 0 on successful TLS handshake. Fallback: grep -Fqi fixed-string.
++       # shellcheck disable=SC2086
++       # shellcheck disable=SC2086
++       # shellcheck disable=SC2086
++       # shellcheck disable=SC2086
++       if echo "QUIT" | timeout 5s openssl s_client -connect "${domain}:${port}" \
++         $ssl_opts -brief >/dev/null 2>&1; then
++         $ssl_opts -brief >/dev/null 2>&1; then
++         echo -e "  ${GREEN}✅ ${domain}:${port}${NC} (SMTP — TLS established)"
++         echo -e "  ${GREEN}✅ ${domain}:${port}${NC} (SMTP — TLS established)"
++       # Fallback: some openssl builds return non-zero even on success; check output with fixed-string
++       result=$(echo "QUIT" | timeout 5s openssl s_client -connect "${domain}:${port}" \
++         $ssl_opts -brief 2>&1 | head -5) || true
++         $ssl_opts -brief 2>&1 | head -5) || true
++       if echo "$result" | grep -Fqi "CONNECTION ESTABLISHED"; then
++       if echo "$result" | grep -Fqi "CONNECTION ESTABLISHED"; then
++       echo -e "  ${RED}❌ ${domain}:${port}${NC} (SMTP — TIMEOUT/REFUSED)"
++       return 1
++       return 1
++       return 1
++       return 1
++       return 1
++       return 1
++     993|143)
++       # IMAP: openssl s_client (direct TLS for 993, STARTTLS for 143)
++         echo -e "  ${YELLOW}⚠️  ${domain}:${port}${NC} (IMAP — openssl not found, skipped)"
++       if [ "$port" = "143" ]; then
++         ssl_opts="-starttls imap"
++       if echo "" | timeout 5s openssl s_client -connect "${domain}:${port}" \
++         echo -e "  ${GREEN}✅ ${domain}:${port}${NC} (IMAP — TLS established)"
++         echo -e "  ${GREEN}✅ ${domain}:${port}${NC} (IMAP — TLS established)"
++       # Fallback: fixed-string grep, no regex
++       result=$(echo "" | timeout 5s openssl s_client -connect "${domain}:${port}" \
++       echo -e "  ${RED}❌ ${domain}:${port}${NC} (IMAP — TIMEOUT/REFUSED)"
++     41641)
++       # Tailscale WireGuard — UDP check via nc
++       # [FINDING-13 v1.3.0-r2] timeout 5s wrapper on nc
++       # [FINDING-13 v1.3.0-r2] timeout 5s wrapper on nc
++       # [FINDING-13 v1.3.0-r2] timeout 5s wrapper on nc
++       if command -v nc >/dev/null 2>&1; then
++       if command -v nc >/dev/null 2>&1; then
++       if command -v nc >/dev/null 2>&1; then
++         if timeout 5s nc -zu "${domain}" "${port}" 2>/dev/null; then
++           echo -e "  ${GREEN}✅ ${domain}:${port}${NC} (UDP — reachable)"
++           return 0
++           return 0
++           return 0
++           return 0
++           return 0
++         fi
++         fi
++         fi
++         fi
++         fi
++         fi
++       # UDP checks are inherently unreliable (no response != blocked)
++       echo -e "  ${YELLOW}⚠️  ${domain}:${port}${NC} (UDP — no response, may be OK)"
++     22)
++       # SSH: TCP connect check via nc
++         if timeout 5s nc -z "${domain}" "${port}" 2>/dev/null; then
++         if timeout 5s nc -z "${domain}" "${port}" 2>/dev/null; then
++           echo -e "  ${GREEN}✅ ${domain}:${port}${NC} (SSH — TCP open)"
++           echo -e "  ${GREEN}✅ ${domain}:${port}${NC} (SSH — TCP open)"
++       else
++       else
++       else
++         # Fallback: bash /dev/tcp
++         if timeout 5s bash -c "echo >/dev/tcp/${domain}/${port}" 2>/dev/null; then
++         if timeout 5s bash -c "echo >/dev/tcp/${domain}/${port}" 2>/dev/null; then
++       echo -e "  ${RED}❌ ${domain}:${port}${NC} (SSH — TIMEOUT/REFUSED)"
++     *)
++       # Generic TCP check
++           echo -e "  ${GREEN}✅ ${domain}:${port}${NC} (TCP — open)"
+
+### scripts/plugin-integrity.sh  [code]
++ #!/bin/bash
++ # =============================================================================
++ # =============================================================================
++ # Plugin Integrity Hashing — clawd-zero-trust
++ # v1.3.0: Initial implementation
++ #
++ #
++ # Monitors OpenClaw plugin file integrity via SHA-256 hashing.
++ # Detects unauthorized modifications, new/removed plugins, and drift
++ # from the hardening.json allowlist.
++ # Subcommands:
++ #   --snapshot  Compute and store SHA-256 hashes for all installed plugins
++ #   --verify    Compare current hashes against stored snapshot
++ #   --drift     Check loaded plugins against hardening.json allowlist
++ set -u
++ SNAPSHOT_MODE=0
++ VERIFY_MODE=0
++ DRIFT_MODE=0
++ SCRIPT_PATH="$(readlink -f "$0")"
++ SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
++ SKILL_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
++ STATE_DIR="$SKILL_DIR/.state"
++ HASH_FILE="$STATE_DIR/plugin-hashes.json"
++ HARDENING_FILE="$SKILL_DIR/hardening.json"
++ EXTENSIONS_DIR="$HOME/.openclaw/extensions"
++ RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
++ usage() {
++   cat <<EOF
++ Usage: bash $0 [--snapshot] [--verify] [--drift]
++ Subcommands:
++   --snapshot   Compute SHA-256 hashes for all installed plugins, store in .state/plugin-hashes.json
++   --verify     Compare current plugin hashes against stored snapshot. Exit 1 on mismatch.
++   --drift      Compare loaded plugins against hardening.json allowlist. Alert on new/removed.
++ Combine flags to run multiple checks:
++   bash $0 --verify --drift
++ EOF
++ }
++ }
++ }
++ }
++ }
++ if [ $# -eq 0 ]; then
++   usage
++   exit 0
++ fi
++ fi
++ fi
++ fi
++ for arg in "$@"; do
++   case "$arg" in
++     --snapshot) SNAPSHOT_MODE=1 ;;
++     --verify)   VERIFY_MODE=1 ;;
++     --drift)    DRIFT_MODE=1 ;;
++     -h|--help)  usage; exit 0 ;;
++     *) echo -e "${RED}[ERROR]${NC} Unknown arg: $arg"; usage; exit 1 ;;
++   esac
++ done
++ mkdir -p "$STATE_DIR"
++ # ---------------------------------------------------------------------------
++ # ---------------------------------------------------------------------------
++ # ---------------------------------------------------------------------------
++ # ---------------------------------------------------------------------------
++ # ---------------------------------------------------------------------------
++ # ---------------------------------------------------------------------------
++ # ---------------------------------------------------------------------------
++ # ---------------------------------------------------------------------------
++ # ---------------------------------------------------------------------------
++ # ---------------------------------------------------------------------------
++ # find_plugin_js <plugin_dir>
++ # Locate the primary JS entry point for a plugin. Priority:
++ #   1. dist/index.js  (compiled TS plugins)
++ #   2. index.js       (simple plugins)
++ #   3. first *.js     (fallback)
++ # Returns the path on stdout, or empty string if none found.
++ find_plugin_js() {
++   local pdir="$1"
++   if [ -f "$pdir/dist/index.js" ]; then
++     echo "$pdir/dist/index.js"
++   elif [ -f "$pdir/index.js" ]; then
++     echo "$pdir/index.js"
++   else
++     # Fallback: first .js file found (non-recursive in root)
++     local first_js
++     first_js="$(find "$pdir" -maxdepth 1 -name '*.js' -type f 2>/dev/null | head -1)"
++     if [ -n "$first_js" ]; then
++       echo "$first_js"
++     fi
++     fi
++     fi
++     fi
++     fi
++   fi
++   fi
++   fi
++   fi
++   fi
++   fi
++   fi
++   fi
++   fi
++ # do_snapshot: Compute SHA-256 for each plugin and store in JSON
++ # [NEW-3 v1.3.0-r3] Fully Python-based: bash collects plugin dirs as NUL-
++ # delimited list, Python does all hashing + JSON serialization. Zero bash-
++ # level string splitting of hash data. Handles spaces/unicode/special chars.
++ do_snapshot() {
++   echo -e "${CYAN}[SNAPSHOT]${NC} Computing plugin integrity hashes..."
++   if [ ! -d "$EXTENSIONS_DIR" ]; then
++   if [ ! -d "$EXTENSIONS_DIR" ]; then
++     echo -e "${YELLOW}[WARN]${NC} Extensions directory not found: $EXTENSIONS_DIR"
++     echo -e "${YELLOW}[WARN]${NC} Extensions directory not found: $EXTENSIONS_DIR"
++     echo -e "${YELLOW}[WARN]${NC} No plugins to snapshot."
++     return 0
++   # Collect plugin directory paths as NUL-delimited list (safe for all filenames)
++   local plugin_dirs=""
++   local plugin_dirs=""
++   for pdir in "$EXTENSIONS_DIR"/*/; do
++   for pdir in "$EXTENSIONS_DIR"/*/; do
++     [ ! -d "$pdir" ] && continue
++     [ ! -d "$pdir" ] && continue
++     if [ -n "$plugin_dirs" ]; then
++     if [ -n "$plugin_dirs" ]; then
++       plugin_dirs="${plugin_dirs}"$'\0'"${pdir}"
++       plugin_dirs="${plugin_dirs}"$'\0'"${pdir}"
++     else
++     else
++     else
++     else
++       plugin_dirs="${pdir}"
++       plugin_dirs="${pdir}"
++   done
++   done
++   # Python does all the work: find JS entry, hash, write JSON atomically
++   python3 - "$HASH_FILE" "$HOME" <<'PYEOF' < <(printf '%s' "$plugin_dirs")
++ import json, sys, os, hashlib
++ import json, sys, os, hashlib
++ from datetime import datetime, timezone
++ from pathlib import Path
++ hash_file = sys.argv[1]
++ hash_file = sys.argv[1]
++ home_dir = sys.argv[2]
++ # Read NUL-delimited plugin dirs from stdin
++ raw = sys.stdin.buffer.read()
++ raw = sys.stdin.buffer.read()
++ if not raw:
++     print("  No plugins found to snapshot.")
++     sys.exit(0)
++ plugin_dirs = [d for d in raw.decode('utf-8', errors='replace').split('\0') if d.strip()]
++ now = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
++ plugins = {}
++ count = 0
++ for pdir in plugin_dirs:
++     pdir = pdir.rstrip('/')
++     pname = os.path.basename(pdir)
++     # Find JS entry point: dist/index.js > index.js > first *.js
++     js_path = None
++     candidate = os.path.join(pdir, 'dist', 'index.js')
++     candidate = os.path.join(pdir, 'dist', 'index.js')
++     if os.path.isfile(candidate):
++     if os.path.isfile(candidate):
++     if os.path.isfile(candidate):
++         js_path = candidate
++     else:
++     else:
++         candidate = os.path.join(pdir, 'index.js')
++         if os.path.isfile(candidate):
++             js_path = candidate
++         else:
++             # Fallback: first .js in root
++             try:
++                 for f in sorted(os.listdir(pdir)):
++                     if f.endswith('.js') and os.path.isfile(os.path.join(pdir, f)):
++                         js_path = os.path.join(pdir, f)
++                         break
++             except OSError:
++                 pass
++     if not js_path:
++     if not js_path:
++         print(f"  \033[1;33m⚠️\033[0m  {pname} — no JS entry point found, skipping")
++         continue
++         continue
++         continue
++         continue
++         continue
++     # Compute SHA-256
++     sha = hashlib.sha256()
++     sha = hashlib.sha256()
++     try:
++     try:
++     try:
++         with open(js_path, 'rb') as f:
++             for chunk in iter(lambda: f.read(65536), b''):
++             for chunk in iter(lambda: f.read(65536), b''):
++                 sha.update(chunk)
++                 sha.update(chunk)
++     except OSError as e:
++         print(f"  \033[0;31m❌\033[0m  {pname} — read error: {e}")
++     file_hash = sha.hexdigest()
++     rel_path = js_path
++     if js_path.startswith(home_dir + '/'):
++         rel_path = js_path[len(home_dir) + 1:]
++     plugins[pname] = {
++         'hash': file_hash,
++         'path': rel_path,
++         'snapshotAt': now
++     }
++     basename = os.path.basename(js_path)
++     print(f"  \033[0;32m✅\033[0m {pname} → {file_hash[:16]}... ({basename})")
++     count += 1
++ # Write JSON atomically (write to tmp, rename)
++ os.makedirs(os.path.dirname(hash_file), exist_ok=True)
++ tmp_path = hash_file + '.tmp'
++ with open(tmp_path, 'w', encoding='utf-8') as f:
++     json.dump({
++         'version': '1.3.0',
++         'generatedAt': now,
++         'plugins': plugins
++     }, f, indent=2)
++     f.write('\n')
++ os.replace(tmp_path, hash_file)
++ print(f"\n\033[0;32m[DONE]\033[0m Snapshot saved: {hash_file} ({count} plugins)")
++ PYEOF
++ PYEOF
++   local rc=$?
++   [ -f "$HASH_FILE" ] && chmod 600 "$HASH_FILE"
++   return "$rc"
++ # do_verify: Compare current hashes vs stored snapshot
++ # [NEW-3 v1.3.0-r3] Fully Python-based: reads JSON snapshot, rehashes files
++ # in Python, compares in Python. Zero bash-level string splitting of hash
++ # comparison data. Handles spaces/unicode/special chars in plugin paths.
++ do_verify() {
++   echo -e "${CYAN}[VERIFY]${NC} Checking plugin integrity against stored hashes..."
++   if [ ! -f "$HASH_FILE" ]; then
++     echo -e "${RED}[ERROR]${NC} No snapshot found at: $HASH_FILE"
++     echo -e "  Run --snapshot first to establish a baseline."
++     return 1
++     return 1
++     return 1
++     return 1
++     return 1
++   # Collect current plugin directory paths as NUL-delimited list
++   # Python does everything: load snapshot, hash current files, compare, report
++   python3 - "$HASH_FILE" "$EXTENSIONS_DIR" <<'PYEOF' < <(printf '%s' "$plugin_dirs")
++ extensions_dir = sys.argv[2]
++ # ANSI colors
++ RED = '\033[0;31m'
++ GREEN = '\033[0;32m'
++ YELLOW = '\033[1;33m'
++ NC = '\033[0m'
++ # Load stored snapshot
++ try:
++ try:
++     with open(hash_file, 'r', encoding='utf-8') as f:
++         snapshot = json.load(f)
++ except (json.JSONDecodeError, ValueError, OSError) as e:
++     print(f"  {YELLOW}[WARN]{NC} Snapshot is empty or malformed: {e}")
++     sys.exit(1)
++     sys.exit(1)
++     sys.exit(1)
++     sys.exit(1)
++     sys.exit(1)
++ stored_plugins = snapshot.get('plugins', {})
++ if not stored_plugins:
++     print(f"  {YELLOW}[WARN]{NC} Snapshot contains no plugins.")
++ # Read NUL-delimited current plugin dirs from stdin
++ current_dirs = {}
++ if raw:
++     for d in raw.decode('utf-8', errors='replace').split('\0'):
++         d = d.rstrip('/')
++         if d:
++             current_dirs[os.path.basename(d)] = d
++ def find_plugin_js(pdir):
++     """Find JS entry point: dist/index.js > index.js > first *.js"""
++         return candidate
++         return candidate
++     candidate = os.path.join(pdir, 'index.js')
++         for f in sorted(os.listdir(pdir)):
++             if f.endswith('.js') and os.path.isfile(os.path.join(pdir, f)):
++                 return os.path.join(pdir, f)
++     except OSError:
++     except OSError:
++         pass
++     return None
++ def sha256_file(path):
++     """Compute SHA-256 of a file."""
++         with open(path, 'rb') as f:
++         return sha.hexdigest()
++         return None
++ mismatches = 0
++ checked = 0
++ missing = 0
++ # Check stored plugins against current state
++ for pname in sorted(stored_plugins.keys()):
++     stored = stored_plugins[pname]
++     stored_hash = stored.get('hash', '')
++     checked += 1
++     pdir = os.path.join(extensions_dir, pname)
++     if not os.path.isdir(pdir):
++         print(f"  {RED}⚠️  REMOVED:{NC} {pname} — plugin directory no longer exists")
++         missing += 1
++     js_path = find_plugin_js(pdir)
+
+### scripts/whitelist.sh  [code]
+- # clawd-zero-trust dynamic egress whitelist wrapper — v1.2.0
++ # clawd-zero-trust dynamic egress whitelist wrapper — v1.3.0

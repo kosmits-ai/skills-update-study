@@ -1,0 +1,92 @@
+ade5791/thinkforce  2.0.1 -> 2.0.2
+change_type: instructions   changelog: **Agent assignment logic clarified and agent schema updated.**  - Updated agent discovery and assignment instructions to match the current API schema; fields like `tags`, `capabilities`, and `status` no longer exist. - Added detailed descriptions of real agent response fields (`agentName`, `agentRole`, `enabledTools`, etc.). - Revised matching logic: match on `agentName` and substrings in `agentRole`; clarified that `workstationKey` is only a UI hint, not a role indicator. - Clarified that every
+
+### SKILL.md  [instructions]
+-     {
+-       "name": "Acme CEO",
+-       "agentRole": "CEO",
+-       "type": "default",
+-       "description": "Coordinator. Plans missions and reviews final output.",
+-       "capabilities": ["planning", "review"],
+-       "tools": ["Code_Assistant", "Web_Browser", "Memory_Manager"],
+-       "tags": ["coordinator"],
+-       "status": "active",
+-       "status": "active",
+-       "config": { "model": "claude-opus-4-7", "temperature": 0.7 },
+-       "avatar": "https://...",
+-     },
+-       "id": "agt_def456",
+-       "name": "Market Researcher",
+-       "agentRole": "Researcher",
+-       "type": "custom",
+-       "tools": ["Web_Browser", "Website_Fetch", "getWolfram"],
+-       "tags": ["research", "data"],
+-       "config": { "model": "deepseek-v4-flash" }
+- 1. **`agentRole`** — coarse-grained role label (`CEO`, `Researcher`, `Developer`, `Designer`, `Marketer`, `Operator`, etc.). Best signal for "which agent is the planner?" or "which agent writes code?".
+- 2. **`tags[]` + `capabilities[]`** — finer-grained markers the user set on the agent (e.g. `tags: ["video"]` or `capabilities: ["copywriting"]`).
+- 3. **`tools[]`** — which tools the agent has enabled. If a subtask needs `Design_Agent` to run, prefer an agent that already has it (otherwise you'll have to override with `attachedToolNames`).
+- 4. **`name` / `description`** — last-resort fuzzy match if roles/tags are too generic.
+- 5. **`status: "active"`** — never pick an `inactive` or `archived` agent.
+- `workstationKey` is the planner's hint about what kind of work the step needs:
+- | workstationKey | Suggested agent role            |
+- | -------------- | ------------------------------- |
+- | `researching`  | Researcher / Analyst / Data     |
+- | `working`      | Developer / Designer / Operator |
+- | `syncing`      | Operator / Integrator           |
+- | `error`        | Reserved — don't assign here    |
+- Use `workstationKey` as your first signal when matching agents.
+- 4. GET /api/missions/<id>/subtasks → confirm IDs + workstationKeys
+-      pick agent = agents.find(a =>
+-          a.status === 'active' &&
+-          matchesWorkstation(a, subtask.workstationKey)
+-      ) || ceoAgent;
+- - **Always match `status: "active"`.** Inactive agents will accept the assignment but won't dispatch.
+- - **Tool-allowlist before reassigning.** If an agent is close-but-not-quite (missing one tool), prefer setting `attachedToolNames` on the subtask over picking a worse agent.
+- - **Never invent agent IDs.** If `POST /api/agents { action:"list" }` returns 0 active agents, tell the user — don't fabricate.
+- 4. **Assign before running.** Every subtask needs `assignedAgentId` (active agent) before `/run`. Decompose does NOT auto-assign — you must PATCH each subtask. Match agents by `agentRole` + `workstationKey` + `tools`, never by guessing. CEO is the always-available fallback. See section 1.5.
+-      Note: all UNASSIGNED. workstationKey hints at the agent role to pick.
+-    → e.g. CEO, Copywriter, Designer, Video Editor (all status:"active")
+- 4. GET /api/missions/M1/subtasks → confirm IDs + workstationKeys
++       "agentName": "Acme CEO",
++       "agentRole": "You are the CEO. You plan missions, coordinate other agents, and review final outputs...",
++       "agentType": "office",
++       "model": "claude-opus-4-7",
++       "provider": "anthropic",
++       "reasoningEffort": "high",
++       "enabledTools": ["function-Web_Search", "function-Code_Assistant", "function-Memory_Manager"],
++       "selectedTools": [{ "type": "function", "function": { "name": "Web_Search", "description": "...", "parameters": {...} } }, ...],
++       "mcpConnections": [],
++       "officeState": "idle",
++       "workspaceSync": null,
++ ### Real agent schema (what's actually there)
++ | Field             | What it is                                                                                       |
++ | ----------------- | ------------------------------------------------------------------------------------------------ |
++ | `agentName`       | Short display name (e.g. "Market Researcher", "Driver Recruitment Agent"). The primary handle.   |
++ | `agentRole`       | **Free-text system prompt** for the agent — often paragraphs long. NOT a short role label.       |
++ | `agentType`       | Internal type marker (`office` for normal in-office agents, often `null` for legacy/custom).     |
++ | `model`           | Model id the agent runs on (`claude-opus-4-7`, `deepseek/deepseek-v4-flash`, etc.).              |
++ | `enabledTools[]`  | Array of strings like `"function-Web_Search"` — which tools are toggled on for this agent.       |
++ | `selectedTools[]` | The full OpenAI-style tool objects (mirrors `enabledTools` but with definitions). Use for inspection only — for matching, prefer `enabledTools`. |
++ | `mcpConnections[]`| Array of MCP connector ids the agent has access to.                                              |
++ | `officeState`     | UI animation state: `idle | working | researching | syncing`. Not a routing signal.              |
++ | `provider`        | LLM provider key (`anthropic`, `openrouter`, `deepseek`, ...).                                   |
++ **Fields that DO NOT exist on agents** (don't try to match on them): `name`, `description`, `tags`, `capabilities`, `tools`, `status`, `config`. Older docs reference these — they were never on the schema.
++ 1. **`agentName`** — the only short, human-meaningful label. Match by substring: `"researcher"`, `"designer"`, `"copywriter"`, `"marketer"`. This is your primary signal.
++ 2. **`agentRole` substring** — grep the system prompt for domain keywords (`"video"`, `"copy"`, `"frontend"`, `"recruit"`, `"compliance"`). Slower than `agentName` matching but catches agents whose name is generic.
++ 3. **`enabledTools[]`** — if the subtask needs `Design_Agent` to run, prefer an agent that already has `"function-Design_Agent"` in `enabledTools`. Otherwise you'll need to override with `attachedToolNames` on the subtask (which works, but is an extra step).
++ 4. **`model`** — only relevant if the user explicitly asked for "the Claude agent" or "the fast one"; otherwise ignore.
++ There is no `status` field — every agent the API returns is dispatchable. There is no `inactive` or `archived` state.
++ **`workstationKey` is NOT a role hint.** It's the office UI's animation/cubicle assignment for showing the agent avatar in the right workstation while the step runs (`working | researching | syncing | error`). The decomposer LLM picks one of those four buckets per subtask, but it carries no signal about which *agent* should run the step. Pick agents by `agentName` + `agentRole` substring, not by `workstationKey`.
++ 4. GET /api/missions/<id>/subtasks → confirm IDs + titles
++      // Match by title keywords against agentName + agentRole
++      pick agent = agents.find(a => {
++        const hay = ((a.agentName || '') + ' ' + (a.agentRole || '')).toLowerCase();
++        return subtask.title.toLowerCase().split(/\W+/).some(w => w.length > 3 && hay.includes(w));
++      }) || ceoAgent;
++ - **Tool-allowlist before reassigning.** If an agent is close-but-not-quite (missing one tool), prefer setting `attachedToolNames` on the subtask over picking a worse agent. The agent only sees the union of its `enabledTools` and the subtask's `attachedToolNames` (when set).
++ - **Never invent agent IDs.** If `POST /api/agents { action:"list" }` returns no agents that fit, fall back to the CEO — don't fabricate.
++ - **Don't use `workstationKey` to pick the agent.** It's an office-animation field, not a routing signal. See above.
++ 4. **Assign before running.** Every subtask needs `assignedAgentId` before `/run`. Decompose does NOT auto-assign — you must PATCH each subtask. Match agents by `agentName` + `agentRole` substring + `enabledTools`, never by guessing. CEO is the always-available fallback. See section 1.5.
++      Note: all UNASSIGNED. Use subtask titles + agentName/agentRole to pick.
++    → e.g. CEO, Copywriter, Designer, Video Editor
++ 4. GET /api/missions/M1/subtasks → confirm subtask IDs + titles

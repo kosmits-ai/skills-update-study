@@ -1,0 +1,264 @@
+nextaltair/soul-in-sapphire  2.0.0 -> 2.0.1
+change_type: instructions+docs+code   changelog: Add a file-backed heartbeat observation helper and documented invocation to avoid repeated inline-eval approval prompts. Preserve model-led emotion interpretation and existing host permission policy.
+
+### README.md  [docs]
++ ```bash
++ ```
++ ```
++ ### heartbeatの観測結果を保存する
++ 判定や感情の解釈はモデルが行い、JSONの更新は専用の
++ `scripts/heartbeat_observe.mjs`に任せます。`node -e`で毎回コードを生成しません。
++ ネイティブのファイル書き込みツールで次の観測JSONを作成してください。
++ ```json
++ {"result":"no_change","reason":"根拠のある今回の判断","evidence_references":{"context":"読んだファイルやツールの参照"}}
++ node scripts/heartbeat_observe.mjs \
++   --workspace /path/to/agent-workspace \
++   --observation-file /path/to/observation.json \
++   --apply
++ `--apply`なしは確認だけです。`changed`の場合は、正常完了したtickの
++ `--receipt-file`も渡します。未完了のreceiptや壊れた既存JSONは上書きしません。
++ `ok:true`と`applied:true`を確認してください。既存の無関係なキーを維持し、
++ Notionや`memory/now-state.json`は変更しません。ホストの承認設定を緩める必要はありません。
+
+### SKILL.md  [instructions]
++    Record the check itself with [scripts/heartbeat_observe.mjs](scripts/heartbeat_observe.mjs): create an observation JSON with native file tools, then pass explicit `--workspace`, `--observation-file` and `--apply`. For `changed`, also pass the completed tick's `--receipt-file`. Verify exit status, `ok` and `applied`; the helper only merges heartbeat observation fields, never writes Notion or refreshes `now-state.json`.
++ For unattended checks, use the bundled file-backed helpers, not `node -e`,
++ `python -c`, interpreter stdin/heredocs or generated one-off scripts. Native
++ file tools (or `cat`/`head`/`tail`/`rg` for shell reads) avoid inline-program
++ approval prompts. Keep the host's approval policy unchanged.
++ Heartbeat observation (local only; preview by default, `--apply` writes):
++     node scripts/heartbeat_observe.mjs --workspace /path/to/agent-workspace --observation-file /path/to/observation.json --apply
++ Observation JSON: `{"result":"no_change","reason":"grounded interpretation","evidence_references":{"context":"source path or tool reference"}}`.
++ Accepted results: `changed`, `no_change`, `unavailable`, `failed`. For `changed`,
++ add `--receipt-file /path/to/completed-tick.json`; do not supply event/state IDs
++ in the observation. See [references/heartbeat-sensing.md](references/heartbeat-sensing.md).
+
+### references/heartbeat-sensing.md  [docs]
+- 4. Merge `last_soul_check`, `last_soul_result`, `last_soul_reason` and evidence
+-    references into heartbeat state without discarding unrelated keys. Results
+-    are `changed`, `no_change`, `unavailable` or `failed`. A missing evidence
++ 4. Create an observation JSON with native file tools: `result`, a grounded
++    `reason`, and `evidence_references` (an object of source names to string
++    references). Run the installed skill's `scripts/heartbeat_observe.mjs` with
++    explicit `--workspace`, `--observation-file` and `--apply`. For `changed`,
++    also pass the same completed tick's `--receipt-file`; the helper rejects
++    incomplete/pending receipts and obtains event/state IDs only from them.
++    Preview is the default without `--apply`. Check exit status, `ok` and
++    `applied`, then use the returned observation or native file tools to verify.
++    The helper atomically merges `last_soul_check`, `last_soul_result`,
++    `last_soul_reason` and evidence references without discarding unrelated keys.
++    Results are `changed`, `no_change`, `unavailable` or `failed`. A missing evidence
++    This helper is local-only: it never writes Notion or modifies now-state.json.
++    Do not replace it with `node -e`, `python -c`, interpreter stdin/heredocs or
++    generated scripts. Hosts with strict inline-eval approval would prompt on
++    those forms every check. Use native file reads or `cat`/`head`/`tail`/`rg`,
++    not `sed`/`awk` inline programs or `find -exec`; do not relax host permissions.
+
+### scripts/heartbeat_observe.mjs  [code]
++ import fs from 'node:fs';
++ import path from 'node:path';
++ import {atomicJson} from './soul_io.js';
++ const results = new Set(['changed', 'no_change', 'unavailable', 'failed']);
++ const isObject = value => value !== null && typeof value === 'object' && !Array.isArray(value);
++ const hasId = value => typeof value === 'string' && value.trim().length > 0;
++ function readObject(file) {
++   const value = JSON.parse(fs.readFileSync(file, 'utf8'));
++   if (!isObject(value)) throw new Error('Expected a JSON object: ' + file);
++   return value;
++ }
++ }
++ }
++ function main() {
++   const args = {};
++   for (let i = 2; i < process.argv.length; i++) {
++     const flag = process.argv[i];
++     if (flag === '--help') {
++       console.log('heartbeat_observe.mjs --workspace <agent-workspace> --observation-file <json> [--receipt-file <completed-tick.json>] [--apply | --dry-run]\nDefault: preview only. Observation: {"result":"no_change","reason":"grounded reason","evidence_references":{"source":"path or tool reference"}}');
++       return;
++     }
++     }
++     }
++     }
++     }
++     if (flag === '--apply' || flag === '--dry-run') {
++       args[flag] = true;
++       continue;
++     if (!['--workspace', '--observation-file', '--receipt-file'].includes(flag)) {
++       throw new Error('Unknown argument: ' + flag);
++     const value = process.argv[++i];
++     if (!value || value.startsWith('--') || args[flag] !== undefined) {
++       throw new Error('Missing or duplicate argument: ' + flag);
++     args[flag] = value;
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   if (args['--apply'] && args['--dry-run']) throw new Error('Choose --apply or --dry-run, not both');
++   if (!args['--workspace']) throw new Error('--workspace is required');
++   if (!args['--observation-file']) throw new Error('--observation-file is required');
++   const observation = readObject(args['--observation-file']);
++   if (!results.has(observation.result)) throw new Error('Invalid observation result');
++   if (typeof observation.reason !== 'string' || !observation.reason.trim()) {
++     throw new Error('A grounded observation reason is required');
++   const references = observation.evidence_references;
++   if (!isObject(references) || Object.values(references).some(value => typeof value !== 'string')) {
++     throw new Error('evidence_references must be an object of strings');
++   if ('event_id' in references || 'state_id' in references) {
++     throw new Error('Event/state IDs must come from a completed tick receipt, not observation input');
++   const durableIds = {};
++   if (observation.result === 'changed') {
++     if (!args['--receipt-file']) throw new Error('changed requires --receipt-file');
++     const receipt = readObject(args['--receipt-file']);
++     if (receipt.complete !== true || receipt.pending || !hasId(receipt.event?.id) || !hasId(receipt.state?.id)) {
++       throw new Error('Tick receipt is incomplete or ambiguous; reconcile before recording changed');
++     durableIds.event_id = receipt.event.id;
++     durableIds.state_id = receipt.state.id;
++   } else if (args['--receipt-file']) {
++     throw new Error('--receipt-file applies only to changed observations');
++   const file = path.resolve(args['--workspace'], 'memory/heartbeat-state.json');
++   let prior = {};
++   try {
++     prior = readObject(file);
++   } catch (error) {
++     if (error.code !== 'ENOENT') throw error;
++   if (prior.evidence_references !== undefined && !isObject(prior.evidence_references)) {
++     throw new Error('Existing evidence_references must be an object');
++   const checkedAt = new Date().toISOString();
++   const next = {
++     ...prior,
++     last_soul_check: checkedAt,
++     last_soul_result: observation.result,
++     last_soul_reason: observation.reason.trim(),
++     evidence_references: {...prior.evidence_references, ...references, ...durableIds},
++   };
++   const applied = args['--apply'] === true;
++   if (applied) atomicJson(file, next);
++   console.log(JSON.stringify({ok: true, applied, dry_run: !applied, heartbeat_file: file,
++     last_soul_check: checkedAt, last_soul_result: observation.result,
++     last_soul_reason: next.last_soul_reason, evidence_references: next.evidence_references}));
++ try {
++   main();
++ } catch (error) {
++   console.error(JSON.stringify({ok: false, stage: 'observation', error: error.message}));
++   process.exitCode = 1;
+
+### scripts/heartbeat_observe.test.js  [code]
++ import test from 'node:test';
++ import assert from 'node:assert/strict';
++ import fs from 'node:fs';
++ import os from 'node:os';
++ import path from 'node:path';
++ import {spawnSync} from 'node:child_process';
++ import {fileURLToPath} from 'node:url';
++ const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sis-observe-'));
++ const script = fileURLToPath(new URL('./heartbeat_observe.mjs', import.meta.url));
++ const write = (file, value) => fs.writeFileSync(file, JSON.stringify(value));
++ function fixture(name) {
++   const workspace = path.join(root, name);
++   fs.mkdirSync(path.join(workspace, 'memory'), {recursive: true});
++   const heartbeat = path.join(workspace, 'memory/heartbeat-state.json');
++   const mirror = path.join(workspace, 'memory/now-state.json');
++   const observation = path.join(workspace, 'observation.json');
++   write(heartbeat, {unrelated: {keep: true}, lastSnapshotAt: 17,
++     evidence_references: {retained: 'existing source'}});
++   write(mirror, {updated_at: '2026-10-05T00:00:00Z', stress: 0, state_id: 'historical'});
++   write(observation, {result: 'no_change', reason: 'Grounded fixture observation.',
++     evidence_references: {context: 'fixture source'}});
++   return {workspace, heartbeat, mirror, observation};
++ }
++ }
++ function run(f, ...args) {
++   return spawnSync(process.execPath, [script, '--workspace', f.workspace,
++     '--observation-file', f.observation, ...args], {encoding: 'utf8', cwd: os.tmpdir()});
++ test('preview is default and apply merges only the observation without refreshing the snapshot', () => {
++   const f = fixture('workspace with spaces');
++   const before = fs.readFileSync(f.heartbeat, 'utf8');
++   const before = fs.readFileSync(f.heartbeat, 'utf8');
++   const before = fs.readFileSync(f.heartbeat, 'utf8');
++   const before = fs.readFileSync(f.heartbeat, 'utf8');
++   const mirror = fs.readFileSync(f.mirror, 'utf8');
++   for (const args of [[], ['--dry-run']]) {
++     const r = run(f, ...args);
++     assert.equal(r.status, 0, r.stderr);
++     assert.equal(JSON.parse(r.stdout).applied, false);
++     assert.equal(fs.readFileSync(f.heartbeat, 'utf8'), before);
++     assert.equal(fs.readFileSync(f.heartbeat, 'utf8'), before);
++     assert.equal(fs.readFileSync(f.heartbeat, 'utf8'), before);
++   }
++   }
++   }
++   }
++   const r = run(f, '--apply');
++   assert.equal(r.status, 0, r.stderr);
++   assert.equal(r.status, 0, r.stderr);
++   const result = JSON.parse(r.stdout);
++   const saved = JSON.parse(fs.readFileSync(f.heartbeat, 'utf8'));
++   assert.equal(result.applied, true);
++   assert.deepEqual(saved.unrelated, {keep: true});
++   assert.equal(saved.lastSnapshotAt, 17);
++   assert.equal(saved.last_soul_result, 'no_change');
++   assert.deepEqual(saved.evidence_references, {retained: 'existing source', context: 'fixture source'});
++   assert.equal(saved.last_soul_check, result.last_soul_check);
++   assert.match(saved.last_soul_check, /T.*Z$/);
++   assert.equal(fs.readFileSync(f.mirror, 'utf8'), mirror);
++ });
++ });
++ });
++ });
++ });
++ test('invalid observation and malformed prior state cannot overwrite existing data', () => {
++   const f = fixture('invalid');
++   for (const observation of [
++     {result: 'success', reason: 'fixture', evidence_references: {}},
++     {result: 'no_change', reason: ' ', evidence_references: {}},
++     {result: 'no_change', reason: 'fixture', evidence_references: []},
++     {result: 'no_change', reason: 'fixture', evidence_references: {source: 4}},
++     {result: 'no_change', reason: 'fixture', evidence_references: {state_id: 'invented'}},
++   ]) {
++   ]) {
++     write(f.observation, observation);
++     assert.notEqual(run(f, '--apply').status, 0);
++     assert.notEqual(run(f, '--apply').status, 0);
++   write(f.observation, {result: 'failed', reason: 'Fixture evidence unavailable.', evidence_references: {}});
++   for (const malformed of ['{broken', '[]', '{"evidence_references":[]}']) {
++     fs.writeFileSync(f.heartbeat, malformed);
++     assert.equal(fs.readFileSync(f.heartbeat, 'utf8'), malformed);
++ test('changed requires a completed, non-pending receipt and obtains IDs only from it', () => {
++   const f = fixture('changed');
++   write(f.observation, {result: 'changed', reason: 'A completed fixture tick.', evidence_references: {}});
++   assert.notEqual(run(f, '--apply').status, 0);
++   const receipt = path.join(f.workspace, 'receipt.json');
++   for (const value of [
++     {complete: false, event: {id: 'event'}, state: {id: 'state'}},
++     {complete: true, pending: 'state', event: {id: 'event'}, state: {id: 'state'}},
++     {complete: true, event: {id: 'event'}, state: {id: 2}},
++     write(receipt, value);
++     assert.notEqual(run(f, '--receipt-file', receipt, '--apply').status, 0);
++   write(receipt, {complete: true, pending: null, event: {id: 'fixture-event'}, state: {id: 'fixture-state'}});
++   const r = run(f, '--receipt-file', receipt, '--apply');
++   assert.deepEqual(JSON.parse(r.stdout).evidence_references,
++     {retained: 'existing source', event_id: 'fixture-event', state_id: 'fixture-state'});
++ test('missing heartbeat state can be initialized without creating a snapshot or changing inputs', () => {
++   const workspace = path.join(root, 'new-workspace');
++   const observation = path.join(root, 'new-observation.json');
++   write(observation, {result: 'unavailable', reason: 'Fixture has no evidence yet.', evidence_references: {}});
++   const input = fs.readFileSync(observation, 'utf8');
++   const f = {workspace, observation};
++   const preview = run(f);
++   assert.equal(preview.status, 0, preview.stderr);
++   assert.equal(fs.existsSync(workspace), false);
++   const applied = run(f, '--apply');
++   assert.equal(applied.status, 0, applied.stderr);
++   assert.equal(JSON.parse(fs.readFileSync(path.join(workspace, 'memory/heartbeat-state.json'))).last_soul_result, 'unavailable');
++   assert.equal(fs.existsSync(path.join(workspace, 'memory/now-state.json')), false);
++   assert.equal(fs.readFileSync(observation, 'utf8'), input);
++ test('workspace is explicit and conflicting write modes fail before mutation', () => {
++   const f = fixture('arguments');
++   assert.notEqual(run(f, '--apply', '--dry-run').status, 0);
++   const missingWorkspace = spawnSync(process.execPath, [script, '--observation-file', f.observation, '--apply'], {encoding: 'utf8'});
++   assert.notEqual(missingWorkspace.status, 0);
++   assert.match(missingWorkspace.stderr, /workspace is required/);
++   assert.equal(fs.readFileSync(f.heartbeat, 'utf8'), before);

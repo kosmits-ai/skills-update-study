@@ -1,0 +1,237 @@
+openlittlebear/appium-android-adb  1.3.4 -> 1.5.0
+change_type: instructions+docs+code   changelog: Declared as the base skill the 12306/pdd/hospital skills depend on. Ships requirements-adb.txt (pinned OCR-loop venv deps) so dependents install from $BASE/requirements-adb.txt. Every ocr_bridge.py invocation is documented as $PY $BASE/... so commands work from any working directory; OCR_BRIDGE_DIR no longer doubles as the module location.
+
+### SKILL.md  [instructions]
+- description: Read and control any Android app via Appium or uiautomator2. Primary backend (battle-proven on a real 12306 booking): direct uiautomator2 + RapidOCR via ocr_bridge.py (screenshot→OCR→click/swipe→verify loop). Appium bridge_daemon.py kept as fallback for native apps. For UC WebView (Alipay Nebula) apps like 12306, use the OCR loop for everything.
+- # Appium Android Bridge
+- Generic Android bridge for any app. Reads screens via OCR, executes taps/scrolling/typing. Two backends:
+- # One-time venv (Python 3.10+):
+- python3 -m venv ~/.openclaw/workspace/.venv-12306
+- ~/.openclaw/workspace/.venv-12306/bin/pip install uiautomator2 rapidocr-onnxruntime opencv-python onnxruntime
+- PY=~/.openclaw/workspace/.venv-12306/bin/python
+- 1. `shot()`: `adb shell screencap -p /sdcard/s.png` → `adb pull` → RapidOCR → `[(text, l, t, r, b)]`
+-   every screenshot; `ocr_bridge.py clean` purges immediately.
++ description: Base skill for Android automation over USB ADB. Ships ocr_bridge.py — the screenshot→RapidOCR→click/swipe→re-verify loop that 12306-android-adb, pdd-android-adb and hospital-android-adb all depend on. Primary backend is direct uiautomator2 + RapidOCR (battle-proven on real 12306 and hospital bookings); Appium via bridge_daemon.py is kept only as a fallback for fully native apps and is dead on Realme-class devices. ClawHub has no dependency resolver — install this alongside any skill that names it as a requirement.
++ # Android ADB Bridge (base skill)
++ Generic Android bridge for any app. Reads screens via OCR, executes taps/scrolling/typing.
++ ## 📦 This is the base skill
++ **Other skills depend on this one.** It ships the shared parts:
++ | File | Role |
++ |------|------|
++ | `ocr_bridge.py` | The OCR loop — screenshot → RapidOCR → click/swipe → re-verify. **This is what dependents use.** |
++ | `requirements-adb.txt` | Pinned deps for the OCR-loop venv. Dependents install it as `$BASE/requirements-adb.txt`. |
++ | `bridge_daemon.py` | Appium backend (fallback only; see the failure mode below) |
++ | `start_bridge.sh` | Launches the Appium daemon (fallback only) |
++ Dependents: **`12306-android-adb`**, **`pdd-android-adb`**, **`hospital-android-adb`**. Each documents
++ `$PY $BASE/ocr_bridge.py <cmd>` where `BASE` is this skill's directory, so it works from any working
++ directory.
++ **ClawHub has no dependency resolver** — installing a dependent skill does *not* install this one.
++ Install it explicitly:
++ ```bash
++ ```bash
++ clawhub install appium-android-adb
++ ```
++ ```
++ `ocr_bridge.py` imports **no Appium** (only `uiautomator2` + `rapidocr-onnxruntime`), so dependents
++ pay nothing for the Appium backend they never use. Note the name under-sells the skill: the OCR loop
++ is the reason it exists and the reason others depend on it.
++ Two backends:
++ # One-time venv (Python 3.10+), shared with the three dependent skills.
++ # The pins live in requirements-adb.txt, in this skill's directory; adjust BASE
++ # if you installed the skill somewhere other than the default.
++ # Pinned deliberately — an unpinned `pip install` resolves "latest" at install
++ # time, so the code that actually runs is whatever PyPI happened to serve that
++ # day and can change under you (ClawHub review [T08]).
++ BASE=~/.openclaw/workspace/skills/appium-android-adb   # this skill
++ python3 -m venv ~/.openclaw/workspace/.venv-adb
++ ~/.openclaw/workspace/.venv-adb/bin/pip install -r $BASE/requirements-adb.txt
++ PY=~/.openclaw/workspace/.venv-adb/bin/python
++ The bare `$PY ocr_bridge.py …` form above works here because you're in this skill's directory.
++ **Dependent skills invoke it as `$PY $BASE/ocr_bridge.py …`** instead — `$BASE` being this skill's
++ path — so their commands run from any working directory. Use `$BASE` in anything you write that has
++ to work outside this directory.
++ 1. `shot()`: `adb exec-out screencap -p` (streamed over USB — **nothing is written to `/sdcard`**) → RapidOCR → `[(text, l, t, r, b)]`. The `screencap`+`pull` pair survives only as a fallback for old platform-tools, and deletes its device-side file.
++    > Historical note: this step used to leave `s.png` in `/sdcard` forever, outside the private 0700
++    > screenshot dir the Safety section promises. Fixed in 1.3.5 — see ClawHub review finding `[T09]`.
++ **Appium binds to loopback only.** Both launch paths pass `--address 127.0.0.1`,
++ because Appium exposes full control of the attached device — without it the
++ server binds broadly and anything else on the LAN could drive the phone. If you
++ start Appium yourself, do the same:
++ appium --address 127.0.0.1
++   every screenshot; `ocr_bridge.py clean` purges immediately. Note that
++   `clean` only ages out that host-side dir — it cannot reach the device, so
++   **nothing is written to `/sdcard` in the first place**: captures stream over
++   USB via `adb exec-out`, and the older `screencap` + `pull` fallback deletes
++   its own device file.
++ - **Appium exposure**: the server is bound to `127.0.0.1` on every launch path.
++   It offers unrestricted control of the connected device, so never start it on
++   `0.0.0.0`, and stop it when you're done.
+
+### bridge_daemon.py  [code]
+-         ["appium", "--log", str(IPC_DIR / "appium.log")],
+-     or OCR-based position detection."""
+-     path = str(IPC_DIR / "screen.png")
+-     subprocess.run(["adb", "shell", "screencap", "-p", "/sdcard/scr.png"],
+-                    capture_output=True, timeout=10)
+-                    capture_output=True, timeout=10)
+-                    capture_output=True, timeout=10)
+-                    capture_output=True, timeout=10)
+-     subprocess.run(["adb", "pull", "/sdcard/scr.png", path],
+-     return {"ok": True, "path": path}
+-     # Take screenshot into the private IPC dir (may contain sensitive data)
+-     subprocess.run(["adb", "shell", "screencap", "-p", "/sdcard/ocr_scr.png"],
+-     subprocess.run(["adb", "pull", "/sdcard/ocr_scr.png", shot_path],
++ APPIUM_BIND = "127.0.0.1"      # loopback only — never expose device control to the LAN
++     try:
++     try:
++ def _grab_screenshot(dest: Path) -> bool:
++     """Capture the screen into `dest`. True on success.
++     Preferred path is `adb exec-out`, which streams the PNG over USB without
++     writing anything to the device's shared storage. The two-step
++     `screencap` + `pull` fallback is kept for older platform-tools but now
++     deletes its device-side file — previously every capture left a screenshot
++     in /sdcard forever, outside the private-directory retention this skill
++     documents (ClawHub review finding [T09]).
++     """
++         with open(dest, "wb") as fh:
++             subprocess.run(["adb", "exec-out", "screencap", "-p"],
++                            stdout=fh, timeout=10, check=False)
++         if dest.stat().st_size > 0:
++             return True
++     except (OSError, subprocess.SubprocessError):
++         pass
++     device_path = "/sdcard/bridge_scr.png"
++         subprocess.run(["adb", "shell", "screencap", "-p", device_path],
++                        capture_output=True, timeout=10)
++                        capture_output=True, timeout=10)
++                        capture_output=True, timeout=10)
++         subprocess.run(["adb", "pull", device_path, str(dest)],
++     finally:
++         subprocess.run(["adb", "shell", "rm", "-f", device_path],
++     return dest.exists() and dest.stat().st_size > 0
++         #
++         # --address 127.0.0.1: Appium drives a device that the client already
++         # owns, so there is no reason for it to listen beyond loopback. Without
++         # this it binds broadly and exposes a full Android-control API to the
++         # local network — exactly what the ClawHub review flagged as [T05].
++         ["appium", "--address", APPIUM_BIND, "--log", str(IPC_DIR / "appium.log")],
++     or OCR-based position detection. Nothing is left on the device."""
++     path = IPC_DIR / "screen.png"
++     if not _grab_screenshot(path):
++         return {"ok": False,
++         return {"ok": False,
++                 "error": "screenshot returned no data — device asleep, or the "
++                 "error": "screenshot returned no data — device asleep, or the "
++                          "screen is FLAG_SECURE (locked keyguard / secure keyboard)"}
++                          "screen is FLAG_SECURE (locked keyguard / secure keyboard)"}
++     return {"ok": True, "path": str(path)}
++     # Screenshot into the private IPC dir (may contain sensitive data).
++     # _grab_screenshot streams via `adb exec-out`, so nothing lands on the device.
++     if not _grab_screenshot(IPC_DIR / "ocr_scr.png"):
++                 # `driver` used to be an undefined name here — this path raised
++                 # NameError the moment OCR actually matched (ClawHub [SDI-4]).
++                 driver = _get_driver()
+
+### ocr_bridge.py  [code]
+-     ocr_bridge.py shot [tag]               # screenshot to /tmp/<tag>.png
+-     on every call (use `clean` to purge immediately). Returns list of
+-     (text, l, t, r, b).
+-     subprocess.run(["adb", "shell", "screencap", "-p", "/sdcard/s.png"],
+-                    timeout=15)
+-     subprocess.run(["adb", "pull", "/sdcard/s.png", pull_path], timeout=15)
++     ocr_bridge.py shot [tag]               # screenshot to ~/.cache/ocr-bridge/<tag>.png
++ DEVICE_SHOT = "/sdcard/s.png"
++ def _grab_screenshot(dest):
++     """Capture the screen into `dest`. Returns the file size in bytes.
++     Preferred path is `adb exec-out`, which streams the PNG over USB without
++     ever writing to the device's shared storage — so no screenshot debris
++     (and no PII we can't reach with `clean`) accumulates in /sdcard. The old
++     two-step `screencap` + `pull` survives as a fallback for platform-tools
++     too old for `exec-out`, and removes its device-side file afterwards.
++     """
++     """
++     try:
++     try:
++         with open(dest, "wb") as fh:
++             subprocess.run(["adb", "exec-out", "screencap", "-p"],
++                            stdout=fh, timeout=15, check=False)
++         if os.path.getsize(dest) > 0:
++             return os.path.getsize(dest)
++     except (OSError, subprocess.SubprocessError):
++         pass
++     subprocess.run(["adb", "shell", "screencap", "-p", DEVICE_SHOT], timeout=15)
++     subprocess.run(["adb", "pull", DEVICE_SHOT, dest], timeout=15)
++     subprocess.run(["adb", "shell", "rm", "-f", DEVICE_SHOT], timeout=15)
++     return os.path.getsize(dest) if os.path.exists(dest) else 0
++ def _is_blank(path):
++     """True if the capture is uniformly black — i.e. the screen is off.
++     A dozing device still returns a perfectly valid PNG, so without this check
++     callers get an empty OCR list and no clue why.
++         import cv2
++         img = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
++         return img is not None and img.size > 0 and int(img.max()) == 0
++     except Exception:
++         return False        # a diagnostic must never break the capture path
++     on every call (use `clean` to purge immediately). Nothing is written to
++     the device. Returns list of (text, l, t, r, b).
++     Raises RuntimeError when the capture comes back empty, which almost always
++     means FLAG_SECURE — a focused password/verification field raising the IME's
++     secure keyboard, or a protected page. Blur the field (tap an inert spot) or
++     navigate away, then retry.
++     if _grab_screenshot(pull_path) == 0:
++         raise RuntimeError(
++         raise RuntimeError(
++             f"empty screenshot ({pull_path}) — the capture returned no data. "
++             "FLAG_SECURE is the usual cause, and there are two common ones: "
++             "(1) the device is LOCKED — a pattern/PIN/face keyguard is "
++             "FLAG_SECURE, so ask the user to unlock the phone; or (2) a focused "
++             "password field raised the IME's secure keyboard — blur it by "
++             "tapping an inert spot, then shoot again. "
++             "`ocr_bridge.py a11y` still reads these screens and will tell you "
++             "which one it is."
++         )
++         )
++     if _is_blank(pull_path):
++             "screenshot is uniformly black — the device is asleep (screen off). "
++             "Wake it first: `adb shell input keyevent KEYCODE_WAKEUP`, and keep it "
++             "awake for the session with `adb shell svc power stayon true`."
+
+### requirements-adb.txt  [docs]
++ # OCR-loop venv for this skill, and for the three that depend on it.
++ #
++ #
++ #
++ #
++ # Install (one-time, shared):
++ #   python3 -m venv ~/.openclaw/workspace/.venv-adb
++ #   ~/.openclaw/workspace/.venv-adb/bin/pip install -r requirements-adb.txt
++ # From a dependent skill, the same file is $BASE/requirements-adb.txt — which is
++ # why you install this skill first: it carries the pins.
++ # Pinned deliberately. An unpinned `pip install` resolves "latest" at install
++ # time, so the code that actually runs is whatever PyPI happened to serve that
++ # day and can change under you (ClawHub review [T08]). These are the versions
++ # the OCR loop was verified against.
++ # Deliberately small — uiautomator2 + RapidOCR only. ocr_bridge.py drives the
++ # phone with no Appium and no funasr, and on a Raspberry Pi this venv shares the
++ # machine with other workloads.
++ uiautomator2==3.7.0
++ rapidocr-onnxruntime==1.2.3
++ opencv-python==5.0.0.93
++ onnxruntime==1.29.0
+
+### start_bridge.sh  [code]
+- # 1. Clean up all stale state
+- pkill -f bridge_daemon 2>/dev/null || true
+-     nohup appium --log "$HOME/.cache/appium-bridge/appium.log" > /dev/null 2>&1 &
++ # 1. Clean up all stale state.
++ # Kill only the daemon itself. A bare `pkill -f bridge_daemon` also matches any
++ # unrelated process whose command line merely contains that string, so match the
++ # script plus its --daemon flag, and never our own PID.
++ for pid in $(pgrep -f "bridge_daemon\.py --daemon" 2>/dev/null); do
++     [ "$pid" = "$$" ] && continue
++     kill "$pid" 2>/dev/null || true
++ done
++     # --address 127.0.0.1: loopback only. Appium exposes full control of the
++     # connected device; without this it binds broadly and any host on the LAN
++     # could drive the phone.
++     nohup appium --address 127.0.0.1 --log "$HOME/.cache/appium-bridge/appium.log" > /dev/null 2>&1 &

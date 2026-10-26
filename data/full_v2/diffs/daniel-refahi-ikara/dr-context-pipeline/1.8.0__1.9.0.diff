@@ -1,0 +1,131 @@
+daniel-refahi-ikara/dr-context-pipeline  1.8.0 -> 1.9.0
+change_type: instructions+docs   changelog: Add runtime modes: normal, debug, and audit. Default normal mode keeps everyday operation lightweight while debug and audit preserve full evidence output.
+
+### SKILL.md  [instructions]
+- ## Runtime evidence contract (non-optional)
+- Every single task must follow the Runtime Evidence Checklist in `references/RUNTIME_CHECKLIST.md`:
+- - Emit the **Retrieval Bundle JSON** that conforms to `references/schemas/retrieval_bundle.schema.json`.
+- - Emit the **Context Pack JSON** that conforms to `references/schemas/context_pack.schema.json` (or explicitly state the lint failure and fall back to raw snippets).
+- - List which snippet IDs are being passed forward.
+- - Only then provide the user-facing reasoning/result.
+- - If any step fails, reply `NOT EXECUTED: <reason>` and stop.
+- Casual prompts (“go for it”, “review it”, etc.) do **not** suspend this contract. If the user wants a lighter interaction they can explicitly waive it.
+- 3) Retrieve top relevant snippets from your memory store; emit a **Retrieval Bundle JSON** (see schema).
+- 4) Compress Retrieval Bundle → **Context Pack JSON** using `references/compressor_prompt.txt`.
++ ## Runtime modes and evidence contract
++ Every single task must follow the Runtime Evidence Checklist in `references/RUNTIME_CHECKLIST.md`.
++ The pipeline supports three runtime modes:
++ - `normal` — compact day-to-day operation
++ - `debug` — full pipeline artifacts for diagnosis
++ - `audit` — full artifacts plus execution receipts for high-trust review
++ Default to `normal` unless the user explicitly asks for `debug`, `audit`, tracing, receipts, or a full evidence dump.
++ Mode rules:
++ - In **all** modes, the agent must actually perform the retrieval/compression/lint steps before claiming success.
++ - In **all** modes, if a required step cannot be completed, reply `NOT EXECUTED: <reason>` and stop.
++ - In **normal** mode, do not dump full Retrieval Bundle or Context Pack JSON into the transcript unless the user explicitly asks for it.
++ - In **debug** mode, emit the Retrieval Bundle JSON, Context Pack JSON, dropped-snippet reasons, and snippet pass-through summary.
++ - In **audit** mode, emit everything from debug mode and preserve step-by-step execution evidence suitable for later review.
++ Required output by mode:
++ - **normal**:
++   - compact answer
++   - task type
++   - snippet IDs passed forward
++   - whether compression succeeded or fallback was used
++ - **debug**:
++   - Retrieval Bundle JSON
++   - Context Pack JSON
++   - snippet summary
++   - dropped reasons
++   - user-facing reasoning/result
++   - user-facing reasoning/result
++ - **audit**:
++   - all debug artifacts
++   - execution receipts / proof of each completed step
++ Casual prompts do **not** waive the requirement to do the work. They only keep the pipeline in `normal` mode unless the user explicitly asks for more evidence.
++ 3) Retrieve top relevant snippets from your memory store; build a **Retrieval Bundle** internally (see schema).
++ 4) Compress Retrieval Bundle → **Context Pack** using `references/compressor_prompt.txt`.
++ 7) Emit evidence according to the active runtime mode:
++    - `normal`: compact evidence summary only
++    - `debug`: full Retrieval Bundle + Context Pack + snippet summary
++    - `audit`: debug artifacts plus execution receipts
+
+### references/RUNTIME_CHECKLIST.md  [docs]
+- 1. **Retrieval Bundle JSON**
+-    - Load `memory/always_on.md`.
+-    - Route + retrieve according to `context_pipeline/router.yml` caps.
+-    - Emit the Retrieval Bundle object (matching `references/schemas/retrieval_bundle.schema.json`) in the transcript.
+-    - Include `snippet_id`, `path`, `start_line`, `end_line`, `citation`, and `text` for every snippet.
+-    - List any `dropped` entries with reasons.
+- 2. **Context Pack JSON**
+-    - Compress using `context_pipeline/compressor_prompt.txt`.
+-    - Emit the Context Pack object (matching `references/schemas/context_pack.schema.json`).
+-    - `sources` arrays **must** be snippet IDs (e.g., `["S1","S3"]`).
+-    - If lint fails, explicitly state `CONTEXT PACK LINT FAILED` and paste the lint error.
+- 3. **Snippet Summary + Pass-through**
+-    - Provide a short bullet list of which snippets (by ID) you are passing into the reasoning step and why.
+-    - Note any snippets intentionally excluded via `exclude_as_irrelevant`.
+- 4. **Reasoning Output**
+-    - Only after the artifacts above, proceed with the user-facing answer.
+-    - Reference snippet IDs in-line (e.g., `Source: S2`).
+- 5. **Failure Contract**
+-    - If any step above cannot be completed, reply exactly `NOT EXECUTED: <reason>` and stop. Do **not** invent bundles or packs.
+- This checklist is non-optional. If the user issues a casual instruction like “go for it,” you still must emit the Retrieval Bundle + Context Pack or return `NOT EXECUTED`.
++ ## Runtime modes
++ The pipeline supports three modes:
++ - `normal` — compact operation for everyday use
++ - `debug` — full pipeline artifacts for diagnosis
++ - `audit` — full artifacts plus execution receipts for high-trust review
++ Default to `normal` unless the user explicitly asks for debugging, tracing, receipts, or a full evidence dump.
++ ## Rules that apply in all modes
++ 1. Load `memory/always_on.md`.
++ 2. Route + retrieve according to `context_pipeline/router.yml` caps.
++ 3. Build a Retrieval Bundle object internally.
++ 4. Compress to a Context Pack internally.
++ 5. Lint the Context Pack.
++ 6. If lint fails, use the documented fallback behavior.
++ 7. If any required step cannot be completed, reply exactly `NOT EXECUTED: <reason>` and stop.
++ 8. Do **not** claim a bundle, pack, or step was produced unless it actually was.
++ ## Required transcript output by mode
++ ### `normal`
++ Emit only:
++ - task type
++ - snippet IDs passed into reasoning
++ - whether compression succeeded or raw-snippet fallback was used
++ - the user-facing reasoning/output
++ - the user-facing reasoning/output
++ Do **not** emit the full Retrieval Bundle JSON or full Context Pack JSON unless the user explicitly asks for them.
++ ### `debug`
++ Emit:
++ - full Retrieval Bundle JSON
++ - full Context Pack JSON
++ - dropped entries with reasons
++ - snippet summary + pass-through
++ If lint fails, explicitly state `CONTEXT PACK LINT FAILED` and include the lint error before falling back.
++ ### `audit`
++ Emit everything from `debug`, plus:
++ - step-by-step execution evidence / receipts suitable for later review
++ - any command/tool proof needed to support claims of completion
++ ## Failure contract
++ If any required step above cannot be completed, reply exactly `NOT EXECUTED: <reason>` and stop. Do **not** invent bundles, packs, or receipts.
+
+### references/configure_prompt.md  [docs]
+- If you need a longer prompt that bakes in the evidence contract, use this:
+- 3. Retrieve memory snippets and build a Retrieval Bundle JSON that matches `context_pipeline/schemas/retrieval_bundle.schema.json`. Include snippet IDs (S1..Sn), citations, and dropped snippets.
+- 4. Compress to a Context Pack JSON using `context_pipeline/compressor_prompt.txt` and `context_pipeline/schemas/context_pack.schema.json`. `sources` arrays must list snippet IDs only.
+- 6. Emit (in this order) → Retrieval Bundle JSON, Context Pack JSON (or lint failure), snippet summary, then the user-facing reasoning.
+- 7. If any step cannot be completed exactly, reply `NOT EXECUTED: <reason>`.
+- **Never** claim you performed a step without pasting the artifact. Casual prompts do not waive this requirement.
++ If you need a longer prompt that bakes in the runtime modes, use this:
++ The pipeline supports three runtime modes:
++ - `normal` — compact day-to-day behavior
++ - `debug` — full Retrieval Bundle and Context Pack output
++ - `audit` — full artifacts plus execution receipts
++ Default to `normal` unless I explicitly ask for debugging, tracing, receipts, or a full evidence dump.
++ 3. Retrieve memory snippets and build a Retrieval Bundle object that matches `context_pipeline/schemas/retrieval_bundle.schema.json`.
++ 4. Compress to a Context Pack object using `context_pipeline/compressor_prompt.txt` and `context_pipeline/schemas/context_pack.schema.json`. `sources` arrays must list snippet IDs only.
++ 6. Emit transcript evidence according to mode:
++    - `normal`: task type, snippet IDs, fallback/compression status, then reasoning
++    - `debug`: full Retrieval Bundle JSON, full Context Pack JSON, snippet summary, then reasoning
++    - `audit`: all debug artifacts plus execution receipts
++ 7. If any required step cannot be completed exactly, reply `NOT EXECUTED: <reason>`.
++ **Never** claim you performed a step unless it actually ran.

@@ -1,0 +1,253 @@
+phuc-nt/facebook-group-monitor  1.1.0 -> 1.3.0
+change_type: instructions+code   changelog: v1.3.0: New feed strip workflow — dynamic vision prompt from JSON authors, anti-duplicate guard, updated output schema (feed_screenshot top-level). Resolves vision mismatch issue where model described wrong posts.
+
+### SKILL.md  [instructions]
+-   seen posts, reports only new ones. Supports screenshot capture per post for
+-   LLM vision analysis. Use when: monitoring Facebook groups, scraping FB posts,
+-   checking new group activity, Facebook automation, capturing post screenshots
+-   for vision AI, tracking marketplace posts, book sale monitoring.
+- **captures screenshots** of each post with images → agent uses vision model to extract information.
+- {"success": true, "action": "status", "message": "Session active — đã đăng nhập Facebook."}
+- ### 2. Scrape new posts (with screenshots)
+- - `--shots-dir <PATH>`: ⚠️ **RECOMMENDED** — save screenshots in agent workspace so image tool can read them
+- - `--no-shots`: Skip screenshots (faster, text-only)
+- **Output JSON (with screenshots):**
+-   "screenshots_taken": 2,
+-       "text": "Post content (may be truncated)...",
+-       "images": 3,
+-       "screenshot_path": "/path/to/temp-screenshots/abc123.jpg"
+-   "message": "Tìm thấy 3 bài mới / 6 bài tổng cộng. Đã chụp 2 ảnh."
+- > **Note**: `screenshot_path` only present for posts with images (`images > 0`).
+- > Posts without images have text content only — read directly from `text` field.
+- ### Step 2: Process each new post
+- **Posts WITH `screenshot_path`** (has attached images):
+- - Read the screenshot file using vision
+- - Use LLM vision to extract relevant information from the image
+- - Combine with `text` field for complete context
+- - Prioritize image content (usually more complete than truncated text)
+- **Posts WITHOUT `screenshot_path`** (text-only):
+- - Read directly from `text` field
+- - Summarize available information
+- 📝 [Key details extracted]
+- - **Session expired**: If error "Chưa đăng nhập" → run `login` from terminal
+- - **"See more"**: Text is truncated — screenshots usually have more complete content
+- - **Screenshot quality**: JPEG 82% — sufficient for LLM vision to read text and recognize images
++   seen posts, reports only new ones. Captures a single stitched "feed strip"
++   screenshot (viewport scroll + Pillow stitch) for efficient LLM vision
++   analysis — one image covers the full feed. Use when: monitoring Facebook
++   groups, scraping FB posts, checking new group activity, Facebook automation,
++   marketplace monitoring, book sale tracking, competitor group monitoring.
++ **captures a stitched "feed strip"** (scrolls 3× viewport, crops to feed column,
++ stitches into 1 JPEG) → agent calls vision model once with a custom prompt to
++ extract and interpret all new posts in a single LLM call.
++ {"success": true, "action": "status", "message": "Session active — logged in to Facebook."}
++ ### 2. Scrape new posts (with feed strip screenshot)
++ - `--shots-dir <PATH>`: ⚠️ **REQUIRED for vision** — save screenshots in agent workspace so image tool can read them
++ - `--no-shots`: Skip screenshots (faster, text-only mode)
++ **Output JSON (with feed strip screenshot):**
++   "feed_screenshot": "/path/to/temp-screenshots/feed_abc12345_1741800000.jpg",
++       "text": "Post content (may be truncated by Facebook's 'See more')...",
++       "images": 3
++   "message": "Found 3 new posts / 6 total."
++ > **Note**: `feed_screenshot` is a single stitched JPEG covering the full feed (3 viewport scrolls).
++ > Individual posts no longer have a `screenshot_path` — use `feed_screenshot` (top-level) instead.
++ ### Step 2: Analyze feed screenshot + combine with text
++ **If `feed_screenshot` is present** (1 stitched image covering the full feed):
++ - Compose a dynamic prompt using the author list from the JSON, so vision focuses on the correct new posts (the feed strip also contains already-seen posts)
++ - Call image tool with **both** `image` and `prompt` parameters:
++   ```
++   ```
++   image tool:
++     image: <feed_screenshot path>
++     prompt: "Facebook group feed. Find and analyze posts by these people (new posts to process):
++     - [Author 1]: "[first few words of text from JSON]" — N images
++     - [Author 2]: "[first few words of text from JSON]"
++     ...
++     For EACH post, do 2 things:
++     1. EXTRACT: book/product name, author/publisher (read from cover), price (including handwritten prices), condition (new/used/marked/yellowed).
++     2. INTERPRET: is the deal worth it (price vs market if known), is the item rare/valuable, actual condition assessment from photos."
++ - ⚠️ **NEVER call image tool with empty `{}`** — default prompt just describes the image generically
++ - ⚠️ **Feed strip includes old posts** — always include author + text snippet so vision targets the right posts
++ - After getting vision result: match by author, add `url` from JSON
++ - Prioritize image content over truncated `text` field ("see more" posts)
++ **If `feed_screenshot` is absent** (screenshot failed):
++ - Read directly from `text` field of each post
++ - Summarize available information, note "no screenshot available"
++ 💰 Price: [price or "unknown"]
++ 📝 Condition: [description]
++ 💡 Note: [deal assessment or insight, if any]
++ ### ⚠️ Anti-duplicate rule
++ - **Send Telegram only ONCE** per run, regardless of whether vision succeeded or failed
++ - If `message` tool returns an error → report once and stop, do NOT retry
++ - If vision fails → fallback to text, send once with note "⚠️ Vision unavailable, text only"
++ - **Session expired**: If error "Not logged in" → run `login` from terminal
++ - **"See more"**: Text is truncated — feed strip screenshot usually has complete content
++ - **Feed strip**: Scrolls 3× viewport height, crops to feed column, stitches 1 JPEG — reduces vision calls from N to 1
++ - **Screenshot quality**: JPEG 82% — sufficient for LLM vision to read text and identify product images
++ - **Vision model**: Use a vision-capable model (e.g. Gemini Flash) for the image tool call
+
+### scripts/fb-group-monitor.py  [code]
+- # SCREENSHOTS_DIR can be overridden by --shots-dir argument.
+- # Default: saves in script dir. Agent SHOULD pass workspace path via --shots-dir
+- # so OpenClaw image tool can access them (only allowed to read within workspace).
+- MAX_SCREENSHOTS = 100       # Max screenshots to keep
+- SCREENSHOT_TTL_HOURS = 48   # Delete screenshots older than N hours
+- # JS to extract data from a single post element
+-     """Remove screenshots older than TTL or exceeding MAX_SCREENSHOTS."""
+-         locale="en-US",
+-         timezone_id="America/New_York",
+-     print("Opening browser for Facebook login...")
+-     print("After logging in, press Enter in this terminal.")
+-         input("\n✅ Login complete? Press Enter to save session...")
+-     result_json(True, "login", message="Facebook session saved.")
+-             result_json(True, "status", message="Session active — logged into Facebook.")
+-             result_json(False, "status", error="Not logged in. Run: fb-group-monitor.py login")
+-                 message=f"Removed {removed} old screenshots. {remaining} remaining.")
+-                             error="Not logged into Facebook. Run: fb-group-monitor.py login")
+-                 result_json(False, "scrape", error=f"Facebook verification required: {title}")
+-             # Scroll to load more posts
+-             # Get element handles for each post in the feed
+-                 # ── Screenshot post element ────────────────────────────────
+-                 if take_screenshots and data.get("images", 0) > 0:
+-                     try:
+-                         pid = post_hash(data["text"], data["author"])
+-                         shot_path = shots_dir / f"{pid}.jpg"
+-                         # Scroll element into viewport
+-                         await child.scroll_into_view_if_needed()
+-                         await page.wait_for_timeout(600)
+-                         await child.screenshot(
+-                             path=str(shot_path),
+-                             type="jpeg",
+-                             quality=82,
+-                         )
+-                         data["screenshot_path"] = str(shot_path)
+-                     except Exception as e:
+-                         data["screenshot_error"] = str(e)
+-                             message="No posts found. Selectors may need updating.")
+-             # Filter new posts
+-             shots_count = sum(1 for p in new_posts if p.get("screenshot_path"))
+-                 screenshots_taken=shots_count,
+-                     f"Found {len(new_posts)} new posts / {len(posts_data)} total. "
+-                     f"Captured {shots_count} screenshots."
+-         description="Facebook Group Monitor — scrape posts + screenshots from FB groups",
+-     sub.add_parser("login", help="Login to Facebook (opens browser)")
+-     sub.add_parser("status", help="Check login session")
+-     clean_p = sub.add_parser("clean-shots", help="Remove old screenshots")
+-         help="Screenshots directory (default: script_dir/screenshots)"
+-     scrape_p = sub.add_parser("scrape", help="Scrape new posts from a group")
+-     scrape_p.add_argument("group_url", help="Facebook group URL or ID")
+-     scrape_p.add_argument("--limit", type=int, default=10, help="Max posts (default: 10)")
+-                           help="Skip screenshots (faster, text-only mode)")
+-         help="Screenshot output directory — SHOULD point to agent workspace so image tool can read them."
++ import io
++ try:
++     from PIL import Image as PILImage
++     PILLOW_AVAILABLE = True
++ except ImportError:
++     PILLOW_AVAILABLE = False
++ # SCREENSHOTS_DIR được override bởi --shots-dir argument.
++ # Mặc định lưu trong script dir (fallback), nhưng agent NÊN truyền workspace path
++ # để OpenClaw image tool có thể đọc được (chỉ cho phép đọc trong workspace).
++ MAX_SCREENSHOTS = 100       # Tối đa giữ N ảnh
++ SCREENSHOT_TTL_HOURS = 48   # Xóa ảnh cũ hơn N giờ
++ FEED_SCROLL_SHOTS = 3       # Số viewport screenshots để stitch thành feed strip
++ # JS để extract data từ 1 post element
++     """Xóa screenshots cũ hơn TTL hoặc vượt MAX_SCREENSHOTS."""
++     try:
++         locale="vi-VN",
++         timezone_id="Asia/Ho_Chi_Minh",
++     print("Mở browser để đăng nhập Facebook...")
++     print("Sau khi đăng nhập xong, nhấn Enter ở terminal này.")
++         input("\n✅ Đăng nhập xong? Nhấn Enter để lưu session...")
++     result_json(True, "login", message="Đã lưu session Facebook.")
++         else:
++             )
++             result_json(True, "status", message="Session active — đã đăng nhập Facebook.")
++             result_json(False, "status", error="Chưa đăng nhập. Chạy: fb-group-monitor.py login")
++                 message=f"Đã xóa {removed} ảnh cũ. Còn lại {remaining} ảnh.")
++ async def capture_feed_strip(page, shots_dir, group_id, n_shots=FEED_SCROLL_SHOTS):
++     """Capture N viewport screenshots cropped to the feed column, stitch into 1 image.
++     Scroll back to top first, then capture one frame per viewport-height scroll.
++     Frames are stitched vertically into a single JPEG for LLM vision analysis.
++     Returns the file path string on success, or None on failure.
++     """
++     if not PILLOW_AVAILABLE:
++         return None
++         return None
++         # Get feed column x/width for cropping (removes navbar & right sidebar noise)
++         # Also get navbar height to skip it on first frame (navbar is sticky/fixed)
++         feed_box = await page.evaluate("""() => {
++             const feed = document.querySelector('[role="feed"]');
++             const nav = document.querySelector('[role="banner"], header, [data-pagelet="NavBar"]');
++             if (!feed) return null;
++             const feedRect = feed.getBoundingClientRect();
++             const navH = nav ? Math.round(nav.getBoundingClientRect().height) : 56;
++             return {
++                 x: Math.max(0, Math.round(feedRect.left)),
++                 width: Math.round(feedRect.width),
++                 navH: navH
++             };
++         }""")
++         vp = page.viewport_size or {"width": 1280, "height": 900}
++         vp_h = vp["height"]
++         if feed_box and feed_box["width"] > 100:
++             clip_x = feed_box["x"]
++             clip_w = min(feed_box["width"], vp["width"] - feed_box["x"])
++             nav_h = feed_box.get("navH", 56)
++             clip_x, clip_w, nav_h = 0, vp["width"], 56
++         # Scroll to top so screenshots start from newest posts
++         await page.evaluate("window.scrollTo(0, 0)")
++         await page.wait_for_timeout(800)
++         frames = []
++         for i in range(n_shots):
++             # Skip navbar on every frame (it's fixed/sticky, always at top of viewport)
++             clip_y = nav_h
++             clip_h = vp_h - nav_h
++             buf = await page.screenshot(
++                 type="jpeg",
++                 quality=85,
++                 clip={"x": clip_x, "y": clip_y, "width": clip_w, "height": clip_h},
++             frames.append(buf)
++             if i < n_shots - 1:
++                 await page.evaluate(f"window.scrollBy(0, {vp_h})")
++                 await page.wait_for_timeout(random.randint(1000, 1800))
++         # Stitch frames vertically
++         images = [PILImage.open(io.BytesIO(b)) for b in frames]
++         total_h = sum(img.height for img in images)
++         max_w = max(img.width for img in images)
++         stitched = PILImage.new("RGB", (max_w, total_h), (255, 255, 255))
++         y = 0
++         for img in images:
++             stitched.paste(img, (0, y))
++             y += img.height
++         out_buf = io.BytesIO()
++         stitched.save(out_buf, format="JPEG", quality=82, optimize=True)
++         out_path = shots_dir / f"feed_{group_id}_{int(time.time())}.jpg"
++         out_path.write_bytes(out_buf.getvalue())
++         return str(out_path)
++     except Exception:
++                             error="Chưa đăng nhập Facebook. Chạy: fb-group-monitor.py login")
++                 result_json(False, "scrape", error=f"Facebook yêu cầu xác minh: {title}")
++             # Scroll để load thêm posts
++             # Lấy element handles của từng post trong feed
++             # ── Feed strip screenshot (1 stitched image covers full feed) ──
++             feed_screenshot = None
++             if take_screenshots:
++                 group_id = hashlib.md5(group_url.encode()).hexdigest()[:8]
++                 feed_screenshot = await capture_feed_strip(page, shots_dir, group_id)
++                             message="Không tìm thấy bài post nào. Có thể cần kiểm tra selectors.")
++             # Lọc bài mới
++                 feed_screenshot=feed_screenshot,
++                     f"Tìm thấy {len(new_posts)} bài mới / {len(posts_data)} bài tổng cộng. "
++                     + (f"Feed screenshot: {feed_screenshot}" if feed_screenshot else "Không có ảnh.")
++         description="Facebook Group Monitor — scrape posts + screenshots từ FB groups",
++     sub.add_parser("login", help="Đăng nhập Facebook (mở browser)")
++     sub.add_parser("status", help="Kiểm tra session")
++     clean_p = sub.add_parser("clean-shots", help="Xóa screenshots cũ")
++         help="Thư mục chứa screenshots (default: script_dir/screenshots)"
++     scrape_p = sub.add_parser("scrape", help="Scrape bài mới từ group")
++     scrape_p.add_argument("group_url", help="URL hoặc ID của Facebook group")
++     scrape_p.add_argument("--limit", type=int, default=10, help="Số bài tối đa (default: 10)")
++                           help="Không chụp ảnh (nhanh hơn, dùng khi chỉ cần text)")
++         help="Thư mục lưu screenshots — NÊN trỏ vào workspace để image tool đọc được. "
++              "VD: ~/.openclaw/workspace-daily-digest/temp-screenshots"

@@ -1,0 +1,657 @@
+stanistolberg/clawd-zero-trust  1.1.7 -> 1.1.8
+change_type: instructions+docs+code   changelog: - Maintenance update: removes project management and contribution metadata. - Added `hardening.json` to the repository. - Updated `README.md` and documentation to reflect minor version changes. - Adjusted scripts (`egress-filter.sh`, `harden.sh`) for policy and workflow consistency. - Removed unused GitHub templates and community files.
+
+### .github/ISSUE_TEMPLATE/bug_report.md  [docs]
+- ---
+- ---
+- name: Bug report
+- about: Something broken or behaving unexpectedly
+- title: '[BUG] '
+- labels: bug
+- assignees: stanistolberg
+- ## What happened
+- <!-- Describe the bug clearly and concisely -->
+- ## Steps to reproduce
+- ```bash
+- # Exact commands you ran
+- ```
+- ```
+- ```
+- ## Expected behavior
+- <!-- What should have happened -->
+- ## Actual behavior
+- <!-- What actually happened, including full error output -->
+- ## Environment
+- - OS: <!-- e.g. Ubuntu 22.04 -->
+- - UFW version: <!-- ufw --version -->
+- - Bash version: <!-- bash --version -->
+- - Script version: <!-- grep PROFILE_VERSION scripts/egress-filter.sh -->
+- ## Logs
+- # Paste relevant content from logs/egress_filter.log or logs/audit.log
+- ## Impact
+- <!-- Does this affect security? Could it cause a lockout? -->
+
+### .github/ISSUE_TEMPLATE/feature_request.md  [docs]
+- ---
+- ---
+- name: Feature request
+- about: Propose an addition or improvement
+- title: '[FEATURE] '
+- labels: enhancement
+- assignees: stanistolberg
+- ## What problem does this solve
+- <!-- Be specific. What fails or is missing today? -->
+- ## Proposed solution
+- <!-- How would you implement it? Include pseudocode or examples if helpful -->
+- ## Security implications
+- <!-- Does this change the firewall policy? Could it weaken rollback guarantees? Does it add sudo calls? -->
+- ## Alternatives considered
+- <!-- What else did you think about? Why is your approach better? -->
+- ## Checklist
+- - [ ] This does not weaken rollback or lockout detection
+- - [ ] This works with `--dry-run` as the default
+- - [ ] This passes `shellcheck`
+- - [ ] New providers (if any) are justified
+
+### CODE_OF_CONDUCT.md  [docs]
+- # Code of Conduct
+- ## The short version
+- Be professional. Be direct. Focus on the code.
+- This is a technical project. Discussions should be about security, implementation quality, and correctness. Personal attacks, harassment, or off-topic noise will result in removal from the project.
+- ## Expected behavior
+- - Provide technical criticism with specifics, not opinions
+- - Accept that security decisions have tradeoffs — explain yours
+- - Respond to issues and PRs in a timely manner if you opened them
+- - Credit prior work when building on it
+- ## Unacceptable behavior
+- - Personal attacks or insults
+- - Publishing others' private information
+- - Harassment of any kind
+- - Deliberate introduction of vulnerabilities under the guise of contribution
+- ## Enforcement
+- Violations reported to stan@blocksoft.tech. Maintainer decisions are final.
+- ## Attribution
+- Maintained by Blocksoft GmbH.
+
+### CONTRIBUTING.md  [docs]
+- # Contributing to clawd-zero-trust
+- Thanks for your interest. This is security infrastructure — contributions are welcome but held to a high standard.
+- ## Before you start
+- Open an issue first. Describe what you want to fix or add, and why. This avoids wasted effort on PRs that won't be merged.
+- ## Standards
+- Every change to a shell script must:
+- 1. Pass `shellcheck` with zero warnings
+- 2. Pass the full release gate:
+-    ```bash
+-    bash scripts/release-gate.sh .
+-    ```
+- 3. Not introduce new `eval` patterns without explicit justification
+- 4. Not weaken the rollback guarantees (`perform_reset_or_die` must remain non-optional)
+- 5. Not add domains to `PROVIDERS` without documented justification
+- ## Pull request checklist
+- - [ ] `shellcheck` clean
+- - [ ] `release-gate.sh` passes
+- - [ ] Changes documented in the version header comment of the modified script
+- - [ ] `README.md` updated if architecture or behavior changes
+- - [ ] No hardcoded IPs (use DNS resolution)
+- - [ ] No `perform_reset || true` patterns (always use `perform_reset_or_die`)
+- ## What gets merged
+- - Bug fixes with clear reproduction steps
+- - Security improvements that don't break existing safety guarantees
+- - New providers added to the allowlist (with justification)
+- - Documentation improvements
+- ## What won't be merged
+- - Weakening of the rollback or lockout detection logic
+- - Removing the script hash gate
+- - Adding `2>/dev/null` to commands where failure must be detected
+- - Changes that break `--dry-run` idempotency
+- ## Code style
+- - Bash only. No additional runtime dependencies beyond `ufw`, `dig`, `curl`, `python3`.
+- - All functions documented with a comment explaining their safety contract.
+- - Dry-run must always be the default. Apply requires an explicit flag.
+- ## Maintainer
+- Stan Stolberg — stan@blocksoft.tech
+- Blocksoft GmbH — https://blocksoft.tech
+
+### README.md  [docs]
+- # clawd-zero-trust
+- > Zero Trust security hardening skill for [OpenClaw](https://openclaw.ai) deployments.
+- > Audited through dual-model review (GPT-5.3 + Sonnet 4.6). Production-stable at v1.1.1.
+- ---
+- ---
+- ---
+- ---
+- ---
+- ---
+- ---
+- ---
+- ---
+- ---
+- ---
+- When you run an AI agent on a server, it talks to the internet constantly — to call AI APIs, fetch data, send messages. By default, **it can reach anything**. No restrictions. No boundaries.
+- That's a problem.
+- A misconfigured agent, a compromised plugin, or a prompt injection attack could turn your server into an exfiltration point — quietly sending your data, keys, or internal state to any endpoint on the internet. And you'd never know until it was too late.
+- **Zero Trust flips the default.** Instead of "allow everything, block the bad stuff", it starts with "block everything, allow only what's explicitly needed."
+- For an AI agent like OpenClaw, "what's explicitly needed" is a short list: the AI providers it calls (Anthropic, OpenAI, Google), the messaging layer (Telegram), GitHub, search, and Tailscale for remote access. That's it. Nothing else should ever need outbound access from this machine.
+- This skill enforces exactly that — at the kernel firewall level, using UFW. Not at the application layer where it can be bypassed, but at the OS level where it can't.
+- ### The threat model
+- | Threat | Without this skill | With this skill |
+- |--------|-------------------|-----------------|
+- | Prompt injection → data exfiltration | Agent calls attacker's endpoint | Connection blocked by UFW |
+- | Compromised plugin phoning home | Unrestricted outbound access | Only allowlisted IPs pass |
+- | Supply chain attack via npm/pip | Package calls C2 server | Blocked unless explicitly allowed |
+- | Misconfigured agent leaking secrets | No network boundary | Firewall catches it |
+- | SSH brute force pivot | Agent can reach any IP | Outbound restricted to known providers |
+- ### What "Zero Trust" means here
+- 1. **Deny all outbound by default** — `ufw default deny outgoing`
+- 2. **Allowlist only what's provably needed** — DNS-resolved IPs for 13 known providers
+- 3. **Verify after every change** — canary mode runs live connectivity checks for 120s before committing
+- 4. **Rollback on any failure** — if post-apply checks fail, firewall reverts automatically
+- 5. **Never trust the script itself** — script hash gate prevents tampered re-applies
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- clawd-zero-trust/
+- ├── SKILL.md                        # OpenClaw skill manifest + usage instructions
+- ├── scripts/
+- │   ├── egress-filter.sh            # Core: UFW Zero Trust egress policy engine
+- │   ├── harden.sh                   # OpenClaw config hardening (PLP, plugins, gateway)
+- │   ├── audit.sh                    # Deep security audit + false-positive filter
+- │   ├── release-gate.sh             # CI pipeline: validate → shellcheck → package → verify
+- │   ├── quick_validate.py           # Structural skill validator (pre-package)
+- │   └── package_skill.py            # Skill packager → .skill artifact
+- └── references/
+-     ├── false-positives.md          # Registry of known audit false positives
+-     └── zero-trust-principles.md    # Design rationale and threat model
+- ## Core: egress-filter.sh
+- The centerpiece. Implements a **DNS-resolved IP allowlist** enforced via UFW, with a full operational safety stack.
+- ### How it works
+- ┌─────────────────────────────────────────────────────────┐
+- │                      apply_policy()                     │
+- │                                                         │
+- │                                                         │
+- │                                                         │
+- │                                                         │
+- │                                                         │
+- │  1. snapshot_ips()                                      │
+- │     └─ dig A + AAAA for each provider domain           │
+- │     └─ abort if 0 providers resolve (lockout guard)    │
+- │  2. flush_zt_rules()                                    │
+- │     └─ ufw status numbered → find ZT: tagged rules     │
+- │     └─ delete in reverse order (index-stable)          │
+- │  3. Apply static allows                                 │
+- │     └─ loopback, DNS(53), SSH(22), Tailscale ports     │
+- │  4. Apply provider IP rules (from snapshot)            │
+- │     └─ ufw allow out to <ip> port 443 comment ZT:...  │
+- │  5. ufw default deny outgoing                          │
+- │  6. ufw reload                                         │
+- └─────────────────────────────────────────────────────────┘
+- ### Provider allowlist (DNS-resolved at runtime)
+- | Provider | Port |
+- |----------|------|
+- | api.anthropic.com | 443 |
+- | api.openai.com | 443 |
+- | generativelanguage.googleapis.com | 443 |
+- | api.telegram.org | 443 |
+- | api.github.com | 443 |
+- | api.search.brave.com | 443 |
+- | controlplane.tailscale.com | 443 |
+- | login.tailscale.com | 443 |
+- | log.tailscale.io | 443 |
+- | accounts.google.com | 443 |
+- | oauth2.googleapis.com | 443 |
+- | registry.npmjs.org | 443 |
+- | api.agentsandbox.co | 443 |
+- IPs are resolved fresh on every apply — CDN IP rotation is handled automatically. IPv4 + IPv6 both captured.
+- ### Safety stack (layered)
+- Layer 1 — Pre-flight
+-   check_dep()         → abort if dig/ufw/curl/python3 missing
+-   check_ufw_active()  → abort if UFW is inactive (rules would be no-ops)
+-   enforce_profile_gate() → hash mismatch on modified script = abort (TOFU model)
+- Layer 2 — Apply
+-   snapshot_ips()      → returns 1 if zero providers resolve
+-                         apply_policy() propagates → deny-outgoing never fires
+-   flush_zt_rules()    → clears stale IP rules before re-apply (no accumulation)
+-                         detects sudo/UFW failure explicitly (no silent skip)
+- Layer 3 — Post-apply
+-   verify_critical_endpoints()
+-                       → curl each endpoint, check HTTP code ≠ 000
+-                         (CDN 404/421 = reachable; 000 = no connection)
+- Layer 4 — Rollback
+-   perform_reset_or_die()
+-                       → if rollback itself fails: log 🚨 CRITICAL,
+-                         write LOCKOUT-MANUAL-INTERVENTION-REQUIRED to state,
+-                         exit 99 (never silently continues)
+- ### Execution modes
+- ```bash
+- bash egress-filter.sh              # Dry-run (default) — preview, zero changes
+- bash egress-filter.sh --apply      # Transactional apply + post-check + rollback
+- bash egress-filter.sh --canary     # 120s live verify loop before committing
+- bash egress-filter.sh --verify     # Endpoint reachability check only
+- bash egress-filter.sh --reset      # Restore ufw default allow outgoing
+- bash egress-filter.sh --force      # Bypass hash gate (accept new profile)
+- ### Canary mode
+- apply_policy()
+-   ↓ success
+- verify_critical_endpoints()  ← every 15s for 120s
+-   ↓ all pass
+- ufw reload (commit)
+- write_state(canary-pass-committed)
+-   ↓ any fail
+- perform_reset_or_die("canary-verify-failed")
+- write_state(canary-failed-rolled-back)
+- exit 1
+- ### State machine
+- .state/egress-profile.json:
+-   {
+-     "profileVersion": "1.1.1",
+-     "scriptHash": "<sha256>",
+-     "lastAppliedAt": "<ISO8601>",
+-     "lastResult": "<state>"
+-   }
+- States:
+-   apply-success
+-   apply-failed-rolled-back
+-   apply-failed-postcheck-rolled-back
+-   canary-pass-committed
+-   canary-failed-rolled-back
+-   canary-apply-failed-rolled-back
+-   reset
+-   reset-failed
+-   LOCKOUT-MANUAL-INTERVENTION-REQUIRED   ← alert: manual action needed
+- ## harden.sh
+- Idempotent OpenClaw config hardening. Reads `~/.openclaw/openclaw.json` via `jq`, applies only missing settings.
+- | Check | What it does |
+- |-------|-------------|
+- | SecureClaw loaded | Verifies plugin is active; prints install steps if not |
+- | `plugins.allow` | Adds `secureclaw` to allowlist if missing |
+- | `tools.byProvider` | Applies PLP (Principle of Least Privilege) per-model toolset |
+- | SSH perimeter | Checks for `0.0.0.0:22` / `[::]:22` exposure; prints fix |
+- | Gateway bind | Sets `gateway.bind = loopback` if not already set |
+- Modes: `--dry-run` (default) · `--apply`
+- ## audit.sh
+- Wraps `openclaw security audit --deep` with:
+- - **False-positive suppression** — filters known safe patterns (`openclaw-agentsandbox`, `secureclaw`) via `grep -v`
+- - **SSH exposure check** — detects `0.0.0.0:22` and `[::]:22` (IPv4 + IPv6)
+- - **Port 631 (CUPS)** — flags if still active
+- - **Dependency check** — `dig`, `ufw` availability
+- - **Structured log** — append-only at `logs/audit.log` (mode 600)
+- ## release-gate.sh
+- Four-stage CI pipeline — all must pass to produce a `.skill` artifact:
+- Stage 1: quick_validate.py
+-   └─ Checks SKILL.md present, scripts/ exists, required files in place
+- Stage 2: shellcheck
+-   └─ Runs against all .sh files in scripts/
+-   └─ Fails hard on any warning
+- Stage 3: package_skill.py
+-   └─ Bundles skill → skills/dist/clawd-zero-trust.skill
+- Stage 4: egress-filter.sh --verify
+-   └─ Live endpoint check: Telegram, GitHub, Anthropic, OpenAI
+-   └─ Fails if any endpoint returns code 000 (no TCP connection)
+- ## Design decisions
+- **Why DNS resolution at apply time, not hardcoded IPs?**
+- CDNs (Cloudflare, AWS) rotate IPs. Hardcoded lists go stale within days. Resolving at apply-time keeps rules accurate; canary mode validates connectivity immediately after.
+- **Why reverse-order UFW rule deletion?**
+- UFW renumbers rules after each deletion. Deleting highest-numbered first means lower indices are never invalidated mid-loop.
+- **Why HTTP code `≠ 000` instead of `curl -f`?**
+- `curl -f` fails on HTTP ≥ 400. Anthropic returns 404 and OpenAI returns 421 on the root path — both are valid CDN responses proving full TCP/TLS reachability. Only `000` means no connection established.
+- **Why TOFU (Trust On First Use) for the hash gate?**
+- First run is ungated by design. The gate only fires on subsequent runs where the script has been modified since last apply. The deploy key + private repo is the integrity boundary for the initial install.
+- **Why `perform_reset_or_die` instead of `perform_reset || true`?**
+- Silent rollback failure is the worst outcome — the system appears to be in a safe state but isn't. Better to exit 99 loudly and require manual intervention than to continue with an unknown firewall state.
+- ## Version history
+- | Version | Change |
+- |---------|--------|
+- | v1.0.1 | Transactional apply, versioned state, canary mode, dry-run default |
+- | v1.0.2 | `verify_endpoint`: HTTP code check instead of `curl -f` |
+- | v1.0.3 | `perform_reset_or_die`, `snapshot_ips` zero-resolve guard, UFW active check |
+- | v1.1.0 | `flush_zt_rules()` — prevents rule accumulation on repeated runs |
+- | v1.1.1 | `flush_zt_rules`: return 1 on partial failure; detect sudo/UFW errors explicitly |
+- # 1. Audit current state
+- # 2. Preview hardening (safe, no changes)
+- # 3. Preview egress policy (safe, no changes)
+- bash scripts/egress-filter.sh
+- # 4. Apply hardening
+- # 5. Apply egress policy
+- ## Requirements
+- - Ubuntu 20.04+ (UFW + bash 4.2+)
+- - `ufw`, `curl`, `dig` (dnsutils), `python3`, `shellcheck`
+- - Passwordless sudo for `ufw` commands
+- - OpenClaw with SecureClaw plugin loaded
++ # clawd-zero-trust v1.1.7
++ Zero Trust security hardening for OpenClaw AI agent deployments. Built by [Blocksoft](https://blocksoft.tech).
++ AI agents run 24/7 with access to shell, network, and secrets. One compromised plugin or prompt injection and your agent becomes an exfiltration vector. Default OpenClaw ships wide open — all outbound ports, no plugin restrictions, no tool scoping.
++ This skill locks it down. Every outbound connection is whitelisted by DNS-resolved IP. Every plugin is explicitly allowed. Every model gets only the tools it needs. If something breaks the rules, traffic gets dropped — not logged and forgotten.
++ Built for operators who treat their AI agent like production infrastructure, not a toy.
++ ## What it does
++ - **Egress filtering:** DNS-based UFW rules — only allow outbound to verified AI provider IPs (Anthropic, OpenAI, Google, Telegram, Tailscale, GitHub)
++ - **Port 22 lockdown:** SSH egress restricted to GitHub CIDRs only (for deploy key git push)
++ - **Port 80 conditional:** Only allows HTTP egress if Tailscale DERP fallback actually needs it
++ - **GitHub CIDR drift detection:** Warns when hardcoded CIDRs diverge from `api.github.com/meta`
++ - **Hardening config externalized:** `hardening.json` survives OpenClaw updates (no more jq-patching openclaw.json)
++ - **Plugin allowlisting:** Restricts loaded plugins to verified first-party set
++ - **PLP (Principle of Least Privilege):** Limits tool access for untrusted/cheap models
++ - **Transactional apply:** Auto-rollback if connectivity checks fail post-apply
++ - **Canary mode:** Temporary apply with 120s verification window before commit
++ # Audit current state
++ # Preview hardening changes (dry-run)
++ # Preview egress rules (dry-run)
++ bash scripts/egress-filter.sh --dry-run
++ # Apply hardening
++ # Apply egress (with auto-rollback on failure)
++ # Emergency rollback
++ bash scripts/egress-filter.sh --reset
++ ## Changelog
++ ### v1.1.7 (2026-02-22)
++ - **Fix 2:** Conditional port 80/tcp — runtime check via `tailscale netcheck`, skip if DERP doesn't need it
++ - **Fix 3:** Port 22/tcp restricted to 4 GitHub SSH CIDRs with `api.github.com/meta` drift detection
++ - **Fix 5:** Hardening config externalized to `hardening.json` — shallow-merge into openclaw.json post-deploy
++ - Multi-model security audit: Opus 4.6 + GPT 5.3 + Sonnet 4.6 (3-model consensus required)
++ - Purged leaked credentials from git history
++ ### v1.1.6 (2026-02-21)
++ - Release gate script (shellcheck + validate + package + verify)
++ - Scanner false-positive remediation (no eval, documented agentsandbox.co)
++ ### v1.1.5 and earlier
++ - Transactional apply with auto-rollback
++ - Canary mode (120s verification)
++ - Versioned firewall profile state
++ - flush_zt_rules to prevent UFW rule accumulation
++ - Bug fixes from dual-model audits (GPT 5.3 + Sonnet 4.6)
++ scripts/
++   egress-filter.sh   # Core egress policy (UFW rules)
++   harden.sh          # OpenClaw config hardening
++   audit.sh           # Security audit checker
++   release-gate.sh    # Pre-release validation
++ hardening.json       # Externalized hardening overrides
++ references/
++   zero-trust-principles.md
++   false-positives.md
++ .state/
++   egress-profile.json  # Versioned firewall state
+
+### SECURITY.md  [docs]
+- # Security Policy
+- ## Supported Versions
+- | Version | Supported |
+- |---------|-----------|
+- | 1.1.x   | ✅ Active  |
+- | 1.0.x   | ⚠️ Critical fixes only |
+- | < 1.0   | ❌ No longer supported |
+- ## Reporting a Vulnerability
+- **Do not open a public GitHub issue for security vulnerabilities.**
+- Report privately via email: **info@blocksoft.tech**
+- Include:
+- - Description of the vulnerability
+- - Steps to reproduce
+- - Impact assessment (what can an attacker achieve?)
+- - Your suggested fix (optional but appreciated)
+- ### What to expect
+- | Timeline | Action |
+- |----------|--------|
+- | 48 hours | Acknowledgement of your report |
+- | 7 days   | Initial assessment and severity classification |
+- | 30 days  | Fix developed and tested |
+- | 90 days  | Public disclosure (coordinated with reporter) |
+- We follow responsible disclosure. If you report a valid vulnerability, we will credit you in the release notes unless you prefer to remain anonymous.
+- ## Scope
+- **In scope:**
+- - `egress-filter.sh` — firewall policy logic, rollback paths, hash gate bypass
+- - `harden.sh` — config mutation, privilege escalation vectors
+- - `audit.sh` — false-positive suppression that could hide real threats
+- - `release-gate.sh` — gate bypass that could allow unsigned/untested code to ship
+- **Out of scope:**
+- - Vulnerabilities in UFW, OpenClaw, or third-party dependencies
+- - Issues requiring physical access to the host
+- - Social engineering
+- ## Security Design
+- This skill is security infrastructure. It has been audited through a dual-model review process (GPT-5.3 + Sonnet 4.6) before each release. All known false positives are documented in `references/false-positives.md`.
+- Known non-Human Identity (NHI) patterns that may trigger security scanners but are intentional:
+- - `openclaw-agentsandbox` — legitimate OAuth key generation
+- - `secureclaw` — legitimate auditing engine
+- See `references/false-positives.md` for details.
+
+### SKILL.md  [instructions]
+- version: "1.1.6"
+- # clawd-zero-trust (v1.1.6)
+- ### 4) Release Gate (v1.1.6)
++ version: "1.1.7"
++ # clawd-zero-trust (v1.1.7)
++ ### 4) Release Gate (v1.1.7)
+
+### hardening.json  [code]
++ {
++   "plugins": {
++     "allow": [
++       "google-antigravity-auth",
++       "telegram",
++       "openclaw-agentsandbox",
++       "openclaw-mcp-adapter",
++       "secureclaw"
++     ]
++   },
++   },
++   },
++   "tools": {
++     "byProvider": {
++       "google-antigravity/gemini-3-flash": {
++         "profile": "coding",
++         "allow": ["web_search", "web_fetch", "message", "session_status"]
++       }
++     }
++     }
++   "gateway": {
++     "bind": "loopback"
++   "plp": {
++     "mode": "graceful",
++     "bootstrap": {
++       "auto_plan_first": true,
++       "intent_required": true,
++       "authorization_required": true
++   }
++ }
+
+### scripts/egress-filter.sh  [code]
+- PROFILE_VERSION="1.1.6"
+-   cmd sudo ufw allow out 22/tcp                                         || return 1
+-   cmd sudo ufw allow out 80/tcp comment "Tailscale DERP fallback"       || return 1
++ PROFILE_VERSION="1.1.7"
++ }
++ }
++   fi
++   fi
++   fi
++   fi
++   fi
++     return 0
++     return 0
++ import json, sys
++ try:
++ except Exception:
++     return 1
++ )
++ GITHUB_SSH_CIDRS=(
++   "140.82.112.0/20"
++   "143.55.64.0/20"
++   "192.30.252.0/22"
++   "185.199.108.0/22"
++ tailscale_derp_needs_port80() {
++   # Returns 0 if evidence suggests DERP fallback over :80 may be needed.
++   # Returns 1 otherwise.
++   if ! command -v tailscale >/dev/null 2>&1; then
++     log "WARN: tailscale CLI not found; skipping outbound 80/tcp DERP fallback rule"
++   local netcheck_out
++   netcheck_out="$(tailscale netcheck 2>/dev/null || true)"
++   # netcheck output may contain lines like "* DERP ...:80" or "... port 80".
++   if echo "$netcheck_out" | grep -Eiq 'DERP.*(:80|port[[:space:]]*80)|:[[:space:]]*80'; then
++   return 1
++ check_github_ssh_cidrs_drift() {
++   local hardcoded joined
++   hardcoded="$(printf '%s\n' "${GITHUB_SSH_CIDRS[@]}" | sort)"
++   local api_cidrs
++   api_cidrs="$(curl -fsSL --max-time 10 https://api.github.com/meta 2>/dev/null | \
++     python3 -c '
++     d = json.load(sys.stdin)
++     g = d.get("git", [])
++     print("\n".join(sorted(set(g))))
++     pass
++ ' || true)"
++   if [ -z "$api_cidrs" ]; then
++     log "WARN: Could not fetch GitHub meta CIDRs (https://api.github.com/meta). Using hardcoded SSH CIDRs."
++   if [ "$hardcoded" != "$api_cidrs" ]; then
++     log "WARN: GitHub SSH CIDR drift detected between hardcoded list and api.github.com/meta (field: git)."
++     log "WARN: Hardcoded: $(printf '%s ' "${GITHUB_SSH_CIDRS[@]}")"
++     joined="$(echo "$api_cidrs" | tr '\n' ' ')"
++     log "WARN: API git : ${joined}"
++   done
++   check_github_ssh_cidrs_drift
++   local gh_cidr
++   for gh_cidr in "${GITHUB_SSH_CIDRS[@]}"; do
++     cmd sudo ufw allow out to "$gh_cidr" port 22 proto tcp comment "GitHub SSH" || return 1
++   if tailscale_derp_needs_port80; then
++     log "WARN: Tailscale DERP fallback appears to require outbound 80/tcp; allowing with caution."
++     cmd sudo ufw allow out 80/tcp comment "Tailscale DERP fallback"     || return 1
++   else
++     log "INFO: Tailscale DERP fallback over 80/tcp not detected; skipping outbound 80/tcp rule."
+
+### scripts/harden.sh  [code]
+- # =============================================================================
+- # =============================================================================
+- # =============================================================================
+- # =============================================================================
+- #
+- #
+- #
+-   else
+-     else
+-     fi
+- echo ""
+- echo ""
+- else
+- else
+- else
+- fi
+- fi
+- fi
+- # 2. Plugin Allowlist (idempotent: add secureclaw if missing)
+- # SECURITY NOTICE: This block manages OpenClaw's plugin allow-list.
+- # It is a RESTRICTION, not an expansion — plugins.allow limits which plugins
+- # can run. Only 'secureclaw' is added to an existing list.
+- # Plugin inventory (all first-party OpenClaw / Blocksoft verified):
+- #   google-antigravity-auth  — Google OAuth provider (official OpenClaw)
+- #   telegram                 — Telegram messaging provider (official OpenClaw)
+- #   openclaw-agentsandbox    — Agent sandbox isolation layer (official OpenClaw)
+- #   openclaw-mcp-adapter     — MCP protocol adapter (official OpenClaw)
+- #   secureclaw               — Security audit engine (adversa-ai, open source)
+- # The bootstrap list (null-config case) is only written when NO plugins.allow
+- # exists. Set HARDEN_SKIP_PLUGIN_BOOTSTRAP=1 to skip that case entirely.
+- # Ref: references/false-positives.md
+- echo "2️⃣  Plugin Allowlist:"
+- # Bootstrap skip: set env var to skip null-config plugin initialization
+- SKIP_BOOTSTRAP="${HARDEN_SKIP_PLUGIN_BOOTSTRAP:-0}"
+- # Only the security plugin is added to existing lists
+- SECURECLAW_PLUGIN="secureclaw"
+- # Bootstrap list: used ONLY when plugins.allow is entirely absent
+- # Contains verified first-party OpenClaw plugins only (see header above)
+- BOOTSTRAP_PLUGINS='["google-antigravity-auth","telegram","openclaw-agentsandbox","openclaw-mcp-adapter","secureclaw"]'
+- # Check current state
+- CURRENT_ALLOW=$(jq -r '.plugins.allow // empty' "$CONFIG" 2>/dev/null)
+- SECURECLAW_IN_ALLOW=$(jq -e '.plugins.allow | if . == null then false elif (. | map(select(. == "secureclaw")) | length > 0) then true else false end' "$CONFIG" 2>/dev/null || echo "false")
+- if [ "$SECURECLAW_IN_ALLOW" = "true" ]; then
+-   ok "plugins.allow already contains '$SECURECLAW_PLUGIN' — no changes made"
+-   info "Current allow list: $CURRENT_ALLOW"
+-   if [ -z "$CURRENT_ALLOW" ] || [ "$CURRENT_ALLOW" = "null" ]; then
+-     if [ "$SKIP_BOOTSTRAP" = "1" ]; then
+-       warn "plugins.allow absent but HARDEN_SKIP_PLUGIN_BOOTSTRAP=1 — skipping bootstrap"
+-       warn "plugins.allow is absent — bootstrap case: initializing with verified first-party plugin set"
+-       warn "Plugins to be written: $BOOTSTRAP_PLUGINS"
+-       warn "This RESTRICTS OpenClaw to these plugins only. To skip: HARDEN_SKIP_PLUGIN_BOOTSTRAP=1"
+-       apply_jq "Bootstrap plugins.allow with verified first-party plugin set" \
+-         ".plugins.allow = ${BOOTSTRAP_PLUGINS}" \
+-         "$CONFIG"
+-       info "AUDIT LOG: plugins.allow bootstrapped with: ${BOOTSTRAP_PLUGINS}"
+-     warn "plugins.allow exists but missing '$SECURECLAW_PLUGIN' — adding security audit plugin only"
+-     info "Current list: $CURRENT_ALLOW"
+-     info "Adding: $SECURECLAW_PLUGIN (OpenClaw security audit engine — adversa-ai/secureclaw)"
+-     apply_jq "Add $SECURECLAW_PLUGIN to plugins.allow (security audit plugin only)" \
+-       '.plugins.allow |= (. + ["secureclaw"] | unique)' \
+-       "$CONFIG"
+-     info "AUDIT LOG: added '$SECURECLAW_PLUGIN' to existing plugins.allow"
+- # 3. PLP — tools.byProvider (idempotent)
+- echo "3️⃣  PLP (Principle of Least Privilege):"
+- BYPROVIDER_EXISTS=$(jq -e '.tools.byProvider != null' "$CONFIG" 2>/dev/null || echo "false")
+- if [ "$BYPROVIDER_EXISTS" = "true" ]; then
+-   ok "tools.byProvider already configured"
+-   info "Current: $(jq -c '.tools.byProvider' "$CONFIG" 2>/dev/null)"
+-   warn "tools.byProvider not configured — will apply PLP restriction"
+-   PLP_CONFIG='{
+-     "google-antigravity/gemini-3-flash": {
+-       "profile": "coding",
+-       "allow": ["web_search","web_fetch","message","session_status"]
+-     }
+-   }'
+-   apply_jq "Set tools.byProvider" \
+-     ".tools.byProvider = ${PLP_CONFIG}" \
+-     "$CONFIG"
+-     "$CONFIG"
+- # 4. SSH Perimeter (check only — modifying sshd_config requires sudo)
+- echo "4️⃣  SSH Perimeter:"
+- # 5. Gateway bind (idempotent)
+- echo "5️⃣  Gateway:"
+- GATEWAY_BIND=$(jq -r '.gateway.bind // empty' "$CONFIG" 2>/dev/null)
+- if [ "$GATEWAY_BIND" = "loopback" ]; then
+-   ok "Gateway bound to loopback"
+-   warn "Gateway not bound to loopback (current: '${GATEWAY_BIND:-unset}')"
+-   apply_jq "Set gateway.bind = loopback" \
+-     '.gateway.bind = "loopback"' \
++ SCRIPT_PATH="$(readlink -f "$0")"
++ SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
++ SKILL_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
++ HARDENING_FILE="${HARDENING_FILE:-$SKILL_DIR/hardening.json}"
++   if [ "$DRY_RUN" -eq 1 ]; then
++   fi
++   fi
++   fi
++ }
++     return 1
++     return 1
++     return 1
++     return 1
++     return 1
++ merge_hardening_overrides() {
++   if [ ! -f "$HARDENING_FILE" ]; then
++     fail "hardening.json not found at: $HARDENING_FILE"
++   if ! jq -e . "$HARDENING_FILE" >/dev/null 2>&1; then
++     fail "hardening.json is not valid JSON: $HARDENING_FILE"
++   local merged backup tmp
++   merged=$(jq -s '.[0] * .[1]' "$CONFIG" "$HARDENING_FILE" 2>/dev/null) || {
++     fail "Failed to merge openclaw.json with hardening.json"
++   }
++   }
++   if ! echo "$merged" | jq -e . >/dev/null 2>&1; then
++     fail "Merged config failed jq validation"
++     echo -e "${YELLOW}[DRY-RUN]${NC} Would shallow-merge overrides from $HARDENING_FILE into $CONFIG"
++     echo "$merged" | jq '{plugins: .plugins, tools: .tools, gateway: .gateway, plp: .plp}'
++     return 0
++   backup="$CONFIG.bak.hardening.$(date -u +%Y%m%d%H%M%S)"
++   cp "$CONFIG" "$backup" || {
++     fail "Failed to create backup: $backup"
++   info "Backup created: $backup"
++   tmp=$(mktemp)
++   echo "$merged" > "$tmp"
++   mv "$tmp" "$CONFIG"
++   ok "Merged hardening overrides from hardening.json"
++   return 0
++ # 2. Hardening overrides (externalized)
++ echo "2️⃣  Hardening Overrides (hardening.json):"
++ merge_hardening_overrides || exit 1
++ # 3. SSH Perimeter (check only — modifying sshd_config requires sudo)
++ echo "3️⃣  SSH Perimeter:"
++ # Gateway bind now managed via hardening.json merge.

@@ -1,0 +1,551 @@
+yicko/playwright-browser-use  1.0.14 -> 1.0.15
+change_type: instructions+docs+code   changelog: - skill-card.md 文件已移除，不再随版本分发。 - 无其他变更。
+
+### CHANGELOG.md  [docs]
++ ## [1.3.10] — 2026-07-30
++ ### Security — download path traversal (proactive full-source audit)
++ Every prior hardening round was driven by external audit findings, all of which
++ concentrated on the credential primitives. A full sweep of `pw-browser.js` turned
++ up an unrelated and **more directly attacker-reachable** hole in `download`.
++ - **`download` no longer trusts the page-supplied filename.** `dl.suggestedFilename()`
++   is chosen by the *web page being automated*, not by the operator. When the caller
++   passed a destination **directory** (the normal case, e.g. `~/Downloads`), the old
++   code did `path.join(dest, suggested)` — so a malicious page returning
++   `../../.bashrc` wrote **outside** that directory. This is an arbitrary-file-write
++   primitive triggered by merely visiting a hostile site, no operator mistake needed.
++   New module-scoped `safeDownloadTarget()` reduces the name to a bare `path.basename`
++   and then asserts the resolved target still sits inside the resolved destination,
++   returning error kind `PathTraversal` otherwise. Passing an explicit **file** path
++   as `dest` keeps its previous meaning (operator authority, used verbatim).
++ - **Constant-time daemon token comparison.** `provided !== daemonToken` short-circuits
++   and leaks length/position through timing. Replaced with `timingSafeToken()` built on
++   `crypto.timingSafeEqual` (length-checked first). Negligible risk against a 24-byte
++   random token, but free to get right — defence in depth for the token that authorises
++   `eval` / `run-code` / credential access.
++ ### Internal
++ - CLI entry is now guarded by `require.main === module`, and `safeDownloadTarget` /
++   `timingSafeToken` are exported when the file is `require`d — so pure logic can be
++   unit-tested without launching a browser or a daemon.
++ ### Tests
++ ### Tests
++ ### Tests
++ - New `tests/d-download.js` (15 assertions, browser-free — no daemon, no Chrome):
++   traversal names (`../../.bashrc`, `../escape.png`, absolute paths, embedded
++   separators) are all neutralised into `dest`; bare `..`, `a/..`, `../../` and empty
++   names are rejected as `PathTraversal`; ordinary names pass through unchanged.
++   `timingSafeToken` accepts the exact token and rejects wrong-value, shorter, longer,
++   empty and `undefined` without throwing. Wired into `npm test` as the sixth group.
++ ## [1.3.9] — 2026-07-30
++ ### Security — session-persistence hardening (audit findings, 86–98% confidence)
++ Previous versions documented two credential-hygiene practices that were **advice only**, never enforced by code. This release turns both into real controls.
++ - **`PW_BROWSER_CRED_PERSIST=off` — credential-persistence kill switch.** Blocks
++   `cookies export|import` and `storage export|import` (new error kind
++   `CredentialPersistenceDisabled`) while leaving `list` / `get` / `set` / `clear`
++   fully usable. This is deliberately **finer-grained than `PW_BROWSER_SAFE_MODE=1`**,
++   which disables the credential primitives wholesale: the rogue-agent risk is
++   dominated by session state *reaching the filesystem*, where it outlives the
++   daemon and becomes a reusable identity. Removing only that primitive keeps
++   normal automation working. Operator-controlled process env — a caller cannot
++   lift it.
++ - **Secret files are now owner-only.** `~/.pw-browser/` is created `0700`; the
++   daemon auth token (`daemon.json`) and every exported cookie/localStorage dump
++   are written `0600`, with an explicit `chmod` so files left `0644` by older
++   versions get tightened on rewrite. Previously `daemon.json` — which holds the
++   token authorising `eval` / `run-code` / credential access — was written with
++   default `0644`, letting **any other local user take over the browser session**.
++   (POSIX only; on Windows mode bits are not OS-enforced and user-profile ACLs apply.)
++ ### Docs
++ - Mitigation guidance rewritten across SKILL.md / README (zh+en) / QUICKSTART (zh+en):
++   "remember to `chmod 600`" → "already enforced"; "don't persist credentials in
++   automated flows" → "start the daemon with `PW_BROWSER_CRED_PERSIST=off`".
++ - Deployment matrix gains a **禁凭证落盘 / cred-persist-off** tier between "full" and
++   "safe mode"; frontmatter `permissions.enforcement` gains `cred-persist-killswitch`
++   and `secret-file-permissions`; execution-boundary list grows from 4 to 6 items.
++ - `b-negative.js` phase 4: `CRED_PERSIST=off` blocks export/import yet in-memory
++   `cookies list` / `storage set` still succeed.
++ - `b-negative.js` phase 5: exported credential file and `daemon.json` are `0600`,
++   state dir is `0700` (assertions skipped with an existence check on win32).
++ ## [1.3.8] — 2026-07-30
++ ### Security — credential path confinement is no longer caller-waivable (privilege escalation, 97%)
++ - **Fixed a privilege-escalation path**: `--unsafe` alone used to lift the credential
++   path confinement. Since the flag is supplied by the *caller* (possibly an untrusted or
++   compromised agent), the guard could be disabled by the very actor it was meant to
++   contain — a guard whose key is held by the constrained party is not a guard.
++ - **Privilege separation**: escaping confinement now requires **both**
++   (1) the operator starting the daemon with `PW_BROWSER_ALLOW_UNSAFE_CRED_PATH=1`
++   (a process env var a caller sending HTTP commands cannot set), and
++   (2) the caller passing `--unsafe` (intent, not authority).
++   Without (1), `--unsafe` is rejected with `UnsafeOverrideNotPermitted` and nothing is written.
++ - **Symlink escape closed**: paths are now resolved via `realpath` on the deepest existing
++   ancestor, so a symlink planted inside `~/.pw-browser` can no longer redirect credential
++   files outside the confinement.
++ - **Structured errors**: refusals now carry error kinds `CredentialPathConfined` /
++   `UnsafeOverrideNotPermitted` instead of a bare 400 message.
++ - **Audit trail**: every credential-path access (allowed, denied, or operator-escaped) is
++   logged to the daemon's stderr; the daemon also prints a startup warning when the
++   override env is enabled. Responses gain a `confined` boolean.
++ - Docs aligned across SKILL.md (frontmatter `permissions.enforcement` +
++   `operator-gated-override`, enforcement-boundary section, Rogue Agent mitigation ⑤),
++   README zh/en, QUICKSTART zh/en, and the `--help` banner (now lists daemon env vars).
++ - Tests: `b-negative.js` gains a phase 3 daemon with the operator opt-in; asserts
++   `--unsafe` alone is refused and writes nothing, that the env alone does not weaken the
++   default, and that env + flag yields `confined:false` + warning. `a-group.js` exports now
++   stay inside `STATE_DIR`.
++ ## [1.3.7] — 2026-07-30
++ ### Fixed
++ ### Fixed
++ - **`eval "<expr>" <ref>` (element-scoped) was broken** — the expression was closed over from Node scope
++   (`el.evaluate(el => eval(expr))`). Playwright serializes the callback to a string and runs it in the
++   browser, so `expr` was never defined there and the call failed with a `ReferenceError`. The expression
++   is now passed explicitly as an evaluate argument. This path had **no test coverage**, which is why the
++   defect went unnoticed.
++ ### Changed
++ - `eval` responses now carry an explicit `scope` field (`"page"` | `"element"`) so callers can verify
++   which semantics were applied instead of guessing.
++ - Result serialization hardened: `JSON.stringify` failures (circular structures, `undefined`) no longer
++   produce a broken payload; they fall back to `String(v)`.
++ - Rewrote the `eval` code comment to state the real execution semantics (Playwright does **not** capture
++   Node closures; `el` is the documented binding for the element-scoped form) alongside the security
++   boundary, removing an ambiguity that invited unsafe assumptions about where code actually runs.
++ ### Documentation
++ - `SKILL.md` / `README.md` / `README.en.md` now document the scope semantics of `eval`: without `ref` the
++   expression evaluates against the page global; with `ref` the identifier `el` is bound to the DOM node.
++   Return values must be JSON-serializable (DOM nodes and circular structures cannot cross the bridge).
++ - `tests/features.js`: +5 assertions covering the previously untested element-scoped `eval` path
++   (`el.textContent`, `el.id.toUpperCase()`, `el.getAttribute(...)`, `scope` field for both forms).
++ ## [1.3.6] — 2026-07-30
++ ### Docs / Security (intent-code divergence, 93% confidence)
++ - **修正 `run-code` 沙箱注释夸大安全边界**：原注释称"user code can drive the browser but cannot reach the host"，暗示已被锁死，但忽略注入的 `page` 对象本身就是完整浏览器权威（可访问任意站点、读认证会话、触发下载/上传、以用户身份发带凭证请求）。新注释明确：VM 隔离的是**宿主机**（OS/文件系统/进程），**不是浏览器会话/网络**；`page` 等同把用户的浏览器交给代码；必须仅在可信、用户可见的本地环境启用，不可信输入绝不能到达；并澄清 token 认证只限网络可达性、非能力沙箱。SKILL.md/README 既有 `run-code` 描述本已准确，无需改动。
++ ## [1.3.5] — 2026-07-30
++ ### Docs / Security (description-behavior mismatch, 95% confidence)
++ - **包描述不再轻描淡写**：`package.json` 的 `description` 原为"普通浏览器自动化 CLI"，漏掉了实质高危能力。现改为如实声明 `INCLUDES HIGH-RISK PRIMITIVES`：cookie/localStorage 凭证提取/注入（会话令牌）、页面任意 JS（`eval`）、守护进程代码执行（`run-code`）及持久化凭证会话，并标注 daemon token 认证与 `PW_BROWSER_SAFE_MODE=1` 可禁用全部代码执行与凭证原语。
++ - README 中英文开头同步新增 ⚠️ 醒目警示，明确"本工具不只是点开网页"，列出代码执行与凭证操控能力，并指向「🔐 权限模型与最低特权」「⚠️ 安全边界」两节，消除与 SKILL.md 已有准确描述的失配。三处（package.json / README.zh / README.en）现已一致。
++ ## [1.3.4] — 2026-07-30
++ ### Docs / Security (LP3 — MCP least-privilege, 90% confidence)
++ - **形式化权限模型**：此前 SKILL.md 仅有自由文本 `capabilities` / `allowed-tools`，缺乏可被编排者/审核者解析的权限模型，容易把"能力清单"误读成"授权边界"从而低估攻击面。本版在 SKILL.md frontmatter 新增**机器可读的 `permissions` 块**（`model: none-formal`、`enforcement`、`least-privilege`、`metadata-is`），并新增章节「🔐 权限模型与最低特权」：
++   - 明确 `capabilities` 是**攻击面描述，不是权限授予、也不是沙箱边界**；
++   - 给出**三级部署矩阵**（全能力 / 安全模式 / 沙箱+安全模式）及每级残余风险；
++   - 列出**实际执行边界**（token 仅限网络可达性、安全模式是唯一内建能力开关、路径限制、宿主工具策略局限）；
++   - 声明本技能**没有**独立于上述四点的形式化权限系统，最低特权须在编排层落实。
++ - README 中英文「安全说明」同步补充权限模型提示，与 SKILL.md 三处一致。
++ ## [1.3.3] — 2026-07-30
++ - **技能名不合规导致安装失败**：SKILL.md frontmatter 的 `name` 由 `Playwright-browser-use` 改为全小写 `playwright-browser-use`。宿主平台校验规则要求技能名只能包含小写字母、数字与连字符，原大写首字母会在添加技能时报 `Invalid skill name`。
++ - 同步将发布镜像目录改名为 `playwright-browser-use`，并更新 `sync.sh` / `make-release.sh` 的默认路径，保证目录名与技能名一致。
+
+### MANIFEST.txt  [docs]
+- # Generated: 2026-07-27T07:23:59Z
+- # Source: /d/workbuddy/skills/Playwright-browser-use
++ # Generated: 2026-07-30T14:06:03Z
++ # Source: /d/workbuddy/skills/playwright-browser-use
+
+### QUICKSTART.en.md  [docs]
+- > 📁 **Path confinement:** `cookies` / `storage` `export`/`import` are **confined to `~/.pw-browser/` by default** — a deliberate safety measure so credentials can't be silently scattered into `/tmp` or loaded from attacker-controlled paths elsewhere. A custom path must also live under `~/.pw-browser/`. To read/write outside it you must pass `--unsafe` (**not recommended**, only if you know exactly what you're doing). Every response carries a `warning` field noting the file holds live session credentials.
+- > - Delete them when done (`rm`); if you must keep them briefly, keep them under the already-restricted `~/.pw-browser/` and `chmod 600` the file.
++ > 🔒 v1.3.10+: `suggestedFilename` is chosen by the web page and is untrusted input. When `--path` is a directory, the name is reduced to a `basename` and confined inside it; anything escaping returns `PathTraversal`.
++ > 📁 **Path confinement:** `cookies` / `storage` `export`/`import` are **confined to `~/.pw-browser/` by default** — a deliberate safety measure so credentials can't be silently scattered into `/tmp` or loaded from attacker-controlled paths elsewhere. A custom path must also live under `~/.pw-browser/` (paths are resolved through `realpath`, so symlinks can't escape either).
++ >
++ > 🛡️ **Waiving the confinement is the operator's call, not the caller's (v1.3.8):** earlier versions let any caller lift the guard just by adding `--unsafe` — handing the key to the very party the guard constrains. Escaping now requires **both**: ① the operator (a human) starts the daemon with `PW_BROWSER_ALLOW_UNSAFE_CRED_PATH=1` (a process env var, which a party sending HTTP commands cannot set), and ② the caller passes `--unsafe` (intent). `--unsafe` alone is rejected with `UnsafeOverrideNotPermitted`. Responses carry `confined` and `warning` fields, and the daemon logs every credential-path access to stderr for auditing.
++ > - Delete them when done (`rm`); if you must keep them briefly, just leave them in the default `~/.pw-browser/` — since v1.3.9 that directory is created `0700` and credential files (plus the daemon auth token) are written `0600`, so **no manual `chmod` is needed**. On Windows POSIX mode bits aren't enforced by the OS; user-profile ACLs apply instead.
++ > - If credentials must never touch the disk at all, the operator can start the daemon with `PW_BROWSER_CRED_PERSIST=off`: `export`/`import` are then **refused** (`CredentialPersistenceDisabled`) while in-memory `cookies list` / `storage get|set|clear` keep working — finer-grained than `PW_BROWSER_SAFE_MODE=1`, which disables the credential primitives and code execution wholesale.
+
+### QUICKSTART.md  [docs]
+- > 📁 **路径限制**：`cookies` / `storage` 的 `export`/`import` 默认被限制在 `~/.pw-browser/` 目录内——这是刻意的安全设计，防止凭证被静默散落到 `/tmp` 或加载来自任意路径的攻击者构造文件。自定义路径也必须位于 `~/.pw-browser/` 之下；若要写到/读自该目录之外，必须显式传 `--unsafe`（**不推荐**，仅当你清楚自己在做什么时）。命令返回里都带 `warning` 字段提示该文件含实时会话凭证。
+- > - 用完即删（`rm`）；若需暂存，请放到受限目录（如 `~/.pw-browser/`，它本身即受限）并对文件设 `chmod 600`。
++ > 🔒 v1.3.10+：`suggestedFilename` 由网页决定，属不可信输入。当 `--path` 是目录时，该名字会被取 `basename` 并限制在目录内，越界返回 `PathTraversal`。
++ > 📁 **路径限制**：`cookies` / `storage` 的 `export`/`import` 默认被限制在 `~/.pw-browser/` 目录内——这是刻意的安全设计，防止凭证被静默散落到 `/tmp` 或加载来自任意路径的攻击者构造文件。自定义路径也必须位于 `~/.pw-browser/` 之下（路径经 realpath 解析，用符号链接也逃不出去）。
++ >
++ > 🛡️ **越界解除权归操作者，不归调用方（v1.3.8）**：早期版本只要调用方自己加 `--unsafe` 就能解除限制——等于把护栏的钥匙交给被约束的一方。现在必须**同时**满足两个条件才放行：① 操作者（人）以 `PW_BROWSER_ALLOW_UNSAFE_CRED_PATH=1` 启动 daemon（进程环境变量，发 HTTP 命令的一方改不了）；② 调用方显式传 `--unsafe`（表达意图）。只传 `--unsafe` 会被拒绝并返回 `UnsafeOverrideNotPermitted`。命令返回带 `confined`（是否仍在受限目录内）与 `warning` 字段，daemon stderr 会记录每一次凭证路径访问，便于事后审计。
++ > - 用完即删（`rm`）；若需暂存，放在默认的 `~/.pw-browser/` 内即可——自 v1.3.9 起该目录以 `0700` 创建、凭证文件以 `0600` 写入（连 daemon 认证 token 也是），**不必再手工 `chmod`**。Windows 上 POSIX 权限位不由系统强制，依赖用户目录 ACL。
++ > - 若整条流程都不该让凭证落盘：操作者用 `PW_BROWSER_CRED_PERSIST=off` 启动 daemon，`export`/`import` 会被**强制拒绝**（`CredentialPersistenceDisabled`），而 `cookies list` / `storage get|set|clear` 等内存态操作不受影响。这比 `PW_BROWSER_SAFE_MODE=1`（整体禁用凭证原语与代码执行）粒度更细。
+
+### README.en.md  [docs]
+- | Advanced | `screenshot [--annotate]` / `mousewheel <dx> <dy>` / `eval "<expr>"` ⚠️ / `run-code "<code>"` ⚠️ | screenshot (`--annotate` overlays numbered boxes matched to refs), scroll, code execution |
+- - 📁 **Path confinement:** `export`/`import` are confined to `~/.pw-browser/` by default (so credentials can't be scattered into `/tmp` or loaded from attacker-controlled paths elsewhere); a custom path must also live under that dir. Reading/writing outside it requires an explicit `--unsafe` (not recommended). Every response carries a `warning` field noting the file holds live session credentials.
+- - 🔒 **Session-persistence risk (Rogue Agent / Medium):** `export`/`import` let the login state be written to disk and restored across runs — convenient, but a rogue/misbehaving agent can use it for **privilege persistence**. Treat exported session files as secrets: delete when done, `chmod 600` if kept; don't persist credentials by default in automated flows; `cookies clear` / `storage clear` and `shutdown` the daemon when not needed (idle auto-exit defaults to 15 min). For not-fully-trusted callers, start the daemon with `PW_BROWSER_SAFE_MODE=1` — since v1.3.2 it **disables all cookies/storage subcommands entirely** (credential primitives blocked at the same level as code execution); pair with sandbox isolation if needed.
++ > ⚠️ **Full capabilities (includes code execution & credential manipulation)**: this tool is **NOT just "open web pages"** — it ships two **code-execution** abilities, `eval` (arbitrary in-page **JavaScript**) and `run-code` (Playwright/Node code in the daemon context), plus `cookies` / `storage` **credential read/write primitives** that can extract/inject login state and session tokens **without any code execution**. All are controlled by a persistent local daemon (127.0.0.1:19223), gated by a daemon token; `PW_BROWSER_SAFE_MODE=1` **fully disables** code-exec and credential access (v1.3.2+). Read "🔐 Permission Model & Least Privilege" and "⚠️ Security Boundaries" below to understand the full attack surface and applicable boundaries before authorizing.
++ | Advanced | `screenshot [--annotate]` / `mousewheel <dx> <dy>` / `eval "<expr>" [ref]` ⚠️ / `run-code "<code>"` ⚠️ | screenshot (`--annotate` overlays numbered boxes matched to refs), scroll, code execution. Without `ref`, `eval` runs against the page global scope (`scope: "page"`); with `ref`, the identifier **`el`** is bound to that DOM node (`scope: "element"`), e.g. `eval "el.textContent" e3`. Return values must be JSON-serializable |
++   > 🔒 v1.3.10+: the page-supplied suggested filename is reduced to a bare `basename` and confined inside `--path` (out-of-bounds returns `PathTraversal`), so a hostile page can no longer use a name like `../../.bashrc` to write outside the directory. If `--path` names an explicit file, it is used verbatim.
++ - 📁 **Path confinement (operator-gated):** `export`/`import` are confined to `~/.pw-browser/` by default (so credentials can't be scattered into `/tmp` or loaded from attacker-controlled paths elsewhere; paths are resolved through `realpath`, so symlinks can't escape). Since v1.3.8 the confinement **cannot be waived by the caller**: escaping it requires **both** ① the operator starting the daemon with `PW_BROWSER_ALLOW_UNSAFE_CRED_PATH=1`, and ② the caller passing `--unsafe`. `--unsafe` alone returns `UnsafeOverrideNotPermitted`. Responses carry `confined` and `warning` fields, and every credential-path access is logged to the daemon's stderr.
++ - 🔒 **Session-persistence risk (Rogue Agent / Medium):** `export`/`import` let the login state be written to disk and restored across runs — convenient, but a rogue/misbehaving agent can use it for **privilege persistence**. Treat exported session files as secrets: delete when done; if kept, just leave them under `~/.pw-browser/` — since v1.3.9 that directory is created `0700` and both credential dumps and the daemon token file are written `0600`, so no manual `chmod` is needed (on Windows POSIX mode bits aren't enforced; user-profile ACLs apply). To forbid credentials on disk entirely, start the daemon with `PW_BROWSER_CRED_PERSIST=off`: `export`/`import` are **blocked** (`CredentialPersistenceDisabled`) while `list`/`get`/`set`/`clear` keep working — finer-grained than safe mode, for long-running agents that need full automation but must not leave restorable sessions behind. `cookies clear` / `storage clear` and `shutdown` the daemon when not needed (idle auto-exit defaults to 15 min). For not-fully-trusted callers, start the daemon with `PW_BROWSER_SAFE_MODE=1` — since v1.3.2 it **disables all cookies/storage subcommands entirely** (credential primitives blocked at the same level as code execution); pair with sandbox isolation if needed.
++ - **Permission model note**: the frontmatter `capabilities` / `allowed-tools` are **free-form metadata** describing this skill's attack surface — **not a permission grant or a sandbox boundary**. Having a capability means the skill *can* do it, not that it is *limited* to it. There is **no** formal permission system beyond the daemon token / safe mode / path confinement; any "least privilege" need must be met at the orchestration layer via **deployment mode (safe mode + sandbox) + scoped operation agreements**. See SKILL.md "🔐 Permission Model & Least Privilege".
+
+### README.md  [docs]
+- | 高级 | `screenshot [--annotate]` / `mousewheel <dx> <dy>` / `eval "<expr>"` ⚠️ / `run-code "<code>"` ⚠️ | 截图（`--annotate` 叠加与 ref 对应编号框）、滚动、代码执行 |
+- - 📁 **路径限制**：`export`/`import` 默认限制在 `~/.pw-browser/` 目录内（防凭证散落 `/tmp` 或加载外部攻击者构造文件）；自定义路径也须位于该目录下，写到/读自其外必须显式 `--unsafe`（不推荐）。命令返回均带 `warning` 字段提示文件含实时会话凭证。
+- - 🔒 **会话持久化风险（Rogue Agent / 中危）**：`export`/`import` 让登录态可落盘、跨运行恢复——便利，但失控/恶意 Agent 可用它做"特权访问持久化"。导出的会话文件等同密钥：用完即删、暂存须 `chmod 600`；勿在自动化流程默认持久化凭证；不用时 `cookies clear`/`storage clear` 并 `shutdown` 关 daemon（空闲默认 15min 自动退出）。对不完全可信的调用方，用 `PW_BROWSER_SAFE_MODE=1` 启动 daemon——自 v1.3.2 起它会**整体禁用**全部 cookies/storage 子命令（凭证原语与代码执行同级拦截），必要时再配合沙箱隔离。
++ > ⚠️ **完整能力（含代码执行与凭证操控）**：本工具**不只是"点开网页"**——它内置 `eval`（页面上下文**任意 JavaScript** 执行）与 `run-code`（守护进程上下文执行 Playwright/Node 代码）两项**代码执行**能力，以及 `cookies` / `storage` **凭证读写原语**（可**无需代码执行**即提取/注入登录态与会话令牌）。全部经持久化本地守护进程（127.0.0.1:19223）控制，受 daemon token 认证保护；`PW_BROWSER_SAFE_MODE=1` 可**彻底禁用**代码执行与凭证读写（v1.3.2+）。请先阅读下方「🔐 权限模型与最低特权」与「⚠️ 安全边界与使用场景」了解完整攻击面与适用边界，再决定是否授权。
++ | 高级 | `screenshot [--annotate]` / `mousewheel <dx> <dy>` / `eval "<expr>" [ref]` ⚠️ / `run-code "<code>"` ⚠️ | 截图（`--annotate` 叠加与 ref 对应编号框）、滚动、代码执行。`eval` 不带 `ref` 时在页面全局求值（`scope: "page"`）；带 `ref` 时标识符 **`el`** 绑定到该 DOM 节点（`scope: "element"`），如 `eval "el.textContent" e3`。返回值须可 JSON 序列化 |
++   > 🔒 v1.3.10+：网页给出的建议文件名会被强制取 `basename` 并限制在 `--path` 目录内（越界返回 `PathTraversal`），恶意页面无法借 `../../` 之类的文件名写到目录之外。`--path` 若指向具体文件则按原样使用。
++ - 📁 **路径限制（操作者门禁）**：`export`/`import` 默认限制在 `~/.pw-browser/` 目录内（防凭证散落 `/tmp` 或加载外部攻击者构造文件；路径经 realpath 解析，软链无法逃逸）。自 v1.3.8 起**该限制不可由调用方自行解除**——越界需**同时**满足：① 操作者以 `PW_BROWSER_ALLOW_UNSAFE_CRED_PATH=1` 启动 daemon；② 调用方显式传 `--unsafe`。仅传 `--unsafe` 会返回 `UnsafeOverrideNotPermitted`。命令返回带 `confined` 与 `warning` 字段，daemon stderr 记录每次凭证路径访问。
++ - 🔒 **会话持久化风险（Rogue Agent / 中危）**：`export`/`import` 让登录态可落盘、跨运行恢复——便利，但失控/恶意 Agent 可用它做"特权访问持久化"。导出的会话文件等同密钥：用完即删；暂存留在 `~/.pw-browser/` 内即可——自 v1.3.9 起该目录 `0700`、凭证文件与 daemon token 均 `0600` 写入，无需手工 `chmod`（Windows 上依赖用户目录 ACL）。不想让凭证落盘的场景，用 `PW_BROWSER_CRED_PERSIST=off` 启动 daemon：**强制禁用** `export`/`import`（`CredentialPersistenceDisabled`），保留 `list`/`get`/`set`/`clear` 内存态操作——比安全模式粒度更细，适合需要完整自动化但禁止会话跨运行留存的长驻 agent。不用时 `cookies clear`/`storage clear` 并 `shutdown` 关 daemon（空闲默认 15min 自动退出）。对不完全可信的调用方，用 `PW_BROWSER_SAFE_MODE=1` 启动 daemon——自 v1.3.2 起它会**整体禁用**全部 cookies/storage 子命令（凭证原语与代码执行同级拦截），必要时再配合沙箱隔离。
++ - **权限模型说明**：frontmatter 的 `capabilities` / `allowed-tools` 是**自由文本元数据**，描述本技能的攻击面，**不是权限授予或沙箱边界**——拥有某项能力意味着技能*可以*做它，而非*只能*做它。本技能**没有**独立于 daemon token / 安全模式 / 路径限制之外的形式化权限系统；任何"最小权限"诉求须通过**部署模式选择（安全模式 + 沙箱）+ 操作范围约定**在编排层落实。详见 SKILL.md「🔐 权限模型与最低特权」。
+
+### SKILL.md  [instructions]
+- name: Playwright-browser-use
+- - `cookies` / `storage`：**独立的会话凭证读写原语**，无需任何代码执行即可对 cookie 与 `localStorage` 做 `list` / `export` / `import` / `clear` / `set`。它可直接**提取**当前登录态（含 `HttpOnly` cookie、会话/Bearer 令牌、CSRF token），也可**注入**任意攻击者控制的状态，是凭据盗窃与账户接管的**独立高危面**——**不依赖** `eval` / `run-code`。普通模式下仅由 daemon token 认证保护；自 v1.3.2 起 `PW_BROWSER_SAFE_MODE=1` 会**整体禁用**全部 `cookies` / `storage` 子命令（与 eval/run-code 同级拦截）。落盘会话文件的处置见下方「会话持久化风险（Rogue Agent）」块：务必用完即删、不跨环境/账号复用。`export`/`import` 默认**限制在 `~/.pw-browser/` 目录内**以防凭证散落或加载外部攻击者构造文件；写到/读自该目录之外必须显式 `--unsafe`（不推荐）
+- | `pw-browser eval "<expr>" [ref]` | ⚠️ 执行**任意 JavaScript**（页面上下文，完整页面级代码执行：可读 cookie/存储、发起带凭证请求；受 token 认证保护，safe-mode 下禁用） |
+- > 🔒 **会话持久化风险（Rogue Agent / 中危）**：`cookies` / `storage` 的 `export` / `import` 让登录态可落盘备份、跨运行恢复——对正常用户是免登录便利，但**在失控或恶意 Agent 场景下，这正是"特权访问持久化"的典型手段**：导出的会话文件等同一份可复用的身份凭证，可被用来跳过认证、长期驻留。缓解：① 导出的会话文件**等同密钥**，用完即 `rm`、暂存须 `chmod 600` 放受限目录（如 `~/.pw-browser/`）；② **不要**在自动化流程里默认把凭证持久化到磁盘；③ 不需要时尽快 `cookies clear` / `storage clear` 并 `pw-browser shutdown` 关闭 daemon，利用空闲自动退出（`PW_BROWSER_IDLE_MS`，默认 15min）缩短凭证在内存中的驻留窗口；④ 对来源不可信的调用方，用 `PW_BROWSER_SAFE_MODE=1` 启动 daemon——自 v1.3.2 起它会**整体禁用**全部 `cookies` / `storage` 子命令（凭证原语与代码执行同级拦截），必要时再配合沙箱隔离或限定操作范围；⑤ **代码层兜底**：`export`/`import` 默认被限制在 `~/.pw-browser/` 目录内，写到/读自该目录之外必须显式 `--unsafe`，从路径层面降低凭证被散落或加载外部攻击者构造文件的可能。详见 QUICKSTART 示例 4 安全提醒。
++ name: playwright-browser-use
++ # --- Formal permission model (machine-readable) -------------------------
++ # NOTE: This skill has NO built-in fine-grained permission system. The
++ # fields below are declarative metadata for orchestrators/reviewers, NOT
++ # an enforcement boundary. Real constraints come only from:
++ #   - daemon token auth (gates NETWORK reachability, not per-capability)
++ #   - PW_BROWSER_SAFE_MODE=1 (disables code-exec + credential primitives)
++ #   - export/import path confinement to ~/.pw-browser (v1.3.1+); since v1.3.8
++ #     the caller-supplied --unsafe flag alone can NOT lift it — the operator
++ #     must also start the daemon with PW_BROWSER_ALLOW_UNSAFE_CRED_PATH=1
++ #   - PW_BROWSER_CRED_PERSIST=off (v1.3.9) removes credential persistence only
++ #     (export/import), keeping in-memory cookie/storage automation usable
++ # "capabilities" lists the MINIMUM attack surface, not a maximum; the skill
++ # can additionally drive any site the browser can reach, including ones where
++ # the user is already authenticated. Least privilege is achieved at the
++ # orchestration layer via deploy mode (safe mode + sandbox) + scoped ops.
++ permissions:
++   model: "none-formal"          # no built-in RBAC / capability-dropping
++   enforcement:
++     - "daemon-token"            # gates network reachability to 127.0.0.1:19223
++     - "safe-mode-env"           # PW_BROWSER_SAFE_MODE=1 disables code-exec + creds
++     - "path-confinement"        # cookies/storage IO limited to ~/.pw-browser
++     - "operator-gated-override" # lifting confinement needs daemon env, not a caller flag
++     - "cred-persist-killswitch" # PW_BROWSER_CRED_PERSIST=off blocks export/import only
++     - "secret-file-permissions" # daemon token + credential dumps written 0600, dir 0700
++     - "download-name-sanitised" # page-supplied download filename forced to a basename inside --path
++   least-privilege:
++     default-mode: "full"        # full power; requires trusted, user-visible, local
++     scoped-mode: "cred-persist-off"      # PW_BROWSER_CRED_PERSIST=off — keeps automation,
++                                          # removes the privilege-persistence primitive
++     reduced-mode: "safe-mode"   # PW_BROWSER_SAFE_MODE=1 — for not-fully-trusted agents
++     untrusted-mode: "safe-mode+sandbox"  # add network isolation for untrusted input
++   metadata-is: "attack-surface-description"  # NOT a grant, NOT a sandbox boundary
++ - `cookies` / `storage`：**独立的会话凭证读写原语**，无需任何代码执行即可对 cookie 与 `localStorage` 做 `list` / `export` / `import` / `clear` / `set`。它可直接**提取**当前登录态（含 `HttpOnly` cookie、会话/Bearer 令牌、CSRF token），也可**注入**任意攻击者控制的状态，是凭据盗窃与账户接管的**独立高危面**——**不依赖** `eval` / `run-code`。普通模式下仅由 daemon token 认证保护；自 v1.3.2 起 `PW_BROWSER_SAFE_MODE=1` 会**整体禁用**全部 `cookies` / `storage` 子命令（与 eval/run-code 同级拦截）。落盘会话文件的处置见下方「会话持久化风险（Rogue Agent）」块：务必用完即删、不跨环境/账号复用。`export`/`import` 默认**限制在 `~/.pw-browser/` 目录内**以防凭证散落或加载外部攻击者构造文件；自 v1.3.8 起该限制**不可由调用方自行解除**——越界需**同时**满足「操作者以 `PW_BROWSER_ALLOW_UNSAFE_CRED_PATH=1` 启动 daemon」+「调用方显式传 `--unsafe`」，否则返回 `UnsafeOverrideNotPermitted`
++ - 下载文件名消毒（v1.3.10+）：`download` 命令的建议文件名由**被自动化的网页**决定而非操作者。当 `--path` 指向**目录**时，该名字会被强制取 `basename` 并校验解析后仍位于该目录内，越界返回 `PathTraversal`；恶意站点无法再用 `../../.bashrc` 之类的名字把文件写到目录之外。若 `--path` 显式指向一个**文件路径**，则按操作者意图原样使用
++ ## 🔐 权限模型与最低特权（形式化说明）
++ > **关键澄清：`capabilities` 是攻击面描述，不是权限授予，也不是沙箱边界。**
++ > frontmatter 里的 `capabilities` / `allowed-tools` 是给编排者与审核者的**自由文本元数据**：
++ > - `capabilities` 列出的是本技能**能够做什么**（即真实攻击面的最小集合），**不代表**它被限制在这些能力内、也**不代表**它已获授权——拥有某项能力意味着技能*可以*行使它，而非*只能*行使它。
++ > - `allowed-tools` 仅声明技能可调用哪些宿主工具（如 `Bash(node:*)`），**不构成**对技能行为的强制限制；真正的行为约束来自下方"实际执行边界"。
++ > 审核时请以"攻击面下限"而非"能力上限"来读 `capabilities`：技能还可驱动浏览器能抵达的**任意站点**，包括用户**已登录**的站点，从而读取/操作该站点的认证状态。
++ ### 分级部署矩阵（最低特权选择）
++ | 部署模式 | 代码执行 (`eval`/`run-code`) | 凭证原语 (`cookies`/`storage`) | 网络 | 适用场景 | 残余风险 |
++ |----------|------------------------------|-------------------------------|------|----------|----------|
++ | **全能力（默认）** | ✅ 开启 | ✅ 开启 | 经浏览器（含带凭证请求） | 可信本地、用户全程可见、临时/演示会话 | 高：可导出/注入会话、可发带凭证请求 |
++ | **禁凭证落盘** `PW_BROWSER_CRED_PERSIST=off` | ✅ 开启 | ⚠️ 仅内存态（`export`/`import` 返回 `CredentialPersistenceDisabled`） | 经浏览器 | 需要完整自动化能力、但不允许会话状态跨运行留存的长驻 agent | 中高：仍可读取会话内容，但无法把它变成可复用的凭证文件 |
++ | **安全模式** `PW_BROWSER_SAFE_MODE=1` | ⛔ 禁用 (返回 `Disabled`) | ⛔ 禁用 (返回 `Disabled`) | 仅 `snap`/`click`/`fill` 等白名单命令，不主动发请求 | 接入来源不完全可信的 agent、CI 只读巡检 | 中：仍可访问已打开页面的 DOM/可见内容 |
++ | **沙箱 + 安全模式** | ⛔ 禁用 | ⛔ 禁用 | 额外做**网络隔离**（禁止出网 / 仅内网白名单） | 完全不可信或第三方输入驱动的自动化 | 低：沙箱逃逸前无法外联或触碰凭证 |
++ **最低特权原则**：默认按"全能力"部署仅当满足——① 用户全程可见可中断；② 操作对象为用户明确指定的页面；③ 不在已登录高权限账户（银行/邮箱/工单系统）上执行未确认动作。否则应**优先启用安全模式**，并对不可信来源**进一步沙箱隔离**。
++ ### 实际执行边界（技能到底受什么约束）
++ 1. **daemon token 认证**：仅限制*谁能通过网络抵达 daemon*（须持有启动时生成的随机 token）。一旦本地进程持有 token，**所有能力全部可用**——token 是"门禁"而非"按能力细分的权限"。
++ 2. **安全模式（v1.3.2+）**：本技能**唯一内建的能力开关**，整体禁用代码执行与 `cookies`/`storage` 凭证原语；它是降低攻击面的主开关，但不是沙箱。
++ 3. **路径限制 + 操作者门禁（v1.3.1 / v1.3.8）**：`cookies`/`storage` 的 `export`/`import` 默认被限制在 `~/.pw-browser/` 内（符号链接经 realpath 解析，无法用软链逃逸）。**解除权归属操作者而非调用方**：越界须同时满足「daemon 以 `PW_BROWSER_ALLOW_UNSAFE_CRED_PATH=1` 启动」+「调用方显式 `--unsafe`」；仅传 `--unsafe` 会被拒（`UnsafeOverrideNotPermitted`），因为调用方不能修改 daemon 进程的环境变量。这只约束落盘位置，不约束浏览器内的读/写行为。每次凭证路径访问都会写入 daemon stderr 审计行。
++ 4. **凭证持久化开关（v1.3.9）**：`PW_BROWSER_CRED_PERSIST=off` 启动 daemon 可**单独禁用** `cookies`/`storage` 的 `export`/`import`（返回 `CredentialPersistenceDisabled`），而 `list`/`get`/`set`/`clear` 等内存态操作照常可用。它比安全模式**粒度更细**：只切断"会话状态落盘"这一条特权持久化路径，保留正常自动化能力。同样是进程环境变量，调用方无法解除。
++ 5. **落盘文件权限（v1.3.9）**：`~/.pw-browser/` 以 `0700` 创建，daemon 认证 token（`daemon.json`）与导出的凭证文件均以 `0600` 写入（已存在的旧文件会被 chmod 收紧）。这防止**同机其他本地用户**读走 token 接管浏览器、或直接读取导出的会话。注意：POSIX 权限位在 Windows 上不由操作系统强制执行，Windows 下依赖用户目录的 ACL 继承。
++ 6. **宿主工具策略**：`allowed-tools` 由宿主平台在*调用层*决定是否放行技能发起的工具调用；它依赖平台实现，**不保证**能限制技能在已获准工具内的具体行为（例如在 `Bash(node:*)` 内仍可执行任意 Node 代码）。
++ > 结论：本技能**没有**独立于上述六点的"形式化权限系统"。任何"最小权限"诉求都必须通过**部署模式选择（安全模式/沙箱）+ 操作范围约定**在编排层落实，而非依赖技能元数据自证安全。
++ | `pw-browser eval "<expr>" [ref]` | ⚠️ 执行**任意 JavaScript**（页面上下文，完整页面级代码执行：可读 cookie/存储、发起带凭证请求；受 token 认证保护，safe-mode 下禁用）<br>**作用域语义**：不带 `ref` → 表达式在页面全局求值（返回 `scope: "page"`）；带 `ref` → 表达式在该元素上求值，标识符 **`el`** 绑定到对应 DOM 节点（返回 `scope: "element"`），例：`eval "el.textContent" e3`。<br>返回值必须可 JSON 序列化，**不能返回 DOM 节点或循环结构**。 |
++ > 🔒 **会话持久化风险（Rogue Agent / 中危）**：`cookies` / `storage` 的 `export` / `import` 让登录态可落盘备份、跨运行恢复——对正常用户是免登录便利，但**在失控或恶意 Agent 场景下，这正是"特权访问持久化"的典型手段**：导出的会话文件等同一份可复用的身份凭证，可被用来跳过认证、长期驻留。缓解：① 导出的会话文件**等同密钥**，用完即 `rm`；暂存请留在 `~/.pw-browser/` 内——自 v1.3.9 起该目录以 `0700` 创建、凭证文件与 daemon token 均以 `0600` 写入（**无需再手工 `chmod`**，旧文件也会被自动收紧；Windows 上 POSIX 权限位不由系统强制，依赖用户目录 ACL）；② **不要**在自动化流程里默认把凭证持久化到磁盘——自 v1.3.9 起这不再只是建议：操作者可用 `PW_BROWSER_CRED_PERSIST=off` 启动 daemon，**强制禁用** `export`/`import`（返回 `CredentialPersistenceDisabled`）而保留 `list`/`get`/`set`/`clear` 内存态操作，在不牺牲自动化能力的前提下切断特权持久化路径；③ 不需要时尽快 `cookies clear` / `storage clear` 并 `pw-browser shutdown` 关闭 daemon，利用空闲自动退出（`PW_BROWSER_IDLE_MS`，默认 15min）缩短凭证在内存中的驻留窗口；④ 对来源不可信的调用方，用 `PW_BROWSER_SAFE_MODE=1` 启动 daemon——自 v1.3.2 起它会**整体禁用**全部 `cookies` / `storage` 子命令（凭证原语与代码执行同级拦截），必要时再配合沙箱隔离或限定操作范围；⑤ **代码层兜底（v1.3.1 / v1.3.8）**：`export`/`import` 默认被限制在 `~/.pw-browser/` 目录内（realpath 解析，软链无法逃逸），从路径层面降低凭证被散落或加载外部攻击者构造文件的可能；且**该限制不可由被约束方自行解除**——越界须由操作者以 `PW_BROWSER_ALLOW_UNSAFE_CRED_PATH=1` 启动 daemon 后、调用方再显式 `--unsafe`，缺一不可，全部访问均写 stderr 审计。详见 QUICKSTART 示例 4 安全提醒。
+
+### package-lock.json  [code]
+-   "version": "1.3.2",
+-     "version": "1.3.2",
++   "version": "1.3.10",
++     "version": "1.3.10",
+
+### package.json  [code]
+-   "version": "1.3.2",
+-   "description": "Playwright-based browser automation CLI — daemon + client architecture, system Chrome/Edge, no browser download required.",
+-     "test": "node tests/smoke.js && node tests/features.js && node tests/a-group.js && node tests/b-negative.js && node tests/c-snapcap.js",
++   "version": "1.3.10",
++   "description": "Playwright-based browser automation CLI (daemon + client) driving your system Chrome/Edge. INCLUDES HIGH-RISK PRIMITIVES: direct cookie/localStorage credential extraction & injection (session tokens), arbitrary in-page JavaScript (eval), and daemon-context code execution (run-code) — plus a persistent credentialed session. Gated by a random daemon token; set PW_BROWSER_SAFE_MODE=1 to disable all code-exec and credential primitives. Authorize only in trusted, user-visible local environments.",
++     "test": "node tests/smoke.js && node tests/features.js && node tests/a-group.js && node tests/b-negative.js && node tests/c-snapcap.js && node tests/d-download.js",
+
+### pw-browser.js  [code]
+-   if (!fs.existsSync(STATE_DIR)) fs.mkdirSync(STATE_DIR, { recursive: true });
+-   // By default these are confined to STATE_DIR so a caller cannot silently
+-   // scatter secrets into /tmp or load attacker-planted state from arbitrary
+-   // paths. Escaping the confinement requires an explicit, logged --unsafe flag.
+-   const CRED_WARNING = 'SECURITY: this file holds live session credentials (cookies / auth tokens). Treat it like a password — never commit, upload, or share it; delete it when done; restore only on your own machine and for the same site.';
+-   function resolveCredPath(raw, defaultName, params) {
+-     if (params.unsafe === 'true') return { path: path.resolve(target) };
+-     const root = path.resolve(STATE_DIR);
+-     const abs = path.resolve(target);
+-     if (abs !== root && !abs.startsWith(root + path.sep)) {
+-       return { error: `Refusing to access credentials path outside ${root}. Pass --unsafe to override (not recommended — the file contains live session secrets).` };
+-     return { path: abs };
+-       try {
+-       let target = dest;
+-         if (fs.existsSync(dest) && fs.statSync(dest).isDirectory()) target = path.join(dest, suggested);
+-       } catch (e) { target = dest; }
+-       await dl.saveAs(target);
+-       return { ok: true, savedPath: target, suggestedFilename: suggested };
+-       if (!provided || provided !== daemonToken) {
+-           // NOTE: eval runs via page.evaluate() — browser-context only.
+-           // It CANNOT reach Node.js APIs (require/fs/process), so it does
+-           // not escape the browser sandbox to the host. BUT within the page
+-           // it is FULL page-context code execution: it can read
+-           // document.cookie / localStorage / sessionStorage, issue
+-           // credentialed fetch()/XMLHttpRequest, and drive DOM actions.
+-           // Same risk class as run-code; gated by token auth + safe-mode.
+-             const r = await el.evaluate(el => eval(expr));
+-             json({ ok: true, result: typeof r === 'string' ? r : JSON.stringify(r), elapsedMs: Date.now() - t0 });
+-             json({ ok: true, result: typeof r === 'string' ? r : JSON.stringify(r), elapsedMs: Date.now() - t0 });
+-           // require/fs/child_process) are NOT present, so user code can drive
+-           // the browser but cannot reach the host. Safe-mode disables this
+-           // command entirely. This is defense-in-depth on top of token auth.
+-               const rp = resolveCredPath(params.path, 'cookies.json', params);
+-               if (rp.error) return bad(rp.error);
+-               if (rp.error) return bad(rp.error);
+-               if (rp.error) return bad(rp.error);
+-               if (rp.error) return bad(rp.error);
+-               fs.writeFileSync(rp.path, JSON.stringify(cookies, null, 2));
+-               return json({ ok: true, exported: rp.path, count: cookies.length, warning: CRED_WARNING, elapsedMs: Date.now() - t0 });
+-               const rp = resolveCredPath(fp, 'cookies.json', params);
+-               return json({ ok: true, imported: rp.path, count: Array.isArray(cookies) ? cookies.length : 1, warning: CRED_WARNING, elapsedMs: Date.now() - t0 });
+-               const rp = resolveCredPath(params.path, 'localStorage.json', params);
+-               fs.writeFileSync(rp.path, JSON.stringify(obj, null, 2));
+-               return json({ ok: true, exported: rp.path, count: Object.keys(obj).length, warning: CRED_WARNING, elapsedMs: Date.now() - t0 });
+-               const rp = resolveCredPath(fp, 'localStorage.json', params);
+-               return json({ ok: true, imported: rp.path, count: Object.keys(obj).length, warning: CRED_WARNING, elapsedMs: Date.now() - t0 });
+-         fs.writeFileSync(path.join(STATE_DIR, 'daemon.json'), JSON.stringify({ host: DAEMON_HOST, port, pid: process.pid, token: daemonToken }));
+-         if (sub === 'import') return callDaemon('/cookies', { sub: 'import', file: positional[1], unsafe: opts.unsafe });
+-         if (sub === 'import') return callDaemon('/storage', { sub: 'import', file: positional[1], unsafe: opts.unsafe });
+- if (process.argv[2] === 'daemon') {
+-   runDaemon();
+- } else {
+-   runClient();
++ // SECURITY: STATE_DIR holds the daemon auth token and (optionally) exported
++ // session credentials. Create it 0700 and best-effort tighten it if it already
++ // exists with looser bits, so other local users cannot enumerate or read it.
++ // (POSIX only — on Windows the mode argument is ignored by the OS; ACL
++ // inheritance from the user profile dir applies instead.)
++   if (!fs.existsSync(STATE_DIR)) fs.mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 });
++   try { fs.chmodSync(STATE_DIR, 0o700); } catch (_) {}
++ }
++ }
++ }
++ }
++ // SECURITY: write a file that contains secrets (auth token / session cookies /
++ // localStorage dumps) with owner-only permissions. writeFileSync's `mode` only
++ // applies when the file is CREATED, so an explicit chmod follows to also fix
++ // pre-existing files that were written by an older version as 0644.
++ function writeSecretFile(fp, data) {
++   fs.writeFileSync(fp, data, { mode: 0o600 });
++   try { fs.chmodSync(fp, 0o600); } catch (_) {}
++ // SECURITY: turn an attacker-controlled download filename into a safe
++ // in-directory target, or report traversal. The "suggested filename" of a
++ // download is chosen by the WEB PAGE being automated, not by the operator — a
++ // malicious site can return "../../.bashrc" and, when `dest` is a directory,
++ // path.join would write the file OUTSIDE the intended directory (e.g.
++ // overwriting a dotfile in $HOME). We strip every path component down to a bare
++ // basename and then assert the resolved target still lives inside dest.
++ // Module-scoped (not inside runDaemon) so it can be unit-tested without a
++ // browser. Returns { path } or { error }.
++ function safeDownloadTarget(dest, suggested) {
++   const base = path.basename(suggested || '');
++   const resolvedDest = path.resolve(dest);
++   if (base === '') {
++     return { error: { kind: 'PathTraversal', message: 'Refusing to save download: the suggested filename is empty, which would escape the destination directory.' } };
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   const target = path.join(resolvedDest, base);
++   const resolvedTarget = path.resolve(target);
++   if (resolvedTarget !== resolvedDest && !resolvedTarget.startsWith(resolvedDest + path.sep)) {
++     return { error: { kind: 'PathTraversal', message: `Refusing to save download: filename "${suggested}" escapes the destination directory.` } };
++   return { path: target };
++ // SECURITY: constant-time token comparison so a local attacker probing the
++ // daemon cannot mine the 48-hex-char auth token via timing differences. The
++ // raw `provided !== daemonToken` short-circuits and leaks length/position —
++ // negligible against a 24-byte random token, but free to get right.
++ function timingSafeToken(provided, expected) {
++   const a = Buffer.from(String(provided));
++   const b = Buffer.from(String(expected));
++   if (a.length !== b.length) return false;
++   return crypto.timingSafeEqual(a, b);
++   // These paths are confined to STATE_DIR so a caller cannot silently scatter
++   // secrets across the disk or load attacker-planted state from arbitrary paths.
++   //
++   // PRIVILEGE SEPARATION (v1.3.8): the confinement must NOT be waivable by the
++   // party it constrains. Previously `--unsafe` alone lifted it — but --unsafe is
++   // supplied by the *caller* (possibly an untrusted/compromised agent), so the
++   // guard could be disabled by the very actor it was meant to contain. That is a
++   // privilege-escalation path, not a guard. Escaping confinement now requires
++   // BOTH:
++   //   1. the operator starting the daemon with
++   //      PW_BROWSER_ALLOW_UNSAFE_CRED_PATH=1   (process env — a caller sending
++   //      HTTP commands cannot set it), and
++   //   2. the caller explicitly passing --unsafe (intent, not authority).
++   // Without (1), --unsafe is rejected outright. Every credential-path access is
++   // logged to the daemon's stderr as an audit trail.
++   const ALLOW_UNSAFE_CRED_PATH = process.env.PW_BROWSER_ALLOW_UNSAFE_CRED_PATH === '1' ||
++     process.env.PW_BROWSER_ALLOW_UNSAFE_CRED_PATH === 'true';
++   if (process.argv[2] === 'daemon' && ALLOW_UNSAFE_CRED_PATH) {
++     console.error('[daemon] WARNING: PW_BROWSER_ALLOW_UNSAFE_CRED_PATH=1 — callers may read/write credential files OUTSIDE ' + STATE_DIR + ' via --unsafe. Only enable this for trusted, non-agent-driven use.');
++   const CRED_WARNING = 'SECURITY: this file holds live session credentials (cookies / auth tokens). Treat it like a password — never commit, upload, or share it; delete it when done; restore only on your own machine and for the same site. The file is written 0600 (owner-only) on POSIX.';
++   // SECURITY (v1.3.9): operator-level kill switch for credential PERSISTENCE.
++   // Docs long advised "don't persist credentials to disk in automated flows",
++   // but that was advice only — any caller could still `cookies export`. This
++   // makes it enforceable and, crucially, finer-grained than SAFE_MODE:
++   //   SAFE_MODE=1                -> ALL cookies/storage subcommands blocked
++   //   PW_BROWSER_CRED_PERSIST=off-> only export/import blocked; list/get/set/
++   //                                 clear still work (in-memory session use)
++   // Rationale: the rogue-agent risk is dominated by session state reaching the
++   // filesystem, where it survives the daemon and becomes a reusable identity.
++   // Blocking just that keeps normal automation usable while removing the
++   // privilege-persistence primitive. Env-gated, so a caller cannot lift it.
++   const CRED_PERSIST = !(/^(off|0|false|no)$/i).test(String(process.env.PW_BROWSER_CRED_PERSIST || ''));
++   if (process.argv[2] === 'daemon' && !CRED_PERSIST) {
++     console.error('[daemon] PW_BROWSER_CRED_PERSIST=off — cookies/storage export & import are DISABLED (no credential persistence to disk). In-memory list/get/set/clear remain available.');
++   function credPersistBlocked(kind) {
++     return { ok: false, error: { kind: 'CredentialPersistenceDisabled', message: `${kind} is disabled: the operator started this daemon with PW_BROWSER_CRED_PERSIST=off, which forbids writing session credentials to disk or restoring them from disk. In-memory cookies/storage commands still work.` } };
++   // Resolve symlinks on the deepest existing ancestor, so a symlink planted
++   // inside STATE_DIR (e.g. ~/.pw-browser/out -> /tmp) cannot be used to escape
++   // the confinement check. Non-existent leaf segments are appended verbatim.
++   function realpathish(p) {
++     let cur = path.resolve(p);
++     const tail = [];
++     for (;;) {
++       try { return path.join(fs.realpathSync(cur), ...tail.slice().reverse()); } catch (_) {}
++       const parent = path.dirname(cur);
++       if (parent === cur) return path.resolve(p);
++       tail.push(path.basename(cur));
++       cur = parent;
++     }
++     }
++     }
++   function resolveCredPath(raw, defaultName, params, op) {
++     const root = realpathish(STATE_DIR);
++     const abs = realpathish(target);
++     const inside = abs === root || abs.startsWith(root + path.sep);
++     const wantsUnsafe = params.unsafe === 'true' || params.unsafe === true;
++     const label = op || 'access';
++     if (inside) {
++       console.error(`[daemon] AUDIT credential ${label}: ${abs}`);
++       return { path: abs };
++     if (!wantsUnsafe) {
++       console.error(`[daemon] AUDIT credential ${label} DENIED (outside state dir): ${abs}`);
++       return {
++       return {
++         error: {
++         error: {
++           kind: 'CredentialPathConfined',
++           message: `Refusing to ${label} credentials at a path outside ${root}. This file would hold live session secrets. Keep credential files inside the state directory; if an operator has explicitly enabled PW_BROWSER_ALLOW_UNSAFE_CRED_PATH=1 on the daemon, --unsafe may be used to override.`,
++         },
++         },
++       };
++       };
++     if (!ALLOW_UNSAFE_CRED_PATH) {
++       console.error(`[daemon] AUDIT credential ${label} DENIED (--unsafe not permitted by operator): ${abs}`);
++           kind: 'UnsafeOverrideNotPermitted',
++           message: `--unsafe cannot lift credential path confinement: the override is operator-controlled, not caller-controlled. The daemon was started without PW_BROWSER_ALLOW_UNSAFE_CRED_PATH=1, so credential files must stay inside ${root}. Restart the daemon with that variable set only if you (a human operator) intend to allow secrets to be written outside the state directory.`,
++     console.error(`[daemon] AUDIT credential ${label} OUTSIDE state dir (operator-enabled via PW_BROWSER_ALLOW_UNSAFE_CRED_PATH): ${abs}`);
++     return { path: abs, escapedConfinement: true };
++             try {
++             }
++       let safe;
++       // Only when dest is an existing DIRECTORY do we let the (attacker-chosen)
++       // suggested filename participate — and then it is forced to a bare
++       // basename inside dest. When dest is an explicit file path, use it as-is.
++       let isDir = false;
++       try { isDir = fs.existsSync(dest) && fs.statSync(dest).isDirectory(); } catch (_) {}
++       if (isDir) safe = safeDownloadTarget(dest, suggested);
++       else safe = { path: dest };
++       if (safe.error) return { ok: false, error: safe.error };
++       await dl.saveAs(safe.path);
++       return { ok: true, savedPath: safe.path, suggestedFilename: suggested };
++       if (!provided || !timingSafeToken(provided, daemonToken)) {
++           //
++           //
++           //
++           //
++           // EXECUTION SEMANTICS (explicit, do not rely on closures):
++           //   Playwright serializes the callback to a STRING and evaluates it
++           //   inside the browser. Node-scope variables are NOT captured — any
++           //   identifier the callback closes over is `undefined` in the page.
++           //   Therefore `expr` MUST be passed as an explicit argument and
++           //   `eval`-ed there (direct eval, so the arrow function's own scope
++           //   — including `el` — is visible to the expression).
++           //   - no ref : `p.evaluate(expr)` — Playwright treats a string as a
++           //              page-level expression. `this`/scope = page global.
++           //   - with ref: expression runs with `el` bound to the resolved
++           //              ElementHandle's DOM node. e.g. `el.textContent`.
++           //   Return values must be JSON-serializable by Playwright; DOM nodes
++           //   and circular structures cannot cross the bridge and will error.
++           // SECURITY: this is FULL page-context code execution — NOT a sandbox.
++           //   It cannot reach Node APIs (require/fs/process), i.e. it does not
++           //   escape to the HOST. But inside the page it can read
++           //   document.cookie / localStorage / sessionStorage, issue
++           //   credentialed fetch()/XMLHttpRequest as the logged-in user, and
++           //   drive arbitrary DOM actions. Same risk class as run-code.
++           //   Gated only by daemon token auth; PW_BROWSER_SAFE_MODE=1 disables it.
++           const serializeEvalResult = (v) => {
++             if (typeof v === 'string') return v;
++               const s = JSON.stringify(v);
++               return s === undefined ? String(v) : s;
++             } catch {
++               return String(v);
++           };
++             // `expr` passed as an argument (2nd param of evaluate), NOT captured
++             // by closure. `__pwExpr` is deliberately obscure to avoid shadowing
++             // identifiers the user expression might use; `el` is the documented binding.
++             const r = await el.evaluate((el, __pwExpr) => eval(__pwExpr), expr);
++             json({ ok: true, result: serializeEvalResult(r), scope: 'element', elapsedMs: Date.now() - t0 });
++             json({ ok: true, result: serializeEvalResult(r), scope: 'page', elapsedMs: Date.now() - t0 });
++           // require/fs/child_process) are NOT present, so user code CANNOT
++           // directly touch the HOST OS / filesystem / process.
++           // IMPORTANT — the sandbox isolates the HOST, NOT the BROWSER SESSION.
++           // The injected `page` object below is a FULL-POWER browser authority:
++           // it can navigate to ANY origin, read page DOM / cookies / localStorage,
++           // interact with ALREADY-AUTHENTICATED sessions, trigger file
++           // downloads/uploads, and issue CREDENTIALED requests — i.e. it can
++           // exfiltrate secrets or act as the logged-in user. "Cannot reach the
++           // host" does NOT mean "cannot do harm". Treat run-code as equivalent
++           // to handing the user's browser to the code.
++           // Therefore: NEVER enable run-code where untrusted input can reach it.
++           // Safe-mode (PW_BROWSER_SAFE_MODE=1) disables this command entirely;
++           // outside safe-mode, restrict it to trusted, user-visible local
++           // environments only. Token auth gates NETWORK reachability, not
++           // capability — it is defense-in-depth, not a sandbox boundary.
++               if (!CRED_PERSIST) return json({ ...credPersistBlocked('cookies export'), elapsedMs: Date.now() - t0 });
++               const rp = resolveCredPath(params.path, 'cookies.json', params, 'export');
++               if (rp.error) return json({ ok: false, error: rp.error, elapsedMs: Date.now() - t0 });
++               if (rp.error) return json({ ok: false, error: rp.error, elapsedMs: Date.now() - t0 });
++               if (rp.error) return json({ ok: false, error: rp.error, elapsedMs: Date.now() - t0 });
++               if (rp.error) return json({ ok: false, error: rp.error, elapsedMs: Date.now() - t0 });
++               writeSecretFile(rp.path, JSON.stringify(cookies, null, 2));
++               return json({ ok: true, exported: rp.path, count: cookies.length, confined: !rp.escapedConfinement, warning: CRED_WARNING, elapsedMs: Date.now() - t0 });
++               if (!CRED_PERSIST) return json({ ...credPersistBlocked('cookies import'), elapsedMs: Date.now() - t0 });
++               const rp = resolveCredPath(fp, 'cookies.json', params, 'import');
++               return json({ ok: true, imported: rp.path, count: Array.isArray(cookies) ? cookies.length : 1, confined: !rp.escapedConfinement, warning: CRED_WARNING, elapsedMs: Date.now() - t0 });
++               if (!CRED_PERSIST) return json({ ...credPersistBlocked('storage export'), elapsedMs: Date.now() - t0 });
++               const rp = resolveCredPath(params.path, 'localStorage.json', params, 'export');
++               writeSecretFile(rp.path, JSON.stringify(obj, null, 2));
++               return json({ ok: true, exported: rp.path, count: Object.keys(obj).length, confined: !rp.escapedConfinement, warning: CRED_WARNING, elapsedMs: Date.now() - t0 });
++               if (!CRED_PERSIST) return json({ ...credPersistBlocked('storage import'), elapsedMs: Date.now() - t0 });
++               const rp = resolveCredPath(fp, 'localStorage.json', params, 'import');
++               return json({ ok: true, imported: rp.path, count: Object.keys(obj).length, confined: !rp.escapedConfinement, warning: CRED_WARNING, elapsedMs: Date.now() - t0 });
++         // SECURITY: daemon.json carries the auth token that authorises eval /
++         // run-code / credential access. Written 0600 — a 0644 token file would
++         // let any other local user take over the browser session.
++         writeSecretFile(path.join(STATE_DIR, 'daemon.json'), JSON.stringify({ host: DAEMON_HOST, port, pid: process.pid, token: daemonToken }));
++     console.log(`Env (daemon): PW_BROWSER_SAFE_MODE=1 disables eval/run-code AND all cookies/storage commands`);
++     console.log(`              PW_BROWSER_CRED_PERSIST=off disables cookies/storage export+import (no credentials on disk)`);
++     console.log(`              PW_BROWSER_ALLOW_UNSAFE_CRED_PATH=1 lets --unsafe move credential files outside ~/.pw-browser`);
++     console.log(`              PW_BROWSER_IDLE_MS (default 900000, 0 = never), PW_BROWSER_SNAP_LIMIT (default 3000)`);
++         if (sub === 'import') return callDaemon('/cookies', { sub: 'import', file: positional[1] || opts.file, unsafe: opts.unsafe });
++         if (sub === 'import') return callDaemon('/storage', { sub: 'import', file: positional[1] || opts.file, unsafe: opts.unsafe });
++   } else {
++ // Guard with require.main === module so the file can be `require`d by unit
++ // tests (which only want the exported helpers) without triggering runClient().
++ if (require.main === module) {
++   if (process.argv[2] === 'daemon') {
++     runDaemon();
++     runClient();
++ // Export pure helpers for unit testing. Only relevant when the module is
++ // `require`d (not executed as the CLI) — see the require.main guard above.
++ if (require.main !== module) {
++   module.exports = { safeDownloadTarget, timingSafeToken };

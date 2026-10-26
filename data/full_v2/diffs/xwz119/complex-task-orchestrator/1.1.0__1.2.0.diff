@@ -1,0 +1,50 @@
+xwz119/complex-task-orchestrator  1.1.0 -> 1.2.0
+change_type: instructions   changelog: Rewrite concurrent write protection section: broaden from Feishu-only to universal pattern (Excel/local files/APIs all share the same root cause). Add problem panorama table, unified protection rules, and three iron laws: single writer, incremental over full, parallel read serial write.
+
+### SKILL.md  [instructions]
+- ```
+- ```
+- ### 并发写入防护（2026-04-03 实战教训）
+- **核心原则：多个 sub-agent 绝不同时写同一文件。**
+- **Excel/本地文件**：openpyxl 等库是「读取全量→修改→全量写回」模式。两个 sub-agent 并行写同一 xlsx，后保存的会覆盖先保存的，导致数据丢失。
+- **飞书文档 API**：每次写入有 document_revision_id，用过期 revision 写入会返回 order conflict。连续快速写入时前一个未完成就发下一个，也会版本冲突。
+- **飞书大文档重构（>100 block）**：原地重写等于密集删除+创建数百个 block，几乎必然触发 ordering conflict，而且失败后文档可能处于半成品状态。正确做法：
+- 实战数据：铁路行业分析文档（500+ block）原地重构多次尝试全部失败，改新建文档写入后一次成功。人工复制粘贴替换只需几秒（2026-04-04）。
+- **正确做法**：
+- ✅ Sub-agent 只搜索/处理 → 结果写各自独立的 JSON 文件
+- ✅ 主 session 最后统一合并写入 Excel / 飞书文档
+- ✅ 如果必须 sub-agent 写入，严格确保操作不同文件
+- ❌ 多个 sub-agent 写同一 Excel
+- ❌ 多个 sub-agent 写同一飞书文档
+- ❌ Sub-agent A 写完后 Sub-agent B 读同一文件再写（时序不可控）
+- **实战数据**：248 家 ISV 研究任务中，3 个 sub-agent 并行写同一 xlsx，1 个直接翻车（数据全丢），最终需主 session 手动补 60 行。
++ ### 并发写入防护（2026-04-03/04 实战教训）
++ **本质问题：任何"读→改→写"模式在并发场景下都会翻车。这不是某个工具的 bug，而是并发控制的基本原理——跟数据库事务冲突是同一个问题。**
++ **核心原则：同一时间，同一资源，只能有一个写入者。**
++ #### 问题全景（不只是飞书文档！）
++ | 资源类型 | 具体表现 | 根因 |
++ |---------|---------|------|
++ | **飞书文档 API** | Message ordering conflict | 乐观锁 revision_id 冲突 |
++ | **Excel (openpyxl)** | 后写覆盖先写，数据丢失 | 全量读→改→全量写，无锁 |
++ | **本地文件** | sub-agent 内容被另一个覆盖 | 多进程写同一文件，无锁 |
++ | **飞书 write 全量覆盖** | read 异常→write 空内容→丢数据 | "先读后写"不是原子操作 |
++ | **连续快速 API 调用** | 前一个没返回就发下一个 | 版本号过期 |
++ #### 飞书文档特有问题
++ **连续密集写入**：一次操作里调多次 `feishu_doc insert/update/write`，前一个请求还没返回下一个就发出去，revision 对不上就 conflict。
++ **大文档原地重构（>100 block）**：密集删除+创建数百个 block，几乎必然 conflict，失败后文档可能处于半成品状态。
++ 实战：铁路行业分析文档（500+ block）原地重构 5 次全部失败，新建文档写入一次成功（2026-04-04）。
++ #### Excel/本地文件问题
++ openpyxl 等库是「读取全量→修改→全量写回」模式。两个 sub-agent 同时读同一 xlsx，各自加了数据写回，后保存的覆盖先保存的，先写的数据直接丢。
++ 实战：248 家 ISV 研究，3 个 sub-agent 并行写同一 xlsx，1 个翻车数据全丢，手动补 60 行（2026-04-03）。
++ #### 统一防护铁律
++ | ❌ 危险模式 | ✅ 安全替代 |
++ |------------|-----------|
++ | 多 sub-agent 写同一 Excel/文件 | 每个 sub-agent 写独立文件（result-1.json 等）→ 主 session 合并 |
++ | 多 sub-agent 写同一飞书文档 | 同上，主 session 最后一次性写入 |
++ | "先 read 再 write" 全量覆盖 | 用 insert/append 增量写入 |
++ | 大文档原地重构 | 新建文档写入 → 人工复制替换 |
++ | 连续快速 API 调用 | 串行等返回，或合并成一次调用 |
++ **三条铁律：**
++ 1. **写入权收归一处** — sub-agent 只读/搜/算，写入全部由主 session 做
++ 2. **增量优于全量** — insert > write，append > 覆盖
++ 3. **并行读、串行写** — 搜索可以并行，写入必须串行

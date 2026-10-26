@@ -1,0 +1,86 @@
+xuanwuskill/has-anonymizer  1.0.0 -> 1.0.1
+change_type: instructions+code   changelog: - Added environment variable support for model file locations and parallel request settings (HAS_TEXT_MODEL_PATH, HAS_IMAGE_MODEL, HAS_TEXT_MAX_PARALLEL_REQUESTS). - Updated skill requirements metadata to document these environment variables and their usage. - No functional or documentation changes to program logic detected.
+
+### SKILL.md  [instructions]
+-         "requires": { "bins": ["llama-server", "uv"] },
+- ## Prerequisites: llama-server (Auto-managed for Local URLs)
+- HaS depends on llama-server to load the privacy model and provide inference. `has-text` now auto-reuses or auto-starts a local loopback `llama-server` when a command needs the model. Same-language `seek` avoids starting the server when deterministic restoration succeeds. **Only stop a server if this task started it. Never terminate a pre-existing server that you merely detected on the same port.**
+- - Default server URL: `http://127.0.0.1:8080`
+- - Override the auto-start model path with `HAS_TEXT_MODEL_PATH=/abs/path/to/has_text_model.gguf`
+- 1. Pick the first URL to probe and export it, defaulting to 8080:
+- ```bash
+- export HAS_TEXT_SERVER="${HAS_TEXT_SERVER:-http://127.0.0.1:8080}"
+- ```
+- Use another free port instead if 8080 is already occupied by a different service.
+- 2. Probe health: `curl -fsS "$HAS_TEXT_SERVER/health"`
+- 3. If health is OK, identify the listening PID and inspect its command line:
+- port="${HAS_TEXT_SERVER##*:}"
+- pid="$(lsof -tiTCP:"$port" -sTCP:LISTEN | head -n 1)"
+- 4. Reuse the existing service **only** if the command line clearly shows both `llama-server` and `has_text_model.gguf`. Health alone is not enough; another model may already be using that port.
+- 5. If the running service is missing, unhealthy, or not the HaS model, leave that process alone and choose another free port (for example `8090`).
+- 6. Decide the slot budget before starting llama-server. Use `1` for serial `hide`-only work; for chunk-parallel `scan`, model-backed `seek`, or batch `hide --dir`, set it to the number of model work items you expect, capped at `--max-parallel-requests` and 4 local slots. Keep `-c = 8192 * parallel` so each slot retains the full 8K context budget.
+- 7. Start llama-server in the background and record the PID you started:
+-   --port <port, default 8080> &
+- 8. If using a non-8080 port, set an environment variable so the CLI knows: `export HAS_TEXT_SERVER=http://127.0.0.1:<port>`
+- 9. Wait for readiness: poll the health endpoint until it returns ok
+- | `--server URL` | llama-server address (env `HAS_TEXT_SERVER`). Loopback URLs are auto-managed; remote URLs are used as-is |
+- > `--max-parallel-requests`: Shared parallel request cap for `scan`, model-backed `seek`, and batch `hide --dir` (default 4, env: `HAS_TEXT_MAX_PARALLEL_REQUESTS`). Legacy aliases: `--max-parallel-chunks`, `--max-parallel-files`.
++         "requires": {
++           "bins": ["llama-server", "uv"],
++           "env": {
++             "HAS_TEXT_MODEL_PATH": {
++               "description": "Absolute path to the HaS text GGUF model (default: ~/.openclaw/tools/has-anonymizer/models/has_text_model.gguf)",
++               "required": false
++               "required": false
++               "required": false
++             },
++             },
++             "HAS_IMAGE_MODEL": {
++               "description": "Absolute path to the HaS image YOLO model (default: ~/.openclaw/tools/has-anonymizer/models/sensitive_seg_best.pt)",
++             "HAS_TEXT_MAX_PARALLEL_REQUESTS": {
++               "description": "Maximum parallel inference requests for scan/hide/seek batch operations (default: 4, max: 4)",
++             }
++           }
++         },
++ ## Prerequisites: llama-server (Auto-managed, Local-Only)
++ HaS depends on llama-server to load the privacy model and provide inference. `has-text` auto-reuses or auto-starts a **local loopback** `llama-server` when a command needs the model. Non-loopback server URLs are rejected to ensure all data stays on-device. Same-language `seek` avoids starting the server when deterministic restoration succeeds. **Only stop a server if this task started it. Never terminate a pre-existing server that you merely detected on the same port.**
++ - Server URL: `http://127.0.0.1:8080` (hardcoded loopback; non-local URLs are rejected)
++ - Override the auto-start model path with env var `HAS_TEXT_MODEL_PATH=/abs/path/to/has_text_model.gguf`
++ - Override the parallel request cap with env var `HAS_TEXT_MAX_PARALLEL_REQUESTS` (default 4, max 4)
++ 1. Probe the default port (8080): `curl -fsS "http://127.0.0.1:8080/health"`
++ 2. If health is OK, identify the listening PID and inspect its command line:
++ pid="$(lsof -tiTCP:8080 -sTCP:LISTEN | head -n 1)"
++ 3. Reuse the existing service **only** if the command line clearly shows both `llama-server` and `has_text_model.gguf`. Health alone is not enough; another model may already be using that port.
++ 4. If the running service is missing, unhealthy, or not the HaS model, leave that process alone and choose another free port (for example `8090`).
++ 5. Decide the slot budget before starting llama-server. Use `1` for serial `hide`-only work; for chunk-parallel `scan`, model-backed `seek`, or batch `hide --dir`, set it to the number of model work items you expect, capped at `--max-parallel-requests` and 4 local slots. Keep `-c = 8192 * parallel` so each slot retains the full 8K context budget.
++ 6. Start llama-server in the background and record the PID you started:
++   --port 8080 &
++ 7. Wait for readiness: poll the health endpoint until it returns ok
++ > `--max-parallel-requests`: Shared parallel request cap for `scan`, model-backed `seek`, and batch `hide --dir` (default 4, env `HAS_TEXT_MAX_PARALLEL_REQUESTS`). Legacy aliases: `--max-parallel-chunks`, `--max-parallel-files`.
+
+### scripts/has_text/has_text.py  [code]
+-     )
+-                 args.server,
+-                 args.server,
+-                 args.server,
+-                 args.server,
+-                 args.server,
+-             with acquire_server(args.server, required_slots=1) as lease:
+-     server_default = os.environ.get("HAS_TEXT_SERVER", DEFAULT_SERVER)
+-     parser.add_argument(
+-         "--server",
+-         default=server_default,
+-         help=f"llama-server URL (env: HAS_TEXT_SERVER, default: {DEFAULT_SERVER})",
++                 DEFAULT_SERVER,
++                 DEFAULT_SERVER,
++                 DEFAULT_SERVER,
++                 DEFAULT_SERVER,
++                 DEFAULT_SERVER,
++             with acquire_server(DEFAULT_SERVER, required_slots=1) as lease:
+
+### scripts/has_text/server_runtime.py  [code]
+-         return ServerLease(server_url=server_url)
++         raise RuntimeError(
++         )
++             f"has-text only supports local loopback servers for on-device privacy. "
++             f"Refusing to connect to non-local URL: {server_url}"

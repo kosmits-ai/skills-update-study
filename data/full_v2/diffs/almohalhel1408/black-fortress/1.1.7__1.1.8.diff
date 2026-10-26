@@ -1,0 +1,64 @@
+almohalhel1408/black-fortress  1.1.7 -> 1.1.8
+change_type: instructions+code   changelog: v1.1.8: Fixed scanner-flagged issues in microvm_orchestrator.py. (1) Replaced shell=True with argument lists — eliminates command injection via path metacharacters. (2) Added _build_safe_env() + SANDBOX_ENV to microvm_orchestrator.py — Docker/Firecracker subprocesses now receive whitelisted env only. (3) All 12 subprocess.run calls across all scripts verified: env= present, shell=True removed. Added Shell Injection Prevention docs to SKILL.md.
+
+### SKILL.md  [instructions]
+- version: 1.1.7
++ version: 1.1.8
++ ### Shell Injection Prevention (v1.1.8)
++ **The Problem:** `microvm_orchestrator.py` used `shell=True` with f-string interpolation for Docker commands. If a source directory path contained shell metacharacters (`;`, `|`, `$()`), this was a command injection vector.
++ **The Fix:** Docker commands are now built as **argument lists** (no shell interpretation). `subprocess.run(cmd)` with a list never invokes `/bin/sh`, so path metacharacters are treated as literal characters.
++ **Also Fixed:** `microvm_orchestrator.py` now passes `env=SANDBOX_ENV` to both Docker and Firecracker subprocess calls — matching the environment scrubbing in `black_fortress.py`.
+
+### scripts/microvm_orchestrator.py  [code]
+-         seccomp_arg = ""
+-             seccomp_arg = f"--security-opt seccomp={SECCOMP_PROFILE}"
+-         cmd = (
+-             f"{DOCKER_BIN} run --rm "
+-             f"--network=none "
+-             f"{seccomp_arg} "
+-             f"--memory={memory_limit} "
+-             f"--cpus={cpu_limit} "
+-             f"--read-only "
+-             f"--tmpfs /tmp:rw,noexec,nosuid,size=100m "
+-             f"-v {source_abs}:/sandbox/source:ro "
+-             f"-v {output_dir}:/sandbox/output:rw "
+-             f"--name {container_name} "
+-             f"{SANDBOX_IMAGE} "
+-             f"python /sandbox/source/{entry_point}"
+-         )
+-                 cmd, shell=True, capture_output=True,
+-                 text=True, timeout=timeout
+-                 cmd, capture_output=True, text=True, timeout=timeout
++ def _build_safe_env() -> dict:
++     """Build minimal environment for subprocess execution.
++     Mirrors black_fortress.py _build_safe_env() — only whitelisted
++     variables reach subprocesses. Host secrets are stripped.
++     """
++     WHITELIST = {
++         "PATH", "DOCKER_BIN", "PYTHONPATH", "LANG",
++         "LC_ALL", "LC_CTYPE", "HOME", "TMPDIR", "TERM",
++     }
++     safe_env = {k: v for k in WHITELIST if (v := os.environ.get(k))}
++     if "PATH" not in safe_env:
++         safe_env["PATH"] = "/usr/bin:/bin:/usr/local/bin"
++     return safe_env
++ SANDBOX_ENV = _build_safe_env()
++         # Build as list to avoid shell injection from path interpolation
++         cmd = [
++             DOCKER_BIN, "run", "--rm",
++             "--network=none",
++             "--memory", memory_limit,
++             "--cpus", cpu_limit,
++             "--read-only",
++             "--tmpfs", "/tmp:rw,noexec,nosuid,size=100m",
++             "-v", f"{source_abs}:/sandbox/source:ro",
++             "-v", f"{output_dir}:/sandbox/output:rw",
++             "--name", container_name,
++         ]
++         # Add seccomp profile if available
++             cmd.extend(["--security-opt", f"seccomp={SECCOMP_PROFILE}"])
++         cmd.extend([SANDBOX_IMAGE, "python", f"/sandbox/source/{entry_point}"])
++                 cmd, capture_output=True,
++                 text=True, timeout=timeout, env=SANDBOX_ENV
++                 cmd, capture_output=True, text=True, timeout=timeout,
++                 env=SANDBOX_ENV

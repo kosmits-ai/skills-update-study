@@ -1,0 +1,389 @@
+maverick/maverick-mailchimp-mcp  1.0.0 -> 1.0.1
+change_type: instructions+code   changelog: Add Mailchimp local MCP and Pipedrive discovery tools
+
+### SKILL.md  [instructions]
+- description: Use Mailchimp integration context for audiences, campaigns, reports, automations, members, and customer-visible marketing workflows. Use after Maverick connects Mailchimp and provisions runtime OAuth credentials; this skill has no provider-owned MCP manifest registered in this repository yet.
+-             "bins": ["mcporter", "jq", "flock", "shasum"],
+-                 "MAVERICK_MAILCHIMP_MCP_REFRESH_TOKEN",
+-                 "MAVERICK_MAILCHIMP_MCP_CLIENT_ID",
+-         "primaryEnv": "MAVERICK_MAILCHIMP_MCP_REFRESH_TOKEN",
+- This skill has the shared `mcporter` wrapper scripts, but no skill-local `mcporter.json` is registered for Mailchimp yet. Do not call `bash {baseDir}/scripts/invoke.sh` until a provider MCP manifest is added. In current runtime, inspect the available Mailchimp tools first, then use the smallest read path that can identify the audience, campaign, member, report, or automation target.
+- When a Mailchimp MCP manifest is added, follow the same wrapper rule as Linear: invoke through `bash {baseDir}/scripts/invoke.sh`, never call `mcporter` directly, and discover tool schemas before choosing tool names.
+- Write operations that create, update, publish, send, schedule, delete, or modify campaigns, automations, audiences, members, segments, tags, and customer-visible marketing content require explicit user confirmation. Read current state before changing Mailchimp records, and ask the user to choose the target if multiple audiences, campaigns, or members look similar.
+- Tokens are provisioned and rotated automatically. If available runtime tools return HTTP 401 that doesn't recover within a few seconds, the OAuth grant has been revoked — re-authorize the integration to refresh credentials.
+- No provider-owned Mailchimp MCP endpoint is registered in this repository yet. Runtime tool calls, if present in the active OpenClaw environment, use Maverick-provisioned OAuth credentials and expose Mailchimp audience, campaign, report, automation, and member data to the active tool provider. Use this skill for Mailchimp-related work only; do not pass unrelated sensitive content through these tools.
+- - **`mcporter`** ([github.com/steipete/mcporter](https://github.com/steipete/mcporter)) — MCP CLI used by the shared wrapper once a Mailchimp MCP manifest exists. Auto-installed via `npm install -g --ignore-scripts mcporter` if missing on PATH (see `install` spec in frontmatter). The install spec uses unpinned `mcporter` (npm `latest`); operators with strict supply-chain controls should override the install to pin a specific version (e.g. `mcporter@<version>`).
+- - **`jq`** ([stedolan.github.io/jq](https://stedolan.github.io/jq/)) — JSON processor used by the vault initializer. System dependency; install via your OS package manager (`apt install jq`, `brew install jq`, etc.).
+- - **`flock`** (part of [util-linux](https://github.com/util-linux/util-linux)) — file locking used to serialize concurrent vault writes. Available by default on Linux; on macOS install via `brew install flock`.
+- - **`shasum`** (Perl, ships with [`Digest::SHA`](https://metacpan.org/pod/Digest::SHA)) — computes the SHA-256 hashes used to derive the mcporter vault key and the provisioned-token marker. Preinstalled on macOS and on Debian/Ubuntu (incl. the deployed `cloudflare/sandbox` Ubuntu 22.04 image); on minimal Linux images install `perl-Digest-SHA`. The script invokes `shasum -a 256` rather than GNU `sha256sum` so it runs on stock macOS without `coreutils`.
++ description: Search and read Mailchimp Marketing API audiences, members, campaigns, content, and reports through a local MCP wrapper. Use when the user asks about Mailchimp marketing data.
++             "bins": ["mcporter", "uv"],
++                 "MAVERICK_MAILCHIMP_MCP_API_BASE",
++         "primaryEnv": "MAVERICK_MAILCHIMP_MCP_ACCESS_TOKEN",
++             {
++             },
++               "id": "brew-uv",
++               "kind": "brew",
++               "formula": "uv",
++               "bins": ["uv"],
++               "label": "Install uv (brew)",
++ This skill is a thin pass-through to a local stdio MCP server for the Mailchimp Marketing API. mcporter spawns the skill's Python server on each call. The live MCP schema is the source of truth for what tools exist, what they're called, and what arguments they take.
++ ```sh
++ ```sh
++ mcporter --config {baseDir}/mcporter.json list maverick-mailchimp --schema
++ ```
++ ```
++ For structured output:
++ mcporter --config {baseDir}/mcporter.json call --output json maverick-mailchimp.<tool> key=value
++ This first implementation exposes read-only tools. Use them freely to inspect audiences, members, campaigns, campaign content, and reports. If write tools are added later, confirm clear user intent for the exact audience, member, campaign, tag, or schedule before invoking them.
++ Maverick provisions these env vars from the connected Mailchimp OAuth grant:
++ - `MAVERICK_MAILCHIMP_MCP_ACCESS_TOKEN`
++ - `MAVERICK_MAILCHIMP_MCP_API_BASE`
++ Mailchimp Marketing access tokens do not use refresh tokens in this skill. If calls return auth errors, reconnect the Mailchimp integration so Maverick can provision a fresh access token and API base.
++ Tool calls run locally: mcporter spawns this skill's Python MCP server as a subprocess, and that server forwards Mailchimp Marketing API requests with the OAuth bearer token. Mailchimp sees the audience, member, campaign, content, and report data referenced by each call. Use this skill for Mailchimp-related work only; do not pass unrelated sensitive content through these tools.
++ - **`mcporter`** ([github.com/steipete/mcporter](https://github.com/steipete/mcporter)) - MCP CLI used to invoke the local MCP server. Auto-installed via `npm install -g --ignore-scripts mcporter` if missing on PATH (see `install` spec in frontmatter). The install spec uses unpinned `mcporter` (npm `latest`); operators with strict supply-chain controls should override the install to pin a specific version.
++ - **`uv`** ([docs.astral.sh/uv](https://docs.astral.sh/uv/)) - runs the Python wrapper and local MCP server from their inline dependency metadata.
+
+### mcporter.json  [code]
++ {
++   "imports": [],
++   "mcpServers": {
++     "maverick-mailchimp": {
++       "command": "uv",
++       "args": ["run", "--script", "scripts/server.py"],
++       "env": {
++         "MAVERICK_MAILCHIMP_MCP_ACCESS_TOKEN": "${MAVERICK_MAILCHIMP_MCP_ACCESS_TOKEN}",
++         "MAVERICK_MAILCHIMP_MCP_API_BASE": "${MAVERICK_MAILCHIMP_MCP_API_BASE}"
++       }
++     }
++   }
++ }
+
+### scripts/init-mcporter.sh  [code]
+- #!/usr/bin/env bash
+- # init-mcporter.sh — vault seeder for HTTP+OAuth MCP servers.
+- #
+- #
+- #
+- #
+- #
+- #
+- # Reseeds ~/.mcporter/credentials.json when (a) the env-supplied refresh_token
+- # differs from the skill-owned provision marker, or (b) the vault entry is
+- # missing entirely. No-op when both match. The provisioner (whichever upstream
+- # system supplies the env tokens — typically via OpenClaw config.patch)
+- # triggers reseeds by rotating the env values; mcporter rotates OAuth tokens
+- # autonomously in-vault via the MCP SDK between reseeds.
+- # Usage: init-mcporter.sh <server-name> <config-path>
+- # Required env (prefix = uppercased server-name, hyphens → underscores, + "_MCP_"):
+- #   ${prefix}REFRESH_TOKEN  required
+- #   ${prefix}CLIENT_ID      required (DCR-issued)
+- #   ${prefix}ACCESS_TOKEN   required (the provisioner has both tokens at OAuth
+- #                                     completion; seeding the access token
+- #                                     skips mcporter's first-request 401→refresh)
+- # Vault key from steipete/mcporter src/oauth-vault.ts:
+- #   "${name}|${sha256({name, url, command:null}).slice(0,16)}"
+- # Variable naming: lowercase `mcp_*` for script-local state to avoid shadowing
+- # common shell variables (PATH, HOME, USER, etc.). Function-style locals would
+- # be ideal but the script body isn't in a function.
+- set -eu
+- mcp_server="${1:?server name required}"
+- mcp_config="${2:?config path required}"
+- mcp_skill_dir="$(dirname "${mcp_config}")"
+- mcp_url=$(jq -er --arg s "${mcp_server}" \
+-   '.mcpServers[$s].baseUrl // .mcpServers[$s].url' "${mcp_config}" 2>/dev/null) \
+-   || { echo "init-mcporter.sh: ${mcp_config} has no baseUrl/url for server '${mcp_server}' (or file missing)" >&2; exit 1; }
+- mcp_prefix="$(printf '%s' "${mcp_server}" | tr '[:lower:]-' '[:upper:]_')_MCP_"
+- mcp_refresh_var="${mcp_prefix}REFRESH_TOKEN"
+- mcp_access_var="${mcp_prefix}ACCESS_TOKEN"
+- mcp_client_id_var="${mcp_prefix}CLIENT_ID"
+- mcp_refresh="${!mcp_refresh_var:?${mcp_refresh_var} required}"
+- mcp_client_id="${!mcp_client_id_var:?${mcp_client_id_var} required}"
+- mcp_access="${!mcp_access_var:?${mcp_access_var} required}"
+- mcp_vault="${HOME}/.mcporter/credentials.json"
+- mcp_descriptor=$(jq -cn --arg n "${mcp_server}" --arg u "${mcp_url}" \
+-   '{name:$n, url:$u, command:null}')
+- mcp_hash=$(printf '%s' "${mcp_descriptor}" | shasum -a 256 | cut -c1-16)
+- mcp_key="${mcp_server}|${mcp_hash}"
+- # Wrapper-owned sidecar: stores a SHA-256 hash of the last env-supplied refresh
+- # token (NOT the token itself). We only need equality comparison to detect
+- # rotation, so a hash is sufficient — and a leaked .provisioned file then has
+- # no usable credential material. Compare against this hash, NOT against the
+- # live tokens.refresh_token in the vault — providers may rotate refresh tokens
+- # and the MCP SDK writes the rotated value back via saveTokens(), so the live
+- # token can drift away from what the provisioner supplied. Lives in the skill's
+- # own directory so it's co-located with the skill that owns it (cleaned up on
+- # uninstall) and outside mcporter's namespace.
+- mcp_provisioned_file="${mcp_skill_dir}/.provisioned"
+- mcp_refresh_hash=$(printf '%s' "${mcp_refresh}" | shasum -a 256 | cut -c1-64)
+- mkdir -p "$(dirname "${mcp_vault}")"
+- # Serialize concurrent writers: vault is shared across all skills, and two
+- # skills (or two parallel calls of the same skill) initializing in parallel
+- # would race the read-modify-write and tmp-file rename. flock on a sidecar
+- # lock file gates the entire critical section.
+- exec 200>>"${mcp_vault}.lock"
+- flock 200
+- [ -f "${mcp_vault}" ] || echo '{"version":1,"entries":{}}' > "${mcp_vault}"
+- mcp_provisioned_hash=$(cat "${mcp_provisioned_file}" 2>/dev/null || true)
+- # Skip reseed only if BOTH the marker hash matches AND the vault entry actually
+- # exists. Marker can survive while the vault gets reset (different files,
+- # different parent directories — a partial restore or break-glass vault wipe
+- # can leave one without the other). Without the vault check, we'd skip seeding
+- # and leave mcporter with no OAuth state, falling through to its interactive
+- # auth flow which fails headless.
+- if [ "${mcp_provisioned_hash}" = "${mcp_refresh_hash}" ] \
+-    && jq -e --arg k "${mcp_key}" '.entries[$k]' "${mcp_vault}" >/dev/null 2>&1; then
+-   exit 0
+- fi
+- # Atomic writes: tmp file beside the target so rename is guaranteed to stay on
+- # the same filesystem (atomic regardless of runtime mount layout). Interrupted
+- # runs may leave `${target}.tmp.<random>` next to the target until next cleanup
+- # pass / skill uninstall — visible and harmless.
+- # Token values pass to jq via env vars (read with `env.<name>`) instead of
+- # `--arg`, so they don't appear in /proc/<pid>/cmdline. Non-secret values
+- # (server name, URL, vault key, timestamp) still use `--arg` for clarity.
+- mcp_vault_tmp=$(mktemp "${mcp_vault}.tmp.XXXXXX")
+- mcp_access="${mcp_access}" mcp_refresh="${mcp_refresh}" mcp_client_id="${mcp_client_id}" \
+- jq --arg k "${mcp_key}" --arg n "${mcp_server}" --arg u "${mcp_url}" \
+-    --arg ts "$(date -u +%FT%TZ)" \
+-    '.entries[$k] = {
+-       serverName: $n,
+-       serverUrl:  $u,
+-       tokens:     {access_token: env.mcp_access, refresh_token: env.mcp_refresh, token_type: "Bearer"},
+-       clientInfo: {client_id: env.mcp_client_id},
+-       updatedAt:  $ts
+-     }' \
+-    "${mcp_vault}" > "${mcp_vault_tmp}"
+- mv "${mcp_vault_tmp}" "${mcp_vault}"
+- mcp_provisioned_tmp=$(mktemp "${mcp_provisioned_file}.tmp.XXXXXX")
+- printf '%s' "${mcp_refresh_hash}" > "${mcp_provisioned_tmp}"
+- mv "${mcp_provisioned_tmp}" "${mcp_provisioned_file}"
+
+### scripts/invoke.sh  [code]
+- #!/usr/bin/env bash
+- # invoke.sh — universal mcporter wrapper.
+- #
+- #
+- # Convention: the mcporter server key lives in {SKILL_DIR}/mcporter.json.
+- # The wrapper reads the manifest key; init-mcporter.sh reads URL + other server
+- # config from the same manifest.
+- # Always invoke mcporter through this wrapper, never directly.
+- set -eu
+- SKILL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+- CONFIG="${SKILL_DIR}/mcporter.json"
+- SERVER="$(jq -er '(.mcpServers // {}) | keys_unsorted[0]' "${CONFIG}" 2>/dev/null)" \
+-   || { echo "invoke.sh: ${CONFIG} has no mcpServers entry (or file missing)" >&2; exit 1; }
+- bash "${SKILL_DIR}/scripts/init-mcporter.sh" "${SERVER}" "${CONFIG}"
+- exec env MCPORTER_CONFIG="${CONFIG}" mcporter "$@"
+
+### scripts/server.py  [code]
++ #!/usr/bin/env python3
++ # /// script
++ # requires-python = ">=3.11"
++ # dependencies = [
++ #   "mcp>=1.27.0",
++ #   "certifi>=2025.11.12",
++ # ]
++ # ///
++ """Local Mailchimp Marketing API MCP server exposed over stdio."""
++ from __future__ import annotations
++ import hashlib
++ import json
++ import os
++ import ssl
++ import urllib.error
++ import urllib.parse
++ import urllib.request
++ from typing import Any
++ import certifi
++ from mcp.server.fastmcp import Context, FastMCP
++ mcp = FastMCP("mailchimp")
++ _API_BASE = os.environ.get("MAVERICK_MAILCHIMP_MCP_API_BASE", "").rstrip("/")
++ _ACCESS_TOKEN_ENV = "MAVERICK_MAILCHIMP_MCP_ACCESS_TOKEN"
++ def _bearer_token(ctx: Context) -> str:
++     _ = ctx
++     token = os.environ.get(_ACCESS_TOKEN_ENV, "").strip()
++     if not token:
++         raise RuntimeError(f"{_ACCESS_TOKEN_ENV} is required")
++     return token
++ def _api_base() -> str:
++     if not _API_BASE:
++         raise RuntimeError("MAVERICK_MAILCHIMP_MCP_API_BASE is required")
++     return _API_BASE
++ def _bounded_limit(limit: int, *, default: int = 20, maximum: int = 100) -> int:
++     try:
++     try:
++         value = int(limit or default)
++     except (TypeError, ValueError):
++         value = default
++     return max(1, min(value, maximum))
++ def _clean_params(params: dict[str, object] | None) -> dict[str, object]:
++     return {
++         key: value
++         for key, value in (params or {}).items()
++         if value not in (None, "", False)
++     }
++ def _subscriber_hash(email_or_hash: str) -> str:
++     value = email_or_hash.strip()
++     if "@" not in value:
++         return value.lower()
++     return hashlib.md5(value.lower().encode("utf-8")).hexdigest()
++ def _url(path: str, params: dict[str, object] | None = None) -> str:
++     normalized_path = path if path.startswith("/") else f"/{path}"
++     query = urllib.parse.urlencode(_clean_params(params))
++     url = f"{_api_base()}{normalized_path}"
++     return f"{url}?{query}" if query else url
++ def _request(
++     access_token: str,
++     method: str,
++     path: str,
++     *,
++     params: dict[str, object] | None = None,
++ ) -> dict[str, Any]:
++ ) -> dict[str, Any]:
++ ) -> dict[str, Any]:
++ ) -> dict[str, Any]:
++     request = urllib.request.Request(
++         _url(path, params),
++         headers={
++             "Authorization": f"Bearer {access_token}",
++             "Accept": "application/json",
++         },
++         method=method.upper(),
++     )
++     )
++     )
++     )
++     )
++     )
++     )
++     context = ssl.create_default_context(cafile=certifi.where())
++         with urllib.request.urlopen(request, timeout=30, context=context) as response:
++             raw = response.read().decode("utf-8")
++             if not raw:
++                 return {"success": True, "data": None}
++             parsed = json.loads(raw)
++             parsed = json.loads(raw)
++             return parsed if isinstance(parsed, dict) else {"success": True, "data": parsed}
++     except urllib.error.HTTPError as exc:
++         raw = exc.read().decode("utf-8", errors="replace")
++         try:
++         except ValueError:
++             parsed = {"message": raw[:500]}
++         return {
++             "success": False,
++             "error": "mailchimp_http_error",
++             "status": exc.code,
++             "details": parsed,
++         }
++ def _data_response(response: dict[str, Any]) -> dict[str, Any]:
++     if response.get("success") is False:
++         return response
++     return response
++ @mcp.tool()
++ @mcp.tool()
++ @mcp.tool()
++ @mcp.tool()
++ @mcp.tool()
++ @mcp.tool()
++ @mcp.tool()
++ @mcp.tool()
++ @mcp.tool()
++ @mcp.tool()
++ def get_account(ctx: Context) -> dict[str, Any]:
++     """Get account details for the connected Mailchimp account."""
++     return _data_response(_request(_bearer_token(ctx), "GET", "/"))
++ def list_audiences(ctx: Context, limit: int = 20, offset: int = 0) -> dict[str, Any]:
++     """List Mailchimp audiences."""
++     return _data_response(
++     return _data_response(
++     return _data_response(
++     return _data_response(
++     return _data_response(
++     return _data_response(
++         _request(
++         _request(
++         _request(
++         _request(
++         _request(
++             _bearer_token(ctx),
++             _bearer_token(ctx),
++             _bearer_token(ctx),
++             _bearer_token(ctx),
++             _bearer_token(ctx),
++             "GET",
++             "GET",
++             "GET",
++             "GET",
++             "GET",
++             "/lists",
++             params={"count": _bounded_limit(limit), "offset": max(0, int(offset or 0))},
++         )
++         )
++         )
++         )
++         )
++ def get_audience(ctx: Context, audience_id: str) -> dict[str, Any]:
++     """Get details for one Mailchimp audience."""
++     return _data_response(_request(_bearer_token(ctx), "GET", f"/lists/{audience_id}"))
++ def list_members(
++     ctx: Context,
++     ctx: Context,
++     ctx: Context,
++     audience_id: str,
++     limit: int = 20,
++     limit: int = 20,
++     limit: int = 20,
++     offset: int = 0,
++     offset: int = 0,
++     offset: int = 0,
++     status: str = "",
++     status: str = "",
++     """List members in one Mailchimp audience."""
++             f"/lists/{audience_id}/members",
++             params={
++             params={
++             params={
++                 "count": _bounded_limit(limit),
++                 "count": _bounded_limit(limit),
++                 "count": _bounded_limit(limit),
++                 "offset": max(0, int(offset or 0)),
++                 "offset": max(0, int(offset or 0)),
++                 "offset": max(0, int(offset or 0)),
++                 "status": status,
++                 "status": status,
++             },
++             },
++             },
++ def get_member(ctx: Context, audience_id: str, email_or_hash: str) -> dict[str, Any]:
++     """Get one Mailchimp audience member by email address or subscriber hash."""
++             f"/lists/{audience_id}/members/{_subscriber_hash(email_or_hash)}",
++ def search_members(
++     query: str,
++     audience_id: str = "",
++     audience_id: str = "",
++     """Search Mailchimp list members by text query."""
++             "/search-members",
++                 "query": query,
++                 "list_id": audience_id,
++                 "list_id": audience_id,
++ def list_campaigns(
++     sort_field: str = "create_time",
++     sort_dir: str = "DESC",
++     """List Mailchimp campaigns."""
++             "/campaigns",
++                 "sort_field": sort_field,
++                 "sort_dir": sort_dir,
++ def get_campaign(ctx: Context, campaign_id: str) -> dict[str, Any]:
++     """Get details for one Mailchimp campaign."""
++     return _data_response(_request(_bearer_token(ctx), "GET", f"/campaigns/{campaign_id}"))
++ def get_campaign_content(ctx: Context, campaign_id: str) -> dict[str, Any]:
++     """Get rendered content for one Mailchimp campaign."""
++         _request(_bearer_token(ctx), "GET", f"/campaigns/{campaign_id}/content")
++ def get_campaign_report(ctx: Context, campaign_id: str) -> dict[str, Any]:
++     """Get report metrics for one Mailchimp campaign."""
++     return _data_response(_request(_bearer_token(ctx), "GET", f"/reports/{campaign_id}"))
++ def main() -> None:
++     mcp.run()
++ if __name__ == "__main__":
++     main()

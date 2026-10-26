@@ -1,0 +1,92 @@
+vvusu/team-dispatch  1.0.1 -> 1.0.3
+change_type: instructions+docs+code   changelog: Fix macOS launchd watcher install by rendering an absolute-path LaunchAgent plist before bootstrap; avoid Bootstrap failed: 5 Input/output error when plist paths use ~.
+
+### CHANGELOG.md  [docs]
++ ## v1.0.3 (2026-03-09)
++ - fix(macOS): watcher 安装改为先渲染绝对路径 LaunchAgent plist 到 `~/Library/LaunchAgents/` 再 bootstrap
++ - fix(macOS): 避免 launchd 因 plist 中使用 `~` 路径导致 `Bootstrap failed: 5: Input/output error`
++ ## v1.0.2 (2026-03-09)
++ - watcher 默认改为 `openclaw-cron`（仍可配置切换到 `auto-system-first`/launchd/systemd/cron）
++ - 修复 `paths.projectsRoot` 的 `~/` 展开（避免在技能目录下创建字面 `~/work`）
++ - watcher 文档补齐（CONFIG.md）
++ - macOS LaunchAgent plist 的 watch.sh 路径改为 `~/.openclaw/skills/team-dispatch/...`（更符合软链接加载路径）
+
+### README.md  [docs]
+- [![Version](https://img.shields.io/badge/version-1.0.1-blue.svg)](https://github.com/vvusu/team-dispatch/releases)
+-   "version": "1.0.1",
++ [![Version](https://img.shields.io/badge/version-1.0.3-blue.svg)](https://github.com/vvusu/team-dispatch/releases)
++   "version": "1.0.3",
+
+### README.zh.md  [docs]
+- [![Version](https://img.shields.io/badge/version-1.0.1-blue.svg)](https://github.com/vvusu/team-dispatch/releases)
+-   "version": "1.0.1",
++ [![Version](https://img.shields.io/badge/version-1.0.3-blue.svg)](https://github.com/vvusu/team-dispatch/releases)
++   "version": "1.0.3",
+
+### SKILL.md  [instructions]
+- # 🚀 Team Dispatch v1.0.1 — Multi-Agent Workflow Orchestration
++ # 🚀 Team Dispatch v1.0.3 — Multi-Agent Workflow Orchestration
+
+### config.json  [code]
+-   "version": "1.0.1",
+-       "backend": "auto-system-first",
+-       "note": "Cross-platform background watcher installer. backend: auto|openclaw-cron|launchd|systemd|cron"
++   "version": "1.0.3",
++       "backend": "openclaw-cron",
++       "note": "Cross-platform background watcher installer. backend: openclaw-cron|auto|auto-system-first|launchd|systemd|cron"
+
+### references/CONFIG.md  [docs]
++ ## Watcher（后台周期任务）
++ - `team.watcher.enabled` (default: `true`)
++ - `team.watcher.backend` (default: `openclaw-cron`)
++   - `openclaw-cron`: 默认推荐（统一管理，开箱即用；但会消耗模型 token）
++   - `auto-system-first`: 系统调度优先（launchd/systemd/cron），失败才 fallback（更省 token）
++   - `launchd|systemd|cron`: 强制指定具体系统调度器
++ - `team.watcher.interval` (seconds)
++ - `team.watcher.grace` (seconds)
+
+### scripts/setup.sh  [code]
+- # Expand leading ~/
+- if [[ "$PROJECTS_ROOT" == ~/* ]]; then PROJECTS_ROOT="$HOME/${PROJECTS_ROOT#~/}"; fi
++ fi
++ # Expand leading ~/ (do NOT rely on shell tilde expansion, because the value is quoted)
++ if [[ "$PROJECTS_ROOT" == "~/"* ]]; then
++   PROJECTS_ROOT="$HOME/${PROJECTS_ROOT#~/}"
+
+### scripts/watch-install.sh  [code]
+-   # Note: the plist already contains default INTERVAL/GRACE; we override via launchctl setenv.
+-     echo "[dry-run] launchctl bootout gui/$(id -u) $LABEL (best-effort)"
+-     launchctl bootout "gui/$(id -u)" "$LABEL" >/dev/null 2>&1 || true
+-   run launchctl bootstrap "gui/$(id -u)" "$PLIST_SRC"
++   if [ "$DRY_RUN" = "1" ]; then
++   else
++   fi
++ }
++ PLIST_DST="$HOME/Library/LaunchAgents/team-dispatch.watch.plist"
++   mkdir -p "$HOME/Library/LaunchAgents"
++   WATCH_SH="$HOME/.openclaw/skills/team-dispatch/scripts/watch.sh"
++   STDOUT_LOG="$HOME/.openclaw/workspace/tasks/watch.out.log"
++   STDERR_LOG="$HOME/.openclaw/workspace/tasks/watch.err.log"
++   mkdir -p "$(dirname "$STDOUT_LOG")"
++     echo "[dry-run] render plist: $PLIST_DST"
++     python3 - <<PY
++ import os, plistlib
++ src = os.path.expanduser("$PLIST_SRC")
++ dst = os.path.expanduser("$PLIST_DST")
++ home = os.path.expanduser("~")
++ with open(src, "rb") as f:
++     data = plistlib.load(f)
++ data["ProgramArguments"] = ["/bin/bash", os.path.join(home, ".openclaw/skills/team-dispatch/scripts/watch.sh")]
++ data["StandardOutPath"] = os.path.join(home, ".openclaw/workspace/tasks/watch.out.log")
++ data["StandardErrorPath"] = os.path.join(home, ".openclaw/workspace/tasks/watch.err.log")
++ data["EnvironmentVariables"] = {
++     **(data.get("EnvironmentVariables") or {}),
++     "INTERVAL": str(os.environ.get("INTERVAL", "$INTERVAL")),
++     "GRACE": str(os.environ.get("GRACE", "$GRACE")),
++ with open(dst, "wb") as f:
++     plistlib.dump(data, f)
++ PY
++   # Note: keep env in both plist and launchctl setenv so manual reruns inherit overrides too.
++     echo "[dry-run] launchctl bootout gui/$(id -u) $PLIST_DST (best-effort)"
++     launchctl bootout "gui/$(id -u)" "$PLIST_DST" >/dev/null 2>&1 || true
++   run launchctl bootstrap "gui/$(id -u)" "$PLIST_DST"

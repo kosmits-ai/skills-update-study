@@ -1,0 +1,719 @@
+kuns9/trading-upbit-skill  1.0.12 -> 1.0.13
+change_type: code   changelog: - Removed five resource files: events.json, heartbeat.json, nearCounter.json, positions.json, and topVolumeCache.json. - No changes to public documentation or functionality indicated. - Skill behavior and usage remain unchanged.
+
+### config.example.json  [code]
+-     "watchlist": ["KRW-BTC", "KRW-ETH", "KRW-SOL"],
+-     "excludeMarkets": ["KRW-USDT"],
+-     "volatilityBreakout": { "k": 0.5 },
+-       "stopLoss": -0.02
++     "watchlist": [
++       "KRW-BTC",
++       "KRW-ETH",
++       "KRW-SOL"
++     ],
++     ],
++     "excludeMarkets": [
++       "KRW-USDT"
++     },
++     },
++     "volatilityBreakout": {
++       "k": 0.5
++       "pressure": {
++         "enabled": true,
++         "candleUnitMinutes": 5,
++         "candles": 5,
++         "buyMin": 2,
++         "sellMin": 3,
++         "sellReduceRatio": 0.5,
++         "sellReduceMinKrw": 5000,
++         "entryMode": "filter",
++         "requireOneHourBull": true
++       },
++       "stopLoss": -0.02,
++       "reentryCooldownMinutes": 30
++     "eventDedupe": {
++       "ttlMs": 3600000,
++       "byType": {
++         "BUY_SIGNAL": 600000,
++         "STOPLOSS_HIT": 300000,
++         "TARGET_HIT": 300000,
++         "TRAILING_STOP_HIT": 180000,
++         "TAKEPROFIT_HARD": 300000,
++         "SELL_PRESSURE_HIT": 300000,
++         "WATCH_CANDIDATE": 600000
++       }
+
+### resources/events.json  [code]
+- []
+
+### resources/heartbeat.json  [code]
+- {
+-   "lastRunAt": "2026-02-15T12:49:18.132Z",
+-   "lastSummary": {
+-     "scanned": 9,
+-     "breakoutCandidates": 0,
+-     "nearCandidates": 0,
+-     "nearBull": 0,
+-     "breakoutBull": 0,
+-     "signals": 0
+-   },
+-   "lastWatchAt": "2026-02-15T12:49:17.861Z",
+-   "lastWatch": {
+-     "KRW-BTC": 103050000,
+-     "KRW-ETH": 3014000,
+-     "KRW-SOL": 130300
+-   }
+- }
+
+### resources/nearCounter.json  [code]
+- {
+-   "updatedAt": 1771159758127,
+-   "counts": {
+-     "KRW-BTC": 0,
+-     "KRW-ETH": 0,
+-     "KRW-SOL": 0,
+-     "KRW-XRP": 0,
+-     "KRW-DOGE": 0,
+-     "KRW-KITE": 0,
+-     "KRW-AQT": 0,
+-     "KRW-IP": 0,
+-     "KRW-QKC": 0
+-   }
+- }
+
+### resources/positions.json  [code]
+- {
+-   "positions": []
+- }
+
+### resources/topVolumeCache.json  [code]
+- {
+-   "updatedAt": 1771159757465,
+-   "quote": "KRW",
+-   "metric": "acc_trade_price_24h",
+-   "topN": 10,
+-   "markets": [
+-     "KRW-XRP",
+-     "KRW-BTC",
+-     "KRW-ETH",
+-     "KRW-DOGE",
+-     "KRW-SOL",
+-     "KRW-KITE",
+-     "KRW-AQT",
+-     "KRW-IP",
+-     "KRW-QKC"
+-   ]
+- }
+
+### scripts/config/index.js  [code]
++ }
++ // order-flow pressure filter (5m candle direction count)
++ // - buy: bullish candles count >= buyMin
++ // - sell: bearish candles count >= sellMin
++ cfg.trading.aggressive.pressure = cfg.trading.aggressive.pressure || {};
++ cfg.trading.aggressive.pressure.enabled = cfg.trading.aggressive.pressure.enabled ?? true;
++ assertBoolean('trading.aggressive.pressure.enabled', cfg.trading.aggressive.pressure.enabled);
++ cfg.trading.aggressive.pressure.candleUnitMinutes = cfg.trading.aggressive.pressure.candleUnitMinutes ?? 5;
++ cfg.trading.aggressive.pressure.candles = cfg.trading.aggressive.pressure.candles ?? 5;
++ cfg.trading.aggressive.pressure.buyMin = cfg.trading.aggressive.pressure.buyMin ?? 2;
++ cfg.trading.aggressive.pressure.sellMin = cfg.trading.aggressive.pressure.sellMin ?? 3;
++ assertNumber('trading.aggressive.pressure.candleUnitMinutes', cfg.trading.aggressive.pressure.candleUnitMinutes);
++ assertNumber('trading.aggressive.pressure.candles', cfg.trading.aggressive.pressure.candles);
++ assertNumber('trading.aggressive.pressure.buyMin', cfg.trading.aggressive.pressure.buyMin);
++ assertNumber('trading.aggressive.pressure.sellMin', cfg.trading.aggressive.pressure.sellMin);
++ // entryMode:
++ // - 'filter' (default): breakout/near-entry must be true, pressure is an extra filter
++ // - 'pressure_only': ignore breakout/near and enter only by pressure (+ optional 1hBull)
++ cfg.trading.aggressive.pressure.entryMode = cfg.trading.aggressive.pressure.entryMode || 'filter';
++ if (!['filter', 'pressure_only'].includes(cfg.trading.aggressive.pressure.entryMode)) {
++   throw new Error("Invalid config: trading.aggressive.pressure.entryMode must be 'filter' or 'pressure_only'");
++ // Optional: require 60m bullish for pressure-only entries (default true)
++ cfg.trading.aggressive.pressure.requireOneHourBull = cfg.trading.aggressive.pressure.requireOneHourBull ?? true;
++ assertBoolean('trading.aggressive.pressure.requireOneHourBull', cfg.trading.aggressive.pressure.requireOneHourBull);
+
+### scripts/execution/tradeExecutor.js  [code]
+-         if (event.type === 'TARGET_HIT' || event.type === 'STOPLOSS_HIT' || event.type === 'TRAILING_STOP_HIT' || event.type === 'TAKEPROFIT_HARD') {
+-             await positionsRepo.updateToExitPending(event.market, event.type);
+-                 ? `[EXECUTOR] DRYRUN sell uuid=${orderResult.uuid}`
+-                 : `[EXECUTOR] sell placed uuid=${orderResult.uuid}`);
++ function getLastActionTsForMarket(positions, market) {
++     let maxTs = 0;
++     for (const p of (positions || [])) {
++         if (p.market !== market) continue;
++         const times = [p?.entry?.openedAt, p?.entry?.createdAt, p?.exit?.closedAt, p?.exit?.triggeredAt].filter(Boolean);
++         for (const t of times) {
++             const ts = new Date(t).getTime();
++             if (Number.isFinite(ts) && ts > maxTs) maxTs = ts;
++         }
++     }
++     return maxTs;
++ }
++         this.reentryCooldownMs = Number(opts.reentryCooldownMs || 0);
++             }
++             }
++             }
++             // Re-entry cooldown guard (defense-in-depth)
++             if (this.reentryCooldownMs > 0) {
++                 const lastTs = getLastActionTsForMarket(data.positions, event.market);
++                 const nowTs = Date.now();
++                 if (lastTs > 0 && (nowTs - lastTs) < this.reentryCooldownMs) {
++                     Logger.warn(`[EXECUTOR] skip cooldown market=${event.market} ageMs=${nowTs - lastTs} < cooldownMs=${this.reentryCooldownMs}`);
++                     return { ok: false, disposition: 'SKIP', reason: 'REENTRY_COOLDOWN' };
++                 }
++         if (event.type === 'TARGET_HIT' || event.type === 'STOPLOSS_HIT' || event.type === 'TRAILING_STOP_HIT' || event.type === 'TAKEPROFIT_HARD' || event.type === 'SELL_PRESSURE_HIT') {
++             const isPartial = (event.type === 'SELL_PRESSURE_HIT') && Number(riskResult?.ratio || 1) < 1;
++             if (!isPartial) {
++                 await positionsRepo.updateToExitPending(event.market, event.type);
++                 ? `[EXECUTOR] DRYRUN sell uuid=${orderResult.uuid} volume=${riskResult.volume}${isPartial ? ` ratio=${riskResult.ratio}` : ''}`
++                 : `[EXECUTOR] sell placed uuid=${orderResult.uuid} volume=${riskResult.volume}${isPartial ? ` ratio=${riskResult.ratio}` : ''}`);
++             if (isPartial) {
++                 await positionsRepo.recordPartialExit(event.market, orderResult, event.type, riskResult.ratio, { meta: event.meta || null });
++                 return { ok: true, disposition: 'DONE_PARTIAL', action: 'SELL_PARTIAL', uuid: orderResult.uuid, ratio: riskResult.ratio };
+
+### scripts/risk/riskManager.js  [code]
+-             if (event.type === 'TARGET_HIT' || event.type === 'STOPLOSS_HIT') {
+-                 return { allow: true, volume: asset.balance, fee: askFee };
++ const { loadConfig } = require('../config');
++ const cfg = loadConfig();
++                 }
++                 }
++                 }
++             if (
++                 event.type === 'TARGET_HIT' ||
++                 event.type === 'STOPLOSS_HIT' ||
++                 event.type === 'TRAILING_STOP_HIT' ||
++                 event.type === 'TAKEPROFIT_HARD' ||
++                 event.type === 'SELL_PRESSURE_HIT'
++             ) {
++                 const fullVol = parseFloat(asset.balance);
++                 // Optional: partial sell for SELL_PRESSURE_HIT (reduce-only)
++                 let ratio = 1;
++                 if (event.type === 'SELL_PRESSURE_HIT') {
++                 if (event.type === 'SELL_PRESSURE_HIT') {
++                     const r = Number(cfg.trading?.aggressive?.pressure?.sellReduceRatio ?? 1);
++                     if (Number.isFinite(r) && r > 0 && r < 1) ratio = r;
++                 let volume = fullVol * ratio;
++                 // Sell min_total guard (best-effort). Upbit /orders/chance exposes ask.min_total.
++                 const minSellTotal = parseFloat(chance?.market?.ask?.min_total ?? chance?.market?.bid?.min_total ?? minTotal);
++                 const current = Number(event?.meta?.current ?? event?.payload?.price ?? 0);
++                 if (Number.isFinite(current) && current > 0 && Number.isFinite(minSellTotal) && minSellTotal > 0) {
++                     const est = current * volume;
++                     if (est < minSellTotal) {
++                         const fullEst = current * fullVol;
++                         if (fullEst >= minSellTotal) {
++                             // fallback: sell full position if partial would be rejected
++                             volume = fullVol;
++                             ratio = 1;
++                         } else {
++                             return { allow: false, reason: 'UNDER_MIN_TOTAL_SELL', detail: `추정매도금액 미달: ${est} < ${minSellTotal}` };
++                         }
++                         }
++                     }
++                     }
++                 // Optional local minimum for pressure-based reduce sells
++                     const localMin = Number(cfg.trading?.aggressive?.pressure?.sellReduceMinKrw ?? 0);
++                     if (Number.isFinite(localMin) && localMin > 0 && Number.isFinite(current) && current > 0) {
++                         const est = current * volume;
++                         if (est < localMin) {
++                             const fullEst = current * fullVol;
++                             if (fullEst >= localMin) {
++                                 volume = fullVol;
++                                 ratio = 1;
++                             } else {
++                                 return { allow: false, reason: 'UNDER_LOCAL_MIN_SELL', detail: `설정 최소매도금액 미달: ${est} < ${localMin}` };
++                             }
++                 return { allow: true, volume, fee: askFee, ratio };
+
+### scripts/state/positionsRepo.js  [code]
+-     pos.entry.avgFillPrice = Number(orderResult.price || 0);
++   }
++   }
++     const data = await this.load();
++     const data = await this.load();
++     const newPos = {
++       market,
++     };
++     data.positions.push(newPos);
++     await this.save(data);
++     await this.save(data);
++     return newPos;
++     if (!pos) return;
++     // NOTE:
++     // For market-buy (ord_type='price'), Upbit returns `price` as the KRW amount field, not the filled average price.
++     // The true avg fill price should be derived from /order(trades) or /accounts(avg_buy_price).
++     // We keep this field as a best-effort hint only.
++     pos.entry.avgFillPrice = Number(orderResult?.avgFillPrice || orderResult?.trade_price || 0);
++     pos.exit = pos.exit || {};
++   /**
++   /**
++    * Import an OPEN position from /accounts.
++    * - This allows the monitor/worker to manage assets bought outside this bot
++    *   (manual trades, previous runs, partial fills, etc.).
++    */
++    */
++   async importOpenFromAccounts(market, avgBuyPrice, meta = {}) {
++     const exists = data.positions.find(p => p.market === market && (p.state === 'OPEN' || p.state === 'ENTRY_PENDING' || p.state === 'EXIT_PENDING'));
++     if (exists) return exists;
++       id: `pos_import_${Date.now()}`,
++       state: 'OPEN',
++       entry: {
++         budgetKRW: null,
++         orderUuid: null,
++         avgFillPrice: Number(avgBuyPrice || 0),
++         openedAt: null,
++         importedAt: new Date().toISOString(),
++       },
++       meta: { strategy: 'imported', ...meta },
++       exit: { peakPrice: Number(avgBuyPrice || 0), trailingActive: false },
++     const pos = data.positions.find(p => p.market === market && p.state === 'OPEN');
++    * Record a partial exit (reduce-only) without closing the position.
++    * - Used for aggressive SELL_PRESSURE_HIT partial sells.
++   async recordPartialExit(market, orderResult, reason, ratio, meta = {}) {
++     pos.exit.partials = Array.isArray(pos.exit.partials) ? pos.exit.partials : [];
++     pos.exit.partials.push({
++       reason,
++       ratio: Number(ratio || 0),
++       orderUuid: orderResult?.uuid || null,
++       volume: orderResult?.volume || null,
++       createdAt: new Date().toISOString(),
++       meta,
++     });
++     pos.exit.lastPartialAt = new Date().toISOString();
++     pos.exit.lastPartialReason = reason;
+
+### scripts/workers/eventWorker.js  [code]
+-  * v13 worker patch: percent-based budget split across multiple BUY_SIGNALs.
+-  *
+-  * This is a drop-in worker implementation for file-based state:
+-  * - resources/events.json
+-  * - resources/positions.json
+-  * It tries to load an Upbit client from common module paths and supports:
+-  * - placeMarketBuy(market, krwAmount) or marketBuy(market, krwAmount)
+-  * - placeMarketSell(market, volume) or marketSell(market, volume)
+-  * - accounts()/getAccounts()/listAccounts()
+- const fs = require("fs");
+- const path = require("path");
+- const { computeSplitBudget } = require("../risk/budgetPolicy");
+- function ts() {
+-   const d = new Date();
+-   return `[${d.toLocaleString()}]`;
+- }
+- function log(...a) { console.log(ts(), "[UPBIT-CLIENT]", ...a); }
+- function warn(...a){ console.warn(ts(), "[UPBIT-WARN]", ...a); }
+- function err(...a){ console.error(ts(), "[UPBIT-ERR]", ...a); }
+- function projectRoot() { return path.resolve(__dirname, "..", ".."); }
+- function resourcesDir() { return path.join(projectRoot(), "resources"); }
+- function ensureResources() {
+-   const dir = resourcesDir();
+-   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+-   const eventsFile = path.join(dir, "events.json");
+-   const positionsFile = path.join(dir, "positions.json");
+-   if (!fs.existsSync(eventsFile)) fs.writeFileSync(eventsFile, "[]\n", "utf8");
+-   if (!fs.existsSync(positionsFile)) fs.writeFileSync(positionsFile, JSON.stringify({ positions: [] }, null, 2) + "\n", "utf8");
+-   return { dir, eventsFile, positionsFile };
+- function readJson(p, fallback) { try { return JSON.parse(fs.readFileSync(p, "utf8")); } catch { return fallback; } }
+- function writeJson(p, obj) { fs.writeFileSync(p, JSON.stringify(obj, null, 2) + "\n", "utf8"); }
+- function loadConfig() {
+-   const p = path.join(projectRoot(), "config.json");
+-   if (!fs.existsSync(p)) throw new Error("config.json not found in skill root");
+-   return JSON.parse(fs.readFileSync(p, "utf8"));
+- function loadUpbitClient(cfg) {
+-   const candidates = [
+-     "../data/upbitClient",
+-     "../data/api-client",
+-     "../data/apiClient",
+-     "../execution/upbitClient",
+-     "../execution/executor",
+-   ];
+-   for (const rel of candidates) {
+-     try {
+-     try {
+-     try {
+-       const mod = require(rel);
+-       if (typeof mod === "function") return mod(cfg);
+-       if (mod?.createClient) return mod.createClient(cfg);
+-       if (mod?.client) return mod.client;
+-       return mod;
+-     } catch {}
+-   }
+-   }
+-   throw new Error("Upbit client module not found. Adapt loadUpbitClient() paths.");
+- async function getAccounts(client) {
+-   if (typeof client.accounts === "function") return await client.accounts();
+-   if (typeof client.getAccounts === "function") return await client.getAccounts();
+-   if (typeof client.listAccounts === "function") return await client.listAccounts();
+-   throw new Error("Upbit client does not expose accounts/getAccounts/listAccounts");
+- function krwBalanceFromAccounts(accts) {
+-   const krw = (accts || []).find(a => (a.currency || a.code) === "KRW");
+-   const balStr = krw?.balance ?? krw?.available ?? krw?.free ?? "0";
+-   const n = Number(balStr);
+-   return Number.isFinite(n) ? n : 0;
+- async function main() {
+-   const start = Date.now();
+-   const { eventsFile, positionsFile } = ensureResources();
+-   log("[paths] resourcesDir=" + resourcesDir());
+-   log("[paths] eventsFile=" + eventsFile);
+-   log("[paths] positionsFile=" + positionsFile);
+-   const cfg = loadConfig();
+-   const policy = cfg?.trading?.budgetPolicy || { mode: "fixed" };
+-   const events = readJson(eventsFile, []);
+-   const pending = events.filter(e => !e.processed);
+-   const buyEventsAll = pending.filter(e => e.type === "BUY_SIGNAL");
+-   const sellEvents = pending.filter(e => e.type === "SELL_SIGNAL");
+-   log(`[worker] pendingEvents=${pending.length} buy=${buyEventsAll.length} sell=${sellEvents.length}`);
+-   const client = loadUpbitClient(cfg);
+-   // positions
+-   const posDoc = readJson(positionsFile, { positions: [] });
+-   posDoc.positions = Array.isArray(posDoc.positions) ? posDoc.positions : [];
+-   // budget split selection
+-   let perOrderKRW = null;
+-   let buyProcessCount = buyEventsAll.length;
+-   let availableKRW = null;
+-   if (policy?.mode === "balance_pct_split" && buyEventsAll.length > 0) {
+-     const accts = await getAccounts(client);
+-     availableKRW = krwBalanceFromAccounts(accts);
+-     const split = computeSplitBudget(availableKRW, buyEventsAll.length, policy);
+-     perOrderKRW = split.perOrderKRW;
+-     buyProcessCount = split.processCount;
+-     log(`[budget] mode=balance_pct_split availableKRW=${Math.floor(availableKRW)} usableKRW=${split.usableKRW} totalBudgetKRW=${split.totalBudget} buyCount=${buyEventsAll.length} processCount=${buyProcessCount} perOrderKRW=${perOrderKRW}`);
+-     if (buyProcessCount === 0) warn(`[budget] insufficient budget for minOrderKRW=${policy.minOrderKRW}; skipping all BUY events this run`);
+-   function upsertPosition(market, krwSpent, uuid) {
+-     let p = posDoc.positions.find(x => x.market === market);
+-     if (!p) { p = { market }; posDoc.positions.push(p); }
+-     p.lastOrderUuid = uuid;
+-     p.lastBuyAt = new Date().toISOString();
+-     p.krwSpent = (Number(p.krwSpent) || 0) + (Number(krwSpent) || 0);
+-   let processed = 0, skipped = 0, errors = 0;
+-   // BUY
+-   for (let i = 0; i < buyEventsAll.length; i++) {
+-     const e = buyEventsAll[i];
+-     e.attempts = (e.attempts || 0) + 1;
+-     e.attempts = (e.attempts || 0) + 1;
+-     e.lastAttemptAt = new Date().toISOString();
+-     e.lastAttemptAt = new Date().toISOString();
+-     let krwAmount = e.budgetKRW || cfg?.trading?.budgetKRW || 10000;
+-     if (policy?.mode === "balance_pct_split") {
+-       if (i >= buyProcessCount || !perOrderKRW || perOrderKRW <= 0) {
+-         e.result = { action: "SKIP", reason: "INSUFFICIENT_BUDGET_FOR_SPLIT" };
+-         skipped++;
+-         continue;
+-       krwAmount = perOrderKRW;
+-     }
+-     }
+-     log(`[worker] PROCESS id=${e.id} type=${e.type} market=${e.market} attempts=${e.attempts} krw=${krwAmount}`);
+-       const buyFn = client.placeMarketBuy || client.marketBuy;
+-       if (typeof buyFn !== "function") throw new Error("Upbit client missing placeMarketBuy/marketBuy");
+-       const res = await buyFn.call(client, e.market, krwAmount);
+-       const uuid = res?.uuid || res?.result?.uuid || res?.data?.uuid;
+-       const uuid = res?.uuid || res?.result?.uuid || res?.data?.uuid;
+-       log(`[EXECUTOR] buy placed uuid=${uuid}`);
+-       upsertPosition(e.market, krwAmount, uuid);
+-       e.processed = true;
+-       e.processed = true;
+-       e.processed = true;
+-       e.processedAt = new Date().toISOString();
+-       e.processedAt = new Date().toISOString();
+-       e.processedAt = new Date().toISOString();
+-       e.result = { action: "BUY", uuid, krw: krwAmount, policy: policy?.mode || "fixed" };
+-       processed++;
+-       processed++;
+-     } catch (ex) {
+-     } catch (ex) {
+-       err(`[worker] ERROR id=${e.id} market=${e.market} msg=${ex?.message || ex}`);
+-       err(`[worker] ERROR id=${e.id} market=${e.market} msg=${ex?.message || ex}`);
+-       e.lastError = String(ex?.message || ex);
+-       e.lastError = String(ex?.message || ex);
+-       errors++;
+-       errors++;
+-   // SELL (sell full amount if position has 'amount')
+-   for (const e of sellEvents) {
+-     const p = posDoc.positions.find(x => x.market === e.market);
+-     if (!p || !p.amount) {
+-       e.result = { action: "SKIP", reason: "NO_POSITION" };
+-       skipped++;
+-       continue;
+-     log(`[worker] PROCESS id=${e.id} type=${e.type} market=${e.market} attempts=${e.attempts} amount=${p.amount}`);
+-       const sellFn = client.placeMarketSell || client.marketSell;
+-       if (typeof sellFn !== "function") throw new Error("Upbit client missing placeMarketSell/marketSell");
+-       const res = await sellFn.call(client, e.market, p.amount);
+-       log(`[EXECUTOR] sell placed uuid=${uuid}`);
+-       e.result = { action: "SELL", uuid };
+-       posDoc.positions = posDoc.positions.filter(x => x.market !== e.market);
+-   writeJson(eventsFile, events);
+-   writeJson(positionsFile, posDoc);
+-   const dur = Date.now() - start;
+-   log(`[worker] pending=${pending.length} processed=${processed} skipped=${skipped} errors=${errors} positions=${posDoc.positions.length} durationMs=${dur}`);
+-   console.log(`${ts()} [UPBIT-CLIENT] SUMMARY worker pending=${pending.length} processed=${processed} skipped=${skipped} errors=${errors} positions=${posDoc.positions.length} durationMs=${dur}`);
+- main().catch(e => {
+-   console.error(ts(), "[UPBIT-ERR] Worker Fatal:", e?.stack || e);
+-   process.exit(1);
+- });
++  * Event Worker (worker_once)
++  * - Consumes resources/events.json
++  * - Executes trades via TradeExecutor (OrderService + RiskManager + PositionsRepo)
++  * - Marks events processed with result payload
++  * Important:
++  * - Do NOT rely on process.cwd() (OpenClaw cron may run with different CWD)
++  * - Use scripts/state/resources.js for stable paths
++ const fs = require('fs').promises;
++ const { loadConfig } = require('../config');
++ const { UpbitClient, Logger } = require('../execution/upbitClient');
++ const OrderService = require('../execution/orderService');
++ const TradeExecutor = require('../execution/tradeExecutor');
++ const { ensureResources, getResourcePaths } = require('../state/resources');
++ const { acquireLock, releaseLock } = require('../state/lock');
++ const cfg = loadConfig();
++ const ACCESS_KEY = cfg.upbit.accessKey;
++ const SECRET_KEY = cfg.upbit.secretKey;
++ const PATHS = getResourcePaths();
++ const EVENTS_FILE = PATHS.eventsFile;
++ const WORKER_LOCK_FILE = PATHS.workerLockFile;
++ const LOCK_TTL_MS = cfg.trading?.workerLockTtlMs || 120000;
++ async function readEvents() {
++   await ensureResources();
++   await ensureResources();
++   try {
++   try {
++     const raw = await fs.readFile(EVENTS_FILE, 'utf8');
++     const arr = JSON.parse(raw);
++     return Array.isArray(arr) ? arr : [];
++   } catch {
++     return [];
++ async function writeEvents(events) {
++   await fs.writeFile(EVENTS_FILE, JSON.stringify(events, null, 2), 'utf8');
++ function shouldProcess(e) {
++   if (!e || e.processed) return false;
++   // Guard: avoid re-trying forever on broken events
++   const attempts = Number(e.attempts || 0);
++   const maxAttempts = cfg.execution?.maxEventAttempts ?? 5;
++   return attempts < maxAttempts;
++ async function workerOnce() {
++   const _paths = await ensureResources();
++   Logger.info(`[paths] projectRoot=${_paths.dir.replace(/\\resources$/, '')} resourcesDir=${_paths.dir}`);
++   const lock = await acquireLock(WORKER_LOCK_FILE, LOCK_TTL_MS, { kind: 'worker' });
++   if (!lock.ok) {
++     Logger.warn(`LOCKED worker (ageMs=${lock.ageMs}) - skip`);
++     return;
++   const started = Date.now();
++     const events = await readEvents();
++     const pending = events.filter(shouldProcess);
++     Logger.info(`[worker] pending=${pending.length}`);
++     if (pending.length === 0) {
++       Logger.info('SUMMARY worker pending=0 processed=0 skipped=0 errors=0');
++       return;
++     const client = new UpbitClient(ACCESS_KEY, SECRET_KEY);
++     const orderService = new OrderService(client);
++     const cooldownMin = Number(cfg.trading?.aggressive?.reentryCooldownMinutes || 0);
++     const cooldownMs = cooldownMin > 0 ? cooldownMin * 60000 : 0;
++     const executor = new TradeExecutor(orderService, { dryRun: !!cfg.execution?.dryRun, reentryCooldownMs: cooldownMs });
++     let processed = 0;
++     let skipped = 0;
++     let errors = 0;
++     // Event priority: ensure urgent exits fire before other actions.
++     const priority = {
++       STOPLOSS_HIT: 0,
++       SELL_PRESSURE_HIT: 1,
++       TRAILING_STOP_HIT: 2,
++       TARGET_HIT: 3,
++       TAKEPROFIT_HARD: 3,
++       BUY_SIGNAL: 10,
++     };
++     // Process by priority, then chronological order (createdAt)
++     pending.sort((a, b) => {
++       const pa = priority[a.type] ?? 5;
++       const pb = priority[b.type] ?? 5;
++       if (pa !== pb) return pa - pb;
++       return new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime();
++     });
++     for (const e of pending) {
++       e.attempts = Number(e.attempts || 0) + 1;
++       e.lastAttemptAt = new Date().toISOString();
++       try {
++         const res = await executor.execute(e);
++         e.result = res;
++         processed += 1;
++       } catch (ex) {
++         e.lastError = String(ex?.message || ex);
++         Logger.error(`[worker] ERROR id=${e.id} type=${e.type} market=${e.market} msg=${e.lastError}`);
++         errors += 1;
++         // Keep unprocessed so it can retry (up to maxEventAttempts)
++     // mark events array back
++     await writeEvents(events);
++     const dur = Date.now() - started;
++     Logger.info(`[worker] processed=${processed} skipped=${skipped} errors=${errors} durationMs=${dur}`);
++     Logger.info(`SUMMARY worker pending=${pending.length} processed=${processed} skipped=${skipped} errors=${errors} durationMs=${dur}`);
++   } finally {
++     await releaseLock(WORKER_LOCK_FILE);
++ function workerLoop() {
++   const interval = cfg.execution?.eventPollIntervalMs ?? 5000;
++   (async function loop() {
++     await workerOnce();
++     setTimeout(loop, interval);
++   })();
++ module.exports = { workerOnce, workerLoop };
++ if (require.main === module) {
++   workerOnce().catch(e => {
++     Logger.error(`Worker Fatal: ${e?.stack || e}`);
++     process.exit(1);
++   });
+
+### scripts/workers/monitor.js  [code]
+-         // 1시간 내 동일 마켓 동일 타입 이벤트 중복 방지
+-         const hourAgo = Date.now() - 3600000;
+-         if (events.some(e => e.dedupeKey === dedupeKey && new Date(e.createdAt).getTime() > hourAgo && !e.processed)) {
+- async function scanMarkets(priceMapHint = {}, scanList = null, openMarkets = new Set(), openCount = 0) {
+-     Logger.info(`🔍 시장 스캔 시작... (universe=${CONFIG.scanUniverse})`);
+-                     `breakout=${breakout} near=${near} 1hBull=${oneHourBull}` + (cfg.trading?.aggressive?.enabled ? ` momentumOk=${momentumOk}` : ``)
+-                     `breakout=${breakout} near=${near} 1hBull=${oneHourBull}` + (cfg.trading?.aggressive?.enabled ? ` momentumOk=${momentumOk}` : ``)
+- // BUY decision (aggressive mode)
+- // Aggressive: near-entry (ratio>=entryNearThreshold) + momentumOk + 1hBull
+- const wantEntry = (breakout) || (aggressive && near && momentumOk);
+-             payload: { price: current.close, targetPrice: result.targetPrice, ratio, breakout, near, momentumOk },
+-         Logger.warn(`EVENT BUY_SIGNAL ${JSON.stringify({ market: m.market, price: current.close, targetPrice: result.targetPrice, ratio: Number(ratio.toFixed(4)), breakout, near, momentumOk })}`);
+-                 const entry = pos.entry.avgFillPrice;
+-             await scanMarkets(priceMap, combinedToScan, new Set(positions.map(p => p.market)), positions.length);
++     eventDedupe: cfg.trading.eventDedupe || {},
++ function safeNum(v, fallback = 0) {
++     const n = Number(v);
++     return Number.isFinite(n) ? n : fallback;
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ function quoteMarketFromCurrency(currency) {
++     const quote = (cfg.trading?.topVolume?.quote || 'KRW').toUpperCase();
++     return `${quote}-${currency}`;
++ async function fetchAccountsSafe() {
++     try {
++         return await client.request('GET', '/accounts');
++     } catch (e) {
++         Logger.error(`[accounts] fetch failed: ${e?.message || e}`);
++         return [];
++     }
++     }
++     }
++     }
++ function buildAccountIndex(accounts) {
++     const idx = {};
++     for (const a of (accounts || [])) {
++         const currency = a?.currency;
++         if (!currency || currency === 'KRW') continue;
++         const market = quoteMarketFromCurrency(currency);
++         idx[market] = {
++             currency,
++             balance: safeNum(a.balance, 0),
++             locked: safeNum(a.locked, 0),
++             avgBuyPrice: safeNum(a.avg_buy_price, 0),
++         };
++     return idx;
++ async function syncPositionsFromAccounts(accountIndex) {
++     // Import holdings into positions so exit logic can be applied consistently.
++     const excluded = new Set((CONFIG.excludeMarkets || []).map(String));
++     const markets = Object.keys(accountIndex || {}).filter(m => !excluded.has(m));
++     for (const market of markets) {
++         const info = accountIndex[market];
++         if (!info) continue;
++         const qty = safeNum(info.balance, 0);
++         if (qty <= 0) continue;
++         // Create an OPEN position if this bot does not know about it.
++         await positionsRepo.importOpenFromAccounts(market, info.avgBuyPrice, { source: 'accounts' });
++ function computePressureCounts(candles = []) {
++     const bull = (candles || []).filter(c => safeNum(c.trade_price) > safeNum(c.opening_price)).length;
++     const bear = (candles || []).filter(c => safeNum(c.trade_price) < safeNum(c.opening_price)).length;
++     return { bull, bear, total: (candles || []).length };
++         // Dedupe: prevent spamming same (type,market) within TTL
++         const dedupeCfg = (CONFIG.eventDedupe || {});
++         const ttlMs = Number((dedupeCfg.byType && dedupeCfg.byType[event.type]) ?? dedupeCfg.ttlMs ?? 3600000);
++         const since = Date.now() - (Number.isFinite(ttlMs) && ttlMs > 0 ? ttlMs : 0);
++         if (ttlMs > 0 && events.some(e => e.dedupeKey === dedupeKey && new Date(e.createdAt).getTime() > since && !e.processed)) {
++             if (IS_DEBUG) Logger.info(`[event] deduped type=${event.type} market=${event.market} ttlMs=${ttlMs}`);
++         }
++ async function scanMarkets(priceMapHint = {}, scanList = null, openMarkets = new Set(), openCount = 0, lastActionMap = {}, cooldownMs = 0) {
++     const universeLabel = (Array.isArray(scanList) && scanList.length > 0) ? `custom(${scanList.length})` : CONFIG.scanUniverse;
++     Logger.info(`🔍 시장 스캔 시작... (universe=${universeLabel})`);
++             }
++             }
++             // order-flow pressure (aggressive)
++             let pressure = { bull: 0, bear: 0, total: 0 };
++             let buyPressureOk = true;
++             if (aggressive && cfg.trading?.aggressive?.pressure?.enabled && (breakout || near || ratio >= cfg.trading.aggressive.entryNearThreshold)) {
++                 const p = cfg.trading.aggressive.pressure;
++                 const unit = Math.max(1, Math.min(30, p.candleUnitMinutes ?? 5));
++                 const pc = Math.max(1, Math.min(50, p.candles ?? 5));
++                 const m5 = await marketData.getCandles('minutes', m.market, pc, unit);
++                 pressure = computePressureCounts(m5);
++                 const buyMin = Math.max(1, Math.min(pc, p.buyMin ?? 2));
++                 buyPressureOk = pressure.bull >= buyMin;
++                     `breakout=${breakout} near=${near} 1hBull=${oneHourBull}` +
++                     `breakout=${breakout} near=${near} 1hBull=${oneHourBull}` +
++                     (cfg.trading?.aggressive?.enabled ? ` momentumOk=${momentumOk}` : ``) +
++                     (cfg.trading?.aggressive?.enabled ? ` momentumOk=${momentumOk}` : ``) +
++                     ((aggressive && cfg.trading?.aggressive?.pressure?.enabled) ? ` pressure(buy=${pressure.bull}/${pressure.total}, sell=${pressure.bear}/${pressure.total}, buyOk=${buyPressureOk})` : ``)
++                     ((aggressive && cfg.trading?.aggressive?.pressure?.enabled) ? ` pressure(buy=${pressure.bull}/${pressure.total}, sell=${pressure.bear}/${pressure.total}, buyOk=${buyPressureOk})` : ``)
++ // BUY decision
++ // Aggressive: (breakout/near) + momentumOk + buyPressureOk (+ optional pressure-only mode)
++ let wantEntry = (breakout);
++ if (aggressive && cfg.trading?.aggressive?.pressure?.enabled) {
++     const p = cfg.trading.aggressive.pressure;
++     if (p.entryMode === 'pressure_only') {
++         const require1h = (p.requireOneHourBull ?? true);
++         wantEntry = buyPressureOk && (!require1h || oneHourBull);
++     } else {
++         wantEntry = (breakout || near) && momentumOk && buyPressureOk;
++ } else {
++     wantEntry = (breakout) || (aggressive && near && momentumOk);
++         const nowTs = Date.now();
++         const lastTs = Number(lastActionMap?.[m.market] || 0);
++         if (cooldownMs > 0 && lastTs > 0 && (nowTs - lastTs) < cooldownMs) {
++             Logger.warn(`  [scan] ${m.market} reentry cooldown active (ageMs=${nowTs - lastTs} < cooldownMs=${cooldownMs}) - skip`);
++         } else {
++             payload: { price: current.close, targetPrice: result.targetPrice, ratio, breakout, near, momentumOk, pressure },
++         Logger.warn(`EVENT BUY_SIGNAL ${JSON.stringify({ market: m.market, price: current.close, targetPrice: result.targetPrice, ratio: Number(ratio.toFixed(4)), breakout, near, momentumOk, pressure })}`);
++         // 1) Always sync holdings from /accounts so exits work even if positions.json is stale.
++         const accounts = await fetchAccountsSafe();
++         const accountIndex = buildAccountIndex(accounts);
++         await syncPositionsFromAccounts(accountIndex);
++                 const acct = accountIndex[pos.market];
++                 const entry = (acct?.avgBuyPrice && acct.avgBuyPrice > 0) ? acct.avgBuyPrice : pos.entry.avgFillPrice;
++                 if (!entry || entry <= 0) {
++                     Logger.warn(`[Hold] ${pos.market}: missing entry price; skip pnl calc`);
++                     continue;
++                 }
++                 }
++                 }
++                 // Aggressive: sell-pressure exit (5m bearish candle count)
++                 if (cfg.trading?.aggressive?.enabled && cfg.trading?.aggressive?.pressure?.enabled) {
++                     const p = cfg.trading.aggressive.pressure;
++                     const unit = Math.max(1, Math.min(30, p.candleUnitMinutes ?? 5));
++                     const pc = Math.max(1, Math.min(50, p.candles ?? 5));
++                     const m5 = await marketData.getCandles('minutes', pos.market, pc, unit);
++                     const pressure = computePressureCounts(m5);
++                     const sellMin = Math.max(1, Math.min(pc, p.sellMin ?? 3));
++                     const sellOk = pressure.bear >= sellMin;
++                     Logger.info(`🧭 [HoldPressure] ${pos.market}: pressure(buy=${pressure.bull}/${pc}, sell=${pressure.bear}/${pc}, sellOk=${sellOk})`);
++                     if (sellOk) {
++                         // Stop-loss should still win if already below SL
++                         const sl = cfg.trading.aggressive.stopLoss ?? -0.02;
++                         if (pnl <= sl) {
++                             await addEvent({ type: 'STOPLOSS_HIT', market: pos.market, meta: { pnl, entry, current } });
++                         } else {
++                             await addEvent({ type: 'SELL_PRESSURE_HIT', market: pos.market, meta: { pressure, pnl, entry, current } });
++                         }
++                         continue;
++                     }
++             // Re-entry cooldown guard (aggressive)
++             const cooldownMin = Number(cfg.trading?.aggressive?.reentryCooldownMinutes || 0);
++             const cooldownMs = cooldownMin > 0 ? cooldownMin * 60000 : 0;
++             const lastActionMap = {};
++             for (const p of (data.positions || [])) {
++                 const times = [p?.entry?.openedAt, p?.entry?.createdAt, p?.exit?.closedAt, p?.exit?.triggeredAt].filter(Boolean);
++                 if (!times.length) continue;
++                 let maxTs = 0;
++                 for (const t of times) {
++                     const ts = new Date(t).getTime();
++                     if (Number.isFinite(ts) && ts > maxTs) maxTs = ts;
++                 if (maxTs > 0) lastActionMap[p.market] = Math.max(lastActionMap[p.market] || 0, maxTs);
++             await scanMarkets(priceMap, combinedToScan, new Set(positions.map(p => p.market)), positions.length, lastActionMap, cooldownMs);

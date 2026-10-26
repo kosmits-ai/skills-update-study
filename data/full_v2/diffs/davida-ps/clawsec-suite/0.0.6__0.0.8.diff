@@ -1,0 +1,3957 @@
+davida-ps/clawsec-suite  0.0.6 -> 0.0.8
+change_type: instructions+docs+code   changelog: Release 0.0.8 via CI
+
+### HEARTBEAT.md  [docs]
+- # ClawSec Suite — Cron Check
+- Run this on a schedule (cron/systemd/CI/agent scheduler). It is written to be portable: it assumes only POSIX shell + curl + a SHA tool.
+- 1) Check whether ClawSec Suite has an update available
+- 2) Verify integrity of the installed suite package
+- > Design note: Uses the **checksums.json** file from the latest release, which contains version info and SHA256 hashes. Avoids reliance on a separate catalog manifest.
+- INSTALL_ROOT="${INSTALL_ROOT:-$HOME/.openclaw/skills}"
+- SUITE_DIR="$INSTALL_ROOT/clawsec-suite"
+- echo "=== ClawSec update Check ==="
+- echo "When: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+- echo "Where: $SUITE_DIR"
+- ## Step 1 — Verify the currently installed suite files (local integrity)
+- This step is only meaningful if you ship a checksums file *inside* the suite directory (recommended).
+- If present, verify it:
+- if [ -f "$SUITE_DIR/checksums.txt" ]; then
+-   echo "Verifying local checksums.txt"
+-   cd "$SUITE_DIR"
+-   if command -v shasum >/dev/null 2>&1; then
+-     shasum -a 256 -c checksums.txt
+-   else
+-     sha256sum -c checksums.txt
+-   echo "NOTE: No local checksums.txt shipped; skipping local integrity verification"
+- ## Step 1.5 — Verify Bundled Components
+- Check that bundled security skills are properly deployed:
+- # Function to check bundled skill
+- check_bundled_skill() {
+-   local skill_name="$1"
+-   local skill_dir="$INSTALL_ROOT/$skill_name"
+-   local bundled_dir="$SUITE_DIR/bundled/$skill_name"
+-   if [ -d "$skill_dir" ] && [ -f "$skill_dir/skill.json" ]; then
+-     SKILL_VERSION=$(jq -r '.version' "$skill_dir/skill.json")
+-     echo "✓ $skill_name v${SKILL_VERSION} is installed"
+-   elif [ -d "$bundled_dir" ] && [ -f "$bundled_dir/skill.json" ]; then
+-     echo "⚠ $skill_name bundled but not deployed"
+-     echo "  Deploy with: cp -r '$bundled_dir' '$skill_dir'"
+-     echo "✗ $skill_name not found"
+- }
+- echo "=== Bundled Skills Status ==="
+- check_bundled_skill "clawsec-feed"
+- check_bundled_skill "openclaw-audit-watchdog"
+- check_bundled_skill "soul-guardian"
+- ## Step 2 — Check for updates (using checksums.json)
+- Fetch the latest checksums.json from the release mirror. This file contains version info and SHA256 hashes for all release assets.
+- cd "$TMP"
+- curl -fsSLo checksums.json "$CHECKSUMS_URL"
+- LATEST_VER="$(jq -r '.version // ""' checksums.json 2>/dev/null || true)"
+-   echo "(Implement your runtime-specific update action here.)"
+- If your runtime does not have `jq`, you can parse the version line with grep/sed, or we can publish a simpler `latest.txt` endpoint.
+- ## Output
+- This heartbeat should print a short report suitable for being copied into an alert message:
+- - suite version status
+- - integrity status
++ # ClawSec Suite — Heartbeat Check
++ Run this periodically (cron/systemd/CI/agent scheduler). It assumes POSIX shell, `curl`, and `jq`.
++ 1. Check whether `clawsec-suite` has an update available.
++ 2. Poll the advisory feed.
++ 3. Report new advisories, highlight affected installed skills, and require approval before removal actions.
++ FEED_URL="${CLAWSEC_FEED_URL:-https://raw.githubusercontent.com/prompt-security/clawsec/main/advisories/feed.json}"
++ STATE_FILE="${CLAWSEC_SUITE_STATE_FILE:-$HOME/.openclaw/clawsec-suite-feed-state.json}"
++ MIN_FEED_INTERVAL_SECONDS="${MIN_FEED_INTERVAL_SECONDS:-300}"
++ echo "=== ClawSec Suite Heartbeat ==="
++ echo "When:  $(date -u +%Y-%m-%dT%H:%M:%SZ)"
++ echo "Suite: $SUITE_DIR"
++ ## Step 1 — Check suite version updates
++ trap 'rm -rf "$TMP"' EXIT
++ curl -fsSLo "$TMP/checksums.json" "$CHECKSUMS_URL"
++ LATEST_VER="$(jq -r '.version // ""' "$TMP/checksums.json" 2>/dev/null || true)"
++ fi
++ fi
++ ## Step 2 — Initialize advisory state
++ mkdir -p "$(dirname "$STATE_FILE")"
++ if [ ! -f "$STATE_FILE" ]; then
++   echo '{"schema_version":"1.0","known_advisories":[],"last_feed_check":null,"last_feed_updated":null}' > "$STATE_FILE"
++   echo '{"schema_version":"1.0","known_advisories":[],"last_feed_check":null,"last_feed_updated":null}' > "$STATE_FILE"
++   chmod 600 "$STATE_FILE"
++   chmod 600 "$STATE_FILE"
++   chmod 600 "$STATE_FILE"
++ if ! jq -e '.schema_version and .known_advisories' "$STATE_FILE" >/dev/null 2>&1; then
++   echo "WARNING: Invalid state file, resetting: $STATE_FILE"
++   cp "$STATE_FILE" "${STATE_FILE}.bak.$(date -u +%Y%m%d%H%M%S)" 2>/dev/null || true
++ ## Step 3 — Advisory feed check (embedded clawsec-feed)
++ now_epoch="$(date -u +%s)"
++ last_check="$(jq -r '.last_feed_check // "1970-01-01T00:00:00Z"' "$STATE_FILE")"
++ last_epoch="$(date -u -d "$last_check" +%s 2>/dev/null || date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$last_check" +%s 2>/dev/null || echo 0)"
++ if [ $((now_epoch - last_epoch)) -lt "$MIN_FEED_INTERVAL_SECONDS" ]; then
++   echo "Feed check skipped (rate limit: ${MIN_FEED_INTERVAL_SECONDS}s)."
++   FEED_TMP="$TMP/feed.json"
++   FEED_SOURCE="$FEED_URL"
++   if ! curl -fsSLo "$FEED_TMP" "$FEED_URL"; then
++     if [ -f "$SUITE_DIR/advisories/feed.json" ]; then
++       cp "$SUITE_DIR/advisories/feed.json" "$FEED_TMP"
++       FEED_SOURCE="$SUITE_DIR/advisories/feed.json (local fallback)"
++       echo "WARNING: Remote feed unavailable, using local fallback."
++     else
++       echo "ERROR: Remote feed unavailable and no local fallback feed found."
++       exit 1
++     fi
++     fi
++   fi
++   fi
++   fi
++   if ! jq -e '.version and (.advisories | type == "array")' "$FEED_TMP" >/dev/null 2>&1; then
++     echo "ERROR: Advisory feed has invalid format."
++     exit 1
++   echo "Feed source: $FEED_SOURCE"
++   echo "Feed updated: $(jq -r '.updated // "unknown"' "$FEED_TMP")"
++   NEW_IDS_FILE="$TMP/new_ids.txt"
++   jq -r --argfile state "$STATE_FILE" '($state.known_advisories // []) as $known | [.advisories[]?.id | select(. != null and ($known | index(.) | not))] | .[]?' "$FEED_TMP" > "$NEW_IDS_FILE"
++   if [ -s "$NEW_IDS_FILE" ]; then
++     echo "New advisories:"
++     while IFS= read -r id; do
++       [ -z "$id" ] && continue
++       jq -r --arg id "$id" '.advisories[] | select(.id == $id) | "- [\(.severity | ascii_upcase)] \(.id): \(.title)"' "$FEED_TMP"
++       jq -r --arg id "$id" '.advisories[] | select(.id == $id) | "  Action: \(.action // "Review advisory details")"' "$FEED_TMP"
++     done < "$NEW_IDS_FILE"
++     echo "FEED_OK - no new advisories"
++   echo "Affected installed skills (if any):"
++   found_affected=0
++   removal_recommended=0
++   for skill_path in "$INSTALL_ROOT"/*; do
++     [ -d "$skill_path" ] || continue
++     skill_name="$(basename "$skill_path")"
++     skill_hits="$(jq -r --arg skill_prefix "${skill_name}@" '
++       [.advisories[]
++       | select(any(.affected[]?; startswith($skill_prefix)))
++       | "- [\(.severity | ascii_upcase)] \(.id): \(.title)\n  Action: \(.action // "Review advisory details")"
++       ] | .[]?
++     ' "$FEED_TMP")"
++     if [ -n "$skill_hits" ]; then
++       found_affected=1
++       echo "- $skill_name is referenced by advisory feed entries"
++       printf "%s\n" "$skill_hits"
++       if jq -e --arg skill_prefix "${skill_name}@" '
++         any(
++           .advisories[];
++           any(.affected[]?; startswith($skill_prefix))
++           and (
++             ((.type // "" | ascii_downcase) == "malicious_skill")
++             or ((.title // "" | ascii_downcase | test("malicious|exfiltrat|backdoor|trojan|stealer")))
++             or ((.description // "" | ascii_downcase | test("malicious|exfiltrat|backdoor|trojan|stealer")))
++             or ((.action // "" | ascii_downcase | test("remove|uninstall|disable|do not use|quarantine")))
++           )
++         )
++       ' "$FEED_TMP" >/dev/null 2>&1; then
++         removal_recommended=1
++       fi
++   done
++   if [ "$found_affected" -eq 0 ]; then
++     echo "- none"
++   if [ "$removal_recommended" -eq 1 ]; then
++     echo "Approval required: ask the user for explicit approval before removing any skill."
++     echo "Double-confirmation policy: install request is first intent; require a second explicit confirmation with advisory context."
++   # Persist state
++   current_utc="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
++   state_tmp="$TMP/state.json"
++   jq --arg t "$current_utc" --arg updated "$(jq -r '.updated // ""' "$FEED_TMP")" --argfile feed "$FEED_TMP" '
++     .last_feed_check = $t
++     | .last_feed_updated = (if $updated == "" then .last_feed_updated else $updated end)
++     | .known_advisories = ((.known_advisories // []) + [$feed.advisories[]?.id] | map(select(. != null)) | unique)
++   ' "$STATE_FILE" > "$state_tmp"
++   mv "$state_tmp" "$STATE_FILE"
++ ## Output Summary
++ Heartbeat output should include:
++ - suite version status,
++ - advisory feed status,
++ - new advisory list (if any),
++ - installed skills that appear in advisory `affected` lists,
++ - and a double-confirmation reminder before risky install/remove actions.
++ If your runtime sends alerts, treat `critical` and `high` advisories affecting installed skills as immediate notifications.
+
+### SKILL.md  [instructions]
+- version: 0.0.6
+- description: Use when users or agents want to explore or set up ClawSec security protections - this is a wrapper that helps discover and install individual security skills, but requires initial configuration to activate any protections.
+-     bins: [curl, shasum]
+- ## Installation steps
+- **IMPORTANT**: ClawSec Suite includes bundled security skills that provide crucial threat intelligence and monitoring capabilities. These skills are bundled alongside the suite for your convenience and should be deployed to standard skill locations.
+- The suite includes the following bundled skills:
+- - **clawsec-feed**: Provides crucial CVE and security advisory information
+- - **openclaw-audit-watchdog**: Provides crucial automated security audit capabilities
+- - **soul-guardian**: Provides file integrity and drift detection
+- Finalize deployment with post-script after suite installation:
+- #!/bin/bash
+- # BUNDLED SKILLS DEPLOYMENT
+- # These skills are bundled alongside the suite to provide crucial security information
+- set -euo pipefail
+- INSTALL_ROOT="${INSTALL_ROOT:-$HOME/.openclaw/skills}"
+- SUITE_DIR="$INSTALL_ROOT/clawsec-suite"
+- echo "=== Deploying bundled security skills ==="
+- # Function to deploy a bundled skill
+- deploy_skill() {
+-   local skill_name="$1"
+-   local skill_dir="$INSTALL_ROOT/$skill_name"
+-   local bundled_dir="$SUITE_DIR/bundled/$skill_name"
+-   # Check if skill already exists
+-   if [ -d "$skill_dir" ] && [ -f "$skill_dir/skill.json" ]; then
+-     INSTALLED_VERSION=$(jq -r '.version // "unknown"' "$skill_dir/skill.json" 2>/dev/null)
+-     echo "$skill_name already installed (v${INSTALLED_VERSION}), preserving existing installation"
+-     return 0
+-     return 0
+-   # Check if bundled version exists
+-   if [ ! -d "$bundled_dir" ] || [ ! -f "$bundled_dir/skill.json" ]; then
+-     echo "Bundled $skill_name not found, skipping"
+-   # Deploy bundled skill
+-   echo "Deploying bundled $skill_name..."
+-   mkdir -p "$skill_dir"
+-   cp -r "$bundled_dir"/* "$skill_dir/"
+-   # Set proper permissions
+-   chmod 600 "$skill_dir/skill.json"
+-   find "$skill_dir" -type f ! -name "skill.json" -exec chmod 644 {} \;
+-   # Verify installation
+-   if [ -f "$skill_dir/skill.json" ]; then
+-     SKILL_VERSION=$(jq -r '.version' "$skill_dir/skill.json")
+-     echo "✓ $skill_name v${SKILL_VERSION} deployed successfully"
+-     echo "✗ $skill_name deployment verification failed"
+-     return 1
+- }
+- # Deploy each bundled skill
+- deploy_skill "clawsec-feed"
+- deploy_skill "openclaw-audit-watchdog"
+- deploy_skill "soul-guardian"
+- echo ""
+- echo "✓ ClawSec Suite deployment complete"
+- ### ✅ On Successful Installation (IMPORTANT)
+- On success the user should know: which skills were installed, that protections are active, and where to learn more if interested.
+- On success, inform the user which skills were installed and that the default protections are active. (add an encouraging call - like Congrats, you are safe!)
+- On partial success or errors, list what succeeded, what failed with reasons, and suggest retry or troubleshooting
+- ## Contract (what this skill is)
+- ClawSec Suite is a small "manager" package that helps an agent runtime:
+- - install ClawSec security components
+- - verify integrity of installed files (checksums + optional signatures)
+- - check for updates from a signed checksums.json manifest
+- - run a periodic "health check" (security skill updates + chain of supply integrity + advisories)
+- This document is written to be **portable**: it does not assume a specific agent framework or CLI. However it was tested to work best with OpenClaw, Moltbot, Clawdbot and variants
+- ## 🎯 Let's Get You Protected
+- Great! You've installed the ClawSec Suite wrapper. Now let's get you set up with the security protections you came here for.
+- **Quick heads up:** The suite you just installed is like a toolbox - it helps you install and manage security skills, but doesn't provide protections by itself. Think of it as your security skill manager.
+- **Here's how to activate your protections:**
+- 1. Browse the available security skills (see below, or browse to https://clawsec.prompt.security/)
+- 2. Choose which protections match your needs
+- 3. Install your selected skills using the installation guide
+- 4. Auto Configure defaults for each skill for your environment.
+- Each skill protects against different threats - from security advisories to file tampering. Let's explore your options and get you secured.
+- ## Available Security Skills
+- The ClawSec suite includes these security skills:
+- | Skill | Protection Type | Installation |
+- |-------|----------------|-------------|
+- | **clawsec-feed** | Security advisory monitoring from NVD CVE database | ✓ Included by default |
+- | **openclaw-audit-watchdog** | Automated daily security audits with email reporting | ✓ Included by default |
+- | **soul-guardian** | File integrity & drift detection for agent workspace files | ✗ Optional |
+- | **clawtributor** | Community incident reporting (shares anonymized data)* | ✗ Optional (Opt-in) |
+- **Clawtributor requires explicit consent** as it shares anonymized data with the community for collective threat intelligence.
+- ## Getting Started
+- ### Step 1: Review Available Skills
+- Take a moment to review the security skills table above. Each skill provides a different layer of protection:
+- - **Threat awareness** (clawsec-feed): Stay informed about vulnerabilities [Included by default]
+- - **Scheduled audits** (openclaw-audit-watchdog): Daily automated security reviews [Included by default]
+- - **File integrity** (soul-guardian): Detect unauthorized changes to workspace files [Optional]
+- - **Community intelligence** (clawtributor): Share and receive threat data [Optional - Opt-in]
+- ### Step 2: Choose Your Protection Level
+- **default protections** (automatically installed):
+- - clawsec-feed
+- - openclaw-audit-watchdog
+- **Optional protections** (install as needed):
+- - soul-guardian (file integrity and drift detection)
+- - clawtributor (community threat intelligence - requires explicit consent for data sharing)
+- ### Step 3: Bundled Security Skills
+- Good news! The following security skills are bundled alongside ClawSec Suite:
+- ✓ **clawsec-feed** - Provides crucial CVE and threat intelligence information
+- ✓ **openclaw-audit-watchdog** - Provides automated security audit capabilities
+- ✓ **soul-guardian** - Provides file integrity and drift detection
+- These skills are included in the suite package for your convenience.
+- **Deployment options:**
+- - If you don't already have these skills installed, they will be deployed from the bundled copies
+- - If you already have any of these skills, your existing installations will be preserved
+- - Each skill is installed to its standard location: `~/.openclaw/skills/{skill-name}/`
+- **What this means:**
+- - Convenient setup - no separate downloads needed if you don't have them
+- - Standard installation - follows skill conventions
+- - Independent management - each skill can be configured separately
+- - Always current - feed data is fetched online (always up-to-date)
+- ### Step 4: Optional Opt-In Component
+- **clawtributor** (Community threat intelligence):
+- - Share and receive anonymized threat data
+- - Requires explicit opt-in and user consent
+- - Not bundled with suite (available as separate download)
+- - Installation instructions: https://clawsec.prompt.security/skills/clawtributor
+- ### Step 5: Configure Each Skill
+- After installation, each skill requires configuration, to reduce security fatigue start with the defaults for soul guardian (and dont use email sending for audit reports in watchdog):
+- - **clawsec-feed**: Configure update frequency and alert preferences
+- - **openclaw-audit-watchdog**: Set email addresses for audit reports
+- - **soul-guardian**: Set baseline checksums for protected files
+- - **clawtributor**: Provide explicit consent and configure data sharing preferences (if installed)
+- Refer to each skill's SKILL.md file for detailed configuration instructions. if the user wants to change the defaults.
+- ## Trust, provenance, and safety
+- Agents should review scripts before execution!
+- **Do not install anything you cannot verify.** A secure installer must:
+- 1) download artifacts from a stable origin
+- 2) verify integrity (checksum)
+- 3) ideally verify authenticity (signature)
+- 4) fail closed (stop on any mismatch)
+- If your project does not yet publish signatures, publish at least:
+- - `checksums.json` (sha256 hashes + version metadata)
+- ### Canonical release origin
+- All releases are published at:
+- - `https://clawsec.prompt.security/releases/download/<SKILL>-v<VERSION>/...`
+- Example for clawsec-suite v0.0.9:
+- - `https://clawsec.prompt.security/releases/download/clawsec-suite-v0.0.6/checksums.json`
+- - `https://clawsec.prompt.security/releases/download/clawsec-suite-v0.0.6/clawsec-suite.skill`
+- ## Installation (generic, version-pinned, verified)
+- ### Requirements
+- - `curl`
+- - `jq` (for parsing checksums.json)
+- - `unzip`
+- - a SHA-256 tool (`shasum -a 256` on macOS, or `sha256sum` on Linux)
+- ### Install steps
+- Pick a stable install root:
+- - `INSTALL_ROOT` default: `~/.openclaw/skills`
+- > If your agent runtime has its own skills directory, set `INSTALL_ROOT` accordingly.
+- VERSION="${SKILL_VERSION}"
+- BASE="https://clawsec.prompt.security/releases/download/clawsec-suite-v${VERSION}"
+- mkdir -p "$DEST"
+- cd "$(mktemp -d)"
+- # 1) Download checksums.json and artifact
+- curl -fsSL "$BASE/checksums.json" -o checksums.json
+- curl -fsSL "$BASE/SKILL.md" -o SKILL.md
+- # 2) Extract expected checksum from checksums.json
+- EXPECTED_SHA256=$(jq -r '.files["clawsec-suite.skill"].sha256' checksums.json)
+- if [ -z "$EXPECTED_SHA256" ] || [ "$EXPECTED_SHA256" = "null" ]; then
+-   echo "ERROR: Could not extract checksum from checksums.json" >&2
+-   exit 2
+- # 3) Compute actual checksum
+- if command -v shasum >/dev/null 2>&1; then
+-   ACTUAL_SHA256=$(shasum -a 256 clawsec-suite.skill | awk '{print $1}')
+-   ACTUAL_SHA256=$(sha256sum SKILL.md | awk '{print $1}')
+- # 4) Verify checksum (fail closed)
+- if [ "$EXPECTED_SHA256" != "$ACTUAL_SHA256" ]; then
+-   echo "ERROR: Checksum mismatch!" >&2
+-   echo "  Expected: $EXPECTED_SHA256" >&2
+-   echo "  Actual:   $ACTUAL_SHA256" >&2
+- echo "Checksum verified: $ACTUAL_SHA256"
+- # 5) Install
+- rm -rf "$DEST"/*
+- #download specific files by checksum list, or .skill file which is supported by openclaw
+- # 6) Sanity check
+- test -f "$DEST/skill.json"
+- test -f "$DEST/SKILL.md"
+- test -f "$DEST/HEARTBEAT.md"
+- echo "Installed ClawSec Suite v${VERSION} to: $DEST"
+- ### What this does (disclosure)
+- **Installing clawsec-suite:**
+- - Writes only under: `$DEST` (default `~/.openclaw/skills/clawsec-suite`)
+- - Makes network requests only to fetch the suite artifact + checksums (and optionally signatures)
+- - Does **not** provide any security protections by itself - it's just the wrapper/manager
+- - Does **not** auto-install any security skills - you choose which skills to install
+- - Does **not** auto-enable telemetry/community reporting
+- - Does **not** schedule anything automatically
+- **To get actual security protections**, you need to install and configure individual security skills (see "Getting Started" above).
+- ## Update checking (portable design)
+- Each release publishes a `checksums.json` file that contains version info and SHA256 hashes for all artifacts:
+- - `https://clawsec.prompt.security/releases/download/clawsec-suite-v<VERSION>/checksums.json`
+- To check for updates, compare the installed version against the latest `checksums.json`. See `HEARTBEAT.md` for the upgrade check procedure.
+- ## Platform adapters (optional sections)
+- If you want this to work well everywhere, add short adapter sections that only map:
+- - install directory
+- - scheduler integration
+- - message/alert delivery integration
+- Keep the core verify/install/update logic identical.
++ version: 0.0.8
++ description: ClawSec suite manager with embedded advisory-feed monitoring, approval-gated malicious-skill response, and guided setup for additional security skills.
++     bins: [curl, jq, shasum]
++ This means `clawsec-suite` can:
++ - monitor the ClawSec advisory feed,
++ - track which advisories are new since last check,
++ - cross-reference advisories against locally installed skills,
++ - recommend removal for malicious-skill advisories and require explicit user approval first,
++ - and still act as the setup/management entrypoint for other ClawSec protections.
++ ## Included vs Optional Protections
++ ### Built into clawsec-suite
++ - Embedded feed seed file: `advisories/feed.json`
++ - Portable heartbeat workflow in `HEARTBEAT.md`
++ - Advisory polling + state tracking + affected-skill checks
++ - OpenClaw advisory guardian hook package: `hooks/clawsec-advisory-guardian/`
++ - Setup scripts for hook and optional cron scheduling: `scripts/`
++ - Guarded installer: `scripts/guarded_skill_install.mjs`
++ ### installed separately
++ - `openclaw-audit-watchdog`
++ - `soul-guardian`
++ - `clawtributor` (explicit opt-in)
++ ## Installation
++ ### Option A: Via clawhub (recommended)
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ ```bash
++ npx clawhub@latest install clawsec-suite
++ ```
++ ```
++ ```
++ ```
++ ```
++ ```
++ ### Option B: Manual download with verification
++ VERSION="${SKILL_VERSION:?Set SKILL_VERSION (e.g. 0.0.8)}"
++ BASE="https://github.com/prompt-security/clawsec/releases/download/clawsec-suite-v${VERSION}"
++ TEMP_DIR="$(mktemp -d)"
++ DOWNLOAD_DIR="$TEMP_DIR/downloads"
++ trap 'rm -rf "$TEMP_DIR"' EXIT
++ mkdir -p "$DOWNLOAD_DIR"
++ # 1) Download checksums manifest
++ curl -fsSL "$BASE/checksums.json" -o "$TEMP_DIR/checksums.json"
++ if ! jq -e '.skill and .version and .files' "$TEMP_DIR/checksums.json" >/dev/null 2>&1; then
++   echo "ERROR: Invalid checksums.json format" >&2
++   exit 1
++   exit 1
++   exit 1
++ fi
++ fi
++ fi
++ # 2) Download every file listed in checksums and verify immediately
++ DOWNLOAD_FAILED=0
++ for file in $(jq -r '.files | keys[]' "$TEMP_DIR/checksums.json"); do
++   FILE_URL="$(jq -r --arg f "$file" '.files[$f].url' "$TEMP_DIR/checksums.json")"
++   EXPECTED="$(jq -r --arg f "$file" '.files[$f].sha256' "$TEMP_DIR/checksums.json")"
++   if ! curl -fsSL "$FILE_URL" -o "$DOWNLOAD_DIR/$file"; then
++     echo "ERROR: Download failed for $file" >&2
++     DOWNLOAD_FAILED=1
++     DOWNLOAD_FAILED=1
++     continue
++   if command -v shasum >/dev/null 2>&1; then
++     ACTUAL="$(shasum -a 256 "$DOWNLOAD_DIR/$file" | awk '{print $1}')"
++   else
++     ACTUAL="$(sha256sum "$DOWNLOAD_DIR/$file" | awk '{print $1}')"
++   if [ "$EXPECTED" != "$ACTUAL" ]; then
++     echo "ERROR: Checksum mismatch for $file" >&2
++     echo "Verified: $file"
++ done
++ if [ "$DOWNLOAD_FAILED" -eq 1 ]; then
++   echo "ERROR: One or more files failed verification" >&2
++ # 3) Install files using paths from checksums.json
++ while IFS= read -r file; do
++   [ -z "$file" ] && continue
++   REL_PATH="$(jq -r --arg f "$file" '.files[$f].path // $f' "$TEMP_DIR/checksums.json")"
++   SRC_PATH="$DOWNLOAD_DIR/$file"
++   DST_PATH="$DEST/$REL_PATH"
++   mkdir -p "$(dirname "$DST_PATH")"
++   cp "$SRC_PATH" "$DST_PATH"
++ done < <(jq -r '.files | keys[]' "$TEMP_DIR/checksums.json")
++ chmod 600 "$DEST/skill.json"
++ find "$DEST" -type f ! -name "skill.json" -exec chmod 644 {} \;
++ echo "Installed clawsec-suite v${VERSION} to: $DEST"
++ echo "Next step (OpenClaw): node \"$DEST/scripts/setup_advisory_hook.mjs\""
++ ## OpenClaw Automation (Hook + Optional Cron)
++ After installing the suite, enable the advisory guardian hook:
++ SUITE_DIR="${INSTALL_ROOT:-$HOME/.openclaw/skills}/clawsec-suite"
++ SUITE_DIR="${INSTALL_ROOT:-$HOME/.openclaw/skills}/clawsec-suite"
++ SUITE_DIR="${INSTALL_ROOT:-$HOME/.openclaw/skills}/clawsec-suite"
++ node "$SUITE_DIR/scripts/setup_advisory_hook.mjs"
++ Optional: create/update a periodic cron nudge (default every `6h`) that triggers a main-session advisory scan:
++ node "$SUITE_DIR/scripts/setup_advisory_cron.mjs"
++ What this adds:
++ - scan on `agent:bootstrap` and `/new` (`command:new`),
++ - compare advisory `affected` entries against installed skills,
++ - notify when new matches appear,
++ - and ask for explicit user approval before any removal flow.
++ Restart the OpenClaw gateway after enabling the hook. Then run `/new` once to force an immediate scan in the next session context.
++ ## Guarded Skill Install Flow (Double Confirmation)
++ When the user asks to install a skill, treat that as the first request and run a guarded install check:
++ node "$SUITE_DIR/scripts/guarded_skill_install.mjs" --skill helper-plus --version 1.0.1
++ Behavior:
++ - If no advisory match is found, install proceeds.
++ - If advisory match is found, the script prints advisory context and exits with code `42`.
++ - Then require an explicit second confirmation from the user and rerun with `--confirm-advisory`:
++ node "$SUITE_DIR/scripts/guarded_skill_install.mjs" --skill helper-plus --version 1.0.1 --confirm-advisory
++ This enforces:
++ 1. First confirmation: user asked to install.
++ 2. Second confirmation: user explicitly approves install after seeing advisory details.
++ ## Embedded Advisory Feed Behavior
++ The embedded feed logic uses these defaults:
++ - Remote feed URL: `https://raw.githubusercontent.com/prompt-security/clawsec/main/advisories/feed.json`
++ - Local seed fallback: `~/.openclaw/skills/clawsec-suite/advisories/feed.json`
++ - State file: `~/.openclaw/clawsec-suite-feed-state.json`
++ - Hook rate-limit env (OpenClaw hook): `CLAWSEC_HOOK_INTERVAL_SECONDS` (default `300`)
++ ### Quick feed check
++ FEED_URL="${CLAWSEC_FEED_URL:-https://raw.githubusercontent.com/prompt-security/clawsec/main/advisories/feed.json}"
++ STATE_FILE="${CLAWSEC_SUITE_STATE_FILE:-$HOME/.openclaw/clawsec-suite-feed-state.json}"
++ TMP="$(mktemp -d)"
++ trap 'rm -rf "$TMP"' EXIT
++ if ! curl -fsSLo "$TMP/feed.json" "$FEED_URL"; then
++   echo "ERROR: Failed to fetch advisory feed"
++ if ! jq -e '.version and (.advisories | type == "array")' "$TMP/feed.json" >/dev/null; then
++   echo "ERROR: Invalid advisory feed format"
++ mkdir -p "$(dirname "$STATE_FILE")"
++ if [ ! -f "$STATE_FILE" ]; then
++   echo '{"schema_version":"1.0","known_advisories":[],"last_feed_check":null,"last_feed_updated":null}' > "$STATE_FILE"
++   chmod 600 "$STATE_FILE"
++ NEW_IDS_FILE="$TMP/new_ids.txt"
++ jq -r --argfile state "$STATE_FILE" '($state.known_advisories // []) as $known | [.advisories[]?.id | select(. != null and ($known | index(.) | not))] | .[]?' "$TMP/feed.json" > "$NEW_IDS_FILE"
++ if [ -s "$NEW_IDS_FILE" ]; then
++   echo "New advisories detected:"
++   while IFS= read -r id; do
++     [ -z "$id" ] && continue
++     jq -r --arg id "$id" '.advisories[] | select(.id == $id) | "- [\(.severity | ascii_upcase)] \(.id): \(.title)"' "$TMP/feed.json"
++   done < "$NEW_IDS_FILE"
++   echo "FEED_OK - no new advisories"
++ ## Heartbeat Integration
++ Use the suite heartbeat script as the single periodic security check entrypoint:
++ - `skills/clawsec-suite/HEARTBEAT.md`
++ It handles:
++ - suite update checks,
++ - feed polling,
++ - new-advisory detection,
++ - affected-skill cross-referencing,
++ - approval-gated response guidance for malicious/removal advisories,
++ - and persistent state updates.
++ ## Approval-Gated Response Contract
++ If an advisory indicates a malicious or removal-recommended skill and that skill is installed:
++ 1. Notify the user immediately with advisory details and severity.
++ 2. Recommend removing or disabling the affected skill.
++ 3. Treat the original install request as first intent only.
++ 4. Ask for explicit second confirmation before deletion/disable action (or before proceeding with risky install).
++ 5. Only proceed after that second confirmation.
++ The suite hook and heartbeat guidance are intentionally non-destructive by default.
++ ## Optional Skill Installation
++ Install additional protections as needed:
++ npx clawhub@latest install openclaw-audit-watchdog
++ npx clawhub@latest install soul-guardian
++ # opt-in only:
++ npx clawhub@latest install clawtributor
++ ## Security Notes
++ - Always verify checksums before installing files manually.
++ - Keep advisory polling rate-limited (at least 5 minutes between checks).
++ - Treat `critical` and `high` advisories affecting installed skills as immediate action items.
++ - If you migrate off standalone `clawsec-feed`, keep one canonical state file to avoid duplicate notifications.
+
+### advisories/feed.json  [code]
++ {
++   "version": "0.0.2",
++   "updated": "2026-02-08T06:16:28Z",
++   "description": "Community-driven security advisory feed for ClawSec. Automatically updated with OpenClaw-related CVEs from NVD and community-reported security incidents.",
++   "advisories": [
++     {
++     {
++     {
++     {
++     {
++     {
++       "id": "CVE-2026-25593",
++       "severity": "high",
++       "severity": "high",
++       "severity": "high",
++       "severity": "high",
++       "severity": "high",
++       "type": "vulnerable_skill",
++       "type": "vulnerable_skill",
++       "type": "vulnerable_skill",
++       "type": "vulnerable_skill",
++       "type": "vulnerable_skill",
++       "title": "OpenClaw is a personal AI assistant. Prior to 2026.1.20, an unauthenticated local client could use t...",
++       "description": "OpenClaw is a personal AI assistant. Prior to 2026.1.20, an unauthenticated local client could use the Gateway WebSocket API to write config via config.apply and set unsafe cliPath values that were later used for command discovery, enabling command injection as the gateway user. This vulnerability is fixed in 2026.1.20.",
++       "affected": [],
++       "affected": [],
++       "affected": [],
++       "affected": [],
++       "affected": [],
++       "action": "Review and update affected components. See NVD for remediation details.",
++       "action": "Review and update affected components. See NVD for remediation details.",
++       "action": "Review and update affected components. See NVD for remediation details.",
++       "action": "Review and update affected components. See NVD for remediation details.",
++       "action": "Review and update affected components. See NVD for remediation details.",
++       "published": "2026-02-06T21:16:17.790",
++       "references": [
++       "references": [
++       "references": [
++       "references": [
++       "references": [
++         "https://github.com/openclaw/openclaw/security/advisories/GHSA-g55j-c2v4-pjcg"
++       ],
++       ],
++       ],
++       ],
++       ],
++       ],
++       "cvss_score": 8.4,
++       "nvd_url": "https://nvd.nist.gov/vuln/detail/CVE-2026-25593"
++     },
++     },
++     },
++     },
++     },
++       "id": "CVE-2026-25475",
++       "severity": "medium",
++       "title": "OpenClaw is a personal AI assistant. Prior to version 2026.1.30, the isValidMedia() function in src/...",
++       "description": "OpenClaw is a personal AI assistant. Prior to version 2026.1.30, the isValidMedia() function in src/media/parse.ts allows arbitrary file paths including absolute paths, home directory paths, and directory traversal sequences. An agent can read any file on the system by outputting MEDIA:/path/to/file, exfiltrating sensitive data to the user/channel. This issue has been patched in version 2026.1.30.",
++       "published": "2026-02-04T20:16:07.287",
++         "https://github.com/openclaw/openclaw/security/advisories/GHSA-r8g4-86fx-92mq"
++       "cvss_score": 6.5,
++       "nvd_url": "https://nvd.nist.gov/vuln/detail/CVE-2026-25475"
++       "id": "CVE-2026-25157",
++       "title": "OpenClaw is a personal AI assistant. Prior to version 2026.1.29, there is an OS command injection vu...",
++       "description": "OpenClaw is a personal AI assistant. Prior to version 2026.1.29, there is an OS command injection vulnerability via the Project Root Path in sshNodeCommand. The sshNodeCommand function constructed a shell script without properly escaping the user-supplied project path in an error message. When the cd command failed, the unescaped path was interpolated directly into an echo statement, allowing arbitrary command execution on the remote SSH host. The parseSSHTarget function did not validate that SSH target strings could not begin with a dash. An attacker-supplied target like -oProxyCommand=... would be interpreted as an SSH configuration flag rather than a hostname, allowing arbitrary command execution on the local machine. This issue has been patched in version 2026.1.29.",
++       "published": "2026-02-04T20:16:06.577",
++         "https://github.com/openclaw/openclaw/security/advisories/GHSA-q284-4pvr-m585"
++       "cvss_score": 7.7,
++       "nvd_url": "https://nvd.nist.gov/vuln/detail/CVE-2026-25157"
++       "id": "CLAW-2026-0001",
++       "type": "prompt_injection",
++       "title": "Data exfiltration attempt via helper-plus skill",
++       "description": "The helper-plus skill was observed sending conversation data to an external server (suspicious-domain.com) on every invocation. The skill makes undocumented network calls that transmit full conversation context to a domain not mentioned in the skill description.",
++       "affected": [
++         "helper-plus@1.0.0",
++         "helper-plus@1.0.1"
++       "action": "Remove helper-plus immediately. Do not use versions 1.0.0 or 1.0.1. Wait for a verified patched version.",
++       "published": "2026-02-04T09:30:00Z",
++       "references": [],
++       "source": "Community Report",
++       "github_issue_url": "https://github.com/prompt-security/clawsec/issues/1",
++       "reporter": {
++         "agent_name": "SecurityBot",
++         "opener_type": "agent"
++       }
++       "id": "CVE-2026-24763",
++       "title": "OpenClaw (formerly  Clawdbot) is a personal AI assistant you run on your own devices. Prior to 2026....",
++       "description": "OpenClaw (formerly  Clawdbot) is a personal AI assistant you run on your own devices. Prior to 2026.1.29, a command injection vulnerability existed in OpenClaw’s Docker sandbox execution mechanism due to unsafe handling of the PATH environment variable when constructing shell commands. An authenticated user able to control environment variables could influence command execution within the container context. This vulnerability is fixed in 2026.1.29.",
++       "published": "2026-02-02T23:16:08.593",
++         "https://github.com/openclaw/openclaw/commit/771f23d36b95ec2204cc9a0054045f5d8439ea75",
++         "https://github.com/openclaw/openclaw/releases/tag/v2026.1.29",
++         "https://github.com/openclaw/openclaw/security/advisories/GHSA-mc68-q9jw-2h3v"
++       "cvss_score": 8.8,
++       "cvss_score": 8.8,
++       "nvd_url": "https://nvd.nist.gov/vuln/detail/CVE-2026-24763"
++       "id": "CVE-2026-25253",
++       "title": "OpenClaw (aka clawdbot or Moltbot) before 2026.1.29 obtains a gatewayUrl value from a query string a...",
++       "description": "OpenClaw (aka clawdbot or Moltbot) before 2026.1.29 obtains a gatewayUrl value from a query string and automatically makes a WebSocket connection without prompting, sending a token value.",
++       "published": "2026-02-01T23:15:49.717",
++         "https://depthfirst.com/post/1-click-rce-to-steal-your-moltbot-data-and-keys",
++         "https://ethiack.com/news/blog/one-click-rce-moltbot",
++         "https://github.com/openclaw/openclaw/security/advisories/GHSA-g8p2-7wf7-98mq"
++       "nvd_url": "https://nvd.nist.gov/vuln/detail/CVE-2026-25253"
++     }
++   ]
++ }
+
+### bundled/clawsec-feed/README.md  [docs]
+- # ClawSec Feed 📡
+- Security advisory feed monitoring for AI agents. Subscribe to community-driven threat intelligence and stay informed about emerging threats.
+- ## Features
+- - **Real-time Advisories** - Get notified about malicious skills, vulnerabilities, and attack patterns
+- - **Cross-Reference Detection** - Automatically checks if your installed skills are affected
+- - **Community-Driven** - Advisories contributed and reviewed by the security community
+- - **Heartbeat Integration** - Seamlessly integrates with your agent's routine checks
+- ## Quick Install
+- ```bash
+- curl -sLO https://github.com/prompt-security/clawsec/releases/latest/download/clawsec-feed.skill
+- ```
+- ```
+- ```
+- ```
+- ## Advisory Types
+- | Type | Description |
+- |------|-------------|
+- | `malicious_skill` | Skills identified as intentionally harmful |
+- | `vulnerable_skill` | Skills with security vulnerabilities |
+- | `prompt_injection` | Known prompt injection patterns |
+- | `attack_pattern` | Observed attack techniques |
+- ## Feed Structure
+- ```json
+- {
+-   "version": "1.0",
+-   "updated": "2026-02-02T12:00:00Z",
+-   "advisories": [
+-     {
+-       "id": "GA-2026-001",
+-       "severity": "critical",
+-       "type": "malicious_skill",
+-       "title": "Data exfiltration in 'helper-plus'",
+-       "affected": ["helper-plus@1.0.0"],
+-       "action": "Remove immediately"
+-     }
+-   ]
+- }
+- ## Response Example
+- 📡 ClawSec Feed: 2 new advisories
+- CRITICAL - GA-2026-015: Malicious prompt pattern
+-   → Update your system prompt defenses.
+- HIGH - GA-2026-016: Vulnerable skill "data-helper"
+-   → You have this installed! Update to v1.2.1
+- ## Related Skills
+- - **openclaw-audit-watchdog** - Automated daily security audits
+- - **clawtributor** - Report vulnerabilities to the community
+- ## License
+- MIT License - [Prompt Security](https://prompt.security)
+
+### bundled/clawsec-feed/SKILL.md  [instructions]
+- ---
+- ---
+- ---
+- ---
+- ---
+- ---
+- ---
+- ---
+- ---
+- ---
+- ---
+- ---
+- ---
+- ---
+- ---
+- ---
+- ---
+- ---
+- ---
+- ---
+- name: clawsec-feed
+- version: 0.0.4
+- description: Security advisory feed with automated NVD CVE polling for OpenClaw-related vulnerabilities. Updated daily.
+- homepage: https://clawsec.prompt.security
+- metadata: {"openclaw":{"emoji":"📡","category":"security"}}
+- clawdis:
+-   emoji: "📡"
+-   requires:
+-     bins: [curl, jq]
+- # ClawSec Feed 📡
+- Security advisory feed monitoring for AI agents. Subscribe to community-driven threat intelligence and stay informed about emerging threats.
+- This feed is automatically updated daily with CVEs related to OpenClaw, clawdbot, and Moltbot from the NIST National Vulnerability Database (NVD).
+- **An open source project by [Prompt Security](https://prompt.security)**
+- ## Installation Options
+- You can get clawsec-feed in two ways:
+- ### Option A: Bundled with ClawSec Suite (Recommended)
+- **If you've installed clawsec-suite, you may already have this!**
+- ClawSec-feed is bundled alongside ClawSec Suite to provide crucial CVE and threat intelligence information. When you install the suite, if you don't already have the feed installed, it will be deployed from the bundled copy.
+- **Advantages:**
+- **Advantages:**
+- - Convenient - no separate download needed
+- - Standard location - installed to `~/.openclaw/skills/clawsec-feed/`
+- - Preserved - if you already have feed installed, it won't be overwritten
+- - Single verification - integrity checked as part of suite package
+- ### Option B: Standalone Installation (This Page)
+- Install clawsec-feed independently without the full suite.
+- **When to use standalone:**
+- - You only need the advisory feed (not other suite components)
+- - You want to install before installing the suite
+- - You prefer explicit control over feed installation
+- - Lighter weight installation
+- - Independent from suite
+- - Direct control over installation process
+- Continue below for standalone installation instructions.
+- Installation Steps:
+- Agents should review scripts before execution!
+- ```bash
+- ```bash
+- ```bash
+- ```bash
+- ```bash
+- ```bash
+- ```bash
+- ```bash
+- ```bash
+- ```bash
+- ```bash
+- ```bash
+- # Get latest clawsec-feed release tag
+- LATEST_TAG=$(curl -sSL https://api.github.com/repos/prompt-security/ClawSec/releases | \
+-   jq -r '[.[] | select(.tag_name | startswith("clawsec-feed-v"))][0].tag_name')
+-   jq -r '[.[] | select(.tag_name | startswith("clawsec-feed-v"))][0].tag_name')
+- # Download SKILL.md from latest release
+- SKILL_URL="https://github.com/prompt-security/clawsec/releases/download/$LATEST_TAG/SKILL.md"
+- curl -sSL --fail --show-error "$SKILL_URL"
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- Once you have this skill file, proceed to **[Deploy ClawSec Feed](#deploy-clawsec-feed)** below.
+- ## Deploy ClawSec Feed
+- Installation steps:
+- ### Step 1: Create skill directory and save this file
+- mkdir -p ~/.openclaw/skills/clawsec-feed
+- # Save this SKILL.md as SKILL.md in the directory above
+- ### Step 2: Install skill files
+- # Get latest release tag with retry logic
+- LATEST_TAG=$(curl -sSL --retry 3 --retry-delay 1 \
+-   https://api.github.com/repos/prompt-security/ClawSec/releases | \
+- BASE_URL="https://github.com/prompt-security/clawsec/releases/download/$LATEST_TAG"
+- INSTALL_DIR="${CLAWSEC_INSTALL_DIR:-$HOME/.openclaw/skills/clawsec-feed}"
+- INSTALL_DIR="${CLAWSEC_INSTALL_DIR:-$HOME/.openclaw/skills/clawsec-feed}"
+- TEMP_DIR=$(mktemp -d)
+- trap "rm -rf '$TEMP_DIR'" EXIT
+- # Download checksums.json (REQUIRED for integrity verification)
+- echo "Downloading checksums..."
+- if ! curl -sSL --fail --show-error --retry 3 --retry-delay 1 \
+-      "$BASE_URL/checksums.json" -o "$TEMP_DIR/checksums.json"; then
+-   echo "ERROR: Failed to download checksums.json"
+-   exit 1
+-   exit 1
+-   exit 1
+-   exit 1
+-   exit 1
+-   exit 1
+-   exit 1
+-   exit 1
+-   exit 1
+-   exit 1
+-   exit 1
+-   exit 1
+-   exit 1
+-   exit 1
+- fi
+- fi
+- fi
+- fi
+- fi
+- fi
+- fi
+- fi
+- fi
+- fi
+- fi
+- fi
+- fi
+- fi
+- fi
+- fi
+- fi
+- fi
+- fi
+- fi
+- fi
+- # Validate checksums.json structure
+- if ! jq -e '.skill and .version and .files' "$TEMP_DIR/checksums.json" >/dev/null 2>&1; then
+-   echo "ERROR: Invalid checksums.json structure"
+- # PRIMARY: Try .skill artifact
+- echo "Attempting .skill artifact installation..."
+- if curl -sSL --fail --show-error --retry 3 --retry-delay 1 \
+-    "$BASE_URL/clawsec-feed.skill" -o "$TEMP_DIR/clawsec-feed.skill" 2>/dev/null; then
+-   # Security: Check artifact size (prevent DoS)
+-   ARTIFACT_SIZE=$(stat -c%s "$TEMP_DIR/clawsec-feed.skill" 2>/dev/null || stat -f%z "$TEMP_DIR/clawsec-feed.skill")
+-   MAX_SIZE=$((50 * 1024 * 1024))  # 50MB
+-   if [ "$ARTIFACT_SIZE" -gt "$MAX_SIZE" ]; then
+-     echo "WARNING: Artifact too large ($(( ARTIFACT_SIZE / 1024 / 1024 ))MB), falling back to individual files"
+-   else
+-   else
+-   else
+-   else
+-     echo "Extracting artifact ($(( ARTIFACT_SIZE / 1024 ))KB)..."
+-     # Security: Check for path traversal before extraction
+-     if unzip -l "$TEMP_DIR/clawsec-feed.skill" | grep -qE '\.\./|^/|~/'; then
+-       echo "ERROR: Path traversal detected in artifact - possible security issue!"
+-       exit 1
+-       exit 1
+-       exit 1
+-     fi
+-     fi
+-     fi
+-     fi
+-     # Security: Check file count (prevent zip bomb)
+-     FILE_COUNT=$(unzip -l "$TEMP_DIR/clawsec-feed.skill" | grep -c "^[[:space:]]*[0-9]" || echo 0)
+-     if [ "$FILE_COUNT" -gt 100 ]; then
+-       echo "ERROR: Artifact contains too many files ($FILE_COUNT) - possible zip bomb"
+-     # Extract to temp directory
+-     unzip -q "$TEMP_DIR/clawsec-feed.skill" -d "$TEMP_DIR/extracted"
+-     # Verify skill.json exists
+-     if [ ! -f "$TEMP_DIR/extracted/clawsec-feed/skill.json" ]; then
+-       echo "ERROR: skill.json not found in artifact"
+-     # Verify checksums for all extracted files
+-     echo "Verifying checksums..."
+-     CHECKSUM_FAILED=0
+-     for file in $(jq -r '.files | keys[]' "$TEMP_DIR/checksums.json"); do
+-       EXPECTED=$(jq -r --arg f "$file" '.files[$f].sha256' "$TEMP_DIR/checksums.json")
+-       FILE_PATH=$(jq -r --arg f "$file" '.files[$f].path' "$TEMP_DIR/checksums.json")
+-       # Try nested path first, then flat filename
+-       if [ -f "$TEMP_DIR/extracted/clawsec-feed/$FILE_PATH" ]; then
+-         ACTUAL=$(shasum -a 256 "$TEMP_DIR/extracted/clawsec-feed/$FILE_PATH" | cut -d' ' -f1)
+-       elif [ -f "$TEMP_DIR/extracted/clawsec-feed/$file" ]; then
+-         ACTUAL=$(shasum -a 256 "$TEMP_DIR/extracted/clawsec-feed/$file" | cut -d' ' -f1)
+-       else
+-       else
+-       else
+-         echo "  ✗ $file (not found in artifact)"
+-         CHECKSUM_FAILED=1
+-         CHECKSUM_FAILED=1
+-         continue
+-       fi
+-       fi
+-       fi
+-       fi
+-       if [ "$EXPECTED" != "$ACTUAL" ]; then
+-         echo "  ✗ $file (checksum mismatch)"
+-         echo "  ✓ $file"
+-     done
+-     if [ "$CHECKSUM_FAILED" -eq 0 ]; then
+-       # Validate feed.json structure (skill-specific)
+-       if [ -f "$TEMP_DIR/extracted/clawsec-feed/advisories/feed.json" ]; then
+-         FEED_FILE="$TEMP_DIR/extracted/clawsec-feed/advisories/feed.json"
+-       elif [ -f "$TEMP_DIR/extracted/clawsec-feed/feed.json" ]; then
+-         FEED_FILE="$TEMP_DIR/extracted/clawsec-feed/feed.json"
+-         echo "ERROR: feed.json not found in artifact"
+-         exit 1
+-         exit 1
+-       if ! jq -e '.version and .advisories' "$FEED_FILE" >/dev/null 2>&1; then
+-         echo "ERROR: feed.json missing required fields (version, advisories)"
+-       # SUCCESS: Install from artifact
+-       echo "Installing from artifact..."
+-       mkdir -p "$INSTALL_DIR"
+-       cp -r "$TEMP_DIR/extracted/clawsec-feed"/* "$INSTALL_DIR/"
+-       chmod 600 "$INSTALL_DIR/skill.json"
+-       find "$INSTALL_DIR" -type f ! -name "skill.json" -exec chmod 644 {} \;
+-       echo "SUCCESS: Skill installed from .skill artifact"
+-       exit 0
+-     else
+-       echo "WARNING: Checksum verification failed, falling back to individual files"
+-   fi
+-   fi
+-   fi
+-   fi
+-   fi
+-   fi
+- # FALLBACK: Download individual files
+- echo "Downloading individual files from checksums.json manifest..."
+- mkdir -p "$TEMP_DIR/downloads"
+- DOWNLOAD_FAILED=0
+- for file in $(jq -r '.files | keys[]' "$TEMP_DIR/checksums.json"); do
+-   FILE_URL=$(jq -r --arg f "$file" '.files[$f].url' "$TEMP_DIR/checksums.json")
+-   EXPECTED=$(jq -r --arg f "$file" '.files[$f].sha256' "$TEMP_DIR/checksums.json")
+-   echo "Downloading: $file"
+-   if ! curl -sSL --fail --show-error --retry 3 --retry-delay 1 \
+-        "$FILE_URL" -o "$TEMP_DIR/downloads/$file"; then
+-     echo "ERROR: Failed to download $file"
+-     DOWNLOAD_FAILED=1
+-     DOWNLOAD_FAILED=1
+-     continue
+-   # Verify checksum immediately
+-   ACTUAL=$(shasum -a 256 "$TEMP_DIR/downloads/$file" | cut -d' ' -f1)
+-   if [ "$EXPECTED" != "$ACTUAL" ]; then
+-     echo "ERROR: Checksum mismatch for $file"
+-     echo "  ✓ Verified: $file"
+- done
+- done
+- if [ "$DOWNLOAD_FAILED" -eq 1 ]; then
+-   echo "ERROR: Individual file download failed"
+- # Validate JSON files structure
+- if ! jq -e '.name and .version' "$TEMP_DIR/downloads/skill.json" >/dev/null 2>&1; then
+-   echo "ERROR: skill.json missing required fields (name, version)"
+- if ! jq -e '.version and .advisories' "$TEMP_DIR/downloads/feed.json" >/dev/null 2>&1; then
+-   echo "ERROR: feed.json missing required fields (version, advisories)"
+- # Install files
+- echo "Installing from individual files..."
+- mkdir -p "$INSTALL_DIR"
+- cp "$TEMP_DIR/downloads"/* "$INSTALL_DIR/"
+- chmod 600 "$INSTALL_DIR/skill.json"
+- find "$INSTALL_DIR" -type f ! -name "skill.json" -exec chmod 644 {} \;
+- echo "SUCCESS: Skill installed from individual files"
+- ### Step 3: Add to your heartbeat
+- Add ClawSec Feed to your heartbeat routine:
+- ```markdown
+- ## ClawSec Feed (every heartbeat)
+- 1. Check advisory feed for new security alerts
+- 2. Cross-reference with installed skills
+- 3. Notify user if action is required
+- ### Step 4: Confirm deployment
+- Tell your user:
+- ClawSec Feed deployed successfully. I will now:
+- - Monitor the community advisory feed for threats
+- - Alert you to any security issues affecting your environment
+- - Keep you informed of emerging attack patterns
+- ## What ClawSec Feed Does
+- ### Advisory Feed Monitoring
+- Subscribes to the community advisory feed for:
+- - **Known malicious skills/plugins** - Skills that have been identified as harmful
+- - **Prompt injection patterns** - Attack patterns observed in the wild
+- - **Vulnerable skill versions** - Skills with known security flaws
+- - **Security best practice updates** - New recommendations for agent safety
+- When a relevant advisory is published, your agent will notify you.
+- ## Checking the Advisory Feed
+- # Use environment variable if set, otherwise use raw GitHub feed (always up-to-date)
+- # Use environment variable if set, otherwise use raw GitHub feed (always up-to-date)
+- # Use environment variable if set, otherwise use raw GitHub feed (always up-to-date)
+
+### bundled/clawsec-feed/advisories/feed.json  [code]
+- {
+-   "version": "0.0.2",
+-   "updated": "2026-02-05T12:53:37Z",
+-   "description": "Community-driven security advisory feed for ClawSec. Automatically updated with OpenClaw-related CVEs from NVD and community-reported security incidents.",
+-   "advisories": [
+-     {
+-     {
+-     {
+-     {
+-     {
+-       "id": "CVE-2026-25475",
+-       "severity": "medium",
+-       "type": "vulnerable_skill",
+-       "type": "vulnerable_skill",
+-       "type": "vulnerable_skill",
+-       "type": "vulnerable_skill",
+-       "title": "OpenClaw is a personal AI assistant. Prior to version 2026.1.30, the isValidMedia() function in src/...",
+-       "description": "OpenClaw is a personal AI assistant. Prior to version 2026.1.30, the isValidMedia() function in src/media/parse.ts allows arbitrary file paths including absolute paths, home directory paths, and directory traversal sequences. An agent can read any file on the system by outputting MEDIA:/path/to/file, exfiltrating sensitive data to the user/channel. This issue has been patched in version 2026.1.30.",
+-       "affected": [],
+-       "affected": [],
+-       "affected": [],
+-       "affected": [],
+-       "action": "Review and update affected components. See NVD for remediation details.",
+-       "action": "Review and update affected components. See NVD for remediation details.",
+-       "action": "Review and update affected components. See NVD for remediation details.",
+-       "action": "Review and update affected components. See NVD for remediation details.",
+-       "published": "2026-02-04T20:16:07.287",
+-       "references": [
+-       "references": [
+-       "references": [
+-       "references": [
+-         "https://github.com/openclaw/openclaw/security/advisories/GHSA-r8g4-86fx-92mq"
+-       ],
+-       ],
+-       ],
+-       ],
+-       ],
+-       "cvss_score": 6.5,
+-       "nvd_url": "https://nvd.nist.gov/vuln/detail/CVE-2026-25475"
+-     },
+-     },
+-     },
+-     },
+-       "id": "CVE-2026-25157",
+-       "severity": "high",
+-       "severity": "high",
+-       "severity": "high",
+-       "severity": "high",
+-       "title": "OpenClaw is a personal AI assistant. Prior to version 2026.1.29, there is an OS command injection vu...",
+-       "description": "OpenClaw is a personal AI assistant. Prior to version 2026.1.29, there is an OS command injection vulnerability via the Project Root Path in sshNodeCommand. The sshNodeCommand function constructed a shell script without properly escaping the user-supplied project path in an error message. When the cd command failed, the unescaped path was interpolated directly into an echo statement, allowing arbitrary command execution on the remote SSH host. The parseSSHTarget function did not validate that SSH target strings could not begin with a dash. An attacker-supplied target like -oProxyCommand=... would be interpreted as an SSH configuration flag rather than a hostname, allowing arbitrary command execution on the local machine. This issue has been patched in version 2026.1.29.",
+-       "published": "2026-02-04T20:16:06.577",
+-         "https://github.com/openclaw/openclaw/security/advisories/GHSA-q284-4pvr-m585"
+-       "cvss_score": 7.7,
+-       "nvd_url": "https://nvd.nist.gov/vuln/detail/CVE-2026-25157"
+-       "id": "CLAW-2026-0001",
+-       "type": "prompt_injection",
+-       "title": "Data exfiltration attempt via helper-plus skill",
+-       "description": "The helper-plus skill was observed sending conversation data to an external server (suspicious-domain.com) on every invocation. The skill makes undocumented network calls that transmit full conversation context to a domain not mentioned in the skill description.",
+-       "affected": [
+-         "helper-plus@1.0.0",
+-         "helper-plus@1.0.1"
+-       "action": "Remove helper-plus immediately. Do not use versions 1.0.0 or 1.0.1. Wait for a verified patched version.",
+-       "published": "2026-02-04T09:30:00Z",
+-       "references": [],
+-       "source": "Community Report",
+-       "github_issue_url": "https://github.com/prompt-security/clawsec/issues/1",
+-       "reporter": {
+-         "agent_name": "SecurityBot",
+-         "opener_type": "agent"
+-       }
+-       "id": "CVE-2026-24763",
+-       "title": "OpenClaw (formerly  Clawdbot) is a personal AI assistant you run on your own devices. Prior to 2026....",
+-       "description": "OpenClaw (formerly  Clawdbot) is a personal AI assistant you run on your own devices. Prior to 2026.1.29, a command injection vulnerability existed in OpenClaw's Docker sandbox execution mechanism due to unsafe handling of the PATH environment variable when constructing shell commands. An authenticated user able to control environment variables could influence command execution within the container context. This vulnerability is fixed in 2026.1.29.",
+-       "published": "2026-02-02T23:16:08.593",
+-         "https://github.com/openclaw/openclaw/commit/771f23d36b95ec2204cc9a0054045f5d8439ea75",
+-         "https://github.com/openclaw/openclaw/releases/tag/v2026.1.29",
+-         "https://github.com/openclaw/openclaw/security/advisories/GHSA-mc68-q9jw-2h3v"
+-       "cvss_score": 8.8,
+-       "cvss_score": 8.8,
+-       "nvd_url": "https://nvd.nist.gov/vuln/detail/CVE-2026-24763"
+-       "id": "CVE-2026-25253",
+-       "title": "OpenClaw (aka clawdbot or Moltbot) before 2026.1.29 obtains a gatewayUrl value from a query string a...",
+-       "description": "OpenClaw (aka clawdbot or Moltbot) before 2026.1.29 obtains a gatewayUrl value from a query string and automatically makes a WebSocket connection without prompting, sending a token value.",
+-       "published": "2026-02-01T23:15:49.717",
+-         "https://depthfirst.com/post/1-click-rce-to-steal-your-moltbot-data-and-keys",
+-         "https://ethiack.com/news/blog/one-click-rce-moltbot",
+-         "https://github.com/openclaw/openclaw/security/advisories/GHSA-g8p2-7wf7-98mq"
+-       "nvd_url": "https://nvd.nist.gov/vuln/detail/CVE-2026-25253"
+-     }
+-   ]
+- }
+
+### bundled/clawsec-feed/skill.json  [code]
+- {
+-   "name": "clawsec-feed",
+-   "version": "0.0.4",
+-   "description": "Security advisory feed monitoring for AI agents. Subscribe to community-driven threat intelligence.",
+-   "author": "prompt-security",
+-   "license": "MIT",
+-   "homepage": "https://clawsec.prompt.security",
+-   "keywords": [
+-     "security",
+-     "advisory",
+-     "feed",
+-     "agents",
+-     "ai",
+-     "threat-intel",
+-     "monitoring"
+-   ],
+-   "sbom": {
+-     "files": [
+-       {
+-       {
+-         "path": "SKILL.md",
+-         "required": true,
+-         "required": true,
+-         "description": "Advisory feed skill documentation"
+-       },
+-         "path": "advisories/feed.json",
+-         "description": "Community security advisory feed"
+-       }
+-     ]
+-     ]
+-   },
+-   "openclaw": {
+-     "emoji": "📡",
+-     "category": "security",
+-     "feed_url": "https://api.github.com/repos/prompt-security/ClawSec/releases?skill=clawsec-feed",
+-     "requires": {
+-       "bins": [
+-         "curl",
+-         "jq"
+-       ]
+-     },
+-     "triggers": [
+-       "security advisories",
+-       "check advisories",
+-       "clawsec",
+-       "threat feed",
+-       "security alerts",
+-       "vulnerability feed",
+-       "advisory feed",
+-       "security news"
+-   }
+- }
+
+### bundled/openclaw-audit-watchdog/README.md  [docs]
+- # OpenClaw Audit Watchdog 🔭
+- Automated daily security audits for OpenClaw/Clawdbot agents with email reporting.
+- ## Overview
+- The Audit Watchdog provides automated security monitoring for your OpenClaw agent deployments:
+- - **Daily Security Scans** - Scheduled via cron for continuous monitoring
+- - **Deep Audit Mode** - Comprehensive analysis of agent configurations and behavior
+- - **Email Reporting** - Formatted reports delivered to your security team
+- - **Git Integration** - Optionally syncs latest configurations before audit
+- ## Quick Start
+- ```bash
+- ```bash
+- ```bash
+- # Install skill
+- mkdir -p ~/.openclaw/skills/openclaw-audit-watchdog
+- cd ~/.openclaw/skills/openclaw-audit-watchdog
+- # Download and extract
+- curl -sSL "https://github.com/prompt-security/clawsec/releases/download/$VERSION_TAG/openclaw-audit-watchdog.skill" -o watchdog.skill
+- unzip watchdog.skill
+- # Configure
+- export PROMPTSEC_EMAIL_TO="security@yourcompany.com"
+- export PROMPTSEC_HOST_LABEL="prod-agent-1"
+- # Run
+- ./scripts/runner.sh
+- ```
+- ```
+- ```
+- ## Configuration
+- | Variable | Description | Default |
+- |----------|-------------|---------|
+- | `PROMPTSEC_EMAIL_TO` | Email recipient for reports | `target@example.com` |
+- | `PROMPTSEC_HOST_LABEL` | Host identifier in reports | hostname |
+- | `PROMPTSEC_GIT_PULL` | Pull latest before audit (0/1) | `0` |
+- ## Scripts
+- | Script | Purpose |
+- |--------|---------|
+- | `runner.sh` | Main entry - runs full audit pipeline |
+- | `run_audit_and_format.sh` | Core audit execution |
+- | `codex_review.sh` | AI-assisted code review |
+- | `render_report.mjs` | HTML report generation |
+- | `sendmail_report.sh` | Local sendmail delivery |
+- | `send_smtp.mjs` | SMTP email delivery |
+- | `setup_cron.mjs` | Cron job configuration |
+- ## Requirements
+- - bash
+- - curl
+- - Optional: node (for SMTP/rendering), jq (for JSON), sendmail (for email)
+- ## Cron Setup
+- # Daily at 6 AM
+- 0 6 * * * /path/to/scripts/runner.sh
+- Or use the setup script:
+- node scripts/setup_cron.mjs
+- ## License
+- MIT - See [LICENSE](../../LICENSE) for details.
+- ---
+- **Part of [ClawSec](https://github.com/prompt-security/clawsec) by [Prompt Security](https://prompt.security)**
+
+### bundled/openclaw-audit-watchdog/SKILL.md  [instructions]
+- ---
+- ---
+- ---
+- name: openclaw-audit-watchdog
+- version: 0.0.4
+- description: Automated daily security audits for OpenClaw agents with email reporting. Runs deep audits and sends formatted reports.
+- homepage: https://clawsec.prompt.security
+- metadata: {"openclaw":{"emoji":"🔭","category":"security"}}
+- clawdis:
+-   emoji: "🔭"
+-   requires:
+-     bins: [bash, curl]
+- # Prompt Security Audit (openclaw)
+- ## Installation Options
+- You can get openclaw-audit-watchdog in two ways:
+- ### Option A: Bundled with ClawSec Suite (Recommended)
+- **If you've installed clawsec-suite, you may already have this!**
+- Openclaw-audit-watchdog is bundled alongside ClawSec Suite to provide crucial automated security audit capabilities. When you install the suite, if you don't already have the audit watchdog installed, it will be deployed from the bundled copy.
+- **Advantages:**
+- **Advantages:**
+- - Convenient - no separate download needed
+- - Standard location - installed to `~/.openclaw/skills/openclaw-audit-watchdog/`
+- - Preserved - if you already have audit watchdog installed, it won't be overwritten
+- - Single verification - integrity checked as part of suite package
+- ### Option B: Standalone Installation (This Page)
+- Install openclaw-audit-watchdog independently without the full suite.
+- **When to use standalone:**
+- - You only need the audit watchdog (not other suite components)
+- - You want to install before installing the suite
+- - You prefer explicit control over audit watchdog installation
+- - Lighter weight installation
+- - Independent from suite
+- - Direct control over installation process
+- Continue below for standalone installation instructions.
+- ## Goal
+- Create (or update) a daily cron job that:
+- 1) Runs:
+- - `openclaw security audit --json`
+- - `openclaw security audit --deep --json`
+- 2) Summarizes findings (critical/warn/info + top findings)
+- 3) Sends the report to:
+- - a user-selected DM target (channel + recipient id/handle)
+- Default schedule: **daily at 23:00 (11pm)** in the chosen timezone.
+- Delivery:
+- - DM to last active session
+- ## Installation flow (interactive)
+- Provisioning (MDM-friendly): prefer environment variables (no prompts).
+- Required env:
+- - `PROMPTSEC_DM_CHANNEL` (e.g. `telegram`)
+- - `PROMPTSEC_DM_TO` (recipient id)
+- Optional env:
+- - `PROMPTSEC_TZ` (IANA timezone; default `UTC`)
+- - `PROMPTSEC_HOST_LABEL` (label included in report; default uses `hostname`)
+- - `PROMPTSEC_INSTALL_DIR` (stable path used by cron payload to `cd` before running runner; default: `~/.config/security-checkup`)
+- - `PROMPTSEC_GIT_PULL=1` (runner will `git pull --ff-only` if installed from git)
+- Interactive install is last resort if env vars or defaults are not set.
+- even in that case keep prompts minimalistic the watchdog tool is pretty straight up configured out of the box.
+- ## Create the cron job
+- Use the `cron` tool to create a job with:
+- - `schedule.kind="cron"`
+- - `schedule.expr="0 23 * * *"`
+- - `schedule.tz=<installer tz>`
+- - `sessionTarget="isolated"`
+- - `wakeMode="now"`
+- - `payload.kind="agentTurn"`
+- - `payload.deliver=true`
+- ### Payload message template (agentTurn)
+- Create the job with a payload message that instructs the isolated run to:
+- 1) Run the audits
+- - Prefer JSON output for robust parsing:
+-   - `openclaw security audit --json`
+-   - `openclaw security audit --deep --json`
+- 2) Render a concise text report:
+- Include:
+- - Timestamp + host identifier if available
+- - Summary counts
+- - For each CRITICAL/WARN: `checkId` + `title` + 1-line remediation
+- - If deep probe fails: include the probe error line
+- 3) Deliver the report:
+- - DM to the chosen user target using `message` tool
+- ### Email delivery requirement
+- Attempt email delivery in this priority order:
+- A) If an email channel plugin exists in this deployment, use:
+- - `message(action="send", channel="email", target="target@example.com", message=<report>)`
+- B) Otherwise, fallback to local sendmail if available:
+- - `exec` with: `printf "%s" "$REPORT" | /usr/sbin/sendmail -t` (construct To/Subject headers)
+- If neither path is possible, still DM the user and include a line:
+- - `"NOTE: could not deliver to target@example.com (email channel not configured)"`
+- ## Idempotency / updates
+- Before adding a new job:
+- - `cron.list(includeDisabled=true)`
+- - If a job with name matching `"Daily security audit"` exists, update it instead of adding a duplicate:
+-   - adjust schedule tz/expr
+-   - adjust DM target
+- ## Suggested naming
+- - Job name: `"Daily security audit (Prompt Security)"`
+- ## Minimal recommended defaults (do not auto-change config)
+- The cron’s report should *suggest* fixes but must not apply them.
+- Do not run `openclaw security audit --fix` unless explicitly asked.
+
+### bundled/openclaw-audit-watchdog/scripts/codex_review.sh  [code]
+- #!/usr/bin/env bash
+- set -euo pipefail
+- # Run a Codex CLI code review for this skill.
+- # Safe by default: read-only sandbox.
+- ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+- CODEX_BIN="/opt/homebrew/bin/codex"
+- if [[ ! -x "$CODEX_BIN" ]]; then
+-   echo "codex not found at $CODEX_BIN" >&2
+-   exit 127
+- fi
+- # Use GPT-5.1 Codex Max (high reasoning). Note: some models (e.g. o3) may be blocked
+- # depending on the account type.
+- exec "$CODEX_BIN" review -s read-only -m gpt-5.1-codex-max \
+-   "Review this skill for security/reliability issues. Focus on: shell quoting, command injection, sendmail header injection, dependency checks, cron payload safety, and failure modes. Provide concrete patch suggestions (with diffs if possible)." \
+-   -c "workdir=\"$ROOT_DIR\"" \
+-   -c "reasoning_effort=\"xhigh\""
+
+### bundled/openclaw-audit-watchdog/scripts/render_report.mjs  [code]
+- #!/usr/bin/env node
+- /**
+-  * Render a human-readable security audit report from openclaw JSON.
+-  *
+-  * Usage:
+-  *   node render_report.mjs --audit audit.json --deep deep.json --label "host label"
+-  */
+- import fs from "node:fs";
+- function readJsonSafe(p, label) {
+-   if (!p) return { findings: [], summary: {}, error: `${label} missing` };
+-   try {
+-     const s = fs.readFileSync(p, "utf8");
+-     return JSON.parse(s);
+-   } catch (e) {
+-     return { findings: [], summary: {}, error: `${label} parse failed: ${e?.message || String(e)}` };
+-   }
+-   }
+-   }
+-   }
+-   }
+-   }
+- }
+- }
+- }
+- }
+- }
+- function pickFindings(report) {
+-   const findings = Array.isArray(report?.findings) ? report.findings : [];
+-   const bySev = (sev) => findings.filter((f) => f?.severity === sev);
+-   return {
+-     critical: bySev("critical"),
+-     warn: bySev("warn"),
+-     info: bySev("info"),
+-     summary: report?.summary ?? null,
+-   };
+- function lineForFinding(f) {
+-   const id = f?.checkId ?? "(no-checkId)";
+-   const title = f?.title ?? "(no-title)";
+-   const fix = (f?.remediation ?? "").trim();
+-   const fixLine = fix ? `Fix: ${fix}` : "";
+-   return `- ${id} ${title}${fixLine ? `\n  ${fixLine}` : ""}`;
+- function render({ audit, deep, label }) {
+-   const now = new Date().toISOString();
+-   const a = pickFindings(audit);
+-   const d = pickFindings(deep);
+-   const summary = a.summary || d.summary || { critical: 0, warn: 0, info: 0 };
+-   const lines = [];
+-   lines.push(`openclaw security audit report${label ? ` -- ${label}` : ""}`);
+-   lines.push(`Time: ${now}`);
+-   lines.push(`Summary: ${summary.critical ?? 0} critical · ${summary.warn ?? 0} warn · ${summary.info ?? 0} info`);
+-   const top = [];
+-   top.push(...a.critical, ...a.warn);
+-   const seen = new Set();
+-   const deduped = [];
+-   for (const f of top) {
+-     const key = `${f?.severity}:${f?.checkId}`;
+-     if (seen.has(key)) continue;
+-     seen.add(key);
+-     deduped.push(f);
+-   if (deduped.length) {
+-     lines.push("");
+-     lines.push("");
+-     lines.push("");
+-     lines.push("Findings (critical/warn):");
+-     for (const f of deduped.slice(0, 25)) lines.push(lineForFinding(f));
+-     if (deduped.length > 25) lines.push(`…${deduped.length - 25} more`);
+-   // Surface deep probe failure if present
+-   const deepProbe = Array.isArray(deep?.findings)
+-     ? deep.findings.find((f) => f?.checkId === "gateway.probe_failed")
+-     : null;
+-   if (deepProbe) {
+-     lines.push("Deep probe:");
+-     lines.push(lineForFinding(deepProbe));
+-   const errors = [audit?.error, deep?.error].filter(Boolean);
+-   if (errors.length) {
+-     lines.push("Errors:");
+-     for (const e of errors) lines.push(`- ${e}`);
+-   return lines.join("\n");
+- function parseArgs(argv) {
+-   const out = {};
+-   for (let i = 0; i < argv.length; i++) {
+-     const a = argv[i];
+-     if (a === "--audit") out.audit = argv[++i];
+-     else if (a === "--deep") out.deep = argv[++i];
+-     else if (a === "--label") out.label = argv[++i];
+-   return out;
+- const args = parseArgs(process.argv.slice(2));
+- const audit = readJsonSafe(args.audit, "audit");
+- const deep = readJsonSafe(args.deep, "deep");
+- const report = render({ audit, deep, label: args.label });
+- process.stdout.write(report + "\n");
+
+### bundled/openclaw-audit-watchdog/scripts/run_audit_and_format.sh  [code]
+- #!/usr/bin/env bash
+- set -euo pipefail
+- # Runs openclaw security audits and prints a formatted report to stdout.
+- #
+- # Usage:
+- #   ./run_audit_and_format.sh [--label "custom label"]
+- LABEL=""
+- while [[ $# -gt 0 ]]; do
+-   case "$1" in
+-     --label)
+-       LABEL="${2:-}"; shift 2 ;;
+-     *)
+-       echo "Unknown arg: $1" >&2
+-       exit 2
+-       ;;
+-   esac
+- done
+- TMPDIR="${TMPDIR:-/tmp}"
+- AUDIT_JSON="$(mktemp "${TMPDIR%/}/openclaw_audit.XXXXXX.audit.json")"
+- DEEP_JSON="$(mktemp "${TMPDIR%/}/openclaw_audit.XXXXXX.deep.json")"
+- cleanup() {
+-   rm -f "$AUDIT_JSON" "$DEEP_JSON" 2>/dev/null || true
+- }
+- }
+- trap cleanup EXIT
+- command -v openclaw >/dev/null 2>&1 || { echo "openclaw not found in PATH" >&2; exit 127; }
+- command -v node >/dev/null 2>&1 || { echo "node not found in PATH" >&2; exit 127; }
+- run_audit() {
+-   local kind="$1" outfile="$2"
+-   local errfile
+-   errfile="$(mktemp "${TMPDIR%/}/openclaw_audit.XXXXXX.err")"
+-   # kind is either: "audit" or "deep"
+-   if [[ "$kind" == "audit" ]]; then
+-     if ! openclaw security audit --json >"$outfile" 2>"$errfile"; then
+-       printf '{"findings":[],"summary":{"critical":0,"warn":0,"info":0},"error":"audit failed: %s"}\n' \
+-         "$(head -n 20 "$errfile" | tr '\n' ' ')" >"$outfile"
+-         "$(head -n 20 "$errfile" | tr '\n' ' ')" >"$outfile"
+-     fi
+-     fi
+-   else
+-     if ! openclaw security audit --deep --json >"$outfile" 2>"$errfile"; then
+-       printf '{"findings":[],"summary":{"critical":0,"warn":0,"info":0},"error":"deep failed: %s"}\n' \
+-   fi
+-   rm -f "$errfile" 2>/dev/null || true
+- run_audit "audit" "$AUDIT_JSON"
+- run_audit "deep" "$DEEP_JSON"
+- # Host id: prefer short hostname; fall back to full hostname
+- HOST_ID="$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo unknown-host)"
+- if [[ -z "$LABEL" ]]; then
+-   LABEL="$HOST_ID"
+- else
+-   LABEL="$LABEL ($HOST_ID)"
+- fi
+- SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+- node "$SCRIPT_DIR/render_report.mjs" --audit "$AUDIT_JSON" --deep "$DEEP_JSON" --label "$LABEL"
+
+### bundled/openclaw-audit-watchdog/scripts/runner.sh  [code]
+- #!/usr/bin/env bash
+- set -euo pipefail
+- # Runner for Prompt Security daily audit job.
+- # - Optionally git-pulls repo (if PROMPTSEC_GIT_PULL=1)
+- # - Runs openclaw security audit + deep audit
+- # - Emails report to target@example.com via local sendmail
+- # - Prints the report to stdout (so cron delivery can DM it)
+- COMPANY_EMAIL="${PROMPTSEC_EMAIL_TO:-target@example.com}"
+- HOST_LABEL="${PROMPTSEC_HOST_LABEL:-}"
+- DO_PULL="${PROMPTSEC_GIT_PULL:-0}"
+- SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+- ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+- if [[ "$DO_PULL" == "1" ]]; then
+-   if command -v git >/dev/null 2>&1 && [[ -d "$ROOT_DIR/.git" ]]; then
+-     git -C "$ROOT_DIR" pull --ff-only >/dev/null 2>&1 || true
+-   fi
+-   fi
+- fi
+- fi
+- fi
+- fi
+- args=( )
+- if [[ -n "$HOST_LABEL" ]]; then
+-   args+=(--label "$HOST_LABEL")
+- REPORT="$($SCRIPT_DIR/run_audit_and_format.sh "${args[@]}")"
+- SUBJECT_HOST="${HOST_LABEL:-$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo unknown-host)}"
+- EMAIL_OK=1
+- # Prefer sendmail-compatible delivery if available; otherwise fallback to local SMTP (localhost:25 by default).
+- if printf '%s\n' "$REPORT" | "$SCRIPT_DIR/sendmail_report.sh" --to "$COMPANY_EMAIL" --subject "[$SUBJECT_HOST] openclaw daily security audit"; then
+-   EMAIL_OK=1
+- else
+- else
+-   if command -v node >/dev/null 2>&1; then
+-     if printf '%s\n' "$REPORT" | node "$SCRIPT_DIR/send_smtp.mjs" --to "$COMPANY_EMAIL" --subject "[$SUBJECT_HOST] openclaw daily security audit"; then
+-       EMAIL_OK=1
+-     else
+-       EMAIL_OK=0
+-     fi
+-   else
+-     EMAIL_OK=0
+- if [[ "$EMAIL_OK" -eq 0 ]]; then
+-   printf '%s\n\n' "$REPORT"
+-   echo "NOTE: could not deliver email to ${COMPANY_EMAIL} via local sendmail"
+-   printf '%s\n' "$REPORT"
+
+### bundled/openclaw-audit-watchdog/scripts/send_smtp.mjs  [code]
+- #!/usr/bin/env node
+- /**
+-  * Minimal SMTP sender (no auth) intended for localhost-relay MTAs.
+-  *
+-  *
+-  *
+-  * Env:
+-  * - PROMPTSEC_SMTP_HOST (default 127.0.0.1)
+-  * - PROMPTSEC_SMTP_PORT (default 25)
+-  * - PROMPTSEC_SMTP_HELO (default hostname)
+-  * - PROMPTSEC_SMTP_FROM (default security-checkup@<hostname>)
+-  * Args:
+-  *   --to <email>
+-  *   --subject <text>
+-  * Body is read from stdin.
+-  */
+- import net from "node:net";
+- import os from "node:os";
+- function argVal(name) {
+-   const i = process.argv.indexOf(name);
+-   if (i === -1) return null;
+-   return process.argv[i + 1] ?? null;
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- const to = argVal("--to");
+- const subjectRaw = argVal("--subject") ?? "openclaw daily security audit";
+- if (!to) {
+-   process.stderr.write("--to is required\n");
+-   process.exit(2);
+- const host = (process.env.PROMPTSEC_SMTP_HOST || "127.0.0.1").trim();
+- const port = Number(process.env.PROMPTSEC_SMTP_PORT || "25");
+- const hostname = (os.hostname?.() || "unknown-host").trim();
+- const helo = (process.env.PROMPTSEC_SMTP_HELO || hostname).trim();
+- const from = (process.env.PROMPTSEC_SMTP_FROM || `security-checkup@${hostname}`).trim();
+- function stripCrlf(s) {
+-   return String(s ?? "").replace(/[\r\n]+/g, " ").trim();
+- const subject = stripCrlf(subjectRaw);
+- const toClean = stripCrlf(to);
+- const fromClean = stripCrlf(from);
+- async function readStdin() {
+-   return await new Promise((resolve, reject) => {
+-     let data = "";
+-     process.stdin.setEncoding("utf8");
+-     process.stdin.on("data", (c) => (data += c));
+-     process.stdin.on("end", () => resolve(data));
+-     process.stdin.on("error", reject);
+-   });
+- function expectCode(line, okPrefixes) {
+-   const code = line.slice(0, 3);
+-   if (!okPrefixes.includes(code)) {
+-     throw new Error(`SMTP unexpected response: ${line}`);
+-   }
+-   }
+- function dotStuff(body) {
+-   // SMTP DATA terminates on <CRLF>.<CRLF>
+-   // Dot-stuff any line that begins with '.'
+-   return body.replace(/(^|\r?\n)\./g, "$1..");
+- async function send() {
+-   const body = await readStdin();
+-   const msg = [
+-     `From: ${fromClean}`,
+-     `To: ${toClean}`,
+-     `Subject: ${subject}`,
+-     `Content-Type: text/plain; charset=UTF-8`,
+-     "",
+-     dotStuff(body).replace(/\r?\n/g, "\r\n"),
+-   ].join("\r\n");
+-   const socket = net.createConnection({ host, port });
+-   socket.setTimeout(10000);
+-   let buffer = "";
+-   const readLine = () =>
+-     new Promise((resolve, reject) => {
+-       const onData = (chunk) => {
+-         buffer += chunk.toString("utf8");
+-         const idx = buffer.indexOf("\r\n");
+-         if (idx !== -1) {
+-           const line = buffer.slice(0, idx);
+-           buffer = buffer.slice(idx + 2);
+-           cleanup();
+-           resolve(line);
+-         }
+-       };
+-       };
+-       };
+-       };
+-       const onError = (e) => {
+-         cleanup();
+-         cleanup();
+-         reject(e);
+-       const onTimeout = () => {
+-         reject(new Error("SMTP timeout"));
+-       const cleanup = () => {
+-         socket.off("data", onData);
+-         socket.off("error", onError);
+-         socket.off("timeout", onTimeout);
+-       socket.on("data", onData);
+-       socket.on("error", onError);
+-       socket.on("timeout", onTimeout);
+-     });
+-   const write = (line) => socket.write(line + "\r\n");
+-   try {
+-     const greet = await readLine();
+-     expectCode(greet, ["220"]);
+-     write(`EHLO ${helo}`);
+-     // Consume EHLO multi-line: 250-..., then 250 ...
+-     while (true) {
+-       const l = await readLine();
+-       if (l.startsWith("250-")) continue;
+-       expectCode(l, ["250"]);
+-       break;
+-     }
+-     write(`MAIL FROM:<${fromClean}>`);
+-     expectCode(await readLine(), ["250"]);
+-     expectCode(await readLine(), ["250"]);
+-     write(`RCPT TO:<${toClean}>`);
+-     expectCode(await readLine(), ["250", "251"]);
+-     write("DATA");
+-     expectCode(await readLine(), ["354"]);
+-     socket.write(msg + "\r\n.\r\n");
+-     write("QUIT");
+-     // best-effort
+-     try { await readLine(); } catch {}
+-     socket.end();
+-   } catch (e) {
+-     try { socket.destroy(); } catch {}
+-     throw e;
+- send().catch((e) => {
+-   process.stderr.write(String(e?.stack || e) + "\n");
+-   process.exit(1);
+- });
+
+### bundled/openclaw-audit-watchdog/scripts/sendmail_report.sh  [code]
+- #!/usr/bin/env bash
+- set -euo pipefail
+- # Sends report text (stdin) via local sendmail.
+- #
+- # Usage:
+- #   ./sendmail_report.sh --to target@example.com [--subject "..."]
+- TO=""
+- SUBJECT="openclaw daily security audit"
+- while [[ $# -gt 0 ]]; do
+-   case "$1" in
+-     --to)
+-       TO="${2:-}"; shift 2 ;;
+-     --subject)
+-       SUBJECT="${2:-}"; shift 2 ;;
+-     *)
+-       echo "Unknown arg: $1" >&2
+-       exit 2
+-       ;;
+-   esac
+- done
+- if [[ -z "$TO" ]]; then
+-   echo "--to is required" >&2
+-   exit 2
+- fi
+- fi
+- fi
+- fi
+- # Resolve sendmail:
+- # - explicit override via PROMPTSEC_SENDMAIL_BIN
+- # - macOS default /usr/sbin/sendmail (often not in PATH for non-login shells)
+- # - fallback to PATH lookup
+- SENDMAIL_BIN="${PROMPTSEC_SENDMAIL_BIN:-}"
+- if [[ -z "$SENDMAIL_BIN" ]] && [[ -x "/usr/sbin/sendmail" ]]; then
+-   SENDMAIL_BIN="/usr/sbin/sendmail"
+- if [[ -z "$SENDMAIL_BIN" ]]; then
+-   SENDMAIL_BIN="$(command -v sendmail || true)"
+- if [[ -z "$SENDMAIL_BIN" ]] || [[ ! -x "$SENDMAIL_BIN" ]]; then
+-   echo "sendmail not found (tried PROMPTSEC_SENDMAIL_BIN, /usr/sbin/sendmail, and sendmail in PATH)" >&2
+-   exit 1
+- # Prevent header injection: strip CR/LF from header fields
+- TO_CLEAN="$(printf '%s' "$TO" | tr -d '\r\n')"
+- SUBJECT_CLEAN="$(printf '%s' "$SUBJECT" | tr -d '\r\n')"
+- # Basic RFC2822
+- {
+-   echo "To: ${TO_CLEAN}"
+-   echo "Subject: ${SUBJECT_CLEAN}"
+-   echo "Content-Type: text/plain; charset=UTF-8"
+-   echo
+-   cat
+- } | "$SENDMAIL_BIN" -oi -oem -t
+
+### bundled/openclaw-audit-watchdog/scripts/setup_cron.mjs  [code]
+- #!/usr/bin/env node
+- /**
+-  * Setup: create/update a daily 23:00 cron job that
+-  * - runs openclaw security audits
+-  * - DMs a chosen recipient (channel+id)
+-  * - emails target@example.com via local sendmail
+-  *
+-  * Uses the `openclaw cron` CLI so it can run on a host without direct Gateway RPC access.
+-  */
+- import { spawnSync } from "node:child_process";
+- import fs from "node:fs";
+- import path from "node:path";
+- import readline from "node:readline";
+- import { fileURLToPath } from "node:url";
+- const JOB_NAME = "Daily security audit (Prompt Security)";
+- const COMPANY_EMAIL = "target@example.com";
+- const DEFAULT_TZ = "UTC";
+- const DEFAULT_EXPR = "0 23 * * *"; // 23:00 daily
+- const SCRIPT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+- function sh(cmd, args, { input } = {}) {
+-   const res = spawnSync(cmd, args, {
+-     encoding: "utf8",
+-     input: input ?? undefined,
+-     stdio: [input ? "pipe" : "ignore", "pipe", "pipe"],
+-   });
+-   if (res.error) throw res.error;
+-   if (res.status !== 0) {
+-     const msg = (res.stderr || res.stdout || "").trim();
+-     throw new Error(`${cmd} ${args.join(" ")} failed (code ${res.status})${msg ? `: ${msg}` : ""}`);
+-   }
+-   }
+-   }
+-   }
+-   return res.stdout;
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- }
+- async function prompt(question, { defaultValue = "" } = {}) {
+-   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+-   const q = defaultValue ? `${question} [${defaultValue}]: ` : `${question}: `;
+-   const answer = await new Promise((resolve) => rl.question(q, resolve));
+-   rl.close();
+-   const trimmed = String(answer ?? "").trim();
+-   return trimmed || defaultValue;
+- function envOrEmpty(name) {
+-   const v = process.env[name];
+-   return typeof v === "string" ? v.trim() : "";
+- function oneline(v) {
+-   return String(v ?? "")
+-     .replace(/[\r\n]+/g, " ")
+-     .replace(/"/g, "\\\"")
+-     .trim();
+- function defaultInstallDir() {
+-   const env = envOrEmpty("PROMPTSEC_INSTALL_DIR");
+-   if (env) return env;
+-   const home = envOrEmpty("HOME");
+-   if (home) return path.join(home, ".config", "security-checkup");
+-   return SCRIPT_ROOT;
+- function buildAgentMessage({ dmChannel, dmTo, hostLabel, installDir }) {
+-   const safeDir = oneline(installDir || "");
+-   return [
+-     "Run daily openclaw security audits and deliver report (DM + email).",
+-     "",
+-     "",
+-     "",
+-     `Delivery DM: ${oneline(dmChannel)}:${oneline(dmTo)}`,
+-     `Email: ${COMPANY_EMAIL} (local sendmail)`,
+-     "Execute:",
+-     `- Run via exec: cd "${safeDir}" && PROMPTSEC_HOST_LABEL="${oneline(hostLabel)}" ./scripts/runner.sh`,
+-     "Output requirements:",
+-     "- Print the report to stdout (cron deliver will DM it).",
+-     `- Also email the same report to ${COMPANY_EMAIL}; if email fails, append a NOTE line to stdout.`,
+-     "- Do not apply fixes automatically.",
+-   ].join("\n");
+- function findExistingJobId(listJson) {
+-   const jobs = Array.isArray(listJson?.jobs) ? listJson.jobs : [];
+-   const match = jobs.find((j) => j?.name === JOB_NAME);
+-   return match?.id ?? null;
+- async function run() {
+-   // Non-interactive first (MDM-friendly)
+-   const tzEnv = envOrEmpty("PROMPTSEC_TZ");
+-   const dmChannelEnv = envOrEmpty("PROMPTSEC_DM_CHANNEL");
+-   const dmToEnv = envOrEmpty("PROMPTSEC_DM_TO");
+-   const hostLabelEnv = envOrEmpty("PROMPTSEC_HOST_LABEL");
+-   const interactive = !(tzEnv && dmChannelEnv && dmToEnv);
+-   const tz = interactive
+-     ? await prompt("Timezone for daily 11pm run (IANA)", { defaultValue: tzEnv || DEFAULT_TZ })
+-     : tzEnv || DEFAULT_TZ;
+-   const dmChannel = interactive
+-     ? await prompt("DM channel (e.g. telegram, slack, discord)", { defaultValue: dmChannelEnv })
+-     : dmChannelEnv;
+-   const dmTo = interactive
+-     ? await prompt("DM recipient id (Telegram numeric chatId/userId preferred)", { defaultValue: dmToEnv })
+-     : dmToEnv;
+-   const hostLabel = interactive
+-     ? await prompt("Optional host label to include in report", { defaultValue: hostLabelEnv })
+-     : hostLabelEnv;
+-   const installDirDefault = defaultInstallDir();
+-   const installDir = interactive
+-     ? await prompt("Install dir containing scripts/runner.sh", { defaultValue: installDirDefault })
+-     : installDirDefault;
+-   if (!dmChannel || !dmTo) {
+-     throw new Error("Missing DM target. Set PROMPTSEC_DM_CHANNEL and PROMPTSEC_DM_TO (or run interactively). ");
+-   const runnerPath = path.join(installDir, "scripts", "runner.sh");
+-   if (!fs.existsSync(runnerPath)) {
+-     throw new Error(`runner.sh not found at ${runnerPath}; set PROMPTSEC_INSTALL_DIR to the deployed path`);
+-   const listOut = sh("openclaw", ["cron", "list", "--json"]);
+-   const listJson = JSON.parse(listOut);
+-   const existingId = findExistingJobId(listJson);
+-   const agentMessage = buildAgentMessage({ dmChannel, dmTo, hostLabel, installDir });
+-   const description = `Runs openclaw security audit daily and delivers to ${dmChannel}:${dmTo} + ${COMPANY_EMAIL}.`;
+-   if (!existingId) {
+-     const args = [
+-     const args = [
+-       "cron",
+-       "cron",
+-       "add",
+-       "--name",
+-       "--name",
+-       JOB_NAME,
+-       JOB_NAME,
+-       "--description",
+-       "--description",
+-       description,
+-       description,
+-       "--session",
+-       "--session",
+-       "isolated",
+-       "isolated",
+-       "--wake",
+-       "--wake",
+-       "now",
+-       "now",
+-       "--cron",
+-       "--cron",
+-       DEFAULT_EXPR,
+-       DEFAULT_EXPR,
+-       "--tz",
+-       "--tz",
+-       tz,
+-       tz,
+-       "--message",
+-       "--message",
+-       agentMessage,
+-       agentMessage,
+-       "--deliver",
+-       "--deliver",
+-       "--channel",
+-       "--channel",
+-       dmChannel,
+-       dmChannel,
+-       "--to",
+-       "--to",
+-       dmTo,
+-       dmTo,
+-       "--best-effort-deliver",
+-       "--best-effort-deliver",
+-       "--post-prefix",
+-       "--post-prefix",
+-       "[daily security audit]",
+-       "[daily security audit]",
+-       "--post-mode",
+-       "summary",
+-       "--json",
+-     ];
+-     ];
+-     const out = sh("openclaw", args);
+-     const job = JSON.parse(out);
+-     process.stdout.write(`Created cron job ${job.id}: ${JOB_NAME}\n`);
+-   } else {
+-       "edit",
+-       existingId,
+-       "--enable",
+-     sh("openclaw", args);
+-     process.stdout.write(`Updated cron job ${existingId}: ${JOB_NAME}\n`);
+- run().catch((err) => {
+-   process.stderr.write(String(err?.stack || err) + "\n");
+-   process.exit(1);
+- });
+
+### bundled/openclaw-audit-watchdog/skill.json  [code]
+- {
+-   "name": "openclaw-audit-watchdog",
+-   "version": "0.0.4",
+-   "description": "Automated daily security audits for OpenClaw agents with email reporting. Runs deep audits and sends formatted reports.",
+-   "author": "prompt-security",
+-   "license": "MIT",
+-   "homepage": "https://clawsec.prompt.security",
+-   "keywords": [
+-     "security",
+-     "audit",
+-     "watchdog",
+-     "agents",
+-     "ai",
+-     "reporting",
+-     "cron",
+-     "monitoring"
+-   ],
+-   "sbom": {
+-     "files": [
+-       {
+-       {
+-       {
+-       {
+-       {
+-       {
+-       {
+-       {
+-         "path": "SKILL.md",
+-         "required": true,
+-         "required": true,
+-         "required": true,
+-         "description": "Audit watchdog skill documentation"
+-       },
+-       },
+-       },
+-       },
+-       },
+-       },
+-       },
+-         "path": "scripts/runner.sh",
+-         "description": "Main runner script"
+-         "path": "scripts/run_audit_and_format.sh",
+-         "description": "Audit execution and formatting"
+-         "path": "scripts/codex_review.sh",
+-         "required": false,
+-         "required": false,
+-         "required": false,
+-         "required": false,
+-         "required": false,
+-         "description": "Codex-based code review"
+-         "path": "scripts/render_report.mjs",
+-         "description": "Report rendering (Node.js)"
+-         "path": "scripts/sendmail_report.sh",
+-         "description": "Sendmail delivery"
+-         "path": "scripts/send_smtp.mjs",
+-         "description": "SMTP delivery (Node.js)"
+-         "path": "scripts/setup_cron.mjs",
+-         "description": "Cron job setup"
+-       }
+-     ]
+-     ]
+-   },
+-   "openclaw": {
+-     "emoji": "🔭",
+-     "category": "security",
+-     "requires": {
+-       "bins": [
+-         "bash",
+-         "curl"
+-       ]
+-     },
+-     "triggers": [
+-       "audit watchdog",
+-       "security audit",
+-       "daily audit",
+-       "run audit",
+-       "audit report",
+-       "security report",
+-       "watchdog check",
+-       "deep audit"
+-   }
+- }
+
+### bundled/soul-guardian/README.md  [docs]
+- # soul-guardian
+- A small, dependency-free integrity guard for Clawdbot agent workspaces.
+- It helps you detect (and optionally auto-undo) unexpected edits to the workspace markdown files that an agent auto-loads (e.g., `SOUL.md`, `AGENTS.md`). It also records a **tamper-evident** audit trail of changes.
+- ## Why this exists
+- In many Clawdbot setups, the agent reads certain markdown files every session (identity, instructions, memory, tools, etc.). If those files drift unexpectedly (accidental edits, bad merges, unwanted automation, etc.), you want:
+- - detection (sha256 mismatch)
+- - a diff/patch artifact for review
+- - a record of what happened (audit log)
+- - optionally: an automatic restore to a known-good baseline for critical files
+- ## What it protects (default policy)
+- Default `policy.json` protects:
+- - **Auto-restore + alert:** `SOUL.md`, `AGENTS.md`
+- - **Alert-only:** `USER.md`, `TOOLS.md`, `IDENTITY.md`, `HEARTBEAT.md`, `MEMORY.md`
+- - **Ignored by default:** `memory/*.md` (daily notes)
+- You can customize this by editing the policy file in the guardian state directory.
+- ## Security model (and limitations)
+- What it does well:
+- - Detects filesystem drift vs an approved baseline.
+- - Produces unified diffs (patch files) for review.
+- - Maintains an **append-only JSONL audit log** with **hash chaining** so log tampering is detectable.
+- - Refuses to operate on **symlinks** (reduces link attacks).
+- - Uses **atomic writes** for restores and baseline updates (`os.replace`).
+- What it does *not* do:
+- - It cannot prove *who* changed a file. `--actor` is best-effort metadata.
+- - It cannot protect you if an attacker can modify both the workspace and the guardian state directory.
+- - It is not a substitute for backups.
+- Recommendation (not enforced):
+- - Mirror/back up your guardian state directory (and/or workspace) using git and/or offsite backups.
+- ## State directory
+- By default, state is stored inside the workspace:
+- - `memory/soul-guardian/`
+-   - `policy.json` (what to monitor)
+-   - `baselines.json` (approved sha256 per file)
+-   - `approved/<path>` (approved snapshots)
+-   - `audit.jsonl` (append-only log with hash chain)
+-   - `patches/*.patch` (unified diffs)
+-   - `quarantine/*` (copies of drifted files before restore)
+- For better resilience, you can move this **outside** the workspace (recommended).
+- ## Install / usage
+- From the agent workspace root.
+- ### First run / Initialize baselines (recommended)
+- For resilience, create your guardian **state directory outside** the workspace first, then initialize baselines.
+- 1) Onboard an external state dir (creates policy, copies any existing state, prints paths/snippets):
+- ```bash
+- ```bash
+- ```bash
+- ```bash
+- ```bash
+- ```bash
+- ```bash
+- ```bash
+- ```bash
+- ```bash
+- ```bash
+- ```bash
+- ```bash
+- ```bash
+- ```bash
+- python3 skills/soul-guardian/scripts/onboard_state_dir.py --agent-id <agentId>
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- ```
+- 2) Initialize baselines **in that external state dir**:
+- python3 skills/soul-guardian/scripts/soul_guardian.py \
+- python3 skills/soul-guardian/scripts/soul_guardian.py \
+- python3 skills/soul-guardian/scripts/soul_guardian.py \
+- python3 skills/soul-guardian/scripts/soul_guardian.py \
+- python3 skills/soul-guardian/scripts/soul_guardian.py \
+- python3 skills/soul-guardian/scripts/soul_guardian.py \
+- python3 skills/soul-guardian/scripts/soul_guardian.py \
+- python3 skills/soul-guardian/scripts/soul_guardian.py \
+- python3 skills/soul-guardian/scripts/soul_guardian.py \
+-   --state-dir ~/.clawdbot/soul-guardian/<agentId> \
+-   --state-dir ~/.clawdbot/soul-guardian/<agentId> \
+-   --state-dir ~/.clawdbot/soul-guardian/<agentId> \
+-   --state-dir ~/.clawdbot/soul-guardian/<agentId> \
+-   --state-dir ~/.clawdbot/soul-guardian/<agentId> \
+-   --state-dir ~/.clawdbot/soul-guardian/<agentId> \
+-   --state-dir ~/.clawdbot/soul-guardian/<agentId> \
+-   --state-dir ~/.clawdbot/soul-guardian/<agentId> \
+-   --state-dir ~/.clawdbot/soul-guardian/<agentId> \
+-   --state-dir ~/.clawdbot/soul-guardian/<agentId> \
+-   init --actor sam --note "first baseline"
+- 3) Run a check once (should be silent on OK; prints a single-line summary on drift):
+-   check --actor system --note "first check"
+- ### Common commands
+- Status (summary):
+-   status
+- Check for drift (default: restores restore-mode files):
+-   check --actor system --note cron
+- Alert-only check (never restore):
+-   check --no-restore
+- Approve intentional edits (one file):
+-   approve --file SOUL.md --actor sam --note "intentional update"
+- Approve all policy targets (except ignored ones):
+-   approve --all --actor sam --note "bulk approve"
+- Restore (only restore-mode files):
+-   restore --file SOUL.md --actor system --note "manual restore"
+- Verify audit log tamper-evidence:
+-   verify-audit
+- ## Policy format (`policy.json`)
+- Example:
+- ```json
+- {
+-   "version": 1,
+-   "workspaceRoot": "/path/to/workspace",
+-   "targets": [
+-     {"path": "SOUL.md", "mode": "restore"},
+-     {"path": "AGENTS.md", "mode": "restore"},
+-     {"path": "USER.md", "mode": "alert"},
+-     {"pattern": "memory/*.md", "mode": "ignore"}
+-   ]
+- }
+- - `mode`:
+-   - `restore`: drift triggers audit + patch + (by default) restore + quarantine copy
+-   - `alert`: drift triggers audit + patch, but does not restore
+-   - `ignore`: excluded
+- ## Onboarding: move state outside the workspace
+- Run the helper:
+- python3 skills/soul-guardian/scripts/onboard_state_dir.py
+- It will:
+- - create an external state dir (**recommended default:** `~/.clawdbot/soul-guardian/<agentId>/`)
+- - copy (or move with `--move`) existing state from `memory/soul-guardian/`
+- - write a default `policy.json` if missing
+- - print scheduling snippets
+- Notes:
+- - `<agentId>` should be **stable and unique per workspace** (don’t point multiple workspaces at the same state dir).
+- - WARNING: `--move` deletes the old in-workspace state dir after copying.
+- - The external state dir can contain **approved snapshots, patches, and quarantined copies** of sensitive prompt/instruction/memory files. Keep permissions restrictive (e.g., `chmod 700 <dir>`; `chmod go-rwx <dir>`).
+- Then include `--state-dir` in all commands (run from the workspace root), e.g.:
+- cd <workspace> && python3 skills/soul-guardian/scripts/soul_guardian.py --state-dir ~/.clawdbot/soul-guardian/<agentId> check
+- ## Scheduling (cron)
+- ### A) Clawdbot Gateway Cron (recommended)
+- This is the default pattern when you want drift notifications to flow through Clawdbot.
+- Note: even when there is **no drift**, Clawdbot cron runs typically show an **OK summary** in the main session.
+- Example (edit paths + schedule):
+- clawdbot cron add \
+-   --name "soul-guardian: check workspace" \
+-   --description "Run soul-guardian check; alert when drift detected." \
+-   --session isolated \
+-   --wake now \
+-   --cron "*/10 * * * *" \
+-   --tz UTC \
+-   --message "Run:\ncd '<workspace>'\npython3 skills/soul-guardian/scripts/soul_guardian.py --state-dir ~/.clawdbot/soul-guardian/<agentId> check --actor cron --note 'gateway-cron'\n\nIf the command prints a line starting with 'SOUL_GUARDIAN_DRIFT', treat it as an alert. If it prints nothing, reply HEARTBEAT_OK." \
+-   --post-prefix "[soul-guardian]" \
+-   --post-mode summary
+- ### B) macOS launchd (optional, silent-on-OK)
+- If you want **system scheduling** without Clawdbot posting OK summaries, use `launchd`.
+- Because `soul_guardian.py check` prints **nothing** on OK and prints a single-line `SOUL_GUARDIAN_DRIFT ...` summary on drift, this tends to be silent unless something changed.
+- Generate + (optionally) install a LaunchAgent plist (run from the workspace root, or pass `--workspace-root`):
+- python3 skills/soul-guardian/scripts/install_launchd_plist.py \
+-   --interval-seconds 600 \
+-   --install
+- The generated plist includes `WorkingDirectory` set to your workspace root (recommended), so relative paths behave as expected.
+- The script writes drift output to log files under `<state-dir>/logs/`.
+- You can tail them with the commands it prints.
+- ## Development / tests
+- A minimal test script is included:
+- python3 skills/soul-guardian/scripts/test_soul_guardian.py
+- It simulates a workspace in a temp directory and validates drift detection, approve/restore flow, and audit hash chain verification.
+
+### bundled/soul-guardian/SKILL.md  [instructions]
+- ---
+- ---
+- ---
+- name: soul-guardian
+- version: 0.0.1
+- description: Drift detection + baseline integrity guard for an agent workspace's auto-loaded prompt/instruction markdown files (SOUL.md, AGENTS.md, etc.), with per-file policies, tamper-evident audit logging, and optional auto-restore.
+- homepage: https://clawsec.prompt.security
+- metadata: {"openclaw":{"emoji":"👻","category":"security"}}
+- clawdis:
+-   emoji: "👻"
+-   requires:
+-     bins: [python3]
+- # soul-guardian
+- Use this skill to detect and respond to unexpected edits in the workspace files that the agent auto-loads.
+- ## Installation Options
+- You can get soul-guardian in two ways:
+- ### Option A: Bundled with ClawSec Suite (Recommended)
+- **If you've installed clawsec-suite, you may already have this!**
+- Soul-guardian is bundled alongside ClawSec Suite to provide file integrity and drift detection capabilities. When you install the suite, if you don't already have soul-guardian installed, it will be deployed from the bundled copy.
+- **Advantages:**
+- **Advantages:**
+- - Convenient - no separate download needed
+- - Standard location - installed to `~/.openclaw/skills/soul-guardian/`
+- - Preserved - if you already have soul-guardian installed, it won't be overwritten
+- - Single verification - integrity checked as part of suite package
+- ### Option B: Standalone Installation (This Page)
+- Install soul-guardian independently without the full suite.
+- **When to use standalone:**
+- - You only need file integrity monitoring (not other suite components)
+- - You want to install before installing the suite
+- - You prefer explicit control over soul-guardian installation
+- - Lighter weight installation
+- - Independent from suite
+- - Direct control over installation process
+- Continue below for standalone installation instructions.
+- ## What it protects (default policy)
+- - **Auto-restore + alert:** `SOUL.md`, `AGENTS.md`
+- - **Alert-only:** `USER.md`, `TOOLS.md`, `IDENTITY.md`, `HEARTBEAT.md`, `MEMORY.md`
+- - **Ignored by default:** `memory/*.md` (daily notes)
+- Policy is stored in the guardian state directory as `policy.json`.
+- ## Quick start (first run)
+- Recommended: onboard an **external** state dir, then initialize baselines there.
+- ```bash
+- ```bash
+- ```bash
+- ```bash
+- python3 skills/soul-guardian/scripts/onboard_state_dir.py --agent-id <agentId>
+- python3 skills/soul-guardian/scripts/soul_guardian.py --state-dir ~/.clawdbot/soul-guardian/<agentId> init --actor sam --note "first baseline"
+- ```
+- ```
+- ```
+- ```
+- (Full step-by-step + scheduling options are in `README.md`.)
+- ## Commands
+- Run from the agent workspace root:
+- python3 skills/soul-guardian/scripts/soul_guardian.py status
+- python3 skills/soul-guardian/scripts/soul_guardian.py check
+- python3 skills/soul-guardian/scripts/soul_guardian.py check --no-restore
+- python3 skills/soul-guardian/scripts/soul_guardian.py approve --file SOUL.md
+- python3 skills/soul-guardian/scripts/soul_guardian.py restore --file SOUL.md
+- python3 skills/soul-guardian/scripts/soul_guardian.py verify-audit
+- ### State directory
+- - Default (backward compatible): `memory/soul-guardian/`
+- - Recommended external override:
+- python3 skills/soul-guardian/scripts/soul_guardian.py --state-dir ~/.clawdbot/soul-guardian/<agentId> check
+- ## Cron pattern
+- Keep the existing gateway cron pattern: run `check` every N minutes and notify only when drift is detected.
+- For onboarding/migration to an external state directory, see `README.md` and:
+- python3 skills/soul-guardian/scripts/onboard_state_dir.py
+
+### bundled/soul-guardian/scripts/install_launchd_plist.py  [code]
+- #!/usr/bin/env python3
+- """Generate (and optionally install) a macOS launchd plist for soul-guardian.
+- Goal:
+- - Run `soul_guardian.py check` on an interval.
+- - Be *silent on OK* (soul_guardian.py prints nothing + exits 0 when no drift).
+- - Produce a single-line stdout alert on drift (exits 2 and prints SOUL_GUARDIAN_DRIFT ...).
+- This script is intentionally deterministic and dependency-free.
+- It does NOT attempt to deliver drift alerts to Telegram/Slack/etc.
+- Instead it:
+- - writes logs to the state dir (so drift output is preserved)
+- - relies on you to wire notifications however you prefer
+- If you want Clawdbot-side delivery, use Clawdbot Gateway Cron.
+- """
+- from __future__ import annotations
+- import argparse
+- import os
+- from pathlib import Path
+- import plistlib
+- import subprocess
+- import sys
+- def agent_id_default(workspace_root: Path) -> str:
+-     return workspace_root.name
+- def default_external_state_dir(agent_id: str) -> Path:
+-     return Path("~/.clawdbot/soul-guardian").expanduser() / agent_id
+- def run_launchctl(args: list[str]) -> None:
+-     subprocess.run(["/bin/launchctl", *args], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+- def main(argv: list[str]) -> int:
+-     ap = argparse.ArgumentParser()
+-     ap.add_argument(
+-     ap.add_argument(
+-     ap.add_argument(
+-     ap.add_argument(
+-     ap.add_argument(
+-     ap.add_argument(
+-     ap.add_argument(
+-         "--workspace-root",
+-         default=str(Path.cwd()),
+-         help="Workspace root (default: current working directory).",
+-     )
+-     )
+-     )
+-     )
+-     )
+-     )
+-     )
+-         "--agent-id",
+-         default=None,
+-         default=None,
+-         default=None,
+-         default=None,
+-         help="Agent/workspace identifier used in default label + state dir (default: workspace folder name).",
+-         "--state-dir",
+-         "--state-dir",
+-         help="External state directory (recommended). Default: ~/.clawdbot/soul-guardian/<agentId>/",
+-         "--label",
+-         help="launchd label (default: com.clawdbot.soul-guardian.<agentId>)",
+-         "--interval-seconds",
+-         type=int,
+-         default=600,
+-         help="Run interval in seconds (StartInterval). Default: 600 (10 minutes).",
+-     ap.add_argument("--actor", default="cron", help="--actor passed to soul_guardian.py (default: cron).")
+-     ap.add_argument("--note", default="launchd", help="--note passed to soul_guardian.py (default: launchd).")
+-         "--out",
+-         help="Write plist to this path (default: ~/Library/LaunchAgents/<label>.plist)",
+-     ap.add_argument("--force", action="store_true", help="Overwrite existing plist on disk.")
+-         "--install",
+-         action="store_true",
+-         help="Install+load the plist with launchctl (bootstrap). Without this flag we only write the plist.",
+-     args = ap.parse_args(argv)
+-     workspace_root = Path(args.workspace_root).expanduser().resolve()
+-     agent_id = args.agent_id or agent_id_default(workspace_root)
+-     state_dir = Path(args.state_dir).expanduser().resolve() if args.state_dir else default_external_state_dir(agent_id)
+-     label = args.label or f"com.clawdbot.soul-guardian.{agent_id}"
+-     plist_path = Path(args.out).expanduser().resolve() if args.out else (Path("~/Library/LaunchAgents").expanduser() / f"{label}.plist")
+-     script_path = workspace_root / "skills" / "soul-guardian" / "scripts" / "soul_guardian.py"
+-     if not script_path.exists():
+-         raise SystemExit(f"soul_guardian.py not found at {script_path}; pass --workspace-root correctly")
+-     # Keep logs in the external state dir.
+-     log_dir = state_dir / "logs"
+-     log_dir.mkdir(parents=True, exist_ok=True)
+-     stdout_log = log_dir / "launchd.stdout.log"
+-     stderr_log = log_dir / "launchd.stderr.log"
+-     program_args = [
+-         "/usr/bin/python3",
+-         str(script_path),
+-         str(state_dir),
+-         "check",
+-         "--actor",
+-         str(args.actor),
+-         "--note",
+-         str(args.note),
+-     ]
+-     plist: dict[str, object] = {
+-         "Label": label,
+-         "ProgramArguments": program_args,
+-         "WorkingDirectory": str(workspace_root),
+-         "StartInterval": int(args.interval_seconds),
+-         "RunAtLoad": True,
+-         "StandardOutPath": str(stdout_log),
+-         "StandardErrorPath": str(stderr_log),
+-         # Avoid interactive UI dependencies; run in background.
+-         "ProcessType": "Background",
+-     }
+-     plist_path.parent.mkdir(parents=True, exist_ok=True)
+-     if plist_path.exists() and not args.force:
+-         raise SystemExit(f"Refusing to overwrite existing {plist_path}. Re-run with --force.")
+-     with plist_path.open("wb") as f:
+-         plistlib.dump(plist, f, fmt=plistlib.FMT_XML, sort_keys=True)
+-     print(f"Wrote plist: {plist_path}")
+-     print(f"State dir:  {state_dir}")
+-     print(f"Label:      {label}")
+-     uid = os.getuid()
+-     if args.install:
+-         # Best-effort: remove any existing job with same label, then bootstrap.
+-         run_launchctl(["bootout", f"gui/{uid}", label])
+-         run_launchctl(["bootout", f"gui/{uid}", str(plist_path)])
+-         res = subprocess.run(["/bin/launchctl", "bootstrap", f"gui/{uid}", str(plist_path)], text=True, capture_output=True)
+-         if res.returncode != 0:
+-             sys.stderr.write((res.stderr or res.stdout or "").strip() + "\n")
+-             sys.stderr.write("Failed to bootstrap. You can try manually:\n")
+-             sys.stderr.write(f"  launchctl bootstrap gui/{uid} {plist_path}\n")
+-             return 1
+-         subprocess.run(["/bin/launchctl", "enable", f"gui/{uid}/{label}"], check=False)
+-         subprocess.run(["/bin/launchctl", "kickstart", "-k", f"gui/{uid}/{label}"], check=False)
+-         print("Installed + started (launchctl bootstrap/enable/kickstart).")
+-     else:
+-         print("Not installed (dry write). To load it:")
+-         print(f"  launchctl bootstrap gui/{uid} {plist_path}")
+-         print(f"  launchctl enable gui/{uid}/{label}")
+-         print(f"  launchctl kickstart -k gui/{uid}/{label}")
+-     print("\nLogs:")
+-     print(f"  tail -n 200 -f {stdout_log}")
+-     print(f"  tail -n 200 -f {stderr_log}")
+-     return 0
+- if __name__ == "__main__":
+-     raise SystemExit(main(sys.argv[1:]))
+
+### bundled/soul-guardian/scripts/onboard_state_dir.py  [code]
+- #!/usr/bin/env python3
+- """Onboard soul-guardian state directory outside the workspace.
+- Why:
+- - Keeping integrity state inside the workspace can be risky if the workspace is modified or wiped.
+- - Moving state to an external directory improves resilience and makes tampering harder.
+- What this script does:
+- - Creates an external state directory (default: ~/.clawdbot/soul-guardian/<agentId>/)
+- - Copies (or moves) existing in-workspace state from memory/soul-guardian/
+- - Writes a default policy.json if missing
+- - Prints recommended cron snippets (Clawdbot gateway cron and optional launchd)
+- This script does NOT modify your cron jobs automatically.
+- """
+- """
+- from __future__ import annotations
+- import argparse
+- import os
+- from pathlib import Path
+- import shutil
+- import sys
+- WORKSPACE_ROOT = Path.cwd()
+- DEFAULT_IN_WORKSPACE_STATE = WORKSPACE_ROOT / "memory" / "soul-guardian"
+- def agent_id_default() -> str:
+-     # Best-effort: workspace folder name.
+-     return WORKSPACE_ROOT.name
+- def ensure_dir(p: Path) -> None:
+-     p.mkdir(parents=True, exist_ok=True)
+- def copytree_overwrite(src: Path, dst: Path) -> None:
+-     # Copy directory contents into dst (merge).
+-     ensure_dir(dst)
+-     for root, dirs, files in os.walk(src):
+-         r = Path(root)
+-         rel = r.relative_to(src)
+-         target_root = dst / rel
+-         ensure_dir(target_root)
+-         for d in dirs:
+-             ensure_dir(target_root / d)
+-         for f in files:
+-             s = r / f
+-             t = target_root / f
+-             # Overwrite.
+-             shutil.copy2(s, t)
+- DEFAULT_POLICY_JSON = """{
+-   "version": 1,
+-   "workspaceRoot": "",
+-   "targets": [
+-     {"path": "SOUL.md", "mode": "restore"},
+-     {"path": "AGENTS.md", "mode": "restore"},
+-     {"path": "USER.md", "mode": "alert"},
+-     {"path": "TOOLS.md", "mode": "alert"},
+-     {"path": "IDENTITY.md", "mode": "alert"},
+-     {"path": "HEARTBEAT.md", "mode": "alert"},
+-     {"path": "MEMORY.md", "mode": "alert"},
+-     {"pattern": "memory/*.md", "mode": "ignore"}
+-   ]
+- }
+- def main(argv: list[str]) -> int:
+-     ap = argparse.ArgumentParser()
+-     ap.add_argument("--agent-id", default=agent_id_default(), help="Identifier used for default external state path.")
+-     ap.add_argument(
+-         "--state-dir",
+-         default=None,
+-         help="External state directory to create/use (default: ~/.clawdbot/soul-guardian/<agentId>/).",
+-     )
+-     )
+-     )
+-     ap.add_argument("--move", action="store_true", help="Move instead of copy (WARNING: deletes the old in-workspace state dir).")
+-     ap.add_argument("--no-copy", action="store_true", help="Do not copy/move existing in-workspace state.")
+-     args = ap.parse_args(argv)
+-     if args.state_dir:
+-         external = Path(args.state_dir).expanduser()
+-     else:
+-     else:
+-     else:
+-         external = (Path("~/.clawdbot/soul-guardian").expanduser() / args.agent_id)
+-     ensure_dir(external)
+-     if not args.no_copy and DEFAULT_IN_WORKSPACE_STATE.exists():
+-         if args.move:
+-             # Move by copying then removing src (safer than rename across filesystems).
+-             copytree_overwrite(DEFAULT_IN_WORKSPACE_STATE, external)
+-             copytree_overwrite(DEFAULT_IN_WORKSPACE_STATE, external)
+-             shutil.rmtree(DEFAULT_IN_WORKSPACE_STATE)
+-             action = "moved"
+-         else:
+-             action = "copied"
+-         print(f"Existing state {action} from {DEFAULT_IN_WORKSPACE_STATE} -> {external}")
+-         print(f"Using external state dir: {external}")
+-     policy_path = external / "policy.json"
+-     if not policy_path.exists():
+-         txt = DEFAULT_POLICY_JSON.replace('"workspaceRoot": ""', f'"workspaceRoot": "{WORKSPACE_ROOT}"')
+-         policy_path.write_text(txt, encoding="utf-8")
+-         print(f"Wrote default policy: {policy_path}")
+-         print(f"Policy already exists: {policy_path}")
+-     print("\nNext steps")
+-     print("1) Initialize baselines in the external state dir:")
+-     print(
+-     print(
+-         f"   cd '{WORKSPACE_ROOT}' && python3 skills/soul-guardian/scripts/soul_guardian.py --state-dir '{external}' init --actor 'sam' --note 'onboard external state'\n"
+-     print("2) Update your cron/check runner to include --state-dir.")
+-     print("\nClawdbot gateway cron (recommended; does not require system cron):")
+-     print("- In your cron spec, run something like:")
+-         f"  cd '{WORKSPACE_ROOT}' && python3 skills/soul-guardian/scripts/soul_guardian.py --state-dir '{external}' check --actor system --note cron"
+-     print("\nOptional: system cron / launchd (macOS) example (NOT installed automatically):")
+-     label = f"com.clawdbot.soul-guardian.{args.agent_id}"
+-     print(f"- Launchd label: {label}")
+-     print(f"- WorkingDirectory (recommended): {WORKSPACE_ROOT}")
+-     print("- ProgramArguments (example):")
+-     print("  [\n"
+-           f"    '/usr/bin/python3',\n"
+-           f"    '{WORKSPACE_ROOT}/skills/soul-guardian/scripts/soul_guardian.py',\n"
+-           f"    '--state-dir', '{external}',\n"
+-           f"    'check', '--actor', 'system', '--note', 'launchd'\n"
+-           "  ]")
+-     print("\nNotes")
+-     print("- The external state dir can contain approved snapshots, patches, and quarantined copies of drifted prompt/instruction files; keep permissions restrictive (e.g., chmod 700; go-rwx).")
+-     if args.move:
+-         print("- WARNING: --move deletes the old in-workspace state dir after copying.")
+-     print("- Consider mirroring the external state dir via git or offsite backups (not enforced by this tool).")
+-     return 0
+- if __name__ == "__main__":
+-     raise SystemExit(main(sys.argv[1:]))
+
+### bundled/soul-guardian/scripts/soul_guardian.py  [code]
+- #!/usr/bin/env python3
+- """Workspace file integrity guard + audit (multi-file).
+- This is a hardened successor to the original SOUL.md-only guardian.
+- Key features:
+- - Multiple target files with per-file policy (restore | alert | ignore)
+- - Approved baselines stored per file (snapshot + sha256)
+- - Append-only audit log with hash chaining (tamper-evident)
+- - Optional auto-restore for restore-mode files (with quarantine copy)
+- - Refuses to operate on symlinks
+- - Atomic writes for baseline + restore operations (os.replace)
+- State directory (default, backward-compatible): memory/soul-guardian/
+- Subcommands:
+- - init            Initialize policy + baselines (first run)
+- - status          Print status JSON for all policy targets
+- - check           Check for drift; restore for restore-mode by default
+- - approve         Approve current contents as baseline (per file or all)
+- - restore         Restore restore-mode files to last approved baseline
+- - verify-audit    Validate audit log hash chain
+- Exit codes:
+- - 0: ok / no drift
+- - 2: drift detected (for check when any alert/restore drift happened)
+- - 1: error
+- """
+- from __future__ import annotations
+- import argparse
+- import datetime as dt
+- import difflib
+- import fnmatch
+- import hashlib
+- import json
+- import os
+- from pathlib import Path
+- import shutil
+- import stat
+- import sys
+- from typing import Any, Iterable
+- WORKSPACE_ROOT = Path.cwd()
+- DEFAULT_STATE_DIR = WORKSPACE_ROOT / "memory" / "soul-guardian"
+- POLICY_FILE = "policy.json"
+- BASELINES_FILE = "baselines.json"
+- AUDIT_LOG_FILE = "audit.jsonl"
+- APPROVED_DIRNAME = "approved"
+- PATCH_DIRNAME = "patches"
+- QUAR_DIRNAME = "quarantine"
+- CHAIN_GENESIS = "0" * 64
+- def utc_now_iso() -> str:
+-     return dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat()
+- def sha256_bytes(b: bytes) -> str:
+-     h = hashlib.sha256()
+-     h.update(b)
+-     return h.hexdigest()
+- def sha256_text(s: str) -> str:
+-     return sha256_bytes(s.encode("utf-8"))
+- def read_bytes(path: Path) -> bytes:
+-     return path.read_bytes()
+- def read_text(path: Path) -> str:
+-     return path.read_text(encoding="utf-8", errors="replace")
+- def is_symlink(path: Path) -> bool:
+-     try:
+-     try:
+-     try:
+-     try:
+-     try:
+-         st = os.lstat(path)
+-     except FileNotFoundError:
+-         return False
+-         return False
+-     return stat.S_ISLNK(st.st_mode)
+- def ensure_dir(path: Path) -> None:
+-     path.mkdir(parents=True, exist_ok=True)
+- def atomic_write_bytes(path: Path, data: bytes) -> None:
+-     ensure_dir(path.parent)
+-     tmp = path.with_name(path.name + ".tmp")
+-     with tmp.open("wb") as f:
+-         f.write(data)
+-         f.flush()
+-         os.fsync(f.fileno())
+-     os.replace(tmp, path)
+- def atomic_write_text(path: Path, text: str) -> None:
+-     atomic_write_bytes(path, text.encode("utf-8"))
+- def unified_diff_text(old: str, new: str, fromfile: str, tofile: str) -> str:
+-     old_lines = old.splitlines(keepends=True)
+-     new_lines = new.splitlines(keepends=True)
+-     diff = difflib.unified_diff(old_lines, new_lines, fromfile=fromfile, tofile=tofile)
+-     return "".join(diff)
+- def safe_patch_tag(tag: str) -> str:
+-     return ("".join(c for c in tag if c.isalnum() or c in ("-", "_"))[:40] or "patch")
+- def relpath_str(path: Path, root: Path) -> str:
+-     # Normalize to a stable forward-slash relative string.
+-         rel = path.relative_to(root)
+-     except Exception:
+-     except Exception:
+-     except Exception:
+-         rel = Path(os.path.relpath(path, root))
+-     return rel.as_posix()
+- class GuardianState:
+-     def __init__(self, state_dir: Path):
+-         self.state_dir = state_dir
+-         self.policy_path = state_dir / POLICY_FILE
+-         self.baselines_path = state_dir / BASELINES_FILE
+-         self.audit_path = state_dir / AUDIT_LOG_FILE
+-         self.approved_dir = state_dir / APPROVED_DIRNAME
+-         self.patch_dir = state_dir / PATCH_DIRNAME
+-         self.quarantine_dir = state_dir / QUAR_DIRNAME
+-     def ensure_dirs(self) -> None:
+-         ensure_dir(self.state_dir)
+-         ensure_dir(self.approved_dir)
+-         ensure_dir(self.patch_dir)
+-         ensure_dir(self.quarantine_dir)
+- def default_policy() -> dict[str, Any]:
+-     # Default protected set, per requirements.
+-     return {
+-         "version": 1,
+-         "workspaceRoot": str(WORKSPACE_ROOT),
+-         "targets": [
+-             {"path": "SOUL.md", "mode": "restore"},
+-             {"path": "AGENTS.md", "mode": "restore"},
+-             {"path": "USER.md", "mode": "alert"},
+-             {"path": "TOOLS.md", "mode": "alert"},
+-             {"path": "IDENTITY.md", "mode": "alert"},
+-             {"path": "HEARTBEAT.md", "mode": "alert"},
+-             {"path": "MEMORY.md", "mode": "alert"},
+-             # Ignore daily notes by default.
+-             {"pattern": "memory/*.md", "mode": "ignore"},
+-         ],
+-         ],
+-     }
+-     }
+-     }
+-     }
+-     }
+- def load_policy(state: GuardianState) -> dict[str, Any]:
+-     if not state.policy_path.exists():
+-         return default_policy()
+-     return json.loads(state.policy_path.read_text(encoding="utf-8"))
+- def save_policy(state: GuardianState, policy: dict[str, Any]) -> None:
+-     state.ensure_dirs()
+-     state.ensure_dirs()
+-     state.ensure_dirs()
+-     state.ensure_dirs()
+-     state.ensure_dirs()
+-     state.ensure_dirs()
+-     state.ensure_dirs()
+-     state.ensure_dirs()
+-     state.ensure_dirs()
+-     state.ensure_dirs()
+-     state.ensure_dirs()
+-     atomic_write_text(state.policy_path, json.dumps(policy, ensure_ascii=False, indent=2) + "\n")
+- def load_baselines(state: GuardianState) -> dict[str, Any]:
+-     """Load baselines.json.
+-     Backward-compat:
+-     - If baselines.json doesn't exist but legacy SOUL.md baseline exists
+-       (approved.sha256 + approved/SOUL.md), import it into the in-memory baselines.
+-       The caller will persist it on the next save.
+-     """
+-     """
+-     """
+-     """
+-     if state.baselines_path.exists():
+-         return json.loads(state.baselines_path.read_text(encoding="utf-8"))
+-     baselines: dict[str, Any] = {"version": 1, "files": {}}
+-     legacy_sha = state.state_dir / "approved.sha256"
+-     legacy_snap = state.approved_dir / "SOUL.md"
+-     if legacy_sha.exists() and legacy_snap.exists():
+-         sha = legacy_sha.read_text(encoding="utf-8").strip()
+-         if sha:
+-             baselines["files"]["SOUL.md"] = {"sha256": sha, "approvedAt": "legacy"}
+-     return baselines
+- def save_baselines(state: GuardianState, baselines: dict[str, Any]) -> None:
+-     atomic_write_text(state.baselines_path, json.dumps(baselines, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
+- def resolve_targets(policy: dict[str, Any], root: Path) -> list[dict[str, str]]:
+-     """Return list of effective targets to consider.
+-     For entries with {path, mode}: direct file.
+-     For entries with {pattern, mode}: expands via globbing relative to root.
+-     Note: We keep it simple and only expand within workspace root.
+-     targets: list[dict[str, str]] = []
+-     entries = policy.get("targets", [])
+-     entries = policy.get("targets", [])
+-     for ent in entries:
+-     for ent in entries:
+-     for ent in entries:
+-         mode = ent.get("mode")
+-         if mode not in ("restore", "alert", "ignore"):
+-             continue
+-             continue
+-             continue
+-             continue
+-             continue
+-             continue
+-             continue
+-             continue
+-             continue
+-             continue
+-             continue
+-         if "path" in ent:
+-             p = Path(ent["path"])
+-             targets.append({"path": p.as_posix(), "mode": mode})
+-         pat = ent.get("pattern")
+-         pat = ent.get("pattern")
+-         if not pat:
+-         if not pat:
+-         # Expand pattern relative to root.
+-         # Using glob keeps it bounded to workspace.
+-         for match in root.glob(pat):
+-             if match.is_dir():
+-                 continue
+-                 continue
+-             rel = relpath_str(match, root)
+-             targets.append({"path": rel, "mode": mode})
+-     # De-dup by path keeping the last specified mode.
+-     dedup: dict[str, str] = {}
+-     for t in targets:
+-     for t in targets:
+-     for t in targets:
+-     for t in targets:
+-         dedup[t["path"]] = t["mode"]
+-     return [{"path": p, "mode": m} for p, m in sorted(dedup.items())]
+- def policy_mode_for_path(policy: dict[str, Any], rel_path: str) -> str | None:
+-     # Direct match has priority; then patterns.
+-         if ent.get("path") == rel_path:
+-             return ent.get("mode")
+-             return ent.get("mode")
+-         if fnmatch.fnmatch(rel_path, pat):
+-     return None
+- def approved_snapshot_path(state: GuardianState, rel_path: str) -> Path:
+-     # Preserve relative structure under approved/.
+-     return state.approved_dir / Path(rel_path)
+- def write_patch(state: GuardianState, patch_text: str, tag: str, rel_path: str) -> Path:
+-     ts = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+-     ts = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+-     ts = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+-     path_tag = safe_patch_tag(tag)
+-     file_tag = safe_patch_tag(rel_path.replace("/", "_"))
+-     path = state.patch_dir / f"{ts}-{file_tag}-{path_tag}.patch"
+-     atomic_write_text(path, patch_text)
+-     return path
+- def _canonical_json(obj: Any) -> str:
+-     # Stable serialization for hashing.
+-     return json.dumps(obj, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+- def _audit_needs_upgrade(state: GuardianState) -> bool:
+-     """Detect legacy audit logs that lack a chain field."""
+-     if not state.audit_path.exists():
+-     if not state.audit_path.exists():
+-     if not state.audit_path.exists():
+-     if not state.audit_path.exists():
+-         with state.audit_path.open("r", encoding="utf-8") as f:
+-             for line in f:
+-                 line = line.strip()
+-                 if not line:
+-                     continue
+-                 rec = json.loads(line)
+-                 return "chain" not in rec
+-         # If unreadable, force rotation so we can proceed safely.
+-         return True
+-     return False
+- def _rotate_legacy_audit(state: GuardianState) -> None:
+-         return
+-         return
+-     legacy = state.state_dir / f"audit.legacy.{ts}.jsonl"
+-     os.replace(state.audit_path, legacy)
+- def _last_audit_hash(state: GuardianState) -> str:
+-         return CHAIN_GENESIS
+-         return CHAIN_GENESIS
+-         return CHAIN_GENESIS
+-     # Read last non-empty line without loading huge files.
+-     with state.audit_path.open("rb") as f:
+-         f.seek(0, os.SEEK_END)
+-         size = f.tell()
+-         if size == 0:
+-             return CHAIN_GENESIS
+-         block = 65536
+-         start = max(0, size - block)
+-         f.seek(start)
+-         data = f.read()
+-     lines = [ln for ln in data.splitlines() if ln.strip()]
+-     if not lines:
+-     last = lines[-1]
+-         rec = json.loads(last.decode("utf-8"))
+-         return rec.get("chain", {}).get("hash") or CHAIN_GENESIS
+- def append_audit(state: GuardianState, entry: dict[str, Any]) -> None:
+-     """Append an audit entry with hash chaining.
+-     Each record includes: chain.prev, chain.hash
+-     chain.hash = sha256(prev_hash + "\n" + canonical_json(entry_without_chain))
+-     Backward-compat: if an existing audit.jsonl doesn't contain chain fields
+-     (legacy v1 logs), rotate it aside and start a new chained log.
+-     if _audit_needs_upgrade(state):
+-     if _audit_needs_upgrade(state):
+-         _rotate_legacy_audit(state)
+-     prev = _last_audit_hash(state)
+-     entry_wo_chain = dict(entry)
+-     entry_wo_chain.pop("chain", None)
+-     payload = prev + "\n" + _canonical_json(entry_wo_chain)
+-     cur = sha256_text(payload)
+-     record = dict(entry_wo_chain)
+-     record["chain"] = {"prev": prev, "hash": cur}
+-     with state.audit_path.open("a", encoding="utf-8") as f:
+-         f.write(json.dumps(record, ensure_ascii=False) + "\n")
+- def refuse_symlink(path: Path) -> None:
+-     if is_symlink(path):
+-         raise RuntimeError(f"Refusing to operate on symlink: {path}")
+
+### bundled/soul-guardian/scripts/test_soul_guardian.py  [code]
+- #!/usr/bin/env python3
+- """Minimal tests for soul_guardian.py.
+- Run:
+-   python3 skills/soul-guardian/scripts/test_soul_guardian.py
+- This is a lightweight integration test using a temp workspace.
+- """
+- from __future__ import annotations
+- import json
+- import os
+- from pathlib import Path
+- import subprocess
+- import tempfile
+- REPO_ROOT = Path(__file__).resolve().parents[3]  # .../clawd
+- SCRIPT = REPO_ROOT / "skills" / "soul-guardian" / "scripts" / "soul_guardian.py"
+- def run(cmd: list[str], cwd: Path) -> subprocess.CompletedProcess:
+-     return subprocess.run(cmd, cwd=str(cwd), text=True, capture_output=True)
+- def must_ok(cp: subprocess.CompletedProcess) -> None:
+-     if cp.returncode != 0:
+-         raise AssertionError(f"Expected rc=0, got {cp.returncode}\nSTDOUT:\n{cp.stdout}\nSTDERR:\n{cp.stderr}")
+- def must_rc(cp: subprocess.CompletedProcess, rc: int) -> None:
+-     if cp.returncode != rc:
+-         raise AssertionError(f"Expected rc={rc}, got {cp.returncode}\nSTDOUT:\n{cp.stdout}\nSTDERR:\n{cp.stderr}")
+- def main() -> int:
+-     with tempfile.TemporaryDirectory() as td:
+-         ws = Path(td)
+-         state = ws / "state"
+-         # Create a fake workspace with the default protected files.
+-         (ws / "memory").mkdir(parents=True, exist_ok=True)
+-         (ws / "SOUL.md").write_text("hello soul\n", encoding="utf-8")
+-         (ws / "AGENTS.md").write_text("hello agents\n", encoding="utf-8")
+-         (ws / "USER.md").write_text("user v1\n", encoding="utf-8")
+-         (ws / "TOOLS.md").write_text("tools v1\n", encoding="utf-8")
+-         (ws / "IDENTITY.md").write_text("id v1\n", encoding="utf-8")
+-         (ws / "HEARTBEAT.md").write_text("hb v1\n", encoding="utf-8")
+-         (ws / "MEMORY.md").write_text("mem v1\n", encoding="utf-8")
+-         # Daily notes should be ignored by default.
+-         (ws / "memory" / "2026-01-01.md").write_text("daily\n", encoding="utf-8")
+-         # Init baselines.
+-         cp = run(["python3", str(SCRIPT), "--state-dir", str(state), "init", "--actor", "test"], cwd=ws)
+-         must_ok(cp)
+-         must_ok(cp)
+-         must_ok(cp)
+-         must_ok(cp)
+-         must_ok(cp)
+-         # No drift.
+-         cp = run(["python3", str(SCRIPT), "--state-dir", str(state), "check"], cwd=ws)
+-         cp = run(["python3", str(SCRIPT), "--state-dir", str(state), "check"], cwd=ws)
+-         cp = run(["python3", str(SCRIPT), "--state-dir", str(state), "check"], cwd=ws)
+-         # Drift restore-mode file: SOUL.md should be auto-restored by check.
+-         (ws / "SOUL.md").write_text("MALICIOUS\n", encoding="utf-8")
+-         cp = run(["python3", str(SCRIPT), "--state-dir", str(state), "check", "--actor", "cron"], cwd=ws)
+-         must_rc(cp, 2)
+-         must_rc(cp, 2)
+-         assert (ws / "SOUL.md").read_text(encoding="utf-8") == "hello soul\n"
+-         # Drift alert-only file: USER.md should NOT be restored.
+-         (ws / "USER.md").write_text("user v2\n", encoding="utf-8")
+-         assert (ws / "USER.md").read_text(encoding="utf-8") == "user v2\n"
+-         # Approve USER.md change.
+-         cp = run(["python3", str(SCRIPT), "--state-dir", str(state), "approve", "--file", "USER.md", "--actor", "test"], cwd=ws)
+-         # Now check should be clean.
+-         # Verify audit chain ok.
+-         cp = run(["python3", str(SCRIPT), "--state-dir", str(state), "verify-audit"], cwd=ws)
+-         cp = run(["python3", str(SCRIPT), "--state-dir", str(state), "verify-audit"], cwd=ws)
+-         # Tamper with audit log and ensure verify fails.
+-         audit = state / "audit.jsonl"
+-         lines = audit.read_text(encoding="utf-8").splitlines()
+-         assert lines, "audit log empty"
+-         rec = json.loads(lines[-1])
+-         rec["note"] = "tampered"
+-         lines[-1] = json.dumps(rec, ensure_ascii=False)
+-         audit.write_text("\n".join(lines) + "\n", encoding="utf-8")
+-         if cp.returncode == 0:
+-             raise AssertionError("Expected verify-audit to fail after tamper")
+-         print("OK: soul-guardian minimal tests passed")
+-     return 0
+- if __name__ == "__main__":
+-     raise SystemExit(main())
+
+### bundled/soul-guardian/skill.json  [code]
+- {
+-   "name": "soul-guardian",
+-   "version": "0.0.1",
+-   "description": "Drift detection and baseline integrity guard for agent workspace prompt files. Auto-restore critical files with tamper-evident audit logging.",
+-   "author": "prompt-security",
+-   "license": "MIT",
+-   "homepage": "https://clawsec.prompt.security",
+-   "keywords": [
+-     "security",
+-     "integrity",
+-     "drift-detection",
+-     "agents",
+-     "ai",
+-     "protection",
+-     "audit",
+-     "baseline"
+-   ],
+-   "sbom": {
+-     "files": [
+-       {
+-       {
+-       {
+-       {
+-         "path": "SKILL.md",
+-         "required": true,
+-         "required": true,
+-         "required": true,
+-         "description": "Soul guardian skill documentation"
+-       },
+-       },
+-       },
+-         "path": "scripts/soul_guardian.py",
+-         "description": "Main guardian script"
+-         "path": "scripts/onboard_state_dir.py",
+-         "description": "State directory setup"
+-         "path": "scripts/install_launchd_plist.py",
+-         "required": false,
+-         "description": "macOS launchd installer"
+-       }
+-     ]
+-     ]
+-   },
+-   "openclaw": {
+-     "emoji": "👻",
+-     "category": "security",
+-     "requires": {
+-       "bins": [
+-         "python3"
+-       ]
+-     },
+-     "triggers": [
+-       "soul guardian",
+-       "integrity check",
+-       "drift detection",
+-       "baseline check",
+-       "file integrity",
+-       "protect soul",
+-       "guard files",
+-       "workspace security",
+-       "tamper detection"
+-   }
+- }
+
+### hooks/clawsec-advisory-guardian/HOOK.md  [docs]
++ ---
++ ---
++ name: clawsec-advisory-guardian
++ description: Detect advisory matches for installed skills and require explicit user approval before any removal action.
++ metadata: { "openclaw": { "events": ["agent:bootstrap", "command:new"] } }
++ # ClawSec Advisory Guardian Hook
++ This hook checks the ClawSec advisory feed against locally installed skills on:
++ - `agent:bootstrap`
++ - `command:new`
++ When it detects an advisory affecting an installed skill, it posts an alert message.
++ If the advisory looks malicious or removal-oriented, it explicitly recommends removal
++ and asks for user approval first.
++ ## Safety Contract
++ - The hook does not delete or modify skills.
++ - It only reports findings and requests explicit approval before removal.
++ - Alerts are deduplicated using `~/.openclaw/clawsec-suite-feed-state.json`.
++ ## Optional Environment Variables
++ - `CLAWSEC_FEED_URL`: override remote feed URL.
++ - `CLAWSEC_LOCAL_FEED`: override local fallback feed file.
++ - `CLAWSEC_SUITE_STATE_FILE`: override state file path.
++ - `CLAWSEC_INSTALL_ROOT`: override installed skills root.
++ - `CLAWSEC_SUITE_DIR`: override clawsec-suite install path.
++ - `CLAWSEC_HOOK_INTERVAL_SECONDS`: minimum interval between hook scans (default `300`).
+
+### hooks/clawsec-advisory-guardian/handler.ts  [code]
++ import fs from "node:fs/promises";
++ import os from "node:os";
++ import path from "node:path";
++ import { uniqueStrings } from "./lib/utils.mjs";
++ import { isValidFeedPayload, loadRemoteFeed } from "./lib/feed.mjs";
++ import type { HookEvent, FeedPayload, AdvisoryMatch } from "./lib/types.ts";
++ import { loadState, persistState } from "./lib/state.ts";
++ import { discoverInstalledSkills, findMatches, matchKey, buildAlertMessage } from "./lib/matching.ts";
++ const DEFAULT_FEED_URL =
++   "https://raw.githubusercontent.com/prompt-security/clawsec/main/advisories/feed.json";
++ const DEFAULT_SCAN_INTERVAL_SECONDS = 300;
++ function expandHome(inputPath: string): string {
++   if (!inputPath) return inputPath;
++   if (inputPath === "~") return os.homedir();
++   if (inputPath.startsWith("~/")) return path.join(os.homedir(), inputPath.slice(2));
++   return inputPath;
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ function parsePositiveInteger(value: string | undefined, fallback: number): number {
++   const parsed = Number.parseInt(String(value ?? ""), 10);
++   if (!Number.isFinite(parsed) || parsed <= 0) {
++     return fallback;
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   return parsed;
++ function toEventName(event: HookEvent): string {
++   const eventType = String(event.type ?? "").trim();
++   const action = String(event.action ?? "").trim();
++   if (!eventType || !action) return "";
++   return `${eventType}:${action}`;
++ function shouldHandleEvent(event: HookEvent): boolean {
++   const eventName = toEventName(event);
++   return eventName === "agent:bootstrap" || eventName === "command:new";
++ function epochMs(isoTimestamp: string | null): number {
++   if (!isoTimestamp) return 0;
++   const parsed = Date.parse(isoTimestamp);
++   return Number.isNaN(parsed) ? 0 : parsed;
++ function scannedRecently(lastScan: string | null, minIntervalSeconds: number): boolean {
++   const sinceMs = Date.now() - epochMs(lastScan);
++   return sinceMs >= 0 && sinceMs < minIntervalSeconds * 1000;
++ async function loadFeed(feedUrl: string, localFeedPath: string): Promise<FeedPayload> {
++   const remoteFeed = await loadRemoteFeed(feedUrl);
++   if (remoteFeed) return remoteFeed;
++   const fallbackRaw = await fs.readFile(localFeedPath, "utf8");
++   const fallbackPayload = JSON.parse(fallbackRaw);
++   if (!isValidFeedPayload(fallbackPayload)) {
++     throw new Error(`Invalid advisory feed format in fallback file: ${localFeedPath}`);
++   return fallbackPayload;
++ const handler = async (event: HookEvent): Promise<void> => {
++   if (!shouldHandleEvent(event)) return;
++   const installRoot = expandHome(
++     process.env.CLAWSEC_INSTALL_ROOT || process.env.INSTALL_ROOT || path.join(os.homedir(), ".openclaw", "skills"),
++   );
++   );
++   );
++   const suiteDir = expandHome(process.env.CLAWSEC_SUITE_DIR || path.join(installRoot, "clawsec-suite"));
++   const localFeedPath = expandHome(process.env.CLAWSEC_LOCAL_FEED || path.join(suiteDir, "advisories", "feed.json"));
++   const stateFile = expandHome(
++     process.env.CLAWSEC_SUITE_STATE_FILE || path.join(os.homedir(), ".openclaw", "clawsec-suite-feed-state.json"),
++   const feedUrl = process.env.CLAWSEC_FEED_URL || DEFAULT_FEED_URL;
++   const scanIntervalSeconds = parsePositiveInteger(
++     process.env.CLAWSEC_HOOK_INTERVAL_SECONDS,
++     DEFAULT_SCAN_INTERVAL_SECONDS,
++   const forceScan = toEventName(event) === "command:new";
++   const state = await loadState(stateFile);
++   if (!forceScan && scannedRecently(state.last_hook_scan, scanIntervalSeconds)) {
++     return;
++     return;
++     return;
++   let feed: FeedPayload;
++   try {
++     feed = await loadFeed(feedUrl, localFeedPath);
++   } catch (error) {
++     console.warn(`[clawsec-advisory-guardian] failed to load advisory feed: ${String(error)}`);
++   const nowIso = new Date().toISOString();
++   state.last_hook_scan = nowIso;
++   state.last_feed_check = nowIso;
++   if (typeof feed.updated === "string" && feed.updated.trim()) {
++     state.last_feed_updated = feed.updated;
++   const advisoryIds = feed.advisories
++     .map((advisory) => advisory.id)
++     .filter((id): id is string => typeof id === "string" && id.trim() !== "");
++   state.known_advisories = uniqueStrings([...state.known_advisories, ...advisoryIds]);
++   const installedSkills = await discoverInstalledSkills(installRoot);
++   const matches = findMatches(feed, installedSkills);
++   if (matches.length === 0) {
++     await persistState(stateFile, state);
++   const unseenMatches: AdvisoryMatch[] = [];
++   for (const match of matches) {
++     const key = matchKey(match);
++     if (state.notified_matches[key]) {
++       continue;
++     }
++     unseenMatches.push(match);
++     state.notified_matches[key] = nowIso;
++   if (unseenMatches.length > 0 && Array.isArray(event.messages)) {
++     event.messages.push(buildAlertMessage(unseenMatches, installRoot));
++   await persistState(stateFile, state);
++ };
++ export default handler;
+
+### hooks/clawsec-advisory-guardian/lib/feed.mjs  [code]
++ import { isObject } from "./utils.mjs";
++ /**
++ /**
++ /**
++  * @param {string} rawSpecifier
++  * @returns {{ name: string; versionSpec: string } | null}
++  */
++  */
++  */
++ export function parseAffectedSpecifier(rawSpecifier) {
++   const specifier = String(rawSpecifier ?? "").trim();
++   if (!specifier) return null;
++   const atIndex = specifier.lastIndexOf("@");
++   if (atIndex <= 0) {
++     return { name: specifier, versionSpec: "*" };
++   }
++   }
++   return {
++     name: specifier.slice(0, atIndex),
++     versionSpec: specifier.slice(atIndex + 1),
++   };
++ }
++ }
++ }
++  * @param {unknown} raw
++  * @returns {raw is import("./types.ts").FeedPayload}
++ export function isValidFeedPayload(raw) {
++   if (!isObject(raw)) return false;
++   if (!Array.isArray(raw.advisories)) return false;
++   return true;
++  * @param {string} feedUrl
++  * @returns {Promise<import("./types.ts").FeedPayload | null>}
++ export async function loadRemoteFeed(feedUrl) {
++   const fetchFn = /** @type {{ fetch?: Function }} */ (globalThis).fetch;
++   if (typeof fetchFn !== "function") return null;
++   const controller = new globalThis.AbortController();
++   const timeout = globalThis.setTimeout(() => controller.abort(), 10000);
++   try {
++     const response = await fetchFn(feedUrl, {
++       method: "GET",
++       signal: controller.signal,
++       headers: { accept: "application/json" },
++     });
++     if (!response.ok) return null;
++     const payload = await response.json();
++     if (!isValidFeedPayload(payload)) return null;
++     return payload;
++   } catch {
++     return null;
++   } finally {
++     globalThis.clearTimeout(timeout);
+
+### hooks/clawsec-advisory-guardian/lib/matching.ts  [code]
++ import fs from "node:fs/promises";
++ import path from "node:path";
++ import { isObject, normalizeSkillName, uniqueStrings } from "./utils.mjs";
++ import { versionMatches } from "./version.mjs";
++ import { parseAffectedSpecifier } from "./feed.mjs";
++ import type { Advisory, FeedPayload, InstalledSkill, AdvisoryMatch } from "./types.ts";
++ export async function discoverInstalledSkills(installRoot: string): Promise<InstalledSkill[]> {
++   let entries: import("node:fs").Dirent[];
++   try {
++     entries = await fs.readdir(installRoot, { withFileTypes: true });
++   } catch {
++     return [];
++   }
++   }
++   }
++   }
++   }
++   }
++   const skills: InstalledSkill[] = [];
++   for (const entry of entries) {
++     if (!entry.isDirectory()) continue;
++     const fallbackName = entry.name;
++     const skillDir = path.join(installRoot, entry.name);
++     const skillJsonPath = path.join(skillDir, "skill.json");
++     let skillName = fallbackName;
++     let version: string | null = "unknown";
++     try {
++       const rawSkillJson = await fs.readFile(skillJsonPath, "utf8");
++       const parsedSkillJson = JSON.parse(rawSkillJson);
++       if (isObject(parsedSkillJson) && typeof parsedSkillJson.name === "string" && parsedSkillJson.name.trim()) {
++         skillName = parsedSkillJson.name.trim();
++       }
++       }
++       if (
++         isObject(parsedSkillJson) &&
++         typeof parsedSkillJson.version === "string" &&
++         parsedSkillJson.version.trim()
++       ) {
++         version = parsedSkillJson.version.trim();
++     } catch {
++       // best-effort scan: keep fallback directory name when skill.json is missing or invalid
++     }
++     }
++     }
++     }
++     skills.push({ name: skillName, dirName: entry.name, version });
++   return skills;
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ export function affectedSpecifierMatchesSkill(rawSpecifier: string, skill: InstalledSkill): boolean {
++   const parsed = parseAffectedSpecifier(rawSpecifier);
++   if (!parsed) return false;
++   const specName = normalizeSkillName(parsed.name);
++   const skillName = normalizeSkillName(skill.name);
++   if (specName !== skillName) return false;
++   return versionMatches(skill.version, parsed.versionSpec);
++ export function advisoryMatchesSkill(advisory: Advisory, skill: InstalledSkill): string[] {
++   const affected = Array.isArray(advisory.affected) ? advisory.affected : [];
++   const matches = affected.filter((specifier) => affectedSpecifierMatchesSkill(specifier, skill));
++   return uniqueStrings(matches);
++ export function findMatches(feed: FeedPayload, installedSkills: InstalledSkill[]): AdvisoryMatch[] {
++   const matches: AdvisoryMatch[] = [];
++   for (const advisory of feed.advisories) {
++     const affected = Array.isArray(advisory.affected) ? advisory.affected : [];
++     if (affected.length === 0) continue;
++     for (const skill of installedSkills) {
++       const matchedAffected = advisoryMatchesSkill(advisory, skill);
++       if (matchedAffected.length === 0) continue;
++       matches.push({ advisory, skill, matchedAffected });
++   return matches;
++ export function matchKey(match: AdvisoryMatch): string {
++   const normalizedSkillName = normalizeSkillName(match.skill.name);
++   const version = match.skill.version ?? "unknown";
++   const advisoryId =
++     match.advisory.id ??
++     `${match.advisory.title ?? "untitled"}::${match.advisory.published ?? match.advisory.updated ?? "unknown-ts"}`;
++   return `${advisoryId}::${normalizedSkillName}@${version}`;
++ export function looksMalicious(advisory: Advisory): boolean {
++   const type = String(advisory.type ?? "").toLowerCase();
++   const combined = `${advisory.title ?? ""} ${advisory.description ?? ""} ${advisory.action ?? ""}`.toLowerCase();
++   if (type === "malicious_skill" || type === "malicious_plugin") return true;
++   if (/\b(malicious|exfiltrat(e|ion)|backdoor|trojan|credential theft|stealer)\b/.test(combined)) return true;
++   return false;
++ export function looksRemovalRecommended(advisory: Advisory): boolean {
++   const combined = `${advisory.action ?? ""} ${advisory.title ?? ""} ${advisory.description ?? ""}`.toLowerCase();
++   return /\b(remove|uninstall|delete|disable|do not use|quarantine)\b/.test(combined);
++ export function buildAlertMessage(matches: AdvisoryMatch[], installRoot: string): string {
++   const lines: string[] = [];
++   lines.push("CLAWSEC ALERT: advisory feed matches installed skill(s).");
++   lines.push("Affected skill advisories:");
++   const MAX_LISTED = 8;
++   for (const match of matches.slice(0, MAX_LISTED)) {
++     const severity = String(match.advisory.severity ?? "unknown").toUpperCase();
++     const advisoryId = match.advisory.id ?? "unknown-id";
++     const version = match.skill.version ?? "unknown";
++     const matched = match.matchedAffected.join(", ");
++     lines.push(
++     lines.push(
++       `- [${severity}] ${advisoryId} -> ${match.skill.name}@${version}` +
++         (matched ? ` (matched: ${matched})` : ""),
++     );
++     );
++     if (match.advisory.action) {
++       lines.push(`  Action: ${match.advisory.action}`);
++   if (matches.length > MAX_LISTED) {
++     lines.push(`- ... ${matches.length - MAX_LISTED} additional match(es) not shown`);
++   const removalMatches = matches.filter((entry) => looksMalicious(entry.advisory) || looksRemovalRecommended(entry.advisory));
++   if (removalMatches.length > 0) {
++     const impactedSkills = uniqueStrings(removalMatches.map((entry) => entry.skill.name));
++     const impactedDirs = uniqueStrings(removalMatches.map((entry) => entry.skill.dirName));
++     lines.push("");
++     lines.push("");
++     lines.push("Recommendation: one or more matches indicate potentially malicious or unsafe skills.");
++     lines.push("Best practice: remove or disable affected skills only after explicit user approval.");
++       "Double-confirmation policy: treat the install request as first intent and require an additional explicit confirmation with this advisory context.",
++     lines.push(`Approval needed: ask the user to approve removal of: ${impactedSkills.join(", ")}.`);
++     lines.push("Candidate removal paths:");
++     for (const dir of impactedDirs) {
++       lines.push(`- ${path.join(installRoot, dir)}`);
++   } else {
++     lines.push("Recommendation: review advisories and update/remove affected skills as directed.");
++   return lines.join("\n");
+
+### hooks/clawsec-advisory-guardian/lib/state.ts  [code]
++ import fs from "node:fs/promises";
++ import path from "node:path";
++ import { isObject, uniqueStrings } from "./utils.mjs";
++ import type { AdvisoryState } from "./types.ts";
++ export const DEFAULT_STATE: AdvisoryState = {
++   schema_version: "1.1",
++   known_advisories: [],
++   last_feed_check: null,
++   last_feed_updated: null,
++   last_hook_scan: null,
++   notified_matches: {},
++ };
++ export function normalizeState(raw: unknown): AdvisoryState {
++   if (!isObject(raw)) {
++     return { ...DEFAULT_STATE };
++     return { ...DEFAULT_STATE };
++   }
++   }
++   }
++   }
++   const knownAdvisories = Array.isArray(raw.known_advisories)
++     ? uniqueStrings(raw.known_advisories.filter((value): value is string => typeof value === "string" && value.trim() !== ""))
++     : [];
++   const notifiedMatches: Record<string, string> = {};
++   if (isObject(raw.notified_matches)) {
++     for (const [key, value] of Object.entries(raw.notified_matches)) {
++       if (typeof value === "string" && value.trim()) {
++         notifiedMatches[key] = value;
++       }
++     }
++     }
++   return {
++     schema_version: "1.1",
++     known_advisories: knownAdvisories,
++     last_feed_check: typeof raw.last_feed_check === "string" ? raw.last_feed_check : null,
++     last_feed_updated: typeof raw.last_feed_updated === "string" ? raw.last_feed_updated : null,
++     last_hook_scan: typeof raw.last_hook_scan === "string" ? raw.last_hook_scan : null,
++     notified_matches: notifiedMatches,
++   };
++ }
++ }
++ }
++ export async function loadState(stateFile: string): Promise<AdvisoryState> {
++   try {
++   try {
++     const raw = await fs.readFile(stateFile, "utf8");
++     return normalizeState(JSON.parse(raw));
++   } catch {
++ export async function persistState(stateFile: string, state: AdvisoryState): Promise<void> {
++   const normalized = normalizeState(state);
++   await fs.mkdir(path.dirname(stateFile), { recursive: true });
++   const tmpFile = `${stateFile}.tmp-${process.pid}-${Date.now()}`;
++   await fs.writeFile(tmpFile, `${JSON.stringify(normalized, null, 2)}\n`, {
++     encoding: "utf8",
++     mode: 0o600,
++   });
++   await fs.rename(tmpFile, stateFile);
++     await fs.chmod(stateFile, 0o600);
++   } catch (err: unknown) {
++     const code = err instanceof Error && "code" in err ? (err as { code: string }).code : undefined;
++     if (code === "ENOTSUP" || code === "EPERM") {
++       console.warn(
++         `Warning: chmod 0600 failed for ${stateFile} (${code}). ` +
++           "File permissions may not be enforced on this platform/filesystem.",
++       );
++     } else {
++       throw err;
+
+### hooks/clawsec-advisory-guardian/lib/types.ts  [code]
++ export type HookEvent = {
++   type?: string;
++   type?: string;
++   action?: string;
++   action?: string;
++   messages?: string[];
++ };
++ };
++ };
++ };
++ };
++ };
++ export type Advisory = {
++   id?: string;
++   severity?: string;
++   title?: string;
++   description?: string;
++   published?: string;
++   updated?: string;
++   updated?: string;
++   affected?: string[];
++ export type FeedPayload = {
++   advisories: Advisory[];
++ export type InstalledSkill = {
++   name: string;
++   dirName: string;
++   version: string | null;
++ export type AdvisoryMatch = {
++   advisory: Advisory;
++   skill: InstalledSkill;
++   matchedAffected: string[];
++ export type AdvisoryState = {
++   schema_version: string;
++   known_advisories: string[];
++   last_feed_check: string | null;
++   last_feed_updated: string | null;
++   last_hook_scan: string | null;
++   notified_matches: Record<string, string>;
+
+### hooks/clawsec-advisory-guardian/lib/utils.mjs  [code]
++ /**
++ /**
++ /**
++  * @param {unknown} value
++  * @returns {value is Record<string, unknown>}
++  */
++  */
++  */
++ export function isObject(value) {
++   return typeof value === "object" && value !== null;
++ }
++ }
++ }
++  * @param {string} value
++  * @returns {string}
++ export function normalizeSkillName(value) {
++   return String(value ?? "")
++     .trim()
++     .toLowerCase();
++  * @param {string[]} values
++  * @returns {string[]}
++ export function uniqueStrings(values) {
++   return Array.from(new Set(values));
+
+### hooks/clawsec-advisory-guardian/lib/version.mjs  [code]
++ /**
++ /**
++ /**
++ /**
++  * @param {string} version
++  * @returns {[number, number, number] | null}
++  */
++  */
++  */
++  */
++ export function parseSemver(version) {
++   const cleaned = String(version ?? "")
++     .trim()
++     .replace(/^v/i, "")
++     .split("-")[0];
++   const parts = cleaned.split(".");
++   if (parts.length === 0) return null;
++   const normalized = parts.slice(0, 3).map((part) => Number.parseInt(part, 10));
++   while (normalized.length < 3) {
++     normalized.push(0);
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   if (normalized.some((part) => Number.isNaN(part))) {
++     return null;
++   return /** @type {[number, number, number]} */ (normalized);
++ }
++ }
++ }
++ }
++  * @param {string} left
++  * @param {string} right
++  * @returns {number | null}
++ export function compareSemver(left, right) {
++   const a = parseSemver(left);
++   const b = parseSemver(right);
++   if (!a || !b) return null;
++   for (let index = 0; index < 3; index += 1) {
++     if (a[index] > b[index]) return 1;
++     if (a[index] < b[index]) return -1;
++   return 0;
++  * @param {string} value
++  * @returns {string}
++ export function escapeRegex(value) {
++   return String(value ?? "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
++  * @param {string | null} version
++  * @param {string} rawSpec
++  * @returns {boolean}
++ export function versionMatches(version, rawSpec) {
++   const spec = String(rawSpec ?? "").trim();
++   if (!spec || spec === "*" || spec.toLowerCase() === "any") return true;
++   if (!version || String(version).trim().toLowerCase() === "unknown") return false;
++   const normalizedVersion = String(version).trim().replace(/^v/i, "");
++   if (spec.includes("*")) {
++     const regex = new RegExp(`^${escapeRegex(spec).replace(/\\\*/g, ".*")}$`);
++     return regex.test(normalizedVersion);
++   const comparatorMatch = spec.match(/^(>=|<=|>|<|=)\s*(.+)$/);
++   if (comparatorMatch) {
++     const operator = comparatorMatch[1];
++     const targetVersion = comparatorMatch[2].trim();
++     const compared = compareSemver(normalizedVersion, targetVersion);
++     if (compared === null) return false;
++     if (operator === ">=") return compared >= 0;
++     if (operator === "<=") return compared <= 0;
++     if (operator === ">") return compared > 0;
++     if (operator === "<") return compared < 0;
++     return compared === 0;
++   if (spec.startsWith("^")) {
++     const target = parseSemver(spec.slice(1));
++     const target = parseSemver(spec.slice(1));
++     const current = parseSemver(normalizedVersion);
++     const current = parseSemver(normalizedVersion);
++     if (!target || !current) return false;
++     if (!target || !current) return false;
++     if (current[0] !== target[0]) return false;
++     if (target[0] === 0 && current[1] !== target[1]) return false;
++     return compareSemver(normalizedVersion, spec.slice(1)) !== -1;
++   if (spec.startsWith("~")) {
++     return (
++       current[0] === target[0] &&
++       current[1] === target[1] &&
++       compareSemver(normalizedVersion, spec.slice(1)) !== -1
++     );
++   return normalizedVersion === spec || normalizedVersion === spec.replace(/^v/i, "");
+
+### scripts/guarded_skill_install.mjs  [code]
++ #!/usr/bin/env node
++ import { spawnSync } from "node:child_process";
++ import fs from "node:fs/promises";
++ import os from "node:os";
++ import path from "node:path";
++ import { normalizeSkillName, uniqueStrings } from "../hooks/clawsec-advisory-guardian/lib/utils.mjs";
++ import { versionMatches } from "../hooks/clawsec-advisory-guardian/lib/version.mjs";
++ import { parseAffectedSpecifier, isValidFeedPayload, loadRemoteFeed } from "../hooks/clawsec-advisory-guardian/lib/feed.mjs";
++ const DEFAULT_FEED_URL =
++   "https://raw.githubusercontent.com/prompt-security/clawsec/main/advisories/feed.json";
++ const DEFAULT_SUITE_DIR = path.join(os.homedir(), ".openclaw", "skills", "clawsec-suite");
++ const DEFAULT_LOCAL_FEED = path.join(DEFAULT_SUITE_DIR, "advisories", "feed.json");
++ const EXIT_CONFIRM_REQUIRED = 42;
++ function printUsage() {
++   process.stderr.write(
++     [
++       "Usage:",
++       "  node scripts/guarded_skill_install.mjs --skill <skill-name> [--version <version>] [--confirm-advisory] [--dry-run]",
++       "",
++       "",
++       "",
++       "Examples:",
++       "  node scripts/guarded_skill_install.mjs --skill helper-plus --version 1.0.1",
++       "  node scripts/guarded_skill_install.mjs --skill helper-plus --version 1.0.1 --confirm-advisory",
++       "Exit codes:",
++       "  0  success / no advisory block",
++       "  42 advisory matched and second confirmation is required",
++       "  1  error",
++     ].join("\n"),
++   );
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ function parseArgs(argv) {
++   const parsed = {
++     skill: "",
++     version: "",
++     confirmAdvisory: false,
++     dryRun: false,
++   };
++   for (let i = 0; i < argv.length; i += 1) {
++     const token = argv[i];
++     if (token === "--skill") {
++       parsed.skill = String(argv[i + 1] ?? "").trim();
++       i += 1;
++       i += 1;
++       continue;
++       continue;
++       continue;
++       continue;
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     }
++     if (token === "--version") {
++       parsed.version = String(argv[i + 1] ?? "").trim();
++     if (token === "--confirm-advisory") {
++       parsed.confirmAdvisory = true;
++     if (token === "--dry-run") {
++       parsed.dryRun = true;
++     if (token === "--help" || token === "-h") {
++       printUsage();
++       process.exit(0);
++     throw new Error(`Unknown argument: ${token}`);
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   }
++   if (!parsed.skill) {
++     throw new Error("Missing required argument: --skill");
++   if (!/^[a-z0-9-]+$/.test(parsed.skill)) {
++     throw new Error("Invalid --skill value. Use lowercase letters, digits, and hyphens only.");
++   return parsed;
++ function affectedSpecifierMatches(specifier, skillName, version) {
++   const parsed = parseAffectedSpecifier(specifier);
++   const parsed = parseAffectedSpecifier(specifier);
++   if (!parsed) return false;
++   if (!parsed) return false;
++   if (normalizeSkillName(parsed.name) !== normalizeSkillName(skillName)) return false;
++   if (normalizeSkillName(parsed.name) !== normalizeSkillName(skillName)) return false;
++   return versionMatches(version, parsed.versionSpec);
++ function affectedSpecifierMatchesNameOnly(specifier, skillName) {
++   const vs = parsed.versionSpec.trim();
++   return !vs || vs === "*" || vs.toLowerCase() === "any";
++ function advisoryLooksHighRisk(advisory) {
++   const type = String(advisory.type ?? "").toLowerCase();
++   const severity = String(advisory.severity ?? "").toLowerCase();
++   const combined = `${advisory.title ?? ""} ${advisory.description ?? ""} ${advisory.action ?? ""}`.toLowerCase();
++   if (type === "malicious_skill" || type === "malicious_plugin") return true;
++   if (/\b(malicious|exfiltrate|exfiltration|backdoor|trojan|stealer|credential theft)\b/.test(combined)) return true;
++   if (/\b(remove|uninstall|disable|do not use|quarantine)\b/.test(combined)) return true;
++   if (severity === "critical") return true;
++   return false;
++ async function loadFeed() {
++   const feedUrl = process.env.CLAWSEC_FEED_URL || DEFAULT_FEED_URL;
++   const localFeedPath = process.env.CLAWSEC_LOCAL_FEED || DEFAULT_LOCAL_FEED;
++   const remoteFeed = await loadRemoteFeed(feedUrl);
++   if (remoteFeed) return { feed: remoteFeed, source: `remote:${feedUrl}` };
++   const raw = await fs.readFile(localFeedPath, "utf8");
++   const payload = JSON.parse(raw);
++   if (!isValidFeedPayload(payload)) {
++     throw new Error(`Invalid fallback advisory feed format: ${localFeedPath}`);
++   return { feed: payload, source: `local:${localFeedPath}` };
++ function findMatches(feed, skillName, version) {
++   const advisories = Array.isArray(feed.advisories) ? feed.advisories : [];
++   const matches = [];
++   for (const advisory of advisories) {
++     const affected = Array.isArray(advisory.affected) ? advisory.affected : [];
++     if (affected.length === 0) continue;
++     const matchedAffected = uniqueStrings(
++       affected.filter((specifier) =>
++         version
++           ? affectedSpecifierMatches(specifier, skillName, version)
++           : affectedSpecifierMatchesNameOnly(specifier, skillName),
++       ),
++     );
++     );
++     if (matchedAffected.length > 0) {
++       matches.push({ advisory, matchedAffected });
++   return matches;
++ function printMatches(matches, skillName, version) {
++   process.stdout.write("Advisory matches detected for requested install target.\n");
++   process.stdout.write(`Target: ${skillName}${version ? `@${version}` : ""}\n`);
++   for (const entry of matches) {
++     const advisory = entry.advisory;
++     const severity = String(advisory.severity ?? "unknown").toUpperCase();
++     const advisoryId = advisory.id ?? "unknown-id";
++     const title = advisory.title ?? "Untitled advisory";
++     process.stdout.write(`- [${severity}] ${advisoryId}: ${title}\n`);
++     process.stdout.write(`  matched: ${entry.matchedAffected.join(", ")}\n`);
++     if (advisory.action) {
++       process.stdout.write(`  action: ${advisory.action}\n`);
++ function runInstall(skillName, version) {
++   const target = version ? `${skillName}@${version}` : skillName;
++   process.stdout.write(`Install target: ${target}\n`);
++   const result = spawnSync("npx", ["clawhub@latest", "install", target], {
++     stdio: "inherit",
++   });
++   if (result.error) {
++     throw result.error;
++   if (result.status !== 0) {
++     process.exit(result.status ?? 1);
++ async function main() {
++   const args = parseArgs(process.argv.slice(2));
++   const { feed, source } = await loadFeed();
++   const matches = findMatches(feed, args.skill, args.version);
++   const highRisk = matches.some((entry) => advisoryLooksHighRisk(entry.advisory));
++   process.stdout.write(`Advisory source: ${source}\n`);
++   if (matches.length > 0) {
++     printMatches(matches, args.skill, args.version);
++     process.stdout.write("\n");
++     process.stdout.write("Install request recognized as first confirmation.\n");
++     process.stdout.write("Additional explicit confirmation is required with advisory context.\n");
++     if (!args.confirmAdvisory) {
++       process.stdout.write(
++         "Re-run with --confirm-advisory to proceed after the user explicitly confirms.\n",
++       );
++       process.exit(EXIT_CONFIRM_REQUIRED);
++     process.stdout.write("Second confirmation provided via --confirm-advisory.\n");
++   if (args.dryRun) {
++     process.stdout.write("Dry run only; install command was not executed.\n");
++     return;
++   if (highRisk) {
++     process.stdout.write(
++       "High-risk advisory context acknowledged. Proceeding only because --confirm-advisory was provided.\n",
++   runInstall(args.skill, args.version);
++ main().catch((error) => {
++   process.stderr.write(`${String(error)}\n`);
++   process.exit(1);
++ });
+
+### scripts/setup_advisory_cron.mjs  [code]
++ #!/usr/bin/env node
++ import { spawnSync } from "node:child_process";
++ const JOB_NAME = process.env.CLAWSEC_ADVISORY_CRON_NAME?.trim() || "ClawSec Advisory Scan";
++ const JOB_EVERY = process.env.CLAWSEC_ADVISORY_CRON_EVERY?.trim() || "6h";
++ const JOB_DESCRIPTION =
++   "Trigger a periodic ClawSec advisory scan in the main session and ask for approval before removing flagged skills.";
++ const SYSTEM_EVENT =
++   "Run ClawSec advisory scan. If installed skills are flagged as malicious or removal is recommended, notify the user and request explicit approval before any removal.";
++ function sh(cmd, args) {
++   const result = spawnSync(cmd, args, {
++     encoding: "utf8",
++     stdio: ["ignore", "pipe", "pipe"],
++   });
++   if (result.error) {
++     throw result.error;
++   }
++   }
++   }
++   }
++   }
++   if (result.status !== 0) {
++     const details = (result.stderr || result.stdout || "").trim();
++     throw new Error(`${cmd} ${args.join(" ")} failed${details ? `: ${details}` : ""}`);
++   return result.stdout;
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ function requireOpenClawCli() {
++   try {
++   try {
++     sh("openclaw", ["--version"]);
++   } catch (error) {
++     throw new Error(
++       "openclaw CLI is required. Install OpenClaw and ensure `openclaw` is available in PATH. " +
++         `Original error: ${String(error)}`,
++     );
++ function findExistingJobId(jobsPayload) {
++   if (!jobsPayload || !Array.isArray(jobsPayload.jobs)) return null;
++   const existing = jobsPayload.jobs.find((job) => job && job.name === JOB_NAME);
++   return existing?.id ?? null;
++ function addJob() {
++   const out = sh("openclaw", [
++     "cron",
++     "cron",
++     "add",
++     "--name",
++     "--name",
++     JOB_NAME,
++     JOB_NAME,
++     "--description",
++     "--description",
++     JOB_DESCRIPTION,
++     JOB_DESCRIPTION,
++     "--every",
++     "--every",
++     JOB_EVERY,
++     JOB_EVERY,
++     "--session",
++     "--session",
++     "main",
++     "main",
++     "--system-event",
++     "--system-event",
++     SYSTEM_EVENT,
++     SYSTEM_EVENT,
++     "--wake",
++     "--wake",
++     "now",
++     "now",
++     "--json",
++   ]);
++   ]);
++     const payload = JSON.parse(out);
++     return payload?.id ?? null;
++   } catch {
++     return null;
++ function editJob(jobId) {
++   sh("openclaw", [
++     "edit",
++     jobId,
++     "--enable",
++ function main() {
++   requireOpenClawCli();
++   const jobsOut = sh("openclaw", ["cron", "list", "--json"]);
++   const jobsPayload = JSON.parse(jobsOut);
++   const existingJobId = findExistingJobId(jobsPayload);
++   if (existingJobId) {
++     editJob(existingJobId);
++     process.stdout.write(`Updated cron job ${existingJobId}: ${JOB_NAME}\n`);
++   } else {
++     const createdId = addJob();
++     if (createdId) {
++       process.stdout.write(`Created cron job ${createdId}: ${JOB_NAME}\n`);
++     } else {
++       process.stdout.write(`Created cron job: ${JOB_NAME}\n`);
++     }
++   process.stdout.write(`Schedule: every ${JOB_EVERY}\n`);
++   process.stdout.write("Session target: main (system event + wake now)\n");
++ try {
++   main();
++ } catch (error) {
++   process.stderr.write(`${String(error)}\n`);
++   process.exit(1);
+
+### scripts/setup_advisory_hook.mjs  [code]
++ #!/usr/bin/env node
++ import { spawnSync } from "node:child_process";
++ import fs from "node:fs";
++ import os from "node:os";
++ import path from "node:path";
++ import { fileURLToPath } from "node:url";
++ const HOOK_NAME = "clawsec-advisory-guardian";
++ const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
++ const SUITE_DIR = path.resolve(SCRIPT_DIR, "..");
++ const SOURCE_HOOK_DIR = path.join(SUITE_DIR, "hooks", HOOK_NAME);
++ const HOOKS_ROOT = path.join(os.homedir(), ".openclaw", "hooks");
++ const TARGET_HOOK_DIR = path.join(HOOKS_ROOT, HOOK_NAME);
++ function sh(cmd, args) {
++   const result = spawnSync(cmd, args, {
++     encoding: "utf8",
++     stdio: ["ignore", "pipe", "pipe"],
++   });
++   if (result.error) {
++     throw result.error;
++   }
++   }
++   }
++   }
++   if (result.status !== 0) {
++     const details = (result.stderr || result.stdout || "").trim();
++     throw new Error(`${cmd} ${args.join(" ")} failed${details ? `: ${details}` : ""}`);
++   return result.stdout;
++ }
++ }
++ }
++ }
++ }
++ }
++ }
++ function requireOpenClawCli() {
++   try {
++     sh("openclaw", ["--version"]);
++   } catch (error) {
++     throw new Error(
++       "openclaw CLI is required. Install OpenClaw and ensure `openclaw` is available in PATH. " +
++         `Original error: ${String(error)}`,
++     );
++ function assertSourceHookExists() {
++   const requiredFiles = [
++     "HOOK.md",
++     "handler.ts",
++     "lib/utils.mjs",
++     "lib/version.mjs",
++     "lib/feed.mjs",
++   ];
++   for (const file of requiredFiles) {
++     const fullPath = path.join(SOURCE_HOOK_DIR, file);
++     if (!fs.existsSync(fullPath)) {
++       throw new Error(`Missing required hook file: ${fullPath}`);
++     }
++ function installHookFiles() {
++   fs.mkdirSync(HOOKS_ROOT, { recursive: true });
++   fs.rmSync(TARGET_HOOK_DIR, { recursive: true, force: true });
++   fs.cpSync(SOURCE_HOOK_DIR, TARGET_HOOK_DIR, { recursive: true });
++ function enableHook() {
++   sh("openclaw", ["hooks", "enable", HOOK_NAME]);
++ function main() {
++   assertSourceHookExists();
++   requireOpenClawCli();
++   installHookFiles();
++   enableHook();
++   process.stdout.write(`Installed hook files to: ${TARGET_HOOK_DIR}\n`);
++   process.stdout.write(`Enabled hook: ${HOOK_NAME}\n`);
++   process.stdout.write("Restart your OpenClaw gateway process so the hook is loaded.\n");
++   process.stdout.write("After restart, run /new once to trigger an immediate advisory scan.\n");
++ try {
++   main();
++ } catch (error) {
++   process.stderr.write(`${String(error)}\n`);
++   process.exit(1);
+
+### skill.json  [code]
+-   "version": "0.0.6",
+-   "description": "Use when users want to explore or set up ClawSec security protections - this is a wrapper that helps discover and install individual security skills, but requires initial configuration to activate any protections.",
+-     "guardian",
+-         "description": "update checks and integrity verification"
+-         "path": "bundled/clawsec-feed/skill.json",
+-         "description": "Bundled feed metadata"
+-         "path": "bundled/clawsec-feed/SKILL.md",
+-         "description": "Bundled feed documentation"
+-         "path": "bundled/clawsec-feed/advisories/feed.json",
+-         "description": "Bundled security advisory feed data"
+-         "path": "bundled/openclaw-audit-watchdog/skill.json",
+-         "description": "Bundled audit watchdog metadata"
+-         "path": "bundled/openclaw-audit-watchdog/SKILL.md",
+-         "description": "Bundled audit watchdog documentation"
+-         "path": "bundled/soul-guardian/skill.json",
+-         "description": "Bundled soul guardian metadata"
+-         "path": "bundled/soul-guardian/SKILL.md",
+-         "description": "Bundled soul guardian documentation"
+-     "description": "Available skills in the ClawSec security suite",
+-     "base_url": "https://ClawSec.prompt.security/releases/download",
+-         "description": "Security advisory feed monitoring",
+-         "default_install": true,
+-         "description": "Community incident reporting (may share anonymized data)",
+-         "note": "Tailored for OpenClaw/MoltBot family only"
+-   "bundled_skills": {
+-       "description": "Security advisory feed (bundled for convenient deployment)",
+-       "default": true,
+-       "default": true,
+-       "standalone_available": true,
+-       "standalone_available": true,
+-       "rationale": "Provides crucial CVE and threat intelligence information"
+-     },
+-     },
+-     "openclaw-audit-watchdog": {
+-       "description": "Daily security audits (bundled for convenient deployment)",
+-       "rationale": "Provides crucial automated security audit capabilities"
+-     "soul-guardian": {
+-       "description": "File integrity monitoring (bundled for convenient deployment)",
+-       "default": false,
+-       "rationale": "Provides important file integrity and drift detection"
+-       "install skills",
+-       "skill catalog",
+-       "update skills",
+-       "list available skills",
+-       "install clawsec",
+-       "security suite"
++   "version": "0.0.8",
++   "description": "ClawSec suite manager with embedded advisory-feed monitoring, approval-gated malicious-skill response, and guided setup for additional security skills.",
++     "advisory",
++     "feed",
++     "threat-intel",
++     "hooks",
++     "approval",
++       {
++       {
++       },
++       },
++         "description": "Portable heartbeat and update-check procedure"
++         "path": "advisories/feed.json",
++         "description": "Embedded advisory feed seed (merged from clawsec-feed)"
++         "path": "hooks/clawsec-advisory-guardian/HOOK.md",
++         "description": "OpenClaw hook metadata for advisory-driven malicious-skill checks"
++         "path": "hooks/clawsec-advisory-guardian/handler.ts",
++         "description": "OpenClaw hook handler for approval-gated advisory actions"
++         "path": "hooks/clawsec-advisory-guardian/lib/utils.mjs",
++         "description": "Shared utility functions (isObject, normalizeSkillName, uniqueStrings)"
++         "path": "hooks/clawsec-advisory-guardian/lib/version.mjs",
++         "description": "Shared semver parsing and version matching logic"
++         "path": "hooks/clawsec-advisory-guardian/lib/feed.mjs",
++         "description": "Shared advisory feed loading and validation"
++         "path": "scripts/setup_advisory_hook.mjs",
++         "description": "Installer script for enabling the advisory guardian hook"
++         "path": "scripts/setup_advisory_cron.mjs",
++         "description": "Installer script for optional periodic advisory scan cron"
++         "path": "scripts/guarded_skill_install.mjs",
++         "description": "Two-step confirmation installer that blocks risky skill installs until explicit second approval"
++   "embedded_components": {
++       "source_skill": "clawsec-feed",
++       "source_version": "0.0.4",
++       "paths": [
++         "advisories/feed.json"
++       ],
++       ],
++       "capabilities": [
++         "advisory-feed monitoring",
++         "new-advisory detection",
++         "affected-skill cross-reference",
++         "approval-gated malicious-skill removal recommendations",
++         "double-confirmation gating for risky skill installs"
++       "deprecation_plan": "standalone skill may be retired after suite migration is verified"
++     "description": "Available protections in the ClawSec suite",
++     "base_url": "https://clawsec.prompt.security/releases/download",
++         "description": "Advisory monitoring is now embedded in clawsec-suite",
++         "integrated_in_suite": true,
++         "standalone_available": true,
++         "note": "Tailored for OpenClaw/MoltBot family"
++         "description": "Community incident reporting (shares anonymized data)",
++         "jq",
++       "security suite",
++       "security advisories",
++       "malicious skill alert",
++       "remove malicious skills",
++       "safe skill install",
++       "confirm skill install",
++       "check advisories",
++       "advisory feed",
++       "update skills"

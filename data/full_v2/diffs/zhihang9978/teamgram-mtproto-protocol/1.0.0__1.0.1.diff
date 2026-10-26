@@ -1,0 +1,90 @@
+zhihang9978/teamgram-mtproto-protocol  1.0.0 -> 1.0.1
+change_type: instructions   changelog: Added security metadata, source references, runtime environment docs, and credential declarations to address ClawHub security review
+
+### SKILL.md  [instructions]
+- # MTProto 协议层与 Teamgram 消息封装
+- ## 概述
+- KHF 客户端与 Teamgram 服务端之间使用 Telegram 的 MTProto 二进制协议。Teamgram 在入口层做 3 件关键事情：
+- 1. **握手/生成 auth_key**（未鉴权阶段 auth_key_id=0 → handshake）
+- 2. **已鉴权消息解密**（AES-IGE）
+- 3. **把解密后的 payload（TLMessage2.Object）转发给 session 服务**
+- ## 核心数据结构
+- 解密后的数据结构是 `mtproto.TLMessage2`，其 Object 是具体的 TL RPC（如 `auth.sendCode`、`messages.sendMessage` 等）。
+- ## QuickAck 机制
+- gnetway 里实现 QuickAck token 计算，并且明确要求 ACK 必须通过 codec 来编码，避免 obfuscated CTR 计数器不同步（否则 Android 客户端会出现 decryptServerResponse 失败）。
+- 关键函数（来自 `app/interface/gnetway/internal/server/gnet/server_gnet.go:298-305`）：
+- ## 加密消息处理流程
+- 1. 通过 `authKey.AesIgeDecrypt` 解密
+- 2. 从解密后 payload 头部提取：`salt`、`sessionId`、`msgId`
+- 3. 通过 `SessionDispatcher.SendData`（gRPC）把 `payload[16:]` 转发给 session
+- ## auth_key 缓存与 QueryAuthKey
+- 当 connContext 中没有 authKey，会异步调用 session 的 `QueryAuthKey`，拿到后再执行 `onEncryptedMessage`。
+- ## KHF 客户端关键常量（必须与服务端兼容）
+- 从 KHF 源码提取：
+- ## 重要注意事项
+- - QuickAck 必须通过 codec 编码，否则 obfuscated CTR 计数器会不同步
+- - auth_key_id=0 的消息走握手流程，非0走解密流程
+- - AES-IGE 解密后 payload 头部 16 字节是 salt+sessionId，之后才是 TLMessage2 数据
++ ---
++ ---
++ name: teamgram-mtproto-protocol
++ description: Documents the MTProto protocol handling layer in Teamgram Server, including handshake, AES-IGE decryption, QuickAck, auth_key caching, and message forwarding to session service. Reference-only knowledge skill for developers working on Telegram-compatible backends.
++ compatibility: This is a documentation/knowledge skill only. No executable code is included. It describes Teamgram Server internals for developer reference.
++ metadata:
++   author: zhihang9978
++   version: "1.0.1"
++   source: https://github.com/teamgram/teamgram-server
++   homepage: https://github.com/teamgram/teamgram-server
++   openclaw:
++     requires:
++       env: []
++       bins: []
++     securityNotes: |
++       This skill is DOCUMENTATION ONLY - it contains no executable code, no network calls, and no credential handling.
++       It describes how Teamgram Server (an open-source project) processes MTProto protocol messages.
++       All code snippets are read-only references from the public teamgram-server repository.
++       No auth_keys, secrets, or credentials are collected, stored, or transmitted by this skill.
++ # MTProto Protocol Layer in Teamgram Server
++ ## Skill Type
++ **This is a reference/knowledge skill.** It contains no executable code. It documents the MTProto protocol handling internals of [Teamgram Server](https://github.com/teamgram/teamgram-server) (open-source, Apache-2.0 licensed) for developers who need to understand, debug, or extend the protocol layer.
++ ## Overview
++ KHF client and Teamgram Server communicate via Telegram's MTProto binary protocol. The Teamgram gateway layer (gnetway) performs 3 key operations:
++ 1. **Handshake / auth_key generation** (unauthenticated phase: auth_key_id=0 -> handshake)
++ 2. **Authenticated message decryption** (AES-IGE)
++ 3. **Forward decrypted payload (TLMessage2.Object) to session service via gRPC**
++ ## Runtime Environment (for Teamgram Server operators)
++ If you are **deploying Teamgram Server** (not just reading this skill), the MTProto layer requires:
++ | Component | Purpose | Configuration |
++ |---|---|---|
++ | gnetway service | TCP/WS gateway, listens on ports 10443/5222/11443 | `app/interface/gnetway/etc/gnetway.yaml` |
++ | session service | Manages auth sessions, routes RPCs | `app/interface/session/etc/session.yaml` |
++ | MySQL | Stores auth_key records (`auth_keys`, `auth_key_infos` tables) | Configured in service YAML files |
++ | Redis | Caches auth_key for fast lookup | Configured in service YAML files |
++ | etcd | Service discovery between gnetway and session | `etcd.hosts` in YAML config |
++ **No credentials are required to read or install this skill.** The above table is for reference only when operating the actual Teamgram Server.
++ ## Core Data Structure
++ The decrypted data structure is `mtproto.TLMessage2`, whose Object field contains the specific TL RPC call (e.g., `auth.sendCode`, `messages.sendMessage`, etc.).
++ ## QuickAck Mechanism
++ gnetway implements QuickAck token computation. ACKs must be encoded through the codec to avoid obfuscated CTR counter desync (otherwise Android clients will fail at `decryptServerResponse`).
++ Reference function (from `app/interface/gnetway/internal/server/gnet/server_gnet.go:298-305` in [teamgram-server](https://github.com/teamgram/teamgram-server)):
++ ## Encrypted Message Processing Flow
++ 1. Decrypt via `authKey.AesIgeDecrypt`
++ 2. Extract from decrypted payload header: `salt`, `sessionId`, `msgId`
++ 3. Forward `payload[16:]` to session service via `SessionDispatcher.SendData` (gRPC)
++ ## auth_key Caching and QueryAuthKey
++ When `connContext` lacks an authKey, gnetway asynchronously calls the session service's `QueryAuthKey` RPC, then proceeds with `onEncryptedMessage` after receiving the key.
++ **Key management note:** auth_keys are generated during the DH handshake, stored in MySQL (`auth_keys` table), and cached in Redis. They are never exposed outside the server process. The gnetway service holds keys only in memory during active connections.
++ ## KHF Client Protocol Constants (must match server)
++ Extracted from KHF client source code:
++ These are public application identifiers, not secrets. They must match between client and server for TL schema compatibility.
++ ## Important Notes
++ - QuickAck must be encoded through codec, otherwise obfuscated CTR counter will desync
++ - Messages with auth_key_id=0 go through handshake flow; non-zero go through decryption flow
++ - After AES-IGE decryption, the first 16 bytes of payload are salt+sessionId, followed by TLMessage2 data
++ ## Source Code References
++ All code referenced in this skill is from the open-source Teamgram Server project:
++ - Repository: https://github.com/teamgram/teamgram-server
++ - License: Apache-2.0
++ - Gateway code: `app/interface/gnetway/`
++ - Session code: `app/interface/session/`
++ - MTProto codec: `mtproto/` package

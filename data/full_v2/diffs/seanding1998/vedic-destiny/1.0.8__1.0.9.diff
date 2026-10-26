@@ -1,0 +1,378 @@
+seanding1998/vedic-destiny  1.0.8 -> 1.0.9
+change_type: instructions+docs+code   changelog: v1.4.2 — JHora Ashtakavarga 精确边框解析 + 导出变体兼容 (2026-06-03) 变更动机 新一批 JHora / MinerU 导出样本暴露出两类问题：  Ashtakavarga 结构误判：紧凑表并不是普通 12×12 行列表，而是 3×3 个 4×4 小方块；每个方块的 12 个边框数字才是一组完整 SAV/BAV。旧启发式把它误读成整表行列后，才会出现 SAV 需要缩放、BAV 行不全、R3 整列失败的现象。 行星表入口变体：不同导出中经度字段会出现 deg | sign+min | sec、deg | sign | min | sec、deg+sign | min | sec 三种拆列方式，同时 nakshatra 缩写也新增了 Aswi、Mool 等变体。 scripts/jhora_markdown_bridge.py 改动 1. 新增紧凑 Ashtakavarga 的精确块解析  新增 ASHTAKAVARGA_LABEL_MAP 新增 _extract_ashtakavarga_block_perimeter() 新增 _parse_a
+
+### CHANGELOG.md  [docs]
++ ## v1.4.2 — JHora Ashtakavarga 精确边框解析 + 导出变体兼容 (2026-06-03)
++ ### 变更动机
++ 新一批 JHora / MinerU 导出样本暴露出两类问题：
++ - **Ashtakavarga 结构误判**：紧凑表并不是普通 12×12 行列表，而是 `3×3` 个 `4×4` 小方块；每个方块的 12 个边框数字才是一组完整 SAV/BAV。旧启发式把它误读成整表行列后，才会出现 `SAV` 需要缩放、`BAV` 行不全、`R3` 整列失败的现象。
++ - **行星表入口变体**：不同导出中经度字段会出现 `deg | sign+min | sec`、`deg | sign | min | sec`、`deg+sign | min | sec` 三种拆列方式，同时 `nakshatra` 缩写也新增了 `Aswi`、`Mool` 等变体。
++ ### `scripts/jhora_markdown_bridge.py` 改动
++ **1. 新增紧凑 Ashtakavarga 的精确块解析**
++ - 新增 `ASHTAKAVARGA_LABEL_MAP`
++ - 新增 `_extract_ashtakavarga_block_perimeter()`
++ - 新增 `_parse_ashtakavarga_compact_blocks()`
++ - 识别 `SAV/As/Su/Mo/Ma/Me/Ju/Ve/Sa` 九个 `4×4` 小方块，按边框顺时针读取 12 个数值
++ - 直接产出：
++   - `payload["sav"]`
++   - `payload["bav"]`
++   - `payload["_lagna_ashtakavarga"]`
++ **2. `_extract_ashtakavarga_candidates()` 改为优先走精确块解析**
++ - 命中 `3×3` 小方块布局时，不再使用 `row0 × 337 / sum(row0)` 缩放启发式
++ - 行级启发式保留为 OCR 损伤或非标准导出的后备方案
++ **3. `_format_ashtakavarga_for_llm()` 输出同步更新**
++ - 明确标注当前是否命中紧凑小方块精确解析
++ - 附带精确导出的 `SAV / BAV / Lagna Ashtakavarga`
++ - 不再把“让 LLM 手动做算术”当成主路径，只保留为诊断回退
++ **4. 行星经度解析兼容三种导出格式**
++ - `["26", "Ar 27'", '19.07"']`
++ - `["20", "Le", "00'", '00.34"']`
++ - `["5 Ge", "32'", '00.12"']`
++ **5. `nakshatra` 缩写映射补充**
++ - `Aswi -> Ashwini`
++ - `Mool -> Mula`
++ ### `scripts/chart_sanity_check.py` 改动
++ **6. `R3` 在 BAV 行不完整时改为显式 `SKIP`**
++ - 旧行为：缺少 BAV 行时，仍拿不完整列和去对 `SAV`，导致整列误报 `FAIL`
++ - 新行为：如果缺少行星，`R2` 报缺失，`R3` 返回 `SKIP BAV incomplete`
++ ### 回归结果
++ 使用以下样本回归验证：
++ - `DingXiao_JHora`（MinerU 导出）
++ - `Jhon.md`
++ - `TanZheng_JHora.md`
++ - `ZhangLiYing_JHora.md`
++ - `ZhangYue_JHora.md`
++ - `Zhu.pdf` / `zhujingyu.pdf` / `Lilyeas.pdf` / `caoyuyan.pdf` 的 MinerU markdown
++ 结果：
++ - 紧凑 Ashtakavarga 样本可稳定提取 `SAV=337`
++ - 7 颗星 `BAV` 行常量全部匹配
++ - `BAV` 列和与 `SAV` 全量对齐
++ - 非完整 dasha 导出的样本仅 `R9=SKIP`，其余校验通过
+
+### SKILL.md  [instructions]
++ 当前版本对 JHora 的紧凑 Ashtakavarga 已支持 `3×3` 小方块边框精确解析：命中标准导出时，`SAV=337`、7 星 `BAV` 行常量、`BAV -> SAV` 列和会直接结构化进入 payload，而不是依赖 LLM 手动读表做算术。
+
+### scripts/chart_sanity_check.py  [code]
++     missing_planets: list[str] = []
++             missing_planets.append(planet)
++     if missing_planets:
++         return r2, CheckResult("R3", "skip", f"BAV incomplete, missing {', '.join(missing_planets)}")
+
+### scripts/jhora_markdown_bridge.py  [code]
+-     sign_match = re.match(r"(?P<deg>\d+(?:\.\d+)?)\s*(?P<sign>[A-Za-z]{2})", parts[0])
+-     if not sign_match:
+-         raise ValueError(f"Could not parse longitude head: {parts[0]!r}")
+-     sign_code = sign_match.group("sign")
+-     if sign_code not in SIGN_MAP:
+-         raise ValueError(f"Unknown sign code: {sign_code!r}")
+-     deg = float(sign_match.group("deg"))
+-     minutes = float(re.sub(r"[^\d.]+", "", parts[1]) or "0")
+-     seconds = float(re.sub(r"[^\d.]+", "", parts[2]) or "0")
+-     return SIGN_MAP[sign_code], deg + minutes / 60.0 + seconds / 3600.0
+-         sign, degree = _parse_degree(row[1:4])
+-         nakshatra = _normalize_nakshatra(row[4])
+-         pada = int(re.sub(r"[^\d]+", "", row[5]) or "0")
+-         rasi_code = _clean_text(row[6])
+-         navamsha_code = _clean_text(row[7])
+-         try:
+-         try:
+-         except ValueError:
+-     The LLM can then manually verify:
+-     - SAV row = row 0 × (337 / sum(row0)) ≈ each sign's SAV
+-     - BAV rows from pure data rows (all values 0-8), matched to planet constants
+-     - Cross-check BAV column sums against SAV
+-     BA = {'Sun': 48, 'Moon': 49, 'Mars': 39, 'Mercury': 54, 'Jupiter': 56, 'Venus': 52, 'Saturn': 39}
+-             for p, c in BA.items():
+-             notes = f"BAV candidate → {best}({BA[best]}) diff={bd}" + (f" {notes}" if notes else "")
+-     # Column stats
+-     lines.append("SAV = row0 × 337 / sum(row0). BAV row constants: " + ", ".join(f"{k}={v}" for k, v in BA.items()))
+-     lines.append("Pure BAV rows (all 0-8) should match one of the constants within ±3.")
+-     lines.append("Remaining BAV values are displaced into label-row border columns.")
+-     lines.append("For C10/C11 verification, read pure BAV rows + manually extract label-row BAV.")
+-     """Extract SAV from JHora compact Ashtakavarga format.
+-     The compact format uses 12 physical rows x 12 cols with embedded labels.
+-     Empirically, the first row (row 0) contains SAV values scaled by a factor
+-     of approximately 2.5× (varies 2.48-2.74 across charts).
+-     Strategy: SAV[sign] = row0[sign] * 337 / sum(row0)
+-     This consistently gives SAV sums within ±3 of 337.
+-     BAV row extraction is not currently supported for the compact format;
+-     use BAV constants from chart_sanity_check.py instead.
+-     # Extract the first row as scaled SAV values
+-     row0: list[float] = []
+-     for cell in grid[0][:12]:
+-             row0.append(float(str(cell).strip()))
+-     if len(row0) < 12:
+-     row0_sum = sum(row0)
+-     if row0_sum <= 0:
+-     # Scale: the first row values represent SAV divided by ~2.5
+-     scale = 337.0 / row0_sum
+-     sav = [round(v * scale) for v in row0]
+-     # Verify sum is close to 337
+-     if abs(sum(sav) - 337) > 5:
+-     result: dict[str, Any] = {"sav": [float(v) for v in sav]}
+-     # --- Also extract BAV from pure data rows ---
+-     # In the compact format, rows that are entirely numeric with all values
+-     # in the 0-8 range are BAV rows for specific planets. Their row sums
+-     # approximate known BAV constants (within ±3).
+-     BAV_CONSTANTS = {
+-         "Sun": 48, "Moon": 49, "Mars": 39,
+-         "Mercury": 54, "Jupiter": 56, "Venus": 52, "Saturn": 39,
+-     for r in range(nrows):
+-         vals: list[float] = []
+-             for c in range(min(ncols, len(grid[r]))):
+-                 v = float(str(grid[r][c]).strip())
+-                 if v < 0 or v > 8:
+-                     raise ValueError("not BAV")
+-                 vals.append(v)
+-         except (ValueError, IndexError):
+-         if len(vals) != ncols:
+-         row_sum = sum(vals)
+-         # Match to closest BAV constant
+-         best_planet, best_diff = None, 99
+-         for planet, const in BAV_CONSTANTS.items():
+-             if planet in bav:
+-                 continue  # already assigned
+-             diff = abs(row_sum - const)
+-             if diff < best_diff:
+-                 best_diff = diff
+-                 best_planet = planet
+-         if best_planet and best_diff <= 5:
+-             bav[best_planet] = vals
+-             if len(grid) >= 10 and ncols >= 12:
+-                 # Ashtakavarga table: has 'SAV' label AND first row is all numeric
+-                 row0_numeric = all(
+-                     str(c).strip().replace('.','').lstrip('-').isdigit()
+-                     for c in grid[0][:12] if str(c).strip()
+-                 ) if grid and grid[0] else False
+-                 is_av = has_sav and row0_numeric
+-                 if is_av:
++ }
++ }
++     "Aswi": "Ashwini",
++     "Mool": "Mula",
++     "Su": "Sun",
++     "Mo": "Moon",
++     "Ma": "Mars",
++     "Me": "Mercury",
++     "Ju": "Jupiter",
++     "Ve": "Venus",
++     "Sa": "Saturn",
++ ASHTAKAVARGA_BAV_CONSTANTS = {
++     "Sun": 48,
++     "Moon": 49,
++     "Mars": 39,
++     "Mercury": 54,
++     "Jupiter": 56,
++     "Venus": 52,
++     "Saturn": 39,
++ ASHTAKAVARGA_LABEL_MAP = {
++     "SAV": "SAV",
++     "As": "Lagna",
++             }
++         return None
++         return None
++         return None
++     first = _clean_text(parts[0])
++     second = _clean_text(parts[1])
++     third = _clean_text(parts[2])
++     fourth = _clean_text(parts[3]) if len(parts) > 3 else ""
++     sign_match = re.match(r"(?P<deg>\d+(?:\.\d+)?)\s*(?P<sign>[A-Za-z]{2})", first)
++     if sign_match:
++         sign_code = sign_match.group("sign")
++         if sign_code not in SIGN_MAP:
++         if sign_code not in SIGN_MAP:
++             raise ValueError(f"Unknown sign code: {sign_code!r}")
++             raise ValueError(f"Unknown sign code: {sign_code!r}")
++         deg = float(sign_match.group("deg"))
++         minutes = float(re.sub(r"[^\d.]+", "", second) or "0")
++         seconds = float(re.sub(r"[^\d.]+", "", third) or "0")
++         seconds = float(re.sub(r"[^\d.]+", "", third) or "0")
++         return SIGN_MAP[sign_code], deg + minutes / 60.0 + seconds / 3600.0
++         return SIGN_MAP[sign_code], deg + minutes / 60.0 + seconds / 3600.0
++     # MinerU sometimes splits the degree into its own cell: ["26", "Ar 27'", '19.07"'].
++     deg_text = re.sub(r"[^\d.]+", "", first)
++     split_match = re.match(r"(?P<sign>[A-Za-z]{2})\s*(?P<minutes>\d+(?:\.\d+)?)", second)
++     if deg_text and split_match:
++         sign_code = split_match.group("sign")
++         deg = float(deg_text)
++         deg = float(deg_text)
++         minutes = float(split_match.group("minutes"))
++     # Another export variant uses four cells: ["20", "Le", "00'", '00.34"'].
++     if deg_text and second in SIGN_MAP:
++         minutes = float(re.sub(r"[^\d.]+", "", third) or "0")
++         seconds = float(re.sub(r"[^\d.]+", "", fourth) or "0")
++         return SIGN_MAP[second], deg + minutes / 60.0 + seconds / 3600.0
++     raise ValueError(f"Could not parse longitude cells: {parts!r}")
++             continue
++             continue
++             continue
++             continue
++         if len(row) >= 9 and _clean_text(row[2]) in SIGN_MAP:
++             longitude_cells = row[1:5]
++             nakshatra_idx, pada_idx, rasi_idx, navamsha_idx = 5, 6, 7, 8
++         else:
++             longitude_cells = row[1:4]
++             nakshatra_idx, pada_idx, rasi_idx, navamsha_idx = 4, 5, 6, 7
++         sign, degree = _parse_degree(longitude_cells)
++         nakshatra = _normalize_nakshatra(row[nakshatra_idx])
++         pada = int(re.sub(r"[^\d]+", "", row[pada_idx]) or "0")
++         rasi_code = _clean_text(row[rasi_idx])
++         navamsha_code = _clean_text(row[navamsha_idx])
++     result: dict[str, Any] = {}
++     return result
++     return result
++ def _parse_numeric_cell(cell: Any) -> float | None:
++     text = str(cell).strip()
++     if not text:
++     try:
++         return float(text)
++     except ValueError:
++ def _extract_numeric_values(
++     row: list[str],
++     *,
++     min_value: float | None = None,
++     max_value: float | None = None,
++ ) -> list[float]:
++     values: list[float] = []
++     values: list[float] = []
++     for cell in row:
++         value = _parse_numeric_cell(cell)
++         value = _parse_numeric_cell(cell)
++         if value is None:
++         if value is None:
++         if min_value is not None and value < min_value:
++         if max_value is not None and value > max_value:
++         values.append(value)
++         values.append(value)
++     return values
++     return values
++ def _match_bav_planet(row_sum: float, used_planets: set[str]) -> tuple[str | None, float]:
++     best_planet: str | None = None
++     best_diff = 99.0
++     for planet, expected in ASHTAKAVARGA_BAV_CONSTANTS.items():
++         if planet in used_planets:
++         diff = abs(row_sum - expected)
++         if diff < best_diff:
++             best_planet = planet
++             best_diff = diff
++     return best_planet, best_diff
++ def _extract_ashtakavarga_block_perimeter(grid: list[list[str]], row0: int, col0: int) -> list[float] | None:
++     cells = [
++         grid[row0][col0],
++         grid[row0][col0 + 1],
++         grid[row0][col0 + 2],
++         grid[row0][col0 + 3],
++         grid[row0 + 1][col0 + 3],
++         grid[row0 + 2][col0 + 3],
++         grid[row0 + 3][col0 + 3],
++         grid[row0 + 3][col0 + 2],
++         grid[row0 + 3][col0 + 1],
++         grid[row0 + 3][col0],
++         grid[row0 + 2][col0],
++         grid[row0 + 1][col0],
++     ]
++     for cell in cells:
++ def _parse_ashtakavarga_compact_blocks(grid: list[list[str]]) -> dict[str, Any] | None:
++     """Extract exact SAV/BAV values from JHora's 3x3 compact block layout.
++     The rendered table is not a flat 12x12 matrix of values. It is a 3x3 matrix
++     of 4x4 mini-blocks, where each block stores 12 values on its border and a
++     2x2 label in the center. Reading each border clockwise yields exact SAV/BAV
++     arrays without any heuristic scaling.
++     if len(grid) < 12:
++     ncols = max(len(row) for row in grid) if grid else 0
++     if ncols < 12:
++     blocks: dict[str, list[float]] = {}
++     for row0 in (0, 4, 8):
++         for col0 in (0, 4, 8):
++             label = _clean_text(str(grid[row0 + 1][col0 + 1]))
++             if label not in ASHTAKAVARGA_LABEL_MAP:
++                 return None
++                 return None
++             perimeter = _extract_ashtakavarga_block_perimeter(grid, row0, col0)
++             if perimeter is None:
++             blocks[ASHTAKAVARGA_LABEL_MAP[label]] = perimeter
++     sav = blocks.get("SAV")
++     if sav is None or abs(sum(sav) - 337) > 0.01:
++     result: dict[str, Any] = {"sav": sav}
++     bav = {
++         planet: values
++         for planet, values in blocks.items()
++         if planet in ASHTAKAVARGA_BAV_CONSTANTS
++     if bav:
++         result["bav"] = bav
++     if "Lagna" in blocks:
++         result["_lagna_ashtakavarga"] = blocks["Lagna"]
++ def _extract_ashtakavarga_candidates(grid: list[list[str]]) -> dict[str, Any]:
++     if not grid:
++         return result
++         return result
++     exact = _parse_ashtakavarga_compact_blocks(grid)
++     if exact is not None:
++         result.update(exact)
++     row0 = _extract_numeric_values(grid[0])[:12]
++     if len(row0) == 12:
++         row0_sum = sum(row0)
++         if row0_sum > 0:
++             scale = 337.0 / row0_sum
++             sav = [round(value * scale) for value in row0]
++             if abs(sum(sav) - 337) <= 5:
++                 result["sav"] = [float(value) for value in sav]
++     raw_candidates: list[dict[str, Any]] = []
++     for row_idx, row in enumerate(grid):
++         values = _extract_numeric_values(row, min_value=0, max_value=8)
++         if len(values) != 12:
++         row_sum = sum(values)
++         best_planet, best_diff = _match_bav_planet(row_sum, set())
++         raw_candidates.append(
++             {
++                 "row": row_idx,
++                 "values": values,
++                 "sum": row_sum,
++                 "best_planet": best_planet,
++                 "best_diff": best_diff,
++         )
++         )
++     used_planets: set[str] = set()
++     for candidate in sorted(raw_candidates, key=lambda item: (item["best_diff"], item["row"])):
++         best_planet, best_diff = _match_bav_planet(candidate["sum"], used_planets)
++         if best_planet is None or best_diff > 5:
++         used_planets.add(best_planet)
++         bav[best_planet] = [float(value) for value in candidate["values"]]
++     result["_bav_candidates"] = raw_candidates
++     The rendered table now includes an exact block-perimeter parse when the
++     compact 3x3 mini-block layout is detected. Heuristic row-based hints remain
++     only as fallback diagnostics for malformed OCR.
++     derived = _extract_ashtakavarga_candidates(grid)
++             for p, c in ASHTAKAVARGA_BAV_CONSTANTS.items():
++             notes = (
++                 f"BAV candidate → {best}({ASHTAKAVARGA_BAV_CONSTANTS[best]}) diff={bd}"
++                 + (f" {notes}" if notes else "")
++             )
++     if "sav" in derived and "bav" in derived:
++         lines.append("Compact 3x3 mini-block parse detected: each 4x4 block contributes 12 border values.")
++     else:
++         lines.append(
++             "Fallback heuristic: SAV = row0 × 337 / sum(row0). BAV row constants: "
++             + ", ".join(f"{k}={v}" for k, v in ASHTAKAVARGA_BAV_CONSTANTS.items())
++     lines.append("Each compact block should sum to its known constant when read around the border clockwise.")
++     lines.append("Lagna/As block is present in the export but is not part of the 7-planet BAV validation.")
++     if "sav" in derived:
++         lines.append("")
++         lines.append("Derived SAV: " + ", ".join(str(int(value)) for value in derived["sav"]))
++     if "bav" in derived:
++         lines.append("Derived BAV:")
++         for planet, values in derived["bav"].items():
++             lines.append(f"- {planet}: " + ", ".join(str(int(value)) for value in values))
++     if "_lagna_ashtakavarga" in derived:
++         lines.append("- Lagna: " + ", ".join(str(int(value)) for value in derived["_lagna_ashtakavarga"]))
++     """Extract SAV/BAV from JHora compact Ashtakavarga formats."""
++     result = _extract_ashtakavarga_candidates(grid)
++     if "sav" not in result:
++     result.pop("_bav_candidates", None)
++             if len(grid) >= 10 and ncols >= 10:
++                 if has_sav:
++                     derived = _extract_ashtakavarga_candidates(grid)
++                     if "sav" in derived:
++                         payload["sav"] = derived["sav"]
++                     if "bav" in derived:
++                         payload["bav"] = derived["bav"]

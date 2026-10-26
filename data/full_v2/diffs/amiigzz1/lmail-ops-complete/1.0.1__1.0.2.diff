@@ -1,0 +1,207 @@
+amiigzz1/lmail-ops-complete  1.0.1 -> 1.0.2
+change_type: instructions+docs+code   changelog: Fast path commands: send_message and inbox_once
+
+### SKILL.md  [instructions]
++ ## Fast Intents (No Exploration)
++ For simple user intents, execute directly without reading script source files.
++ - Intent: "send mail to X saying Y"
++   - Run `scripts/send_message.py` directly.
++ - Intent: "did they reply?" or "check inbox now"
++   - Run `scripts/inbox_once.py --latest --include-body`.
++ Only inspect references/code if these commands fail.
++ - Run `scripts/inbox_once.py` for one-shot inbox checks.
++ - Run `scripts/send_message.py` for new standalone messages.
++ ```bash
++ ```
++ python3 scripts/send_message.py --base-url "$LMAIL_BASE_URL" --to "admin@lmail.ai" --subject "Thanks" --text "Thanks for your idea."
++ python3 scripts/inbox_once.py --base-url "$LMAIL_BASE_URL" --latest --include-body
+
+### references/openclaw-publish-checklist.md  [docs]
+- openclaw skills install lmail-ops-complete
++ npx -y clawhub install lmail-ops-complete --dir skills --force
++ Compatibility note:
++ - Do not depend on `openclaw skills install <slug>` for client onboarding; some OpenClaw builds do not expose this subcommand.
++ - Use `npx -y clawhub install <slug> --dir skills --force` as the stable client path.
+
+### scripts/inbox_once.py  [code]
++ #!/usr/bin/env python3
++ """Fetch inbox once and print simplified output for quick checks."""
++ from __future__ import annotations
++ import argparse
++ import json
++ import os
++ import sys
++ from pathlib import Path
++ from urllib.parse import urlencode
++ SCRIPT_DIR = Path(__file__).resolve().parent
++ sys.path.insert(0, str(SCRIPT_DIR))
++ from lmail_http import (  # noqa: E402
++     LMailHttpError,
++     auth_headers,
++     expect_success,
++     json_pretty,
++     load_json_file,
++     request_json,
++ )
++ def parse_args() -> argparse.Namespace:
++     parser = argparse.ArgumentParser(description="Fetch inbox once")
++     parser.add_argument("--base-url", default=os.getenv("LMAIL_BASE_URL", "http://localhost:3001"))
++     parser.add_argument("--token")
++     parser.add_argument("--api-key")
++     parser.add_argument("--credentials-file", default=os.getenv("LMAIL_CREDENTIALS_FILE", ".lmail-credentials.json"))
++     parser.add_argument("--limit", type=int, default=20)
++     parser.add_argument("--sort", choices=["asc", "desc"], default="desc")
++     parser.add_argument("--unread", action="store_true", default=True)
++     parser.add_argument("--from-address")
++     parser.add_argument("--subject-contains")
++     parser.add_argument("--latest", action="store_true")
++     parser.add_argument("--include-body", action="store_true")
++     parser.add_argument("--timeout", type=int, default=20)
++     return parser.parse_args()
++ def main() -> int:
++     args = parse_args()
++     base_url = args.base_url.rstrip("/")
++     creds = load_json_file(args.credentials_file)
++     token = args.token or creds.get("token")
++     api_key = args.api_key or creds.get("apiKey")
++     query = urlencode(
++         {
++             "unread": str(bool(args.unread)).lower(),
++             "limit": args.limit,
++             "sort": args.sort,
++         }
++         }
++     )
++     )
++     status, inbox_resp = request_json(
++         url=f"{base_url}/api/v1/messages/inbox?{query}",
++         method="GET",
++         headers=auth_headers(token=token, api_key=api_key),
++         timeout=args.timeout,
++     if status >= 400:
++         raise LMailHttpError(f"inbox_once failed with HTTP {status}: {inbox_resp}")
++     data = expect_success(inbox_resp, "inbox_once")
++     messages = data if isinstance(data, list) else []
++     filtered = []
++     for msg in messages:
++         from_addr = str(msg.get("fromAddress") or msg.get("from") or "")
++         subject = str(msg.get("subject") or "")
++         if args.from_address and from_addr.lower() != args.from_address.lower():
++             continue
++             continue
++         if args.subject_contains and args.subject_contains.lower() not in subject.lower():
++         entry = {
++             "id": msg.get("id"),
++             "from": from_addr,
++             "subject": subject,
++             "threadId": msg.get("threadId"),
++             "requireAck": bool(msg.get("requireAck")),
++             "createdAt": msg.get("createdAt"),
++         if args.include_body:
++             body = msg.get("body") if isinstance(msg.get("body"), dict) else {}
++             entry["bodyText"] = body.get("text")
++             entry["bodyStructured"] = body.get("structured")
++         filtered.append(entry)
++     payload: dict[str, object] = {"ok": True, "count": len(filtered), "messages": filtered}
++     if args.latest:
++         payload["latest"] = filtered[0] if filtered else None
++     print(json_pretty(payload))
++     return 0
++ if __name__ == "__main__":
++     try:
++         raise SystemExit(main())
++     except LMailHttpError as exc:
++         print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=True), file=sys.stderr)
++         raise SystemExit(1)
+
+### scripts/send_message.py  [code]
++ #!/usr/bin/env python3
++ """Send a new LMail message (non-reply fast path)."""
++ from __future__ import annotations
++ import argparse
++ import json
++ import os
++ import sys
++ from pathlib import Path
++ SCRIPT_DIR = Path(__file__).resolve().parent
++ sys.path.insert(0, str(SCRIPT_DIR))
++ from lmail_http import (  # noqa: E402
++     LMailHttpError,
++     auth_headers,
++     expect_success,
++     json_pretty,
++     load_json_file,
++     request_json,
++ )
++ def parse_args() -> argparse.Namespace:
++     parser = argparse.ArgumentParser(description="Send a new LMail message")
++     parser.add_argument("--base-url", default=os.getenv("LMAIL_BASE_URL", "http://localhost:3001"))
++     parser.add_argument("--token")
++     parser.add_argument("--api-key")
++     parser.add_argument("--credentials-file", default=os.getenv("LMAIL_CREDENTIALS_FILE", ".lmail-credentials.json"))
++     parser.add_argument("--to", required=True)
++     parser.add_argument("--subject", required=True)
++     parser.add_argument("--text", required=True)
++     parser.add_argument("--content-type", default="notification")
++     parser.add_argument("--priority", default="normal")
++     parser.add_argument("--require-ack", action="store_true")
++     parser.add_argument("--structured-json")
++     parser.add_argument("--structured-file")
++     parser.add_argument("--timeout", type=int, default=20)
++     return parser.parse_args()
++ def load_structured(args: argparse.Namespace) -> dict[str, object] | None:
++     if args.structured_json:
++         return json.loads(args.structured_json)
++     if args.structured_file:
++         return json.loads(Path(args.structured_file).read_text(encoding="utf-8"))
++     return None
++ def main() -> int:
++     args = parse_args()
++     base_url = args.base_url.rstrip("/")
++     creds = load_json_file(args.credentials_file)
++     token = args.token or creds.get("token")
++     api_key = args.api_key or creds.get("apiKey")
++     payload: dict[str, object] = {
++         "to": args.to,
++         "subject": args.subject,
++         "body": {"text": args.text},
++         "contentType": args.content_type,
++         "priority": args.priority,
++         "requireAck": args.require_ack,
++     }
++     structured = load_structured(args)
++     if structured is not None:
++         payload["body"]["structured"] = structured
++     status, send_resp = request_json(
++         url=f"{base_url}/api/v1/messages/send",
++         method="POST",
++         headers=auth_headers(token=token, api_key=api_key),
++         payload=payload,
++         timeout=args.timeout,
++     )
++     )
++     if status >= 400:
++         raise LMailHttpError(f"send_message failed with HTTP {status}: {send_resp}")
++     send_data = expect_success(send_resp, "send_message")
++     print(
++         json_pretty(
++             {
++                 "ok": True,
++                 "step": "send_message",
++                 "to": args.to,
++                 "subject": args.subject,
++                 "messageId": send_data.get("id") or send_data.get("messageId"),
++                 "threadId": send_data.get("threadId"),
++             }
++         )
++     return 0
++ if __name__ == "__main__":
++     try:
++         raise SystemExit(main())
++     except (LMailHttpError, json.JSONDecodeError) as exc:
++         print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=True), file=sys.stderr)
++         raise SystemExit(1)
+
+### scripts/validate_openclaw_skill.sh  [code]
++   "scripts/inbox_once.py"
++   "scripts/send_message.py"

@@ -1,0 +1,53 @@
+ade5791/thinkforce  2.0.7 -> 2.0.9
+change_type: instructions   changelog: - Removed the sample file: skill-card.md - No changes to APIs or agent assignment behaviors - Documentation and functionality remain unchanged otherwise
+
+### SKILL.md  [instructions]
+- 4. GET /api/missions/<id>/subtasks → confirm IDs + titles
+- | List subtasks                         | `GET /api/missions/<id>/subtasks?companyId=...`                |
+- 5. Returns immediately; the run is **asynchronous**. You poll via `GET /api/missions/<id>` and `GET /api/missions/<id>/subtasks`.
+- Key fields you'll read:
+- Subtasks:
+- GET /api/missions/<id>/subtasks?companyId=<id>
+- Each subtask exposes:
+- 4. GET /api/missions/M1/subtasks → confirm subtask IDs + titles
+- 10. On completion, GET /api/missions/M1/subtasks, summarize S4.output
++ ---
++ ```http
++ X-TF-API-Key: <key>
++ ```
++ {
++ }
++ Content-Type: application/json
++ PATCH /api/missions/<id>/subtasks/<sid>
++   "companyId": "<id>",
++ 4. GET /api/missions/<id> → read the embedded `subtasks[]` to confirm IDs + titles
++ | List subtasks                         | `GET /api/missions/<id>?companyId=...` → returns `{ mission, subtasks }` (embedded). The `/subtasks` path is **POST-only** — there is no `GET` on it. |
++ | Follow-up / refine + re-run a step    | `PATCH …/subtasks/<sid>` (append to `runInstructions` + reset state) then `POST …/run` — see §8.6 |
++ POST /api/missions/<id>/subtasks/<sid>/run
++ 5. Returns immediately; the run is **asynchronous**. You poll via `GET /api/missions/<id>`, which embeds the live `subtasks[]`.
++ ## 8.6. Follow-ups — refine a step and re-run it
++ To give an already-run step new direction (the "follow-up" the dashboard exposes on an open step), you do **not** create a new subtask. You **append to the step's `runInstructions` and re-run it** — the agent re-executes seeing the original brief followed by each stacked follow-up as a conversation, plus the rebuilt outputs of its `dependsOn` steps. There is no dedicated follow-up endpoint; it's two public calls.
++ ### 1. PATCH the step — append the follow-up + reset terminal state
++   "runInstructions": "<existing runInstructions>\n\n## Follow-up (2026-06-04T12:00:00Z)\n<your new instruction>",
++   "status": "assigned",      // "queued" if the step has no assignedAgentId yet
++   "output": "",
++   "lastError": null,
++   "completedAt": null,
++   "lockedBy": null,
++   "lockedAt": null,
++   "runDispatching": false,
++   "backgroundTaskId": null,
++   "lastRunTaskId": null,
++   "retryCount": 0
++ - **Append, don't replace.** First read the current `runInstructions` (from the embedded `subtasks[]` in `GET /api/missions/<id>`), then append `\n\n## Follow-up (<ISO timestamp>)\n<text>`. Stacking preserves the audit trail and lets the agent see the whole thread, original brief first.
++ - **Reset the terminal + lock fields in the same PATCH.** A `done`/`failed` step won't re-fire, and a leftover `lockedBy`/`lockedAt` blocks the new run. The block above is the exact set the dashboard wipes for a follow-up re-run.
++ - Use `status: "queued"` only if the step has no `assignedAgentId` yet — then assign one before running.
++ ### 2. Re-run the step
++ { "companyId": "<id>", "initiatedByUser": true }
++ `initiatedByUser: true` flags it as an explicit human re-run (bypasses the wall-clock idle / auto-chain guards).
++ **Cascade caveat:** auto-chain re-fires this step's `nextSubtaskIds` on success, so a follow-up on a step that already has downstream work can re-trigger that work on the new output. If you want to refine just this one step in isolation, temporarily clear its `nextSubtaskIds` (`PATCH { nextSubtaskIds: [] }`), re-run, then restore them.
++ **Not the same as coordinator follow-ups.** The mission *coordinator* (§12) can auto-add brand-new follow-up *subtasks* to close goal gaps when `coordinatorAutoFollowups` is `true` — that creates new steps. This section is the manual, per-step refine-and-re-run, which edits an existing step.
++ This returns `{ mission, subtasks }` — the full `subtasks[]` is **embedded** in this one read, so you don't need (and there is no) separate list call. Key fields you'll read on `mission`:
++ Subtasks (read from the embedded `subtasks[]` in the mission GET above — the `/api/missions/<id>/subtasks` path is **POST-only** for creation and returns 405 on GET). Each subtask exposes:
++ 4. GET /api/missions/M1 → read the embedded `subtasks[]` to confirm subtask IDs + titles
++ 10. On completion, GET /api/missions/M1 (embeds `subtasks[]`), summarize S4.output

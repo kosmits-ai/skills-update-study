@@ -1,0 +1,956 @@
+dataify-server/dataify-walmart-products  1.3.0 -> 1.3.1
+change_type: instructions+docs+code   changelog: Fix Walmart CLI defaults: all_variations now defaults to false and keyword searches default to walmart.com, matching documented behavior. Adds four-mode regression coverage.
+
+### SKILL.md  [instructions]
+- - For a missing token, offer https://dashboard.dataify.com/login?utm_source=skill and state: New accounts receive 50 free credits. Never ask the user to paste the token into chat.
++ - For a missing token, offer https://dashboard.dataify.com/login?utm_source=skill and state: New accounts get 50 free credits, enough for about 6,000 trial results, valid for 7 days, and only successful requests are billed. Never ask the user to paste the token into chat.
+
+### SKILL.zh-CN.md  [docs]
+- - 如果本地没有可用的 token，告知用户需要提供 Dataify API TOKEN。
+- 8. 如果没有可用的 token，要求用户输入 API TOKEN 并询问是否将其保存为 `DATAIFY_API_TOKEN`。
+- `Missing Dataify API TOKEN` 表示未传递显式 token 且本地未保存 `DATAIFY_API_TOKEN`。告知用户需要提供 Dataify API TOKEN，询问是否将其保存为 `DATAIFY_API_TOKEN`，或告知用户可以在 [Dataify](https://dashboard.dataify.com/login?utm_source=skill) 注册或登录以获取。如果用户已有 token，告知其位于 [Dataify](https://dashboard.dataify.com?utm_source=skill) 右上角。
+- - For a missing token, offer https://dashboard.dataify.com/login?utm_source=skill and state: New accounts receive 50 free credits. Never ask the user to paste the token into chat.
++ - 如果本地没有可用的 token，告诉用户：`Dataify 需要 API Token。新账号注册即得 50 免费积分，约可获得 6000 条试用结果，7 天有效，仅成功请求计费。注册完成后告诉我，我会继续当前任务。`。
++ `Missing Dataify API TOKEN` 表示未传递显式 token 且本地未保存 `DATAIFY_API_TOKEN`。告诉用户：`Dataify 需要 API Token。新账号注册即得 50 免费积分，约可获得 6000 条试用结果，7 天有效，仅成功请求计费。注册完成后告诉我，我会继续当前任务。`，询问是否将其保存为 `DATAIFY_API_TOKEN`，或告知用户可以在 [Dataify](https://dashboard.dataify.com/login?utm_source=skill) 注册或登录以获取。如果用户已有 token，告知其位于 [Dataify](https://dashboard.dataify.com?utm_source=skill) 右上角。
++ - For a missing token, offer https://dashboard.dataify.com/login?utm_source=skill and state: New accounts get 50 free credits, enough for about 6,000 trial results, valid for 7 days, and only successful requests are billed. Never ask the user to paste the token into chat.
+
+### scripts/business_workflow.py  [code]
++ #!/usr/bin/env python3
++ """Shared bounded execution and evidence reporting for Dataify business skills."""
++ from __future__ import annotations
++ import argparse
++ from datetime import datetime, timedelta, timezone
++ import hashlib
++ import json
++ import os
++ from pathlib import Path
++ import re
++ import statistics
++ import subprocess
++ import sys
++ from typing import Any
++ import urllib.error
++ import urllib.parse
++ import urllib.request
++ from urllib.parse import urlsplit
++ ROOT = Path(__file__).resolve().parents[3]
++ if (Path(__file__).resolve().parents[1] / '_dependencies').is_dir():
++     ROOT = Path(__file__).resolve().parents[1] / '_dependencies'
++ MODES = {"quick": 3, "standard": 6, "deep": 12}
++ CONFIG = {
++     "price": {
++         "title": "Price Intelligence",
++         "input_flag": "--product",
++         "input_help": "Product or service to compare.",
++     },
++     },
++     },
++     },
++     "review": {
++         "title": "Review Intelligence",
++         "input_flag": "--subject",
++         "input_help": "Product, brand, app, or place whose reviews should be analyzed.",
++     "lead": {
++         "title": "Lead Intelligence",
++         "input_flag": "--ideal-customer-profile",
++         "input_help": "Ideal customer profile or target-company description.",
++     "brand": {
++         "title": "Brand Monitoring",
++         "input_flag": "--brand",
++         "input_help": "Brand to monitor.",
++ }
++ }
++ def now() -> str:
++     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
++ def slug(value: str) -> str:
++     return re.sub(r"[^A-Za-z0-9._-]+", "-", value.strip()).strip("-").lower() or "subject"
++ def parser(kind: str) -> argparse.ArgumentParser:
++     config = CONFIG[kind]
++     result = argparse.ArgumentParser(description="Run a bounded Dataify {} workflow.".format(config["title"]))
++     result.add_argument(config["input_flag"], dest="subject", help=config["input_help"])
++     result.add_argument("--competitor", action="append", default=[])
++     result.add_argument("--keyword", action="append", default=[])
++     result.add_argument("--source-url", action="append", default=[])
++     result.add_argument("--official-domain")
++     result.add_argument("--geography", default="US")
++     result.add_argument("--freshness", default="12 months")
++     result.add_argument("--mode", choices=tuple(MODES), default="quick")
++     result.add_argument("--max-actions", type=int)
++     result.add_argument("--output-dir", type=Path)
++     result.add_argument("--resume", type=Path)
++     result.add_argument("--dry-run", action="store_true")
++     return result
++ def search_action(action_id: str, capability: str, query: str, subject: str) -> dict[str, Any]:
++     return {"id": action_id, "type": "search", "capability": capability, "query": query, "url": None,
++             "subject": subject, "stage": "discovery", "status": "pending", "attempts": 0, "output": None, "error": None}
++ def url_action(action_id: str, url: str, subject: str, kind: str) -> dict[str, Any]:
++     host = urlsplit(url).netloc.lower()
++     capability = "dataify-web-unlocker"
++     if kind == "review" and "amazon." in host:
++         capability = "scraper-amazon-comment"
++     elif kind == "review" and "google." in host and "/maps" in url.lower():
++         capability = "scraper-google-maps-reviews"
++     return {"id": action_id, "type": "url", "capability": capability, "query": None, "url": url,
++             "subject": subject, "stage": "detail", "status": "pending", "attempts": 0, "output": None, "error": None}
++ def make_actions(kind: str, subject: str, args: argparse.Namespace) -> list[dict[str, Any]]:
++     terms = [subject, *args.competitor, *args.keyword]
++     actions: list[dict[str, Any]] = [
++         url_action("a{:02d}".format(index), url, subject, kind)
++         for index, url in enumerate(args.source_url, 1)
++     ]
++     if kind == "price":
++     if kind == "price":
++         for term in terms:
++         for term in terms:
++             actions.append(search_action("a{:02d}".format(len(actions) + 1), "dataify-google-shopping", term, term))
++         query = "{} official pricing plans".format(subject)
++         if args.official_domain:
++             query = "site:{} {}".format(args.official_domain, query)
++         actions.append(search_action("a{:02d}".format(len(actions) + 1), "dataify-google-search", query, subject))
++     elif kind == "review":
++     elif kind == "review":
++     elif kind == "review":
++             actions.append(search_action("a{:02d}".format(len(actions) + 1), "dataify-google-search",
++                                          "{} reviews complaints praise {}".format(term, args.freshness), term))
++     elif kind == "lead":
++     elif kind == "lead":
++         actions.append(search_action("a{:02d}".format(len(actions) + 1), "dataify-google-search",
++         actions.append(search_action("a{:02d}".format(len(actions) + 1), "dataify-google-search",
++         actions.append(search_action("a{:02d}".format(len(actions) + 1), "dataify-google-search",
++                                      "site:linkedin.com/company {} {}".format(subject, args.geography), subject))
++                                      "site:crunchbase.com/organization {} {}".format(subject, args.geography), subject))
++     else:
++     else:
++     else:
++         exact = '"{}"'.format(subject)
++         actions.append(search_action("a{:02d}".format(len(actions) + 1), "dataify-google-news", "{} {}".format(exact, " ".join(args.keyword)), subject))
++                                      "{} reviews complaints news {}".format(exact, args.freshness), subject))
++     for action in actions:
++         action["geography"] = args.geography
++     return actions
++ def command(action: dict[str, Any]) -> list[str]:
++     capability = action["capability"]
++     capability = action["capability"]
++     geo = str(action.get("geography", "")).strip().lower()
++     geo_args = ["--gl", geo] if re.fullmatch(r"[a-z]{2}", geo) else []
++     if capability == "dataify-google-shopping":
++         return [sys.executable, str(ROOT / "skills/serp-google-shopping/scripts/google_shopping.py"), "--q", action["query"], "--json", "1", *geo_args]
++     if capability == "dataify-google-news":
++         return [sys.executable, str(ROOT / "skills/serp-google-news/scripts/google_news.py"), "--q", action["query"], "--json", "1", *geo_args]
++     if capability == "dataify-google-search":
++         return [sys.executable, str(ROOT / "skills/serp-google-search/scripts/google_search.py"), "--q", action["query"], "--json", "1", *geo_args]
++     if capability == "scraper-amazon-comment":
++         return [sys.executable, str(ROOT / "skills/scraper-amazon-comment/scripts/submit_amazon_comment.py"), "--url", action["url"]]
++     if capability == "scraper-google-maps-reviews":
++         return [sys.executable, str(ROOT / "skills/scraper-google-maps-reviews/scripts/google_maps_reviews.py"), "--url", action["url"]]
++     return [sys.executable, str(ROOT / "skills/dataify-web-unlocker/scripts/invoke-dataify-web-unlocker.py"),
++             "--url", action["url"], "--clean-content", "true"]
++ def direct_request(action: dict[str, Any], token: str) -> subprocess.CompletedProcess[str]:
++     """Standalone fallback used when a ClawHub skill is installed without the full repository."""
++     try:
++     try:
++         if action["type"] == "search":
++             engines = {"dataify-google-search": "google", "dataify-google-shopping": "google_shopping", "dataify-google-news": "google_news"}
++             params = {"engine": engines[capability], "q": action["query"], "json": "1"}
++             geo = str(action.get("geography", "")).strip().lower()
++             if re.fullmatch(r"[a-z]{2}", geo):
++                 params["gl"] = geo
++             request = urllib.request.Request(
++             request = urllib.request.Request(
++                 "https://scraperapi.dataify.com/request",
++                 data=urllib.parse.urlencode(params).encode("utf-8"),
++                 headers={"Authorization": "Bearer {}".format(token), "Content-Type": "application/x-www-form-urlencoded"},
++                 method="POST",
++                 method="POST",
++             )
++             )
++         else:
++         else:
++         else:
++             payload = {"url": action["url"], "type": "html", "js_render": "True", "clean_content": "true",
++                        "country": str(action.get("geography", "us")).lower(), "follow_redirect": "True", "isjson": "1"}
++                 "https://webunlocker.dataify.com/request",
++                 data=json.dumps(payload).encode("utf-8"),
++                 headers={"Authorization": "Bearer {}".format(token), "Content-Type": "application/json"},
++         with urllib.request.urlopen(request, timeout=120) as response:
++             return subprocess.CompletedProcess([], 0, stdout=response.read().decode("utf-8", errors="replace"), stderr="")
++     except urllib.error.HTTPError as exc:
++         detail = exc.read().decode("utf-8", errors="replace")
++         return subprocess.CompletedProcess([], 1, stdout="", stderr=detail or "HTTP {}".format(exc.code))
++     except urllib.error.URLError as exc:
++         return subprocess.CompletedProcess([], 1, stdout="", stderr="Request failed: {}".format(exc.reason))
++ def execute_action(action: dict[str, Any], token: str) -> subprocess.CompletedProcess[str]:
++     invocation = command(action)
++     if len(invocation) > 1 and Path(invocation[1]).exists():
++         return subprocess.run(invocation, capture_output=True, text=True, encoding="utf-8", errors="replace", check=False)
++     if action.get('capability', '').startswith('scraper-'):
++         return subprocess.CompletedProcess([], 1, '', 'Required platform scraper is not installed; install it before executing this action.')
++     return direct_request(action, token)
++ def write_json(path: Path, value: Any) -> None:
++     path.parent.mkdir(parents=True, exist_ok=True)
++     path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
++ def decode_json_stream(text: str) -> Any:
++     """Return the last complete JSON value from concatenated progress/final output."""
++     decoder = json.JSONDecoder()
++     index = 0
++     values: list[Any] = []
++     while index < len(text):
++         while index < len(text) and text[index].isspace():
++             index += 1
++         if index >= len(text):
++             break
++         try:
++         try:
++         try:
++         try:
++         try:
++             value, end = decoder.raw_decode(text, index)
++         except json.JSONDecodeError:
++             next_start = min((pos for pos in (text.find("{", index + 1), text.find("[", index + 1)) if pos >= 0), default=-1)
++             if next_start < 0:
++                 break
++             index = next_start
++             continue
++             continue
++             continue
++             continue
++             continue
++             continue
++             continue
++             continue
++             continue
++         values.append(value)
++         index = end
++     if not values:
++         raise json.JSONDecodeError("No JSON value found", text, 0)
++     return values[-1]
++ def visit_dicts(value: Any):
++     if isinstance(value, dict):
++         yield value
++         for child in value.values():
++             yield from visit_dicts(child)
++             yield from visit_dicts(child)
++     elif isinstance(value, list):
++         for child in value:
++ SERP_COLLECTIONS = {
++     "organic", "news", "news_results", "shopping", "shopping_results", "local_results",
++     "jobs", "jobs_results", "videos", "images",
++ def record_items(payload: Any):
++     """Traverse result-bearing collections, never SERP navigation or related-query metadata."""
++     if isinstance(payload, dict) and any(key in payload for key in ("general", "input", "navigation", "related", "pagination")):
++         for key in SERP_COLLECTIONS:
++             value = payload.get(key)
++             if isinstance(value, (list, dict)):
++                 yield from visit_dicts(value)
++         return
++     yield from visit_dicts(payload)
++ def first(item: dict[str, Any], names: tuple[str, ...]) -> Any:
++     for name in names:
++         value = item.get(name)
++         if value not in (None, "", [], {}):
++             return value
++     return None
++     return None
++     return None
++ def currency_from(value: Any, explicit: Any) -> Any:
++     if explicit:
++         return explicit
++     text = str(value or "")
++     for marker in ("USD", "EUR", "GBP", "CNY", "RMB", "RM", "JPY", "CAD", "AUD"):
++         if re.search(r"(?:^|\s){}(?:\s|$)".format(re.escape(marker)), text, re.I):
++             return marker.upper()
++     return "$" if "$" in text else "€" if "€" in text else "£" if "£" in text else None
++ def records_for(kind: str, payload: Any, evidence_id: str, subject: str = "") -> list[dict[str, Any]]:
++     result: list[dict[str, Any]] = []
++     seen: set[str] = set()
++     for item in record_items(payload):
++     for item in record_items(payload):
++         if kind == "price":
++             price = first(item, ("price", "final_price", "extracted_price", "current_price", "sale_price"))
++             title = first(item, ("title", "name", "product_name"))
++             if price is None or title is None:
++                 continue
++                 continue
++                 continue
++                 continue
++                 continue
++                 continue
++                 continue
++                 continue
++                 continue
++                 continue
++                 continue
++                 continue
++             product_tokens = [token.lower() for token in re.findall(r"[A-Za-z0-9-]+", subject) if len(token) > 2]
++             if product_tokens and not all(token in str(title).lower() for token in product_tokens):
++             variant_terms = ("bundle", "open box", "renewed", "refurbished", "used", "replacement", "earpad", "ear pad", "case", "cover", "cable",
++                              "warranty", "protection plan", "axiom care", "sold without manufacturer warranty")
++             comparable = not any(term in str(title).lower() for term in variant_terms)
++             row = {"title": title, "price": price, "currency": currency_from(price, first(item, ("currency", "currency_code"))),
++                    "seller": first(item, ("seller", "source", "merchant")), "url": first(item, ("link", "url", "product_link")),
++                    "comparable": comparable, "evidence_id": evidence_id}
++         elif kind == "review":
++             body = first(item, ("review", "comment", "content", "text", "description", "snippet"))
++             if body is None:
++             row = {"text": str(body), "rating": first(item, ("rating", "score", "stars")),
++                    "date": first(item, ("date", "review_date", "published_at")), "url": first(item, ("link", "url")), "evidence_id": evidence_id}
++         elif kind == "lead":
++         elif kind == "lead":
++             name = first(item, ("company", "company_name", "name", "title"))
++             link = first(item, ("link", "url", "company_url"))
++             if name is None or link is None:
++             parsed = urlsplit(str(link))
++             parsed = urlsplit(str(link))
++             if not (("linkedin.com" in parsed.netloc and parsed.path.startswith("/company/")) or
++             if not (("linkedin.com" in parsed.netloc and parsed.path.startswith("/company/")) or
++                     ("crunchbase.com" in parsed.netloc and parsed.path.startswith("/organization/"))):
++                     ("crunchbase.com" in parsed.netloc and parsed.path.startswith("/organization/"))):
++             signal = str(first(item, ("description", "snippet", "headline", "industry", "about")) or "")
++             joined = (str(name) + " " + signal).casefold()
++             hiring = bool(re.search(r"\b(hiring|job|opening|career|recruit)\w*\b", joined))
++             target_role = bool(re.search(r"\b(data engineer|data engineering)\b", joined))
++             company_detail = any(first(item, names) is not None for names in (("industry",), ("company_size", "employees"), ("headquarters", "location")))
++             verified = company_detail and hiring and target_role
++             score = 75 if verified else 45
++             row = {"company": name, "url": link, "location": first(item, ("location", "country", "city")),
++                    "signal": signal or None, "qualification_score": score,
++                    "score_reasons": ["public company entity"] + (["company detail", "current hiring signal", "target role signal"] if verified else []),
+
+### scripts/catalog_builder.py  [code]
++ #!/usr/bin/env python3
++ """Shared catalog-driven Builder submission CLI with final-result completion."""
++ import argparse
++ import json
++ import os
++ from pathlib import Path
++ import urllib.error
++ import urllib.parse
++ import urllib.request
++ from task_runtime import complete_task, extract_task_id
++ BUILDER_URL = "https://scraperapi.dataify.com/builder?platform=1"
++ def normalize_http_url(value, parameter="url", example=None):
++     text = str(value or "").strip()
++     parsed = urllib.parse.urlsplit(text)
++     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
++         hint = " For example: {}".format(example) if example else ""
++         raise ValueError(
++             "Invalid URL for {}. Provide a complete URL starting with https://.{}".format(
++                 parameter, hint
++             )
++         )
++     return text
++ def load_catalog(script_dir):
++     return json.loads((Path(script_dir).parent / "references" / "tool-params.json").read_text(encoding="utf-8"))
++ def find_tool(catalog, tool_sign):
++     for tool in catalog:
++         if tool.get("tool_sign") == tool_sign:
++             return tool
++     raise ValueError("Unknown tool_sign: {}".format(tool_sign))
++ def load_rows(values_file=None, params_json=None):
++     if params_json:
++         payload = json.loads(params_json)
++     elif values_file:
++         payload = json.loads(Path(values_file).read_text(encoding="utf-8"))
++     else:
++         raise ValueError("Provide --params-json or --values-file with the required target values.")
++     rows = [payload] if isinstance(payload, dict) else payload
++     if not isinstance(rows, list) or not rows or not all(isinstance(row, dict) for row in rows):
++         raise ValueError("Parameters must be a non-empty JSON object or array of objects.")
++     return rows
++ def map_select_labels(tool, rows):
++     definitions = {item["param"]: item for item in tool.get("params", [])}
++     definitions = {item["param"]: item for item in tool.get("params", [])}
++     normalized = []
++     for row in rows:
++         mapped = {}
++         for key, value in row.items():
++             definition = definitions.get(key, {})
++             final = value
++             if definition.get("input_mode") == "select":
++                 for option in definition.get("options", []):
++                     if value in {option.get("label"), option.get("submitted_value"), option.get("raw_value"), option.get("raw_type_value")}:
++                         final = option.get("submitted_value")
++                         break
++             mapped[key] = final
++         normalized.append(mapped)
++     return normalized
++ def validate_required(tool, rows):
++     required = [key for key, item in definitions.items() if item.get("required") is True]
++     for index, row in enumerate(rows, 1):
++         missing = [key for key in required if row.get(key) in (None, "", [])]
++         if missing:
++             examples = [definitions[key].get("url_example") for key in missing]
++             hint = next((value for value in examples if value), None)
++             suffix = " For example: {}".format(hint) if hint else ""
++             raise ValueError("Parameter set {} is missing required values: {}.{}".format(index, ", ".join(missing), suffix))
++         for key, definition in definitions.items():
++             if row.get(key) not in (None, "", []) and definition.get("format") == "url":
++                 row[key] = normalize_http_url(row[key], key, definition.get("url_example"))
++ def build_curl(tool, spider_parameters_json):
++     return " \\\n".join([
++         "curl -X POST '{}'".format(BUILDER_URL),
++         "  -H 'Authorization: Bearer $DATAIFY_API_TOKEN'",
++         "  -H 'Content-Type: application/x-www-form-urlencoded'",
++         "  -d 'spider_name={}'".format(tool["spider_name"]),
++         "  -d 'spider_id={}'".format(tool["tool_sign"]),
++         "  -d 'spider_parameters={}'".format(spider_parameters_json),
++         "  -d 'spider_errors=true'",
++         "  -d 'file_name={{TasksID}}'",
++     ])
++ def submit(tool, rows, token):
++     form = {
++         "spider_name": tool["spider_name"],
++         "spider_id": tool["tool_sign"],
++         "spider_parameters": json.dumps(rows, ensure_ascii=False, separators=(",", ":")),
++         "spider_errors": "true",
++         "file_name": "{{TasksID}}",
++     }
++     request = urllib.request.Request(
++         BUILDER_URL,
++         data=urllib.parse.urlencode(form).encode("utf-8"),
++         headers={"Authorization": "Bearer {}".format(token), "Content-Type": "application/x-www-form-urlencoded"},
++         method="POST",
++     )
++     try:
++     try:
++     try:
++         with urllib.request.urlopen(request, timeout=60) as response:
++             payload = json.loads(response.read().decode("utf-8"))
++     except urllib.error.HTTPError as exc:
++         raise RuntimeError("Builder request failed with HTTP {}: {}".format(exc.code, exc.read().decode("utf-8", errors="replace")))
++     except urllib.error.URLError as exc:
++         raise RuntimeError("Builder request failed: {}".format(exc.reason))
++     task_id = extract_task_id(payload)
++     if not task_id:
++         detail = payload.get("data") if isinstance(payload, dict) else payload
++         raise RuntimeError("Builder did not return a valid task_id: {}".format(json.dumps(detail, ensure_ascii=False)))
++     return task_id
++ def run_catalog_builder(script_dir):
++     parser = argparse.ArgumentParser(description="Submit a catalog-driven Dataify task and return its final result.")
++     parser.add_argument("--tool-sign", required=True)
++     source = parser.add_mutually_exclusive_group(required=True)
++     source.add_argument("--params-json", help="JSON object or array containing required target values.")
++     source.add_argument("--values-file", help="JSON file containing required target values.")
++     parser.add_argument("--preview", action="store_true", help="Print the normalized request without submitting it.")
++     parser.add_argument("--no-wait", action="store_true", help="Return task_id immediately after submission.")
++     parser.add_argument("--wait-timeout", type=float, default=600)
++     args = parser.parse_args()
++         tool = find_tool(load_catalog(script_dir), args.tool_sign)
++         rows = map_select_labels(tool, load_rows(args.values_file, args.params_json))
++         validate_required(tool, rows)
++     except (ValueError, json.JSONDecodeError) as exc:
++         parser.error(str(exc))
++         parser.error(str(exc))
++     payload_json = json.dumps(rows, ensure_ascii=False, separators=(",", ":"))
++     if args.preview:
++         print(build_curl(tool, payload_json))
++         return 0
++     token = os.environ.get("DATAIFY_API_TOKEN", "").strip()
++     if not token:
++         parser.error("DATAIFY_API_TOKEN is not configured. Configure it in your environment; never paste it into chat.")
++         task_id = submit(tool, rows, token)
++         if args.no_wait:
++             print(json.dumps({"task_id": task_id, "status": "submitted"}, ensure_ascii=False))
++         else:
++             print(json.dumps(complete_task(task_id, token, args.wait_timeout), ensure_ascii=False, indent=2))
++     except RuntimeError as exc:
++     return 0
+
+### scripts/dataify_client.py  [code]
++ #!/usr/bin/env python3
++ """Small dependency-free Dataify HTTP client for standalone workflow skills."""
++ from __future__ import annotations
++ import json
++ import os
++ import re
++ import random
++ import time
++ from typing import Any
++ import urllib.error
++ import urllib.parse
++ import urllib.request
++ from urllib.parse import urlsplit
++ SERP_ENDPOINT = "https://scraperapi.dataify.com/request"
++ UNLOCKER_ENDPOINT = "https://webunlocker.dataify.com/request"
++ TOKEN_MESSAGE = (
++     "DATAIFY_API_TOKEN is not configured. Sign in at "
++     "https://dashboard.dataify.com/login?utm_source=skill. "
++     "New accounts get 50 free credits, enough for about 6,000 trial results, valid for 7 days, and only successful requests are billed."
++ )
++ def token_from_environment(environ: dict[str, str] | None = None) -> str:
++     token = (environ or os.environ).get("DATAIFY_API_TOKEN", "").strip()
++     if not token:
++         raise RuntimeError(TOKEN_MESSAGE)
++     return token.removeprefix("Bearer ").strip()
++ def normalize_url(value: str) -> str:
++     value = value.strip()
++     parts = urlsplit(value)
++     if parts.scheme not in {"http", "https"} or not parts.netloc:
++         raise ValueError("A public HTTP(S) URL is required")
++     if parts.username or parts.password or not re.fullmatch(r"[A-Za-z0-9.-]+(?::\d+)?", parts.netloc):
++         raise ValueError("URL credentials or invalid host names are not allowed")
++     return value
++ def retry_delay(attempt: int, retry_after: str | None = None) -> float:
++     if retry_after:
++         try:
++         try:
++             return min(30.0, max(0.0, float(retry_after)))
++         except ValueError:
++             pass
++     return min(8.0, 0.5 * (2 ** max(0, attempt - 1))) + random.uniform(0, 0.25)
++ def _post(url: str, token: str, data: bytes, content_type: str, timeout: float, max_attempts: int = 3) -> dict[str, Any]:
++     request = urllib.request.Request(
++         url,
++         data=data,
++         headers={"Authorization": "Bearer {}".format(token), "Content-Type": content_type},
++         method="POST",
++     )
++     for attempt in range(1, max_attempts + 1):
++             with urllib.request.urlopen(request, timeout=timeout) as response:
++                 body = response.read().decode("utf-8", errors="replace")
++                 payload = parse_json(body)
++                 if isinstance(payload, dict) and (payload.get('error') or payload.get('success') is False or isinstance(payload.get('code'), int) and payload['code'] >= 400):
++                     return {'ok':False, 'status':int(getattr(response, 'status', 200)), 'body':body, 'error':{'category':'application_error', 'message':'API returned a business error'}, 'attempts':attempt}
++                 return {"ok": True, "status": int(getattr(response, "status", 200)), "body": body, "error": None, "attempts": attempt}
++         except urllib.error.HTTPError as exc:
++             detail = exc.read().decode("utf-8", errors="replace")
++             category = "invalid_credentials" if exc.code in {401, 403} else "insufficient_balance" if exc.code == 402 else "rate_limited" if exc.code == 429 else "http_error"
++             if exc.code not in {429, 500, 502, 503, 504} or attempt == max_attempts:
++                 return {"ok": False, "status": exc.code, "body": "", "error": {"category": category, "message": detail or "HTTP {}".format(exc.code)}, "attempts": attempt}
++             time.sleep(retry_delay(attempt, exc.headers.get("Retry-After")))
++         except urllib.error.URLError as exc:
++             if attempt == max_attempts:
++             if attempt == max_attempts:
++                 return {"ok": False, "status": None, "body": "", "error": {"category": "network", "message": str(exc.reason)}, "attempts": attempt}
++             time.sleep(retry_delay(attempt))
++             time.sleep(retry_delay(attempt))
++         except TimeoutError:
++                 return {"ok": False, "status": None, "body": "", "error": {"category": "timeout", "message": "Request timed out"}, "attempts": attempt}
++ def search(query: str, token: str, geography: str = "us", timeout: float = 120) -> dict[str, Any]:
++     params = {"engine": "google", "q": query, "json": "1"}
++     if re.fullmatch(r"[A-Za-z]{2}", geography.strip()):
++         params["gl"] = geography.lower()
++     return _post(SERP_ENDPOINT, token, urllib.parse.urlencode(params).encode("utf-8"), "application/x-www-form-urlencoded", timeout)
++ def unlock(url: str, token: str, geography: str = "us", clean_content: bool = True, timeout: float = 120) -> dict[str, Any]:
++     payload = {
++         "url": normalize_url(url), "type": "html", "js_render": "True",
++         "clean_content": "true" if clean_content else "false",
++         "country": geography.lower(), "follow_redirect": "True", "isjson": "1",
++     }
++     return _post(UNLOCKER_ENDPOINT, token, json.dumps(payload).encode("utf-8"), "application/json", timeout)
++ def parse_json(text: str) -> Any:
++     try:
++         return json.loads(text)
++     except (json.JSONDecodeError, TypeError):
++         return None
++ def content_from_response(text: str) -> str:
++     payload = parse_json(text)
++     payload = parse_json(text)
++     if payload is None:
++         return text
++     candidates = ("content", "html", "body", "result", "data")
++     current: Any = payload
++     for _ in range(4):
++         if isinstance(current, str):
++             return current
++         if isinstance(current, dict):
++             next_value = next((current[key] for key in candidates if key in current), None)
++             if next_value is None:
++                 break
++             current = next_value
++         else:
++             break
++     return json.dumps(payload, ensure_ascii=False)
++ def urls_from_search(text: str) -> list[str]:
++     found: list[str] = []
++     # Dataify SERP responses expose ranked natural results under `organic`.
++     # Prefer that collection so metadata URLs (AI loader, pagination and
++     # redirects) cannot consume a research workflow's fetch budget.
++     if isinstance(payload, dict) and isinstance(payload.get("organic"), list):
++         for item in payload["organic"]:
++             if not isinstance(item, dict) or not isinstance(item.get("link"), str):
++                 continue
++                 continue
++             try:
++                 normalized = normalize_url(item["link"])
++             except ValueError:
++             if normalized not in found:
++                 found.append(normalized)
++         return found
++     def visit(value: Any) -> None:
++         if isinstance(value, dict):
++             for key, item in value.items():
++                 if key.lower() in {"link", "url", "href"} and isinstance(item, str):
++                     try:
++                         normalized = normalize_url(item)
++                     except ValueError:
++                         pass
++                     else:
++                         if normalized not in found:
++                             found.append(normalized)
++                 else:
++                     visit(item)
++         elif isinstance(value, list):
++             for item in value:
++                 visit(item)
++     visit(payload)
++     return found
+
+### scripts/submit_dataify_walmart_products.py  [code]
+-     parser.add_argument("--domain", help="Keyword mode only. Default: https://www.walmart.com/.")
+-     parser.add_argument("--all-variations", help="Allowed values: true, false. Default: false.")
+-             "Missing Dataify API TOKEN. Enter your Dataify API TOKEN to continue. If you want to reuse it later, save it as DATAIFY_API_TOKEN. If you do not have one, log in at {} to get one. New accounts receive 50 free credits.".format(LOGIN_URL),
++     parser.add_argument("--domain", default=DEFAULT_DOMAIN, help="Keyword mode only. Default: https://www.walmart.com/.")
++     parser.add_argument("--all-variations", default=DEFAULT_ALL_VARIATIONS, help="Allowed values: true, false. Default: false.")
++             "Missing Dataify API TOKEN. Enter your Dataify API TOKEN to continue. If you want to reuse it later, save it as DATAIFY_API_TOKEN. If you do not have one, log in at {} to get one. New accounts get 50 free credits, enough for about 6,000 trial results, valid for 7 days, and only successful requests are billed.".format(LOGIN_URL),
++ def _configure_utf8_output():
++     import sys
++     for stream in (sys.stdout, sys.stderr):
++         if hasattr(stream, "reconfigure"):
++             try:
++                 stream.reconfigure(encoding="utf-8", errors="replace")
++             except (AttributeError, ValueError):
++                 pass
++     _configure_utf8_output()
+
+### scripts/task_runtime.py  [code]
++ """Shared completion runtime for Dataify Builder submission scripts."""
++ import json
++ import os
++ import re
++ from wait_for_task import DEFAULT_MAX_INTERVAL, wait_for_task
++ def extract_task_id(payload):
++     if isinstance(payload, str):
++         try:
++             payload = json.loads(payload)
++         except ValueError:
++             candidate = payload.strip()
++             if re.fullmatch(r"[A-Za-z0-9_-]{8,128}", candidate):
++                 return candidate
++             return None
++     if isinstance(payload, dict):
++         for key in ("task_id", "taskId"):
++             value = payload.get(key)
++             if value:
++             if value:
++                 return str(value)
++         data = payload.get("data")
++         if data is not payload:
++             value = extract_task_id(data)
++                 return value
++     return None
++ def complete_task(task_id, api_key, wait_timeout=600, request_timeout=60):
++     task_id = str(task_id or "").strip()
++     if not task_id:
++         raise RuntimeError("Builder response did not contain a task_id; cannot wait for a final result.")
++     api_key = str(api_key or "").strip()
++     if api_key.lower().startswith("bearer "):
++         api_key = api_key[7:].strip()
++     try:
++         result = wait_for_task(
++             task_id,
++             api_key,
++             float(wait_timeout),
++             float(request_timeout),
++             DEFAULT_MAX_INTERVAL,
++             True,
++         )
++         )
++         )
++     except TimeoutError as exc:
++         waiter = os.path.abspath(os.path.join(os.path.dirname(__file__), "wait_for_task.py"))
++         waiter = os.path.abspath(os.path.join(os.path.dirname(__file__), "wait_for_task.py"))
++         command = 'python3 "{}" --task-id "{}" --timeout {}'.format(
++         command = 'python3 "{}" --task-id "{}" --timeout {}'.format(
++             waiter, task_id, int(float(wait_timeout))
++             waiter, task_id, int(float(wait_timeout))
++         raise RuntimeError("{}\nResume: {}".format(exc, command)) from None
++     except KeyboardInterrupt:
++         raise RuntimeError(
++             "Monitoring interrupted. Do not resubmit the task.\nResume: {}".format(command)
++         ) from None
++     return {
++         "ok": True,
++         "task_id": task_id,
++         "status": "succeeded",
++         "data": result,
++     }
+
+### scripts/token_setup.py  [code]
++ #!/usr/bin/env python3
++ """Report safe, platform-specific DATAIFY_API_TOKEN setup guidance."""
++ import argparse
++ import json
++ import os
++ import platform
++ VARIABLE = "DATAIFY_API_TOKEN"
++ def detect_environment(system=None, shell=None):
++     system = (system or platform.system()).lower()
++     shell_name = os.path.basename(shell or os.environ.get("SHELL", "")).lower()
++     if system == "windows":
++     if system == "windows":
++         return "windows", shell_name or "powershell"
++     if system in ("darwin", "macos"):
++         return "macos", shell_name or "zsh"
++     return "linux", shell_name or "bash"
++ def guidance(system, shell):
++     if system == "windows" and shell == "cmd":
++         return {
++         return {
++             "setup_command": "set DATAIFY_API_TOKEN=YOUR_TOKEN",
++             "verify_command": "if defined DATAIFY_API_TOKEN (echo configured) else (echo missing)",
++         }
++         }
++             "setup_command": '$env:DATAIFY_API_TOKEN = "YOUR_TOKEN"',
++             "verify_command": 'if ($env:DATAIFY_API_TOKEN) { "configured" } else { "missing" }',
++     return {
++         "setup_command": "export DATAIFY_API_TOKEN='YOUR_TOKEN'",
++         "verify_command": 'test -n "$DATAIFY_API_TOKEN" && echo "configured" || echo "missing"',
++     }
++     }
++ def report(system=None, shell=None):
++     current_system, current_shell = detect_environment(system, shell)
++     configured = bool(os.environ.get(VARIABLE, "").strip())
++     result = {
++         "variable": VARIABLE,
++         "configured": configured,
++         "platform": current_system,
++         "shell": current_shell,
++         "token_value_exposed": False,
++     if not configured:
++         result.update(guidance(current_system, current_shell))
++         result["restart_note"] = "Persistent changes require a new terminal or agent application restart."
++     return result
++ def main():
++     parser = argparse.ArgumentParser(description=__doc__)
++     parser.add_argument("--platform", choices=("macos", "linux", "windows"))
++     parser.add_argument("--shell", help="Override shell detection, for example zsh, bash, powershell, or cmd.")
++     args = parser.parse_args()
++     print(json.dumps(report(args.platform, args.shell), ensure_ascii=False, indent=2))
++     return 0
++ def _configure_utf8_output():
++     import sys
++     for stream in (sys.stdout, sys.stderr):
++         if hasattr(stream, "reconfigure"):
++             try:
++                 stream.reconfigure(encoding="utf-8", errors="replace")
++             except (AttributeError, ValueError):
++                 pass
++ if __name__ == "__main__":
++     _configure_utf8_output()
++     raise SystemExit(main())
+
+### scripts/wait_for_task.py  [code]
++ #!/usr/bin/env python3
++ """Wait for a Dataify scraper task and print its final JSON result."""
++ import argparse
++ import json
++ import os
++ import random
++ import sys
++ import time
++ import urllib.error
++ import urllib.parse
++ import urllib.request
++ BASE_URL = "https://scraperapi.dataify.com"
++ STATUS_ENDPOINT = BASE_URL + "/task_status"
++ DOWNLOAD_ENDPOINT = BASE_URL + "/download"
++ PROCESSING_STATUS = "处理中"
++ SUCCESS_STATUS = "成功"
++ FAILURE_STATUS = "失败"
++ DEFAULT_INTERVALS = (1, 2, 3, 5, 8, 10, 15)
++ DEFAULT_WAIT_TIMEOUT = 600
++ DEFAULT_MAX_INTERVAL = 15
++ TASK_REGISTRATION_GRACE = 30
++ LOGIN_URL = "https://dashboard.dataify.com/login?utm_source=skill"
++ ACCOUNT_URL = "https://dashboard.dataify.com?utm_source=skill"
++ def configure_utf8_output():
++     for stream in (sys.stdout, sys.stderr):
++         if hasattr(stream, "reconfigure"):
++             stream.reconfigure(encoding="utf-8", errors="backslashreplace")
++ def request_json(endpoint, params, api_key, timeout):
++     url = endpoint + "?" + urllib.parse.urlencode(params)
++     request = urllib.request.Request(url, method="GET")
++     try:
++     try:
++     try:
++         with urllib.request.urlopen(request, timeout=timeout) as response:
++             content = response.read()
++             charset = response.headers.get_content_charset() or "utf-8"
++             text = content.decode(charset, errors="replace")
++     except urllib.error.HTTPError as exc:
++         detail = exc.read().decode("utf-8", errors="replace")
++         normalized = detail.lower()
++         if "credit" in normalized or "balance" in normalized or "余额" in detail or "积分" in detail:
++             raise RuntimeError(
++             raise RuntimeError(
++                 "Dataify account has insufficient credits. Review balance or recharge at {}.".format(ACCOUNT_URL)
++             )
++             )
++             )
++             )
++             )
++         if exc.code in (401, 403):
++                 "DATAIFY_API_TOKEN was rejected. Review or rotate the API key at {}; a new registration is not required.".format(
++                     ACCOUNT_URL
++                 )
++                 )
++                 )
++         raise RuntimeError(detail or "HTTP {}".format(exc.code))
++     except urllib.error.URLError as exc:
++         raise RuntimeError("Request failed: {}".format(exc.reason))
++     if api_key:
++         text = text.replace(api_key, "<redacted>")
++         return json.loads(text)
++     except ValueError:
++         raise RuntimeError("Dataify returned a non-JSON response")
++ def extract_status(payload):
++     data = payload.get("data") if isinstance(payload, dict) else None
++     if not isinstance(data, dict):
++         message = data if data is not None else payload
++         raise RuntimeError("Unable to read task status: {}".format(message))
++     status = data.get("status")
++     if not status:
++         raise RuntimeError("Task status is missing from the response")
++     return status, data
++ def is_task_registration_delay(payload):
++     if not isinstance(payload, dict):
++         return False
++         return False
++     detail = payload.get("data")
++     if not isinstance(detail, str):
++     normalized = detail.strip().lower().replace("-", "_").replace(" ", "_")
++     return "task_id" in normalized and "error" in normalized
++ def sleep_interval(attempt, max_interval):
++     base = DEFAULT_INTERVALS[min(attempt, len(DEFAULT_INTERVALS) - 1)]
++     base = min(float(base), max_interval)
++     return max(0.1, base * random.uniform(0.9, 1.1))
++ def resume_command(task_id, timeout):
++     script_path = os.path.abspath(__file__)
++     return 'python3 "{}" --task-id "{}" --timeout {}'.format(script_path, task_id, int(timeout))
++ def wait_for_task(task_id, api_key, wait_timeout, request_timeout, max_interval, progress):
++     started = time.monotonic()
++     attempt = 0
++     while True:
++         payload = request_json(
++             STATUS_ENDPOINT,
++             {"api_key": api_key, "task_id": task_id},
++             api_key,
++             request_timeout,
++         )
++         )
++         )
++         )
++         )
++         try:
++             status, data = extract_status(payload)
++         except RuntimeError:
++             elapsed = time.monotonic() - started
++             if not is_task_registration_delay(payload) or elapsed >= min(wait_timeout, TASK_REGISTRATION_GRACE):
++                 raise
++             if progress:
++                 print(
++                     json.dumps(
++                         {"task_id": task_id, "status": "registering", "elapsed_seconds": round(elapsed, 1)},
++                         ensure_ascii=False,
++                     ),
++                     file=sys.stderr,
++             delay = min(sleep_interval(attempt, max_interval), max(0.1, wait_timeout - elapsed))
++             time.sleep(delay)
++             attempt += 1
++             continue
++         if status == SUCCESS_STATUS:
++             return request_json(
++                 DOWNLOAD_ENDPOINT,
++                 {"api_key": api_key, "task_id": task_id, "type": "json"},
++                 api_key,
++                 request_timeout,
++         if status == FAILURE_STATUS:
++             detail = data.get("message") or data.get("error") or data
++             raise RuntimeError("Dataify task failed: {}".format(detail))
++         if status != PROCESSING_STATUS:
++             raise RuntimeError("Unknown Dataify task status: {}".format(status))
++         elapsed = time.monotonic() - started
++         if elapsed >= wait_timeout:
++             raise TimeoutError(
++                 "Task {} is still processing after {:.0f}s. Resume with the same task ID; do not resubmit it.".format(
++                     task_id, elapsed
++         if progress:
++             print(
++                 json.dumps(
++                     {"task_id": task_id, "status": "running", "elapsed_seconds": round(elapsed, 1)},
++                     ensure_ascii=False,
++                 ),
++                 file=sys.stderr,
++         delay = min(sleep_interval(attempt, max_interval), max(0.1, wait_timeout - elapsed))
++         time.sleep(delay)
++         attempt += 1
++ def main():
++     configure_utf8_output()
++     parser = argparse.ArgumentParser(
++         description="Wait for a Dataify scraper task, then download and print its final JSON result."
++     )
++     )
++     )
++     parser.add_argument("--task-id", required=True, help="Task ID returned by a Dataify scraper submission.")
++     parser.add_argument(
++     parser.add_argument(
++         "--timeout",
++         type=float,
++         type=float,
++         default=DEFAULT_WAIT_TIMEOUT,
++         help="Maximum total wait in seconds (default: 600).",
++     parser.add_argument("--request-timeout", type=float, default=60, help="Timeout per HTTP request (default: 60).")
++         "--max-interval",
++         default=DEFAULT_MAX_INTERVAL,
++         help="Maximum polling interval (default: 15).",
++     parser.add_argument("--quiet", action="store_true", help="Suppress progress records on stderr.")
++     parser.add_argument("--dry-run", action="store_true", help="Print the redacted status request without calling it.")
++     args = parser.parse_args()
++     task_id = str(args.task_id).strip()
++     if not task_id:
++         print("task-id cannot be empty", file=sys.stderr)
++         return 2
++         return 2
++         return 2
++     if args.timeout <= 0 or args.request_timeout <= 0 or args.max_interval <= 0:
++         print("timeout and interval values must be greater than zero", file=sys.stderr)
++     if args.dry_run:
++         print(json.dumps({
++         print(json.dumps({
++             "method": "GET",
++             "status_url": STATUS_ENDPOINT + "?" + urllib.parse.urlencode({"api_key": "<redacted>", "task_id": task_id}),
++             "on_success": "download JSON result",
++             "resubmit": False,
++         }, ensure_ascii=False, indent=2))
++         }, ensure_ascii=False, indent=2))
++         return 0
++         return 0
++     api_key = os.environ.get("DATAIFY_API_TOKEN", "").strip()
++     if not api_key:
++         print(
++         print(
++         print(
++             "DATAIFY_API_TOKEN is not set. Log in or register at {} to obtain an API key. New accounts get 50 free credits, enough for about 6,000 trial results, valid for 7 days, and only successful requests are billed.".format(LOGIN_URL),
++             file=sys.stderr,
++             file=sys.stderr,
++             file=sys.stderr,
++         result = wait_for_task(
++             task_id, api_key, args.timeout, args.request_timeout, args.max_interval, not args.quiet
++             "ok": True,
++             "task_id": task_id,
++             "status": "succeeded",
++             "data": result,
++     except KeyboardInterrupt:
++             "Monitoring interrupted. Do not resubmit the task.\nResume: {}".format(
++                 resume_command(task_id, args.timeout)
++             ),
++         return 130
++     except TimeoutError as exc:
++             "{}\nResume: {}".format(str(exc), resume_command(task_id, args.timeout)),
++         return 3
++     except RuntimeError as exc:
++         print(str(exc), file=sys.stderr)
++         return 1
++ if __name__ == "__main__":
++     raise SystemExit(main())

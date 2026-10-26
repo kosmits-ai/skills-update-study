@@ -1,0 +1,234 @@
+drumrobot/backlog  0.4.1 -> 0.4.2
+change_type: docs+code   changelog: backlog v0.4.2  - Added new integration test script: `test_plane_client_intake.py` - Improved and updated scripts related to Plane client and identifier verification. - Removed legacy documentation file: `skill-card.md` - Updated core documentation (`CHANGELOG.md`, `create.md`) for better clarity. - Enhanced test coverage for Plane identifier validation logic.
+
+### CHANGELOG.md  [docs]
++ ## [0.4.2](https://github.com/es6kr/skills/compare/backlog-v0.4.1...backlog-v0.4.2) (2026-09-27)
++ ### Bug Fixes
++ * **backlog:** add scope gate for Plane-issue creation vs. local git housekeeping ([#551](https://github.com/es6kr/skills/issues/551)) ([02e32e2](https://github.com/es6kr/skills/commit/02e32e2345225f256e92fa88983b2b30f6b24f3c))
++ * **backlog:** make list_issues()/plane_verify_identifier.py see Triage-inbox issues ([#553](https://github.com/es6kr/skills/issues/553)) ([c203652](https://github.com/es6kr/skills/commit/c203652374272f97ef7f0a71fe2d56c8b493717a))
+
+### create.md  [docs]
++ ## Scope Gate — Team-Visible Finding vs. Local-Only Git Housekeeping (HARD STOP)
++ **Before calling `plane_create_issue.py` for a newly-clarified decision or discovery, classify what it actually is.** Not every decision surfaced mid-session belongs on the shared remote tracker — some content is purely local git bookkeeping that `fix_plan.md` (or the workspace's local checklist) already fully captures, and mirroring it to Plane is redundant duplication with no team-visibility payoff.
++ **The test**: does this item need cross-session or cross-tool visibility for someone other than the author of the next session in this exact local checkout? Team-visible examples: a script/tool bug, a sync gap between two systems, code sitting at risk of loss, anything another person or a different tool might need to act on. Local-only examples: which local branch to cherry-pick, in what order, when to push an already-agreed commit batch, how to reorganize a personal worktree's history.
++ | # | Don't | Do |
++ |---|-------|-----|
++ | 1 | Create a Plane issue for every decision axis an `AskUserQuestion` just resolved, on the assumption that "a decision was made, so it needs a tracker entry" | Ask first: is this decision about *content with team-visible value*, or *purely local git housekeeping*? Only the former gets a Plane issue |
++ | 2 | Extend an established "discovery → Plane issue" pattern from earlier in the same session onto a different class of finding without re-checking fit | Re-apply the scope test per item, not per session-momentum. A run of correct Plane creations for bug reports does not license the next few to skip the test |
++ | 3 | Mirror the same content to both `fix_plan.md` and Plane "just in case" | Local-only content stays in `fix_plan.md` only. Duplicating it onto Plane is not a safety margin — it is noise the next session has to reconcile |
++ | 4 | Assume ambiguous cases default to "create the issue, it's cheap" | When ambiguous, ask the user before creating the remote issue rather than defaulting to "every finding gets an issue" |
++ **Self-check (before every `plane_create_issue.py` call)**: would a person other than "me in the next session working this exact local checkout" ever need to see this on the shared tracker? If no — this is local-only git housekeeping, and it belongs in `fix_plan.md` alone.
+
+### scripts/plane_client.py  [code]
+-     def list_issues(self, project_id, use_cache=True):
+-         if use_cache:
+-                 return cached
+-             self._cache_put(project_id, issues)
++         cursor = "%d:0:0" % PAGE_SIZE
++         while True:
++             if not next_cursor or not page.get("next_page_results"):
++                 break
++             cursor = next_cursor
++     def list_issues(self, project_id, use_cache=True, include_intake=False):
++         Plane's `issues/` endpoint only returns issues that have already
++         cleared the intake/Triage inbox — an issue created via the intake
++         API (``plane_create_issue.py``'s default) sits invisibly in
++         ``intake-issues/`` until someone accepts it, so callers that need
++         "does this identifier exist" semantics (e.g.
++         ``plane_verify_identifier.py``) must pass ``include_intake=True`` or
++         they get a false "does not exist" for anything still in Triage.
++         Intake results are fetched fresh on every call (not merged into the
++         ``issues/`` on-disk cache — a separate cache key would risk serving
++         a stale intake-merged list from a plain call, or vice versa) and
++         deduplicated against the base list by ``id``.
++                 issues = cached
++             else:
++                 issues = self._fetch_issues_page(project_id)
++                 self._cache_put(project_id, issues)
++         else:
++             issues = self._fetch_issues_page(project_id)
++         if not include_intake:
++             return issues
++         seen_ids = {i.get("id") for i in issues}
++         merged = list(issues)
++         for intake_issue in self.list_intake_issues(project_id):
++             if intake_issue.get("id") not in seen_ids:
++                 merged.append(intake_issue)
++                 seen_ids.add(intake_issue.get("id"))
++         return merged
++     def _fetch_issues_page(self, project_id):
++         issues = []
++             results = page.get("results", page if isinstance(page, list) else [])
++             next_cursor = page.get("next_cursor") if isinstance(page, dict) else None
++         return issues
++     def list_intake_issues(self, project_id):
++         """Return every issue still sitting in the intake/Triage inbox,
++         normalized to look like a regular ``issues/`` entry (unwraps the
++         ``issue_detail`` field Plane's intake-issues endpoint nests the
++         actual issue under) plus an added ``intake_status`` field
++         (Plane's intake status codes: -2 pending, -1 rejected, 0 snoozed,
++         1 accepted, 2 duplicate)."""
++         entries = []
++             page = self.request(self._project_path(project_id, "intake-issues/?cursor=%s" % cursor))
++             entries.extend(results)
++         for entry in entries:
++             detail = entry.get("issue_detail")
++             if not isinstance(detail, dict):
++                 continue
++             issue = dict(detail)
++             issue["intake_status"] = entry.get("status")
++             issues.append(issue)
+
+### scripts/plane_verify_identifier.py  [code]
+-     issues = client.list_issues(project["id"])
+-             "%s-%d does not exist (project %r has %d issues)"
++     # include_intake=True: an issue sitting in the Triage inbox (created via
++     # plane_create_issue.py's intake default, not yet accepted) is invisible
++     # to the plain issues/ endpoint — omitting this produced false "does not
++     # exist" verdicts for real, just-not-triaged-yet identifiers.
++     issues = client.list_issues(project["id"], include_intake=True)
++             "%s-%d does not exist (project %r has %d issues, including intake/Triage)"
+
+### scripts/test_plane_client_intake.py  [code]
++ #!/usr/bin/env python3
++ """Unit tests for PlaneClient.list_intake_issues() / list_issues(include_intake=...).
++ Regression coverage for SKILL-37: Plane's plain `issues/` endpoint never
++ returns issues still sitting in the intake/Triage inbox, so
++ plane_verify_identifier.py (and anything else checking "does this
++ identifier exist") got a false negative for anything not yet triaged.
++ """
++ import importlib.util
++ import sys
++ import unittest
++ from pathlib import Path
++ from unittest.mock import patch
++ SCRIPT_DIR = Path(__file__).parent.resolve()
++ sys.path.insert(0, str(SCRIPT_DIR))
++ _client_spec = importlib.util.spec_from_file_location("plane_client", str(SCRIPT_DIR / "plane_client.py"))
++ plane_client = importlib.util.module_from_spec(_client_spec)
++ sys.modules["plane_client"] = plane_client
++ _client_spec.loader.exec_module(plane_client)
++ def make_client():
++     client = plane_client.PlaneClient.__new__(plane_client.PlaneClient)
++     client.profile = {"plane_host": "https://plane.example.com", "workspace_slug": "myws"}
++     client.cache_path = None
++     return client
++ class TestListIntakeIssues(unittest.TestCase):
++     def test_unwraps_issue_detail_and_adds_intake_status(self):
++         client = make_client()
++         client = make_client()
++         client = make_client()
++         client = make_client()
++         client = make_client()
++         page = {
++         page = {
++             "results": [
++             "results": [
++                 {
++                 {
++                     "status": -2,
++                     "issue_detail": {"id": "issue-1", "sequence_id": 37, "name": "pending triage"},
++                 },
++                 },
++                     "status": 1,
++                     "issue_detail": {"id": "issue-2", "sequence_id": 38, "name": "already accepted"},
++             ],
++             ],
++             "next_cursor": None,
++             "next_cursor": None,
++             "next_cursor": None,
++             "next_cursor": None,
++             "next_cursor": None,
++             "next_cursor": None,
++             "next_page_results": False,
++             "next_page_results": False,
++             "next_page_results": False,
++             "next_page_results": False,
++             "next_page_results": False,
++             "next_page_results": False,
++         }
++         }
++         }
++         }
++         }
++         }
++         }
++         with patch.object(client, "request", return_value=page) as mock_request:
++             issues = client.list_intake_issues("proj-1")
++             issues = client.list_intake_issues("proj-1")
++             issues = client.list_intake_issues("proj-1")
++         mock_request.assert_called_once()
++         mock_request.assert_called_once()
++         self.assertEqual(len(issues), 2)
++         self.assertEqual(len(issues), 2)
++         self.assertEqual(issues[0]["id"], "issue-1")
++         self.assertEqual(issues[0]["sequence_id"], 37)
++         self.assertEqual(issues[0]["intake_status"], -2)
++         self.assertEqual(issues[1]["intake_status"], 1)
++     def test_entries_without_issue_detail_are_skipped(self):
++             "results": [{"status": -2, "issue_detail": None}],
++         with patch.object(client, "request", return_value=page):
++         self.assertEqual(issues, [])
++     def test_follows_pagination(self):
++         page1 = {
++             "results": [{"status": -2, "issue_detail": {"id": "issue-1", "sequence_id": 1}}],
++             "next_cursor": "100:1:0",
++             "next_page_results": True,
++         page2 = {
++             "results": [{"status": -2, "issue_detail": {"id": "issue-2", "sequence_id": 2}}],
++         with patch.object(client, "request", side_effect=[page1, page2]) as mock_request:
++         self.assertEqual(mock_request.call_count, 2)
++         self.assertEqual([i["id"] for i in issues], ["issue-1", "issue-2"])
++ class TestListIssuesIncludeIntake(unittest.TestCase):
++     def test_default_excludes_intake(self):
++         base_page = {
++         base_page = {
++             "results": [{"id": "issue-1", "sequence_id": 1}],
++             "results": [{"id": "issue-1", "sequence_id": 1}],
++         with patch.object(client, "request", return_value=base_page) as mock_request:
++             issues = client.list_issues("proj-1", use_cache=False)
++         self.assertEqual([i["id"] for i in issues], ["issue-1"])
++         # only the issues/ page was fetched — no intake-issues/ round trip.
++     def test_include_intake_merges_without_duplicating(self):
++         intake_page = {
++                 # already present in the base list — must not be duplicated
++                 {"status": 1, "issue_detail": {"id": "issue-1", "sequence_id": 1}},
++                 # Triage-only — must be added
++                 {"status": -2, "issue_detail": {"id": "issue-2", "sequence_id": 37}},
++         with patch.object(client, "request", side_effect=[base_page, intake_page]):
++             issues = client.list_issues("proj-1", use_cache=False, include_intake=True)
++         self.assertEqual(sorted(i["id"] for i in issues), ["issue-1", "issue-2"])
++ if __name__ == "__main__":
++     unittest.main()
+
+### scripts/test_plane_verify_identifier.py  [code]
+-     def __init__(self, projects, issues_by_project_id):
+-     def list_issues(self, project_id):
+-         return self._issues_by_project_id.get(project_id, [])
++     def __init__(self, projects, issues_by_project_id, intake_only_by_project_id=None):
++         self._intake_only_by_project_id = intake_only_by_project_id or {}
++     def list_issues(self, project_id, use_cache=True, include_intake=False):
++         issues = list(self._issues_by_project_id.get(project_id, []))
++         if include_intake:
++             issues += self._intake_only_by_project_id.get(project_id, [])
++         return issues
++     def setUp(self):
++         self.client = FakeClient(
++                 "proj-1": [
++                 ],
++             },
++         )
++         self.assertEqual(project["id"], "proj-1")
++ class TestResolveIntakeVisibility(unittest.TestCase):
++     """A real identifier sitting in Plane's Triage inbox (created via the
++     intake API, not yet accepted) must resolve — not report a false
++     "does not exist". Regression test for SKILL-37: list_issues() alone
++     (the plain issues/ endpoint) never returns intake-stage issues, so
++     resolve() must request include_intake=True."""
++             projects=[{"id": "proj-1", "identifier": "SKILL"}],
++             issues_by_project_id={"proj-1": []},
++             intake_only_by_project_id={
++                     {"sequence_id": 37, "name": "intake-stage issue, not yet triaged", "intake_status": -2},
++     def test_intake_only_identifier_resolves(self):
++         project, issue = pvi.resolve(self.client, "SKILL", 37)
++         self.assertEqual(issue["name"], "intake-stage issue, not yet triaged")

@@ -1,0 +1,205 @@
+psyb0t/qwenspeak  1.2.0 -> 1.3.0
+change_type: instructions+code   changelog: qwenspeak 1.2.0  - Introduced a new `scripts/qwenspeak.sh` wrapper that automates SSH connection, port, and host key handling. - Switched TTS job handling to an asynchronous workflow: jobs return a UUID immediately, with new commands to monitor, log, list, and cancel jobs. - Improved file management commands with new, more descriptive names (e.g., `list-files`, `remove-file`, `create-dir`). - Updated documentation for the new workflow, commands, and usage examples. - Added enhanced job and file 
+
+### SKILL.md  [instructions]
+- ---
+- description: Text-to-speech via a locked-down SSH container with Qwen3-TTS - preset voices, voice cloning, voice design
+- homepage: https://github.com/psyb0t/docker-qwenspeak
+- user-invocable: true
+-   {
+-     "openclaw":
+-       {
+-         "emoji": "🗣️",
+-         "primaryEnv": "QWENSPEAK_HOST",
+-         "always": false,
+-       },
+-   }
+-   }
+- ## Setup Required
+- This skill requires `QWENSPEAK_HOST` and `QWENSPEAK_PORT` environment variables pointing to a running qwenspeak instance.
+- **Configure OpenClaw** (`~/.openclaw/openclaw.json`):
+- ```json
+- {
+-   "skills": {
+-     "entries": {
+-       "qwenspeak": {
+-         "env": {
+-           "QWENSPEAK_HOST": "localhost",
+-           "QWENSPEAK_PORT": "2222"
+-         }
+-       }
+-     }
+- }
+- ```
+- ```
+- ```
+- Or set the environment variables directly:
+- ```bash
+- ```bash
+- Qwen3-TTS text-to-speech over SSH. YAML-driven pipeline - batch multiple generations across different models in one config. Uses a Python wrapper that whitelists commands - no shell access, no injection, no bullshit.
+- ## First Connection
+- Before running any commands, you must accept the host key so it gets added to `known_hosts`. Run a simple `ls` and accept the fingerprint:
+- ssh -p $QWENSPEAK_PORT tts@$QWENSPEAK_HOST "ls"
+- ssh -p $QWENSPEAK_PORT tts@$QWENSPEAK_HOST "ls"
+- If this is the first time connecting, SSH will prompt to verify the host key. Type `yes` to accept. This only needs to happen once per host. If you skip this step, all subsequent SSH commands will fail with a host key verification error.
+- ## How It Works
+- All commands are executed via SSH against the qwenspeak container. The container forces every connection through a Python wrapper that only allows whitelisted commands. All file paths are locked to `/work` inside the container.
+- **SSH command format:**
+- ssh -p $QWENSPEAK_PORT tts@$QWENSPEAK_HOST "<command> [args]"
+- ## TTS Command
+- | Command | Binary               | Description        |
+- | ------- | -------------------- | ------------------ |
+- | `tts`   | `/usr/local/bin/tts` | Text-to-speech generation |
+- ### Subcommands
+- | Subcommand     | Description                                                  |
+- | -------------- | ------------------------------------------------------------ |
+- | `print-yaml`   | Print a template YAML config to stdout                       |
+- | `list-speakers`| List available preset speakers                               |
+- | `log`          | View TTS logs (`-f` to follow, `-n N` for line count)        |
+- | `tokenize`     | Encode/decode audio through the speech tokenizer             |
+- When called with no subcommand, `tts` reads a YAML config from stdin and runs the pipeline.
+- ## YAML Pipeline
+- All generation is done through YAML configs piped via stdin. Get a template, fill it in, pipe it back.
+- ssh -p $QWENSPEAK_PORT tts@$QWENSPEAK_HOST "tts print-yaml" > job.yaml
+- # Edit it locally, then run it
+- ssh -p $QWENSPEAK_PORT tts@$QWENSPEAK_HOST "tts" < job.yaml
+- # Download results
+- ssh -p $QWENSPEAK_PORT tts@$QWENSPEAK_HOST "get hello.wav" > hello.wav
+- Each config has global settings and a list of steps. Each step loads a model, runs all its generations, then unloads it. Settings cascade: global → step → generation.
+-   # custom-voice: preset speakers with optional emotion control
+-   # voice-design: describe the voice in natural language
+-   # voice-clone: clone a voice from reference audio
+- Record yourself with different emotions and use separate steps:
+- ssh -p $QWENSPEAK_PORT tts@$QWENSPEAK_HOST "mkdir refs"
+- ssh -p $QWENSPEAK_PORT tts@$QWENSPEAK_HOST "put refs/happy.wav" < me_happy.wav
+- ssh -p $QWENSPEAK_PORT tts@$QWENSPEAK_HOST "put refs/angry.wav" < me_angry.wav
+- ## Logging
+- All pipeline output is logged to `/var/log/tts/`. View logs via SSH:
+- # View last 20 lines
+- ssh -p $QWENSPEAK_PORT tts@$QWENSPEAK_HOST "tts log"
+- # Follow (like tail -f)
+- ssh -p $QWENSPEAK_PORT tts@$QWENSPEAK_HOST "tts log -f"
+- # Last 100 lines
+- ssh -p $QWENSPEAK_PORT tts@$QWENSPEAK_HOST "tts log -n 100"
+- All paths are relative to `/work`. Traversal attempts are blocked. Absolute paths get remapped under `/work`.
+- | Command  | Description                                       | Example                                    |
+- | -------- | ------------------------------------------------- | ------------------------------------------ |
+- | `ls`     | List `/work` or a subdirectory (`ls -alph` style, use `--json` for JSON) | `ls` or `ls --json subdir` |
+- | `put`    | Upload file from stdin                            | `put ref.wav` (pipe file via stdin)        |
+- | `get`    | Download file to stdout                           | `get output.wav` (redirect stdout to file) |
+- | `rm`     | Delete a file (not directories)                   | `rm old.wav`                               |
+- | `mkdir`  | Create directory (recursive)                      | `mkdir refs`                               |
+- | `rmdir`  | Remove empty directory                            | `rmdir refs`                               |
+- | `rrmdir` | Remove directory and everything in it recursively | `rrmdir refs`                              |
+- All of these can be set at global, step, or generation level. Lower levels override higher ones.
+- | `text`               | required  | Generation: text to synthesize                               |
+- | `output`             | required  | Generation: output file path (relative to /work)             |
+- ### List speakers
+- ssh -p $QWENSPEAK_PORT tts@$QWENSPEAK_HOST "tts list-speakers"
+- ### File management
+- ssh -p $QWENSPEAK_PORT tts@$QWENSPEAK_HOST "ls --json"
+- ssh -p $QWENSPEAK_PORT tts@$QWENSPEAK_HOST "rm old.wav"
+- ssh -p $QWENSPEAK_PORT tts@$QWENSPEAK_HOST "rrmdir refs"
+- ## Security Notes
+- - No shell access - all commands go through a Python wrapper
+- - Whitelist only - unlisted commands are rejected
+- - No injection - `&&`, `;`, `|`, `$()` are treated as literal arguments (no shell involved)
+- - SSH key auth only - no passwords
+- - All forwarding disabled
+- - All file paths locked to `/work`
++ description: Text-to-speech generation via Qwen3-TTS over SSH. Preset voices, voice cloning, voice design. Use when the user wants to generate speech audio, clone voices, or work with TTS.
++ compatibility: Requires ssh and a running qwenspeak instance. QWENSPEAK_HOST and QWENSPEAK_PORT env vars must be set.
++   version: 1.2.0
++   author: psyb0t
++   homepage: https://github.com/psyb0t/docker-qwenspeak
++ YAML-driven text-to-speech over SSH using Qwen3-TTS models. All commands go through a locked-down container with command whitelisting and path sandboxing.
++ ## Setup
++ Set these environment variables:
++ ## SSH Wrapper
++ Use `scripts/qwenspeak.sh` instead of raw SSH commands. It handles host, port, and host key acceptance automatically.
++ scripts/qwenspeak.sh <command> [args]
++ scripts/qwenspeak.sh <command> < input_file
++ scripts/qwenspeak.sh <command> > output_file
++ ## TTS Generation
++ Jobs run asynchronously. Submit YAML, get a job UUID back immediately, poll for progress.
++ scripts/qwenspeak.sh "tts print-yaml" > job.yaml
++ # Submit job (returns JSON with job ID immediately)
++ scripts/qwenspeak.sh "tts" < job.yaml
++ # {"id": "550e8400-...", "status": "pending", "total_steps": 3, "total_generations": 7}
++ # Check progress
++ scripts/qwenspeak.sh "tts get-job 550e8400"
++ # View job log
++ # View job log
++ scripts/qwenspeak.sh "tts get-job-log 550e8400"
++ # Follow job log (like tail -f)
++ # Follow job log (like tail -f)
++ scripts/qwenspeak.sh "tts get-job-log 550e8400 -f"
++ # List all jobs
++ scripts/qwenspeak.sh "tts list-jobs"
++ scripts/qwenspeak.sh "tts list-jobs"
++ # Cancel a running job
++ scripts/qwenspeak.sh "tts cancel-job 550e8400"
++ # Download result when done
++ scripts/qwenspeak.sh "get hello.wav" > hello.wav
++ Each config has global settings and a list of steps. Each step loads a model, runs all its generations, then unloads it. Settings cascade: global > step > generation.
++ Upload reference files with different emotions and use separate steps:
++ scripts/qwenspeak.sh "create-dir refs"
++ scripts/qwenspeak.sh "put refs/happy.wav" < me_happy.wav
++ scripts/qwenspeak.sh "put refs/angry.wav" < me_angry.wav
++ ## Job Management
++ # List all jobs (shows id, status, progress, created time)
++ scripts/qwenspeak.sh "tts list-jobs --json"
++ # Get full job details as JSON
++ scripts/qwenspeak.sh "tts get-job <uuid-or-prefix>"
++ scripts/qwenspeak.sh "tts get-job-log <uuid-or-prefix>"
++ scripts/qwenspeak.sh "tts get-job-log <uuid-or-prefix> -f"
++ # Cancel a running job (kills the worker process immediately)
++ scripts/qwenspeak.sh "tts cancel-job <uuid-or-prefix>"
++ Job statuses: `pending` → `running` → `completed` | `failed` | `cancelled`
++ Jobs are ephemeral — cleaned up when completed/failed/cancelled and on container restart.
++ ## Other Commands
++ # List available speakers
++ scripts/qwenspeak.sh "tts list-speakers"
++ # View logs (includes output from background jobs)
++ scripts/qwenspeak.sh "tts log"
++ scripts/qwenspeak.sh "tts log -f"
++ scripts/qwenspeak.sh "tts log -n 100"
++ # Tokenize round-trip
++ scripts/qwenspeak.sh "tts tokenize input.wav"
++ All paths relative to `/work`. Traversal blocked.
++ | Command                | Description                          | Example                                                         |
++ | ---------------------- | ------------------------------------ | --------------------------------------------------------------- |
++ | `list-files`           | List directory (`--json` for JSON)   | `scripts/qwenspeak.sh "list-files"`                                |
++ | `put`                  | Upload file from stdin               | `scripts/qwenspeak.sh "put ref.wav" < ref.wav`                     |
++ | `get`                  | Download file to stdout              | `scripts/qwenspeak.sh "get out.wav" > out.wav`                     |
++ | `remove-file`          | Delete a file                        | `scripts/qwenspeak.sh "remove-file old.wav"`                       |
++ | `create-dir`           | Create directory                     | `scripts/qwenspeak.sh "create-dir refs"`                           |
++ | `remove-dir`           | Remove empty directory               | `scripts/qwenspeak.sh "remove-dir refs"`                           |
++ | `remove-dir-recursive` | Remove directory recursively         | `scripts/qwenspeak.sh "remove-dir-recursive refs"`                 |
++ | `move-file`            | Move or rename a file                | `scripts/qwenspeak.sh "move-file old.wav new.wav"`                 |
++ | `copy-file`            | Copy a file                          | `scripts/qwenspeak.sh "copy-file src.wav dst.wav"`                 |
++ | `file-info`            | File metadata as JSON                | `scripts/qwenspeak.sh "file-info out.wav"`                         |
++ | `file-exists`          | Check if file exists (true/false)    | `scripts/qwenspeak.sh "file-exists out.wav"`                       |
++ | `file-hash`            | SHA-256 hash of a file               | `scripts/qwenspeak.sh "file-hash out.wav"`                         |
++ | `disk-usage`           | Total bytes used by file/dir         | `scripts/qwenspeak.sh "disk-usage refs"`                           |
++ | `search-files`         | Glob search (`**` recursive)         | `scripts/qwenspeak.sh "search-files **/*.wav"`                     |
++ | `append-file`          | Append stdin to existing file        | `scripts/qwenspeak.sh "append-file log.txt" < extra.txt`           |
++ All settings can be set at global, step, or generation level. Lower levels override higher ones. Device is controlled by the `PROCESSING_UNIT` env var on the container, not in YAML.
++ | `text`               | required  | Text to synthesize                                           |
++ | `output`             | required  | Output file path (relative to /work)                         |
+
+### scripts/qwenspeak.sh  [code]
++ #!/bin/bash
++ # SSH wrapper for qwenspeak commands.
++ # Requires QWENSPEAK_HOST and QWENSPEAK_PORT env vars.
++ #
++ # Usage:
++ #   qwenspeak <command> [args]           Run a command
++ #   qwenspeak <command> [args] < file    Pipe stdin (e.g. YAML config, file upload)
++ #   qwenspeak <command> [args] > file    Capture stdout (e.g. file download)
++ : "${QWENSPEAK_HOST:?QWENSPEAK_HOST not set}"
++ : "${QWENSPEAK_PORT:?QWENSPEAK_PORT not set}"
++ exec ssh -p "$QWENSPEAK_PORT" \
++     -o StrictHostKeyChecking=accept-new \
++     -o LogLevel=ERROR \
++     "tts@$QWENSPEAK_HOST" "$*"

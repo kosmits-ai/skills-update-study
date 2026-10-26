@@ -1,0 +1,69 @@
+drumrobot/web-browser  0.2.3 -> 0.2.4
+change_type: instructions+docs   changelog: web-browser 0.2.4  - Added section describing required user prompt when a login wall is encountered during capture/verification tasks—assistant must ask whether to continue or stop, instead of unilaterally stopping. - Expanded and clarified best practices for handling login and payment flows—distinguishing between login (can continue with user consent) and sensitive credential entry (defer to user/business). - Updated guides to emphasize user decision authority when reports depend on information
+
+### CHANGELOG.md  [docs]
++ ## [0.2.4](https://github.com/es6kr/skills/compare/web-browser-v0.2.3...web-browser-v0.2.4) (2026-07-23)
++ ### Bug Fixes
++ * **next-fix:** accumulate bug fixes for docxport, wip, fix-plan, and hook-kit ([6eec083](https://github.com/es6kr/skills/commit/6eec083b7fbc429bdabcfcc89d7778b185dd7497))
++ * skills body bundle — consolidate/fix/hook-kit refinements + English-clean guard hooks (Ralph-loop bypass) ([2e26f41](https://github.com/es6kr/skills/commit/2e26f412a5b963984898e13caaca186c3617ca08))
++ * **web-browser:** don't abandon automation on a single login-block signal ([fed542e](https://github.com/es6kr/skills/commit/fed542e600d83979d3e31fde597da13e0ce0e18e))
+
+### SKILL.md  [instructions]
++ | # | Don't | Do |
++ ## Login wall mid-capture — ask before stopping, don't silently defer (HARD STOP)
++ **When a capture/documentation task (report evidence, purchase/registration flow guide, etc.) hits a screen that requires login, and completing that login would reveal materially different information than what's already captured (e.g., the real final price vs. a promotional pre-login price, actual post-login UI state vs. an assumption), do NOT silently stop and paper over the gap with a deferral disclaimer.** Ask the user via `AskUserQuestion` whether to continue (via interactive login in a visible backend) or whether the pre-login capture is sufficient for the purpose at hand.
++ |---|-------|----|
++ | 1 | Hit a login wall → write "please have finance/ops enter payment details themselves for security" and stop, without asking | Decompose the remaining flow: **payment/credential entry** should be deferred to the user/business owner, but **login + viewing the resulting screen** is often just informational — ask which is actually needed before deciding to stop |
++ | 2 | Treat "login" and "entering payment info" as one bundled decision to skip together | They are different risk levels. Login-then-observe (e.g., see the real cart/checkout price) does not require entering card/account credentials — only the latter needs deferral |
++ | 3 | Report a pre-login/promotional price or state as if it were final, without flagging the gap | If the login-gated final screen wasn't verified, explicitly flag it ("actual payment screen not verified — may differ from the listed price") instead of presenting the pre-login figure as authoritative |
++ | 4 | Assume the backend can't support interactive login without checking | Check chrome-devtools connection + visibility (per `credential-issue.md` "Fresh-login flow") first; if visible, open the page there and have the user sign in in that same window, then continue capturing |
++ | 5 | Decide unilaterally that "this is good enough" when the report's factual accuracy depends on the gated screen | If the gap could make a delivered report/guide factually wrong (e.g., a payment-request report citing a price that turns out incorrect), the stop-vs-continue decision belongs to the user, not the assistant |
++ ### Violation case (2026-07-22, 1st)
++ While building a domain-registration payment-request report, captured the domain-search-result page (showing a promotional price) and the login screen, then stopped at the login wall with a disclaimer ("have finance/ops enter payment details"), never asking whether to continue via login to verify the real checkout price. The report's stated price differed from the actual payment-screen price. User feedback (paraphrased): "don't arbitrarily skip capturing screens that require login — ask first."
+
+### credential-issue.md  [docs]
+- login there. For any flow that needs a fresh user sign-in, prefer chrome-devtools (real session) or
+- the user's default browser. Do not drive an interactive login through invisible Playwright.
++ login there. For any flow that needs a fresh user sign-in, prefer chrome-devtools (real session, or
++ fresh `new_page` if visible) or the user's default browser. Do not drive an interactive login through
++ invisible Playwright.
++ **chrome-devtools with no session still outranks Default browser when visible (HARD STOP)**: "no
++ existing session" is not the same as "unusable for this flow." If chrome-devtools-mcp is connected and
++ its window is confirmed visible (not headless), open the login/issuance URL there via `new_page` even
++ when a fresh login is required — the user signs in inside that same window, and automation continuity
++ (navigate → fill → click → extract) survives past login. Falling back to `Start-Process`/`open` (OS-level
++ launch) at this point creates a **disconnected, non-automatable window**: whatever the user does there
++ afterward (bucket creation, token generation) cannot be driven or read by any backend tool, forcing a
++ full manual handoff for the rest of the flow. Only use Default browser when chrome-devtools is
++ disconnected or confirmed headless/invisible — see "Fresh-login flow" below.
++ ### Fresh-login flow: chrome-devtools `new_page` vs OS `Start-Process` (HARD STOP)
++ | # | Don't | Do |
++ |---|-------|-----|
++ | 1 | See no existing session in chrome-devtools (`list_pages` → `about:blank`) and immediately switch to `Start-Process`/OS default browser | Confirm chrome-devtools is connected + visible → open the URL there via `new_page` first. Absence of a session only means the user must log in — it does not disqualify the backend |
++ | 2 | Open the login window via OS `Start-Process`, let the user complete everything there, then explain the automatable tool (chrome-devtools) is a "separate instance" as if that were an external constraint | If a disconnected window was already created by OS-level open, own the choice explicitly ("I opened this window in a way I can't automate") rather than framing it as the automation tool's limitation |
++ | 3 | Treat Default browser as the obvious/default choice for any login-required flow | Default browser is the fallback **only** when chrome-devtools is disconnected or confirmed headless — check both before choosing it |
++ | 4 | After work has already progressed in a disconnected OS-opened window (bucket created, token page open), abandon it and restart automation in a fresh chrome-devtools window | Mid-flow, prefer continuing in whichever window already holds progress — switch backends going forward only for the *next* fresh-login flow, not by discarding in-progress user work |
++ | 5 | See a single anti-automation block screen in chrome-devtools (e.g. Google's "Couldn't sign you in / this browser or app may not be secure") and immediately conclude the backend is unusable → open a second, disconnected Default-browser window | A site-level bot-detection message is not the same as "backend disconnected/headless" (the only two disqualifying conditions in row 3). Ask the user to retry in the **same visible chrome-devtools window** first (click retry, or reload) — the block is sometimes a one-shot heuristic, not a hard wall, and the window stays automatable if it succeeds |
++ **Case (2026-07-22)**: chrome-devtools showed Google's "Couldn't sign you in" block once; assistant concluded the backend was blocked and opened a separate OS `Start-Process` window, asking the user to log in there instead — creating two windows and abandoning the automatable one. The user, following the original instruction to use "the browser you opened," logged into the **chrome-devtools window** anyway and it succeeded (reached the real cart/checkout page with the actual VAT-inclusive price). A single block screenshot is a data point, not a terminal verdict — retry (or ask the user to retry) in place before downgrading.
++ ### Fallback: raw CDP WebSocket scripting when both chrome-devtools-mcp and profile-copy fail
++ When chrome-devtools-mcp's own browser is genuinely **unstable** (resets to a blank page between
++ tool calls — no persisted state across calls) and copying the user's real profile cookies into a
++ fresh `--user-data-dir` fails (modern Chrome's App-Bound Encryption binds the cookie-decryption key
++ to the original profile path, so a copied `Cookies` DB silently fails to decrypt and the browser
++ redirects to login), the working fallback is: launch a **debug-enabled Chrome instance with
++ `--remote-debugging-port`**, have the **user log in there directly** (this is a fresh, real window —
++ not a copy), then drive the rest of the flow via **raw CDP WebSocket commands** from a script (e.g.
++ `uv run --with websockets python -c "..."` on Windows), bypassing MCP tools entirely:
++ 1. `Start-Process chrome.exe -ArgumentList '--remote-debugging-port=<port>', '--user-data-dir=<short-path>', '--profile-directory=Default', '<url>'` — **use a SHORT `--user-data-dir` path** (e.g. `C:\ccdp`, not a deeply nested scratchpad path). Chrome's `Service Worker\CacheStorage\...` subpaths are among the longest in a profile and silently fail with `UnknownError: Failed to execute 'open' on 'CacheStorage'` once the full path approaches Windows' `MAX_PATH` (260 chars) — a symptom easy to misattribute to broken extensions instead of path length.
++ 2. Confirm the CDP endpoint: `curl http://localhost:<port>/json/version`, then `curl http://localhost:<port>/json` to get each page's `webSocketDebuggerUrl`.
++ 3. User signs in interactively in that real window (screen-visible, normal login/2FA).
++ 4. Drive the rest (navigate / `Runtime.evaluate` for form fills and clicks / extract the issued token from the page) via a small script sending JSON-RPC messages over the WebSocket — `Runtime.evaluate` with a `document.querySelector(...).click()` expression works for React/SPA forms that don't respond to plain CSS-selector automation.
++ 5. Use `Log.enable` + `Runtime.exceptionThrown` to read real console errors when something looks broken — don't guess the cause (e.g. "must be an extension issue") from a single symptom; enable console/network domains and read the actual error text first.
++ **PID-scoped process termination (HARD STOP — do not kill by process name)**: when a debug-enabled
++ instance needs to be restarted, **identify its exact PID first** (`netstat -ano | grep <port>` for
++ the port owner, or the PID printed by `Start-Process`) and stop only that PID
++ (`Stop-Process -Id <pid> -Force`). `Stop-Process -Name chrome -Force` kills **every** Chrome process
++ under that name — including the user's own, unrelated, already-open browser windows. A real
++ incident: this exact command closed a window the user had just reopened after a cookie-copy step,
++ requiring an apology and re-open. Name-based kill is only acceptable when you have first confirmed
++ (via a fresh process list) that no other Chrome instance is running.

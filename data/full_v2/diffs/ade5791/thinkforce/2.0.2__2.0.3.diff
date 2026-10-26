@@ -1,0 +1,89 @@
+ade5791/thinkforce  2.0.2 -> 2.0.3
+change_type: instructions   changelog: ## thinkforce 2.0.3  - Removed the skill-card.md file. - No user-facing features or API changes. - Documentation and core usage unchanged.
+
+### SKILL.md  [instructions]
+- | `Music_Generation`     | Lyria music bed via ElevenLabs.                                                                |
+- 1. User_Browser({ action:"open_session", url:"https://app.example.com", instructions:"Capture brand screenshots" })
+-    → { sessionId, sessionUrl }                  // stash sessionId
+-      User_Browser({ action:"navigate",  sessionId, url:"https://app.example.com/dashboard/<beat>" })
+-      User_Browser({ action:"wait",      sessionId, selector:".dashboard-ready" })
+-      r = User_Browser({ action:"screenshot", sessionId })
+-      // r.result.dataUrl is "data:image/png;base64,..."
+-      E2B_File_Manager({ action:"write_base64",
+-                        sandboxId: r.sandboxId,
+-                        path: "/tmp/beat_<n>.png",
+-                        data: r.result.dataUrl.replace(/^data:image\/png;base64,/,"") })
+-      pub = E2B_File_Manager({ action:"upload_public",
+-                               sandboxId: r.sandboxId,
+-                               path: "/tmp/beat_<n>.png",
+-                               destination: "firebase" })
+-      // pub.publicUrl is the Firebase Storage download URL — that's what you forward downstream
+- **Rule:** `User_Browser` + `E2B_File_Manager` is the only reliable path to turn a live page into a public PNG URL for downstream video / image steps. Do NOT use `Web_Browser` when the deliverable is a public screenshot URL.
+- 12. **Surface costs.** When reporting progress, include `totalCostUsd` and per-step `estimatedCostUsd` so the user knows what the run cost.
++ ---
++ ---
++ ```http
++ ```
++ | `Music_Generation`     | Instrumental music bed via OpenRouter Lyria. Returns a public MP3 URL. Background mode — agent polls `Background_Task_Status` with `taskType:"music"`. |
++ | `Voice_Generation`     | Narration / voiceover via ElevenLabs TTS. Returns a public MP3 URL synchronously. Use this — NOT curl-from-sandbox — so cost lands in the mission rollup. See §11.5. |
++ 1. User_Browser({ action:"open_session", url:"https://app.example.com",
++                   instructions:"Capture brand screenshots" })
++    → { sessionId, sessionUrl, sandboxId }                  // stash all three
++      User_Browser({ action:"navigate", sessionId, url:"https://app.example.com/dashboard/<beat>" })
++      User_Browser({ action:"wait",     sessionId, selector:".dashboard-ready" })
++      s = User_Browser({ action:"screenshot", sessionId })
++      // The screenshot tool writes the PNG to /tmp/user_browser_<sessionId>_<ts>.png
++      // inside User_Browser's E2B sandbox and returns
++      // { result: { dataUrl, file_path, sandboxId } }.
++      pub = E2B_File_Manager({ action:"upload_public", file_path: s.result.file_path })
++      // Do NOT pass sandboxId — every User_Browser call pins its sandbox as the
++      // task's persistent sandbox, so the file_manager dispatcher auto-routes
++      // to the same sandbox the screenshot was written into. Passing the wrong
++      // sandboxId is the single most common cause of "file does not exist"
++      // failures here.
++      //
++      // pub.publicUrl is the Firebase Storage download URL — that's what you
++      // forward to Seedance / Image_Generation / Video_Generation downstream.
++ **Why this works:** `upload_public` runs inside the same sandbox as `User_Browser`, so it can read the screenshot file directly without copying bytes through the agent. It uploads to Firebase Storage and returns a long-lived public `https://` URL that any vendor (Seedance, Fal, OpenRouter) can fetch.
++ **Rule:** `User_Browser` + `E2B_File_Manager({ action:"upload_public" })` is the canonical path to turn a live page into a public PNG URL for downstream video / image steps. Do NOT use `Web_Browser` when the deliverable is a public screenshot URL — browser-use cloud's outbound public-host uploads are unreliable (Catbox / Litterbox / Gofile routinely return `Server responded with 0 code`).
++ GET /api/missions/<id>?companyId=<id>
++ ## 11.5. Cost tracking — what `totalCostUsd` actually covers
++ `mission.totalCostUsd` is **not** the platform's bill. It's a rollup of per-subtask `estimatedCostUsd`, and each subtask's number = **LLM inference + tagged generation tasks**. If a tool call doesn't write a Firestore record tagged with the agent's `taskId`, it won't appear in the rollup.
++ ### What's captured
++ | Source | Collection queried | Reliable? |
++ |---|---|---|
++ | OpenRouter / Codex / Anthropic LLM inference | per-subtask `tokenUsage` × model pricing | ✅ Always |
++ | `Image_Generation` (Fal images) | `falImageBackgroundTasks` | ✅ |
++ | `Video_Generation` (Fal Seedance) | `falVideoBackgroundTasks` | ✅ (after the Admin-SDK fix) |
++ | `Music_Generation` (OpenRouter Lyria) | `musicBackgroundTasks` | ✅ (after the Admin-SDK fix) |
++ | `Voice_Generation` (ElevenLabs TTS) | `elevenlabsTtsTasks` | ✅ |
++ | 3D generation (Fal 3D) | `fal3dBackgroundTasks` | ✅ |
++ | Veo / Sora | `veoBackgroundTasks`, `soraBackgroundTasks` | ✅ |
++ | `Code_Assistant` sub-runs | `codeAgentTasks` | ✅ |
++ The rollup runs at the end of the agent-task tool loop and folds each tagged record's `creditCost` into the subtask's `estimatedCostUsd` (sum / `CREDITS_PER_USD=20000`).
++ ### What's NOT captured
++ - **Raw `curl`-from-sandbox to any third-party API.** If an agent invokes ElevenLabs / OpenAI / Anthropic / Fal / etc. from inside an E2B `run_code` call, the platform sees zero of that spend. Under the **PREFER E2B run_code** policy (see §11.6) this is the *expected* default — the user has accepted that tradeoff, so `mission.totalCostUsd` is an LLM-token estimate, not a full bill.
++ - **E2B sandbox compute** (browser sessions, ffmpeg runtime, code execution). The sandbox time itself is unmetered — only what the LLM did inside the loop shows up.
++ - **`Web_Browser` cloud minutes** (browser-use cloud). The tool dispatch is logged, but the cloud's per-minute cost is invisible.
++ - **OpenAI gpt-4o-mini TTS via `/api/tts`** (a legacy endpoint distinct from the new `Voice_Generation`).
++ - **Past missions before the Admin-SDK fix landed (commit 6697d6760).** Their video/music records were never written; the rollup can't backfill — only forward.
++ ### Why the typed generators (`Voice_Generation`, `Image_Generation`, `Music_Generation`, `Video_Generation`) still exist
++ They wrap the equivalent vendor API server-side AND auto-handle three things the agent would otherwise have to write: (a) writing a Firestore record so the call lands in `mission.totalCostUsd`, (b) uploading the result to Firebase Storage so the returned URL is public + long-lived, (c) surfacing the result as a preview in the chat. Reach for them when you specifically want cost attribution OR a public URL OR a preview card — otherwise the agent's default under §11.6 is `E2B_File_Manager run_code`.
++ ### Reading the rollup
++ Surface to the user:
++ - `mission.totalCostUsd` — the rolled-up subtask sum
++ - per-subtask `estimatedCostUsd` — visible on each card
++ - the disclaimer above when the user is reconciling against an actual vendor invoice — `totalCostUsd` is an estimate of token + generation spend, not infrastructure compute
++ **Rule:** when reporting mission cost to the user, include both the rollup number and a one-line caveat ("LLM + tracked generations; doesn't include sandbox compute or third-party calls made directly from agent code"). Never claim it's the all-in bill.
++ ## 11.6. Platform-injected agent behavior (every subtask run)
++ Every time you POST `/api/missions/<id>/subtasks/<sid>/run`, the runner prepends a platform preamble onto the agent's own `agentRole` system prompt. Agents that don't know about these rules will still follow them — they're injected automatically. The rules currently in force:
++ | Rule | What it does |
++ |---|---|
++ | **EXECUTION** | Force multi-step completion — never stop after retrieving credentials, always continue to the action that uses them. |
++ | **SANDBOX NOTE** | E2B is non-root: `sudo apt-get install -y …`, `pip3 install …` (no sudo), npm/node/npx (no sudo). |
++ | **CREDENTIAL-FIRST DISCOVERY** | Before the first third-party API call, agents call `Manage_Credentials({ action: "list" })` to see what's stored, then `Get_Credentials({ platform: "<name>" })`. Skip only when the tool docs say "credentials auto-loaded" (Code_Assistant git ops, Clawd, Web_Browser cloud). Never paste credential values into output. |
++ | **PREFER E2B run_code** | The default first move for vendor-API calls, scripting, data work, and integrations is `E2B_File_Manager({ action: "run_code" })` — a few lines of curl/python/node is almost always more flexible than waiting for a typed tool. Typed tools (`Voice_Generation`, `Image_Generation`, `Music_Generation`, `Video_Generation`, `Web_Search`, …) are conveniences (auto-Firebase upload, preview surfaces) — reach for them only when you specifically want those platform conveniences. Tradeoff: run_code spend is invisible to `mission.totalCostUsd`. |
++ | **ASYNC TOOL PATTERN** | Set-and-forget: submit → store taskId in Memory_Manager → poll with the correct status tool. Never resubmit a job whose status is `processing`. |
++ | **TOOL ERROR HANDLING** | Classify before retrying: 401/403 → `Get_Credentials` then retry once; 400/422 → fix args then retry once; 429 → wait 10s then retry once; 504/ECONNRESET → retry once; everything else after one retry → stop and report. Never retry the same call with identical args twice. |
++ You don't need to repeat these in your `agentRole`. They're baked in for every mission subtask run. Use your `agentRole` for what's unique about each agent (domain expertise, voice, escalation rules), not for restating platform-wide tool discipline.
++ 12. **Surface costs honestly.** When reporting progress include `totalCostUsd` and per-step `estimatedCostUsd`, but caveat that the rollup is mostly an LLM-token estimate — most vendor API spend happens through `E2B_File_Manager run_code` (per §11.6, the default tool for vendor calls) and is invisible to the platform. The typed generators (`Voice_Generation`, `Image_Generation`, `Music_Generation`, `Video_Generation`) DO land in the rollup if used, but agents are not required to prefer them. See §11.5 + §11.6 for the full picture.

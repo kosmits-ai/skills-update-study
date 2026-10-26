@@ -1,0 +1,86 @@
+{
+  "fetched_at": "2026-10-26T17:23:21.378424+00:00",
+  "status": 200,
+  "payload": {
+    "skill": {
+      "slug": "skill-dashboard",
+      "displayName": "Skill Dashboard"
+    },
+    "version": {
+      "version": "2.0.0",
+      "createdAt": 1772080041145,
+      "changelogSource": "auto"
+    },
+    "moderation": {
+      "scope": "skill",
+      "sourceVersion": {
+        "version": "2.0.4",
+        "createdAt": 1772084742683
+      },
+      "matchesRequestedVersion": false,
+      "isPendingScan": false,
+      "isMalwareBlocked": false,
+      "isSuspicious": false,
+      "isHiddenByMod": false,
+      "isRemoved": false
+    },
+    "security": {
+      "status": "suspicious",
+      "hasWarnings": true,
+      "checkedAt": 1772080084523,
+      "model": "gpt-5-mini",
+      "hasScanResult": true,
+      "sha256hash": "f06b7dfc1965adfd14502a3f464df950265903766c2227dac16227971356a03b",
+      "virustotalUrl": "https://www.virustotal.com/gui/file/f06b7dfc1965adfd14502a3f464df950265903766c2227dac16227971356a03b",
+      "scanners": {
+        "vt": null,
+        "skillspector": null,
+        "llm": {
+          "status": "suspicious",
+          "verdict": "suspicious",
+          "normalizedStatus": "suspicious",
+          "confidence": "medium",
+          "summary": "功能与总体描述大体一致，但存在若干不一致与实现细节（未使用的二进制依赖、奇异路径引用、以及对 shell 命令参数未严格消毒）值得在安装前确认。",
+          "dimensions": [
+            {
+              "detail": "技能名与描述为“技能控制台/巡查/管理”，代码实现也主要通过 clawhub CLI 列表/检查/更新/卸载技能，整体用途一致 — 但 package metadata 指明需要二进制 jq，而代码中未见对 jq 的调用或依赖，这是不相称的（不一致）。",
+              "label": "Purpose & Capability",
+              "name": "purpose_capability",
+              "rating": "concern"
+            },
+            {
+              "detail": "SKILL.md 明确声称“所有数据本地缓存、不上传云端”，代码也主要在本地读写缓存文件。但实现中存在对文件/路径的跨目录引用：dashboard.js 在运行 clawhub list 时将 cwd 设为 path.join(__dirname, '..', '..')，dev-dashboard.js 读取 path.join(__dirname, '..', 'skill-dashboard', 'skill-state.json')（可能指向包外的路径）。这些路径选择可能导致读取/写入不止本技能目录的状态文件，建议确认运行时的实际安装布局与这些相对路径是否安全。",
+              "label": "Instruction Scope",
+              "name": "instruction_scope",
+              "rating": "concern"
+            },
+            {
+              "detail": "没有 install spec（即无远程下载/执行步骤），代码文件包含在包内，风险较低；没有从可疑 URLs 下载或在安装时执行外部二进制。",
+              "label": "Install Mechanism",
+              "name": "install_mechanism",
+              "rating": "ok"
+            },
+            {
+              "detail": "未请求任何环境变量或凭据，主要对本地文件和 clawhub CLI 发起调用，所需权限与描述相称。唯一异常是声明需要 jq（二进制），但代码中没有使用它。",
+              "label": "Credentials",
+              "name": "environment_proportionality",
+              "rating": "ok"
+            },
+            {
+              "detail": "always:false（不会被强制常驻）。技能在其目录下写入/读取缓存文件（skill-state.json、dev-cache.json），并且会运行 clawhub update/uninstall 等命令以管理其他技能——这是其功能需要但也意味着能影响系统中其它已安装技能。额外关注：对传入 skill 名称未做严格 shell 参数消毒（见下），可能带来命令注入风险，尤其当 skill 名称部分由不受信任输入提供时。",
+              "label": "Persistence & Privilege",
+              "name": "persistence_privilege",
+              "rating": "note"
+            }
+          ],
+          "guidance": "主要问题（在安装前请确认或修复）：\n\n- jq 在 requires.bins 中被列为必需，但代码并未使用 jq；确认这是冗余声明还是遗漏的实现依赖。若不需要，移除依赖声明以减少混淆。  \n\n- 路径/工作目录：代码在若干地方使用相对路径（如 cwd = path.join(__dirname, '..', '..') 和 dev-dashboard 读取 ../skill-dashboard/skill-state.json）。确认实际安装时这些路径不会让技能读取或修改非预期的文件/目录（可能存在越界读取的风险）。\n\n- 命令注入风险：代码通过 child_process.exec 运行 clawhub CLI（clawhub list/inspect/update/uninstall）。通常技能名来自 clawhub list 并由正则限制为 [a-zA-Z0-9_-]，这是安全的。但 some codepaths（例如 parseUserInput）会捕获任意用户文字并最终传入 update/uninstall 调用；如果未对这些字符串做严格校验/转义，存在 shell 注入的可能。建议确保所有传入的 skill 名称只允许合法 slug 字符，或使用 execFile/spawn+args 而非通过 shell 拼接命令。\n\n- 网络/外发：SKILL.md 明确“不上传云端”，代码也没有发现外部上报或自建远程端点（唯一外网交互是调用 clawhub CLI 的 inspect/打开浏览器到 https://clawhub.ai/skills），这与说明一致。\n\n- 期望能力 vs 要求能力：技能会管理（更新/卸载）其它技能，这是其功能所需，但这也意味着在允许其执行这些操作前，应信任该技能来源与作者。安装前请确认仓库来源（当前来源标为 unknown，但 homepage 指向 github.com/openclaw/skill-dashboard）。\n\n建议操作：\n1) 在受控环境（如本地沙箱）先运行并观察行为；2) 审核并修复对路径的相对引用，确保不会跨越到非预期目录；3) 要求或自行修改代码以对所有来自用户或外部的技能名进行严格校验或改用安全的 child_process API（execFile/spawn）；4) 如果你不能审计代码或不完全信任来源，谨慎授予该技能对系统中其它技能卸载/更新的权限。",
+          "findings": null,
+          "agenticRiskFindings": null,
+          "riskSummary": null,
+          "model": "gpt-5-mini",
+          "checkedAt": 1772080084523
+        }
+      }
+    }
+  }
+}

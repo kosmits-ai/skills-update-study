@@ -1,0 +1,71 @@
+corbin-breton/repo-guardian  1.1.0 -> 1.2.0
+change_type: instructions+code   changelog: **Version 1.2.0 — Data Privacy & Requirements Improvements**  - Added an explicit privacy/disclosure section detailing how repository code is transmitted to model providers, with clarification on diff truncation and token use. - Declared required environment variables and binaries in SKILL.md under a new `requires` field. - Updated token scope recommendations for improved least-privilege security. - Minor clarifications on data flow, privacy, and restrictions in documentation. - No core logic or
+
+### SKILL.md  [instructions]
+- version: 1.0.0
++ version: 1.2.0
++ requires:
++   env:
++     - GH_TOKEN
++   binaries:
++     - gh
++     - python3
++     - curl
++ ## Data Flow & Privacy
++ Repo Guardian sends PR diffs and file listings to the configured OpenClaw agent models for review. This means:
++ - **Repository code from open PRs is transmitted to your configured AI model providers** (e.g., Anthropic, OpenAI) via the OpenClaw agent interface
++ - No data is sent to any third-party endpoint beyond your configured model providers
++ - Large diffs are truncated to 500 lines before transmission to limit exposure
++ - The `GH_TOKEN` is used only for GitHub API calls and is never passed to AI model prompts
++ - All JSON payloads to the GitHub API are constructed via Python `json.dumps()` to prevent injection
++ **Recommended `GH_TOKEN` scopes:** `repo` (read) for review-only mode; add `repo` (write) only if auto-merge is enabled. Use a fine-grained token scoped to the specific repository when possible.
+
+### scripts/guardian.sh  [code]
+-         # Post approval comment
+-         COMMENT="## 🤖 Repo Guardian — Dual-Model Review\n\n**Opus:** ✅ APPROVE — $OPUS_SUMMARY\n**GPT-5.4:** ✅ APPROVE — $GPT_SUMMARY\n\n*Auto-merging on dual consensus.*"
+-         curl -s -X POST -H "$AUTH" -H "$ACCEPT" \
+-           "$API/repos/$REPO/issues/$PR_NUM/comments" \
+-           -d "{\"body\": \"$COMMENT\"}" > /dev/null
+-         # Squash merge
+-           -d "{\"merge_method\": \"squash\", \"commit_title\": \"$PR_TITLE (#$PR_NUM)\"}" > /dev/null
+-         COMMENT="## 🤖 Repo Guardian — Dual-Model Review\n\n**Opus:** $OPUS_VERDICT — $OPUS_SUMMARY\n$OPUS_FINDINGS\n\n**GPT-5.4:** $GPT_VERDICT — $GPT_SUMMARY\n$GPT_FINDINGS\n\n*Changes requested. Please address findings and push updates.*"
+-           -d "$(python3 -c "import json; print(json.dumps({'body': '''$COMMENT'''}))")" > /dev/null 2>&1 || \
+-           -d "{\"body\": \"Repo Guardian reviewed this PR. Changes requested by one or both models. See logs for details.\"}" > /dev/null
++         # Post approval comment (JSON-safe via Python to prevent injection)
++         COMMENT_BODY=$(python3 -c "
++ import json, sys
++ import json, sys
++ opus_summary = sys.argv[1]
++ gpt_summary = sys.argv[2]
++ body = '## 🤖 Repo Guardian — Dual-Model Review\n\n'
++ body = '## 🤖 Repo Guardian — Dual-Model Review\n\n'
++ body += f'**Opus:** ✅ APPROVE — {opus_summary}\n'
++ body += f'**GPT-5.4:** ✅ APPROVE — {gpt_summary}\n\n'
++ body += '*Auto-merging on dual consensus.*'
++ print(json.dumps({'body': body}))
++ print(json.dumps({'body': body}))
++ " "$OPUS_SUMMARY" "$GPT_SUMMARY")
++           -d "$COMMENT_BODY" > /dev/null
++           -d "$COMMENT_BODY" > /dev/null
++         # Squash merge (JSON-safe title)
++         MERGE_BODY=$(python3 -c "
++ title = sys.argv[1]
++ pr_num = sys.argv[2]
++ print(json.dumps({'merge_method': 'squash', 'commit_title': f'{title} (#{pr_num})'}))
++ " "$PR_TITLE" "$PR_NUM")
++           -d "$MERGE_BODY" > /dev/null
++         # Build comment body safely via Python (no shell interpolation in JSON)
++         COMMENT_BODY=$(_OPUS_FINDINGS="$OPUS_FINDINGS" _GPT_FINDINGS="$GPT_FINDINGS" \
++           python3 -c "
++ import json, sys, os
++ opus_verdict = sys.argv[1]
++ opus_summary = sys.argv[2]
++ opus_findings = os.environ.get('_OPUS_FINDINGS', '- No findings parsed')
++ gpt_verdict = sys.argv[3]
++ gpt_summary = sys.argv[4]
++ gpt_findings = os.environ.get('_GPT_FINDINGS', '- No findings parsed')
++ body += f'**Opus:** {opus_verdict} — {opus_summary}\n{opus_findings}\n\n'
++ body += f'**GPT-5.4:** {gpt_verdict} — {gpt_summary}\n{gpt_findings}\n\n'
++ body += '*Changes requested. Please address findings and push updates.*'
++ " "$OPUS_VERDICT" "$OPUS_SUMMARY" "$GPT_VERDICT" "$GPT_SUMMARY" 2>/dev/null) || \
++         COMMENT_BODY='{"body": "Repo Guardian reviewed this PR. Changes requested by one or both models. See logs for details."}'

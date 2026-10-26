@@ -1,0 +1,1382 @@
+zack-dev-cm/openclaw-cws-publisher  0.1.2 -> 0.2.0
+change_type: instructions+code   changelog: Split LocalLens out and narrow the public release kit.
+
+### SKILL.md  [instructions]
+- description: Build, package, audit, and publish a Chrome extension with OpenClaw browser automation, GitHub release artifacts, ClawHub metadata, and portfolio-ready copy.
+- metadata: {"openclaw":{"homepage":"https://github.com/zack-dev-cm/openclaw-cws-publisher","skillKey":"openclaw-cws-publisher","requires":{"anyBins":["python3","git","gh","clawhub","openclaw","sips"]}}}
+- Ship a Chrome extension with less manual release drift:
+- - scan local extension repos
+- - generate screenshots and promo art
+- - scan for obvious leak risks
+- - generate store, GitHub, ClawHub, and portfolio metadata
+- - drive Chrome Web Store submission with `openclaw browser`
+- - the user wants a new Chrome extension prepared for launch
+- - the user wants an OpenClaw-based publish agent for Chrome Web Store work
+- - the user wants GitHub, ClawHub, and portfolio release artifacts kept in one repo
+- 1. Generate marketing assets.
+-    - `python3 {baseDir}/scripts/generate_marketing_assets.py --repo-root <repo>`
+- 2. Inventory local extension repos.
+-    - `python3 {baseDir}/scripts/inventory_local_extensions.py --search-root <root> --markdown-out <md> --json-out <json>`
+- 3. Build the extension ZIP.
+- 4. Scan the repo for obvious publish leaks.
+- 5. Generate launch metadata.
+-    - `python3 {baseDir}/scripts/generate_launch_manifest.py --repo-root <repo> --out <json>`
+-    - `python3 {baseDir}/scripts/generate_listing_copy.py --repo-root <repo> --manifest <json> --out <json>`
+-    - `python3 {baseDir}/scripts/render_portfolio_entry.py --manifest <json> --out <md>`
+- 6. Publish through OpenClaw when credentials are present.
+-    - `python3 {baseDir}/scripts/publish_extension.py --repo-root <repo> --manifest <json> --listing <json> --zip-path <zip> --browser-profile <profile>`
+- - Prefer a single-purpose extension with minimal permissions.
+- - Do not assume Chrome Web Store login is active; detect it from the dashboard snapshot.
+- - Keep GitHub, ClawHub, and portfolio copy aligned with one manifest.
+- - If browser automation cannot safely locate a publishing control, stop and save the latest dashboard snapshot instead of guessing.
+- - `scripts/generate_marketing_assets.py`
+- - `scripts/inventory_local_extensions.py`
+- - `scripts/generate_listing_copy.py`
+- - `scripts/render_release_notes.py`
+- - `scripts/render_portfolio_entry.py`
+- - `scripts/publish_extension.py`
+- - `scripts/run_agent.py`
++ description: Package a Chrome extension, scan tracked files for public-surface leaks, and render GitHub or ClawHub release metadata with explicit tags.
++ metadata: {"openclaw":{"homepage":"https://github.com/zack-dev-cm/openclaw-cws-publisher","skillKey":"openclaw-cws-publisher","requires":{"anyBins":["python3","git","gh","clawhub"]}}}
++ Prepare a Chrome extension repo for release with less metadata drift:
++ - scan tracked files for obvious leak risks
++ - generate GitHub metadata
++ - generate optional ClawHub metadata and explicit tags
++ - render reproducible publish commands
++ - the user wants a Chrome extension repo prepared for GitHub release
++ - the user wants ClawHub tags and GitHub topics kept in sync
++ - the user already has a specific repo path to release
++ 1. Build the extension ZIP.
++ 2. Scan tracked files for obvious publish leaks.
++ 3. Generate launch metadata.
++    - `python3 {baseDir}/scripts/generate_launch_manifest.py --repo-root <repo> --owner <github-owner> --out <json>`
++ 4. Render publish commands.
++ - Operate on the repo path the user named, not on arbitrary sibling directories.
++ - Keep GitHub topics and ClawHub tags explicit in the generated manifest.
++ - Do not assume generated artifacts should be committed.
+
+### agents/openai.yaml  [code]
+-   short_description: "Package and publish Chrome extensions with OpenClaw, GitHub, ClawHub, and leak checks"
+-   default_prompt: "Use $openclaw-cws-publisher to inventory local Chrome extensions, build the new extension ZIP and store assets, scan for publish leaks, generate launch metadata, and drive Chrome Web Store submission through OpenClaw browser automation."
++   short_description: "Package Chrome extensions, scan tracked files, and render GitHub or ClawHub release commands with explicit tags"
++   default_prompt: "Use $openclaw-cws-publisher to package the target extension directory, scan tracked files for public-surface leaks, generate launch metadata for the target repo, and render GitHub or ClawHub publish commands with explicit topics and tags."
+
+### scripts/generate_launch_manifest.py  [code]
+- from common import abs_path, dump_json, slugify
+- def build_launch_manifest(repo_root: Path) -> dict:
+-     manifest = json.loads((repo_root / "extension" / "manifest.json").read_text(encoding="utf-8"))
+-     repo_url = f"https://github.com/zack-dev-cm/{repo_name}"
+-     skill_slug = "openclaw-cws-publisher"
+-     portfolio_slug = slugify(extension_name)
+-     return {
+-         "github_description": "Chrome extension plus OpenClaw skill for packaging, leak-checking, and publishing LocalLens on the Chrome Web Store.",
+-         "github_homepage": "https://clawhub.ai/zack-dev-cm/openclaw-cws-publisher",
+-         "github_topics": [
+-             "chrome-extension",
+-             "chrome-web-store",
+-             "openclaw",
+-             "browser-automation",
+-             "built-in-ai",
+-             "privacy",
+-         ],
+-         "clawhub": {
+-             "slug": skill_slug,
+-             "name": "OpenClaw CWS Publisher",
+-             "description": "OpenClaw skill for packaging and publishing Chrome extensions with leak checks and browser automation.",
+-             "tags": [
+-                 "chrome-extension",
+-                 "chrome-web-store",
+-                 "openclaw",
+-                 "browser-automation",
+-                 "privacy",
+-             ],
+-         },
+-         },
+-         "portfolio": {
+-             "title": "OpenClaw CWS Publisher + LocalLens",
+-             "slug": portfolio_slug,
+-             "project_link": f"https://zack-dev-cm.github.io/projects/{portfolio_slug}.md",
+-             "title": f"Initial public release: {extension_name}",
+-     parser = argparse.ArgumentParser(description="Generate one manifest for GitHub, ClawHub, store, and portfolio metadata.")
+-     payload = build_launch_manifest(repo_root)
++ from common import abs_path, dump_json, run, slugify
++ DEFAULT_TOPICS = ["chrome-extension", "chrome-web-store"]
++ DEFAULT_TAGS = ["chrome-extension", "chrome-web-store", "openclaw"]
++ def parse_github_owner(repo_root: Path) -> str | None:
++     result = run(["git", "remote", "get-url", "origin"], cwd=repo_root, timeout=10)
++     if result.returncode != 0:
++         return None
++         return None
++     remote = (result.stdout or "").strip()
++     if remote.startswith("git@github.com:"):
++         owner_repo = remote.split(":", 1)[1]
++     elif "github.com/" in remote:
++         owner_repo = remote.split("github.com/", 1)[1]
++     else:
++     owner = owner_repo.split("/", 1)[0]
++     return owner or None
++ def read_extension_manifest(repo_root: Path, extension_manifest: str | None) -> dict:
++     manifest_path = abs_path(extension_manifest) if extension_manifest else repo_root / "extension" / "manifest.json"
++     return json.loads(manifest_path.read_text(encoding="utf-8"))
++ def build_launch_manifest(
++     repo_root: Path,
++     *,
++     owner: str | None,
++     extension_manifest: str | None,
++     clawhub_slug: str | None,
++     clawhub_name: str | None,
++     github_description: str | None,
++     github_homepage: str | None,
++     topics: list[str] | None,
++     tags: list[str] | None,
++ ) -> dict:
++     manifest = read_extension_manifest(repo_root, extension_manifest)
++     repo_owner = owner or parse_github_owner(repo_root) or "example-org"
++     repo_url = f"https://github.com/{repo_owner}/{repo_name}"
++     payload = {
++         "repo_owner": repo_owner,
++         "github_description": github_description
++         or f"Package, scan, and release {extension_name} for the Chrome Web Store.",
++         "github_homepage": github_homepage or repo_url,
++         "github_topics": topics or DEFAULT_TOPICS,
++             "title": f"Release {extension_name} v{manifest['version']}",
++         "project_slug": slugify(extension_name),
++     if clawhub_slug:
++         payload["clawhub"] = {
++             "slug": clawhub_slug,
++             "name": clawhub_name or extension_name,
++             "description": f"Release helper and metadata surface for {extension_name}.",
++             "tags": tags or DEFAULT_TAGS,
++         }
++     return payload
++     parser = argparse.ArgumentParser(description="Generate GitHub and optional ClawHub release metadata from an extension manifest.")
++     parser.add_argument("--owner", help="GitHub owner or org. Defaults to the origin remote owner when available.")
++     parser.add_argument("--extension-manifest", help="Path to the target extension manifest. Defaults to <repo>/extension/manifest.json.")
++     parser.add_argument("--clawhub-slug", help="Optional ClawHub slug for the target public skill.")
++     parser.add_argument("--clawhub-name", help="Optional ClawHub display name.")
++     parser.add_argument("--github-description", help="Optional GitHub repo description override.")
++     parser.add_argument("--github-homepage", help="Optional GitHub homepage override.")
++     parser.add_argument("--topic", action="append", dest="topics", help="Repeatable GitHub topic. Defaults to chrome-extension and chrome-web-store.")
++     parser.add_argument("--tag", action="append", dest="tags", help="Repeatable ClawHub tag. Defaults to chrome-extension, chrome-web-store, and openclaw.")
++     payload = build_launch_manifest(
++         repo_root,
++         owner=args.owner,
++         extension_manifest=args.extension_manifest,
++         clawhub_slug=args.clawhub_slug,
++         clawhub_name=args.clawhub_name,
++         github_description=args.github_description,
++         github_homepage=args.github_homepage,
++         topics=args.topics,
++         tags=args.tags,
++     )
+
+### scripts/generate_listing_copy.py  [code]
+- from __future__ import annotations
+- import argparse
+- from pathlib import Path
+- from common import abs_path, dump_json, load_json
+- CERTIFICATIONS = [
+-     "I do not sell or transfer user data to third parties, outside of the approved use cases",
+-     "I do not use or transfer user data for purposes that are unrelated to my item's single purpose",
+-     "I do not use or transfer user data to determine creditworthiness or for lending purposes",
+- ]
+- def build_permission_justifications(permissions: list[str]) -> dict[str, str]:
+-     templates = {
+-         "activeTab": (
+-             "LocalLens requests temporary access to the current tab only after the user clicks an action, "
+-             "so it can read the page title, page URL, and visible text that the user wants summarized, "
+-             "translated, simplified, or rewritten."
+-         ),
+-         ),
+-         ),
+-         ),
+-         ),
+-         "scripting": (
+-             "LocalLens injects a short on-page function into the active tab at request time so it can extract "
+-             "either the readable page text or the user's current selection without persistent host access."
+-         "storage": (
+-             "LocalLens stores only user-facing preferences that are needed to keep the popup consistent across uses."
+-     }
+-     }
+-     return {permission: templates[permission] for permission in permissions if permission in templates}
+- def build_listing_payload(repo_root: Path, launch_manifest: dict) -> dict:
+-     permissions = load_json(repo_root / "extension" / "manifest.json").get("permissions", [])
+-     permission_justifications = build_permission_justifications(permissions)
+-     return {
+-         "name": launch_manifest["extension"]["name"],
+-         "short_description": "Local summaries, simplification, translation, and safe-share cleanup for the active tab using Chrome built-in AI.",
+-         "detailed_description": (
+-             "LocalLens helps you move through dense pages faster without routing tab text to an external server.\n\n"
+-             "What it does:\n"
+-             "- Summarizes the current page into useful key points\n"
+-             "- Summarizes selected text for fast scanning\n"
+-             "- Simplifies dense writing into plainer language\n"
+-             "- Translates selected text inside the popup\n"
+-             "- Creates safe-share briefs by masking obvious sensitive strings before local AI processing\n\n"
+-             "Why people use it:\n"
+-             "- No account or API key\n"
+-             "- Active-tab only workflow\n"
+-             "- Minimal permissions\n"
+-             "- No background scraping or host permissions\n"
+-             "- Built for privacy-sensitive reading and collaboration workflows\n\n"
+-             "Technical note:\n"
+-             "LocalLens targets Chrome 138+ with built-in AI support. If your browser has not downloaded the local model yet, Chrome may need a short warm-up download on first use."
+-         "category": "Tools",
+-         "language": "English",
+-         "single_purpose": (
+-             "Turn page or selected text from the active tab into local summaries, simplified rewrites, translations, or safe-share briefs with Chrome built-in AI."
+-         "privacy": {
+-             "stores_data": "No",
+-             "sells_data": "No",
+-             "shares_data": "No",
+-             "uses_external_servers": "No",
+-             "justification": (
+-                 "LocalLens reads website content from the active tab only after an explicit click. The extension "
+-                 "processes that content locally with Chrome built-in AI and does not transmit page text, selections, "
+-                 "or generated output to the developer."
+-             ),
+-             "permission_justifications": permission_justifications,
+-             "remote_code": False,
+-             "data_categories": ["Website content"],
+-             "privacy_policy_url": launch_manifest["privacy_policy_url"],
+-             "certifications": CERTIFICATIONS,
+-         },
+-         },
+-         "support_url": launch_manifest["support_url"],
+-         "reviewer_instructions": [
+-             "Use Chrome 138+ on desktop with built-in AI enabled.",
+-             "Open a text-heavy page, click the LocalLens action, and run Summarize page.",
+-             "Highlight text on a page, then run Summarize selection, Simplify selection, Translate selection, and Safe-share selection.",
+-             "If Chrome downloads a local model on first use, wait for the progress indicator in the popup to finish and rerun the action.",
+-         ],
+-         ],
+-         "store_assets": {
+-             "icon": str(repo_root / "extension" / "icons" / "icon128.png"),
+-             "screenshots": [
+-                 str(repo_root / "dist" / "store-assets" / "locallens-store-screenshot-1.png"),
+-                 str(repo_root / "dist" / "store-assets" / "locallens-store-screenshot-2.jpg"),
+-             ],
+-             "promo_small": str(repo_root / "dist" / "store-assets" / "locallens-promo-small.png"),
+-             "promo_marquee": str(repo_root / "dist" / "store-assets" / "locallens-promo-marquee.jpg"),
+-         "keywords": [
+-             "ai summary",
+-             "private summary",
+-             "local ai",
+-             "page summary",
+-             "translate text",
+-             "safe share",
+-             "chrome built-in ai",
+- def main() -> None:
+-     parser = argparse.ArgumentParser(description="Generate Chrome Web Store listing copy and metadata.")
+-     parser.add_argument("--repo-root", default=".", help="Project root.")
+-     parser.add_argument("--manifest", required=True, help="Launch manifest JSON.")
+-     parser.add_argument("--out", required=True, help="Output JSON path.")
+-     args = parser.parse_args()
+-     repo_root = abs_path(args.repo_root)
+-     launch_manifest = load_json(args.manifest)
+-     payload = build_listing_payload(repo_root, launch_manifest)
+-     dump_json(args.out, payload)
+-     print(f"Wrote {args.out}")
+- if __name__ == "__main__":
+-     main()
+
+### scripts/generate_marketing_assets.py  [code]
+- from __future__ import annotations
+- import argparse
+- import shutil
+- import subprocess
+- import tempfile
+- import time
+- from pathlib import Path
+- from common import abs_path, run
+- CHROME_CANDIDATES = [
+-     Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+-     Path("/Applications/Chromium.app/Contents/MacOS/Chromium"),
+- ]
+- def asset_is_fresh(output_path: Path, source_paths: list[Path]) -> bool:
+-     if not output_path.exists() or output_path.stat().st_size <= 0:
+-         return False
+-     output_mtime = output_path.stat().st_mtime
+-     latest_source_mtime = max(path.stat().st_mtime for path in source_paths if path.exists())
+-     return output_mtime >= latest_source_mtime
+- def detect_chrome() -> Path:
+-     for candidate in CHROME_CANDIDATES:
+-         if candidate.exists():
+-             return candidate
+-     raise SystemExit("Chrome or Chromium binary not found in standard macOS locations.")
+- def render_page(
+-     chrome: Path,
+-     chrome: Path,
+-     html_path: Path,
+-     html_path: Path,
+-     out_path: Path,
+-     out_path: Path,
+-     width: int,
+-     width: int,
+-     height: int,
+-     height: int,
+-     profile_dir: Path,
+-     profile_dir: Path,
+- ) -> None:
+- ) -> None:
+-     out_path.parent.mkdir(parents=True, exist_ok=True)
+-     source_paths = [html_path, html_path.parent / "marketing.css"]
+-     source_paths = [html_path, html_path.parent / "marketing.css"]
+-     if asset_is_fresh(out_path, source_paths):
+-     if asset_is_fresh(out_path, source_paths):
+-         return
+-         return
+-     command = [
+-         str(chrome),
+-         "--headless=new",
+-         "--disable-gpu",
+-         "--no-first-run",
+-         "--disable-background-networking",
+-         "--hide-scrollbars",
+-         f"--user-data-dir={profile_dir}",
+-         f"--window-size={width},{height}",
+-         f"--screenshot={out_path}",
+-         html_path.as_uri(),
+-     ]
+-     process = subprocess.Popen(
+-         command,
+-         stdout=subprocess.DEVNULL,
+-         stderr=subprocess.DEVNULL,
+-         start_new_session=True,
+-     )
+-     deadline = time.time() + 30
+-     while time.time() < deadline:
+-         if out_path.exists() and out_path.stat().st_size > 0:
+-             return
+-         if process.poll() is not None:
+-             time.sleep(0.25)
+-             if out_path.exists() and out_path.stat().st_size > 0:
+-                 return
+-             raise SystemExit(f"Chrome exited before writing {out_path}")
+-         time.sleep(0.25)
+-     raise SystemExit(f"Timed out waiting for {out_path}")
+- def convert_image(source: Path, destination: Path, image_format: str) -> None:
+-     destination.parent.mkdir(parents=True, exist_ok=True)
+-     destination.parent.mkdir(parents=True, exist_ok=True)
+-     result = run(["sips", "-s", "format", image_format, str(source), "--out", str(destination)], timeout=60)
+-     if result.returncode != 0:
+-     if result.returncode != 0:
+-         raise SystemExit(f"sips convert failed:\n{result.stderr or result.stdout}")
+- def render_jpeg(
+-     temp_png = profile_dir / f"{out_path.stem}.png"
+-     render_page(chrome, html_path, temp_png, width, height, profile_dir)
+-     convert_image(temp_png, out_path, "jpeg")
+- def resize(source: Path, destination: Path, size: int) -> None:
+-     result = run(["sips", "-z", str(size), str(size), str(source), "--out", str(destination)], timeout=60)
+-         raise SystemExit(f"sips resize failed:\n{result.stderr or result.stdout}")
+- def main() -> None:
+-     parser = argparse.ArgumentParser(description="Render icon and store assets from local HTML mockups.")
+-     parser.add_argument("--repo-root", default=".", help="Project root.")
+-     args = parser.parse_args()
+-     repo_root = abs_path(args.repo_root)
+-     chrome = detect_chrome()
+-     marketing = repo_root / "marketing"
+-     dist_assets = repo_root / "dist" / "store-assets"
+-     icons_dir = repo_root / "extension" / "icons"
+-     temp_icon = dist_assets / "icon128.png"
+-     screenshot = dist_assets / "locallens-store-screenshot-1.png"
+-     screenshot_alt = dist_assets / "locallens-store-screenshot-2.jpg"
+-     promo = dist_assets / "locallens-promo-small.png"
+-     marquee = dist_assets / "locallens-promo-marquee.jpg"
+-     profile_dir = Path(tempfile.mkdtemp(prefix="locallens-chrome-"))
+-     try:
+-         render_page(chrome, marketing / "icon.html", temp_icon, 128, 128, profile_dir)
+-         render_page(chrome, marketing / "screenshot.html", screenshot, 1280, 800, profile_dir)
+-         render_jpeg(chrome, marketing / "screenshot-focus.html", screenshot_alt, 1280, 800, profile_dir)
+-         render_page(chrome, marketing / "promo.html", promo, 440, 280, profile_dir)
+-         render_jpeg(chrome, marketing / "marquee.html", marquee, 1400, 560, profile_dir)
+-         icons_dir.mkdir(parents=True, exist_ok=True)
+-         shutil.copy2(temp_icon, icons_dir / "icon128.png")
+-         resize(temp_icon, icons_dir / "icon48.png", 48)
+-         resize(temp_icon, icons_dir / "icon32.png", 32)
+-         resize(temp_icon, icons_dir / "icon16.png", 16)
+-     finally:
+-         run(["pkill", "-f", str(profile_dir)], timeout=10)
+-         shutil.rmtree(profile_dir, ignore_errors=True)
+-     print(f"Generated store assets in {dist_assets}")
+-     print(f"Generated extension icons in {icons_dir}")
+- if __name__ == "__main__":
+-     main()
+
+### scripts/inventory_local_extensions.py  [code]
+- from __future__ import annotations
+- import argparse
+- import json
+- import re
+- import subprocess
+- from pathlib import Path
+- from common import abs_path, dump_json, dump_text, markdown_table
+- STORE_LINK_RE = re.compile(
+-     r"https://chromewebstore\.google\.com/detail/[^/\s)]+/(?P<id>[a-z]{32})",
+-     re.IGNORECASE,
+- )
+- REJECTED_PARENT_NAMES = {
+-     "web",
+-     "public",
+-     "static",
+-     "build",
+-     ".vite",
+-     "cache",
+-     "datasets",
+-     "fixtures",
+-     "outputs",
+-     "docs",
+- }
+- def _extract_store_links(candidate_paths: list[Path]) -> list[str]:
+-     links: list[str] = []
+-     for path in sorted(set(candidate_paths)):
+-         try:
+-         try:
+-         try:
+-             text = path.read_text(encoding="utf-8", errors="ignore")
+-         except Exception:
+-             continue
+-             continue
+-             continue
+-             continue
+-             continue
+-             continue
+-         links.extend(match.group(0) for match in STORE_LINK_RE.finditer(text))
+-     return sorted(set(links))
+- def _find_repo_local_store_links(repo_root: Path) -> list[Path]:
+-     try:
+-     try:
+-         result = subprocess.run(
+-         result = subprocess.run(
+-             [
+-             [
+-             [
+-                 "rg",
+-                 "-l",
+-                 "chromewebstore\\.google\\.com/detail/",
+-                 "--glob",
+-                 "--glob",
+-                 "--glob",
+-                 "--glob",
+-                 "--glob",
+-                 "--glob",
+-                 "--glob",
+-                 "--glob",
+-                 "--glob",
+-                 "--glob",
+-                 "--glob",
+-                 "--glob",
+-                 "--glob",
+-                 "--glob",
+-                 "--glob",
+-                 "--glob",
+-                 "--glob",
+-                 "README*",
+-                 "PRIVACY*",
+-                 "CHANGELOG*",
+-                 "*.html",
+-                 "*.js",
+-                 "*.jsx",
+-                 "*.mjs",
+-                 "*.cjs",
+-                 "*.ts",
+-                 "*.tsx",
+-                 "*.json",
+-                 "!node_modules/**",
+-                 "!dist/**",
+-                 "!build/**",
+-                 "!.venv/**",
+-                 "!docs/**",
+-                 "!tests/**",
+-                 str(repo_root),
+-             ],
+-             ],
+-             text=True,
+-             text=True,
+-             capture_output=True,
+-             capture_output=True,
+-             check=False,
+-             check=False,
+-             timeout=10,
+-         )
+-         )
+-         )
+-         )
+-         )
+-         return [Path(line) for line in result.stdout.splitlines() if line.strip()]
+-     except (FileNotFoundError, subprocess.TimeoutExpired):
+-         candidate_paths = []
+-         for pattern in [
+-             "README*",
+-             "PRIVACY*",
+-             "CHANGELOG*",
+-             "*.html",
+-             "*.js",
+-             "*.jsx",
+-             "*.mjs",
+-             "*.cjs",
+-             "*.ts",
+-             "*.tsx",
+-             "*.json",
+-         ]:
+-             candidate_paths.extend(path for path in repo_root.rglob(pattern) if path.is_file())
+-         return [
+-             path
+-             for path in candidate_paths
+-             if all(part not in {"node_modules", "dist", "build", ".venv", "docs", "tests"} for part in path.parts)
+-         ]
+-         ]
+- def _find_global_store_link_hints(search_root: Path, identifiers: list[str]) -> list[Path]:
+-     search_targets = [path for path in search_root.iterdir() if path.is_dir() and path.name.endswith(".github.io")]
+-     if not search_targets:
+-         return []
+-     candidate_paths: list[Path] = []
+-     for identifier in identifiers:
+-         if not identifier or identifier.startswith("__MSG_"):
+-             result = subprocess.run(
+-                 [
+-                     "rg",
+-                     "-l",
+-                     "-F",
+-                     identifier,
+-                     "--glob",
+-                     "--glob",
+-                     "--glob",
+-                     "--glob",
+-                     "--glob",
+-                     "--glob",
+-                     "*.md",
+-                     "README*",
+-                     "!node_modules/**",
+-                     "!dist/**",
+-                     "!build/**",
+-                     "!.venv/**",
+-                     *[str(path) for path in search_targets],
+-                 ],
+-                 text=True,
+-                 capture_output=True,
+-                 check=False,
+-                 timeout=10,
+-             )
+-         except (FileNotFoundError, subprocess.TimeoutExpired):
+-         candidate_paths.extend(Path(line) for line in result.stdout.splitlines() if line.strip())
+-     return candidate_paths
+- def resolve_project_root(manifest_path: Path, search_root: Path) -> Path:
+-     current = manifest_path.parent.resolve()
+-     search_root = search_root.resolve()
+-     while True:
+-         if (current / ".git").exists():
+-             return current
+-         if current == search_root or search_root not in current.parents:
+-             return manifest_path.parent.resolve()
+-         current = current.parent
+- def build_global_identifiers(repo_name: str, homepage_url: str | None) -> list[str]:
+-     identifiers: list[str] = []
+-     if homepage_url and homepage_url.startswith(("https://", "http://")):
+-         identifiers.append(homepage_url.rstrip("/"))
+-     if repo_name and any(char in repo_name for char in "-_."):
+-         identifiers.append(repo_name)
+-     return identifiers
+- def find_store_links(
+-     repo_root: Path,
+-     search_root: Path,
+-     *,
+-     repo_name: str,
+-     homepage_url: str | None,
+- ) -> list[str]:
+-     repo_local_paths = _find_repo_local_store_links(repo_root)
+-     links = _extract_store_links(repo_local_paths)
+-     if links:
+-         return links
+-     global_paths = _find_global_store_link_hints(search_root, build_global_identifiers(repo_name, homepage_url))
+-     return _extract_store_links(global_paths)
+- def looks_like_extension_manifest(manifest_path: Path) -> bool:
+-     lowered_parts = {part.lower() for part in manifest_path.parts}
+-     parent_name = manifest_path.parent.name.lower()
+-     if parent_name in REJECTED_PARENT_NAMES:
+-         return False
+-     if any(part in REJECTED_PARENT_NAMES for part in lowered_parts):
+-         return "chrome-extension" in lowered_parts or "extension" in lowered_parts
+-     return True
+- def collect_inventory(search_root: Path) -> list[dict]:
+-     inventory: list[dict] = []
+-                 "find",
+-                 str(search_root),
+-                 "-maxdepth",
+-                 "4",
+-                 "-name",
+-                 "manifest.json",
+-                 "-not",
+-                 "-not",
+-                 "-not",
+-                 "-not",
+-                 "-path",
+-                 "-path",
+-                 "-path",
+-                 "-path",
+-                 "*/node_modules/*",
+-                 "*/dist/*",
+-                 "*/build/*",
+-                 "*/.venv/*",
+-                 "-print",
+-             timeout=20,
+-         manifest_paths = [Path(line) for line in result.stdout.splitlines() if line.strip()]
+-     except FileNotFoundError:
+-         patterns = ["manifest.json", "*/manifest.json", "*/*/manifest.json", "*/*/*/manifest.json", "*/*/*/*/manifest.json"]
+-         manifest_paths = sorted({path for pattern in patterns for path in search_root.glob(pattern) if path.is_file()})
+-     except subprocess.TimeoutExpired as exc:
+-         raise RuntimeError(f"Timed out while scanning for manifest.json files under {search_root}") from exc
+-     for manifest_path in sorted(manifest_paths):
+-         if not looks_like_extension_manifest(manifest_path):
+-             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+-         except (OSError, json.JSONDecodeError):
+-         if "manifest_version" not in manifest:
+-         repo_root = resolve_project_root(manifest_path, search_root)
+-         store_links = find_store_links(
+-             repo_root,
+-             search_root,
+-             repo_name=repo_root.name,
+-             homepage_url=manifest.get("homepage_url"),
+-         inventory.append(
+-             {
+-                 "name": manifest.get("name", repo_root.name),
+-                 "version": str(manifest.get("version", "")),
+-                 "path": str(repo_root),
+-                 "description": manifest.get("description", ""),
+-                 "permissions": manifest.get("permissions", []),
+-                 "store_links": store_links,
+-                 "published": bool(store_links),
+-             }
+-     inventory.sort(key=lambda item: (not item["published"], item["name"].lower(), item["path"]))
+-     return inventory
+- def render_markdown(search_root: Path, inventory: list[dict]) -> str:
+-     rows = []
+-     for item in inventory:
+-         links = "<br>".join(item["store_links"]) if item["store_links"] else "local only"
+-         rows.append(
+-                 item["name"],
+-                 "published" if item["published"] else "unpublished",
+-                 item["version"] or "-",
+-                 links,
+-                 item["path"],
+-             ]
+-     return "\n".join(
+-         [
+-             "# Local Chrome Extension Inventory",
+-             "",
+-             "",
+-             "",
+-             f"Search root: `{search_root}`",
+-             markdown_table(["Name", "Status", "Version", "Store Link", "Path"], rows),
+-             f"Total extension repos found: **{len(inventory)}**",
+-     )
+- def main() -> None:
+-     parser = argparse.ArgumentParser(description="Scan a filesystem tree for Chrome extension manifests and inferred store links.")
+-     parser.add_argument("--search-root", required=True, help="Filesystem root to scan.")
+-     parser.add_argument("--json-out", required=True, help="JSON output path.")
+-     parser.add_argument("--markdown-out", required=True, help="Markdown output path.")
+-     args = parser.parse_args()
+-     search_root = abs_path(args.search_root)
+-     inventory = collect_inventory(search_root)
+-     dump_json(args.json_out, inventory)
+-     dump_text(args.markdown_out, render_markdown(search_root, inventory))
+-     print(f"Scanned {len(inventory)} extension repos under {search_root}")
+- if __name__ == "__main__":
+-     main()
+
+### scripts/openclaw_bridge.py  [code]
+- from __future__ import annotations
+- import json
+- import math
+- import re
+- import shutil
+- import subprocess
+- import time
+- from pathlib import Path
+- from common import abs_path, run
+- class OpenClawError(RuntimeError):
+-     pass
+- REF_PATTERNS = [r"^\[([a-z]?\d+)\]", r"\bref[:= ]([a-z]?\d+)\b", r"\(([a-z]?\d+)\)"]
+- INTERACTIVE_ELEMENTS = {
+-     "button",
+-     "checkbox",
+-     "combobox",
+-     "link",
+-     "menuitem",
+-     "option",
+-     "radio",
+-     "switch",
+-     "tab",
+-     "textbox",
+- }
+- def invoke(profile: str, *args: str, timeout: int = 60_000) -> str:
+-     return invoke_with_retry(profile, *args, timeout=timeout)
+- def is_retryable_error(message: str) -> bool:
+-     lowered = message.lower()
+-     return "gateway timeout" in lowered or "timed out" in lowered
+- def invoke_with_retry(
+-     profile: str,
+-     *args: str,
+-     timeout: int = 60_000,
+-     retries: int = 0,
+-     retry_delay_ms: int = 1_500,
+- ) -> str:
+-     cmd = ["openclaw", "browser", "--browser-profile", profile, "--timeout", str(timeout), *args]
+-     process_timeout = max(5, math.ceil(timeout / 1000) + 15)
+-     last_error: OpenClawError | None = None
+-     for attempt in range(retries + 1):
+-         try:
+-             result = run(cmd, timeout=process_timeout)
+-         except subprocess.TimeoutExpired as error:
+-             last_error = OpenClawError(f"OpenClaw command timed out after {process_timeout}s: {' '.join(cmd)}")
+-         else:
+-             if result.returncode == 0:
+-                 return result.stdout
+-             last_error = OpenClawError(result.stderr or result.stdout or "OpenClaw command failed")
+-         if attempt == retries or last_error is None or not is_retryable_error(str(last_error)):
+-             raise last_error
+-         time.sleep(retry_delay_ms / 1000)
+-     raise last_error or OpenClawError("OpenClaw command failed")
+- def start_browser(profile: str) -> None:
+-     status = browser_status(profile)
+-     if status.get("running"):
+-         return
+-     invoke_with_retry(profile, "start", timeout=180_000, retries=1, retry_delay_ms=3_000)
+- def open_url(profile: str, url: str) -> None:
+-     invoke_with_retry(profile, "open", url, timeout=120_000, retries=1)
+- def navigate(profile: str, url: str) -> None:
+-     invoke_with_retry(profile, "navigate", url, timeout=120_000, retries=1)
+- def wait_for(profile: str, *, text: str | None = None, ms: int = 5000) -> None:
+-     if text:
+-         invoke_with_retry(profile, "wait", "--text", text, "--timeout", str(ms), timeout=ms + 30_000, retries=1)
+-     else:
+-         time.sleep(max(ms, 0) / 1000)
+- def snapshot(profile: str, out: Path | None = None) -> str:
+-     args = ["snapshot", "--format", "ai", "--limit", "400"]
+-     if out is not None:
+-         args += ["--out", str(abs_path(out))]
+-     return invoke_with_retry(profile, *args, timeout=120_000, retries=2, retry_delay_ms=2_000)
+- def stage_upload_file(file_path: str | Path) -> Path:
+-     source = abs_path(file_path)
+-     upload_dir = Path("/tmp/openclaw/uploads")
+-     upload_dir.mkdir(parents=True, exist_ok=True)
+-     target = upload_dir / source.name
+-     if source != target:
+-         shutil.copy2(source, target)
+-     return target
+- def arm_upload(profile: str, file_path: str | Path) -> None:
+-     staged_path = stage_upload_file(file_path)
+-     invoke_with_retry(profile, "upload", str(staged_path), timeout=120_000, retries=1)
+- def click(profile: str, ref: str) -> None:
+-     invoke(profile, "click", ref)
+- def type_text(profile: str, ref: str, text: str) -> None:
+-     invoke(profile, "type", ref, text)
+- def fill_fields(profile: str, fields: list[dict]) -> None:
+-     invoke(profile, "fill", "--fields", json.dumps(fields))
+- def browser_status(profile: str) -> dict:
+-     try:
+-         return json.loads(invoke_with_retry(profile, "status", "--json", timeout=45_000, retries=1))
+-     except (OpenClawError, json.JSONDecodeError):
+-         return {}
+- def line_ref(line: str) -> str | None:
+-     for pattern in REF_PATTERNS:
+-         match = re.search(pattern, line)
+-         if match:
+-             return match.group(1)
+-     return None
+-     return None
+- def line_element(line: str) -> str | None:
+-     stripped = line.strip()
+-     match = re.match(r"^- ([^\[:]+)", stripped)
+-     return match.group(1).strip().lower() if match else None
+- def find_ref(snapshot_text: str, phrases: list[str]) -> str | None:
+-     lines = snapshot_text.splitlines()
+-     stack: list[tuple[int, str, str | None]] = []
+-     for line in lines:
+-         indent = len(line) - len(line.lstrip(" "))
+-         while stack and indent <= stack[-1][0]:
+-             stack.pop()
+-         element = line_element(line)
+-         ref = line_ref(line)
+-         if ref:
+-         if ref:
+-             stack.append((indent, ref, element))
+-         lowered = line.lower()
+-         if not all(phrase.lower() in lowered for phrase in phrases):
+-             continue
+-         if ref and element in INTERACTIVE_ELEMENTS:
+-             return ref
+-             return ref
+-         ancestor_nodes = stack[:-1] if ref else stack
+-         for _, ancestor_ref, ancestor_element in reversed(ancestor_nodes):
+-             if ancestor_element in INTERACTIVE_ELEMENTS:
+-                 return ancestor_ref
+-         if stack:
+-             return stack[-1][1]
+- def dump_snapshot_text(snapshot_text: str, path: str | Path) -> None:
+-     abs_path(path).write_text(snapshot_text, encoding="utf-8")
+
+### scripts/publish_extension.py  [code]
+- from __future__ import annotations
+- import argparse
+- import re
+- from pathlib import Path
+- from common import abs_path, load_json
+- from openclaw_bridge import (
+-     OpenClawError,
+-     arm_upload,
+-     click,
+-     dump_snapshot_text,
+-     fill_fields,
+-     find_ref,
+-     line_element,
+-     line_ref,
+-     open_url,
+-     snapshot,
+-     start_browser,
+-     wait_for,
+- )
+- )
+- DASHBOARD_URL = "https://chrome.google.com/webstore/devconsole"
+- PUBLIC_STORE_MARKERS = (
+-     "welcome to chrome web store",
+-     "top categories",
+-     "see collection",
+-     "favorites of 2025",
+- BLOCKER_PATTERNS = (" is required", "must certify", "must provide")
+- DEFAULT_REVIEWER_NOTES = [
+-     "Use Chrome 138+ on desktop with Chrome built-in AI enabled.",
+-     "Open a text-heavy page and run Summarize page from the LocalLens popup.",
+-     "Highlight text and verify Summarize selection, Simplify selection, Translate selection, and Safe-share selection.",
+- ]
+- def has_sign_in_control(snapshot_text: str) -> bool:
+-     for line in snapshot_text.splitlines():
+-     for line in snapshot_text.splitlines():
+-         lowered = line.lower()
+-         lowered = line.lower()
+-         lowered = line.lower()
+-         if "sign in" not in lowered and "signin" not in lowered and "log in" not in lowered:
+-             continue
+-             continue
+-             continue
+-         if "[cursor=pointer]" in lowered or find_ref(line, ["sign", "in"]) or find_ref(line, ["log", "in"]):
+-             return True
+-             return True
+-             return True
+-     return False
+-     return False
+-     return False
+- def find_new_item_ref(snapshot_text: str) -> str | None:
+-     return find_ref(snapshot_text, ["add", "new", "item"]) or find_ref(snapshot_text, ["new", "item"])
+- def find_upload_new_package_ref(snapshot_text: str) -> str | None:
+-     return find_button_ref(snapshot_text, ["upload", "new", "package"])
+- def find_upload_ref(snapshot_text: str) -> str | None:
+-     return (
+-         find_ref(snapshot_text, ["button", "select", "file"])
+-         or find_ref(snapshot_text, ["button", "browse"])
+-         or find_ref(snapshot_text, ["button", "upload", "zip"])
+-         or find_ref(snapshot_text, ["select", "file"])
+-         or find_ref(snapshot_text, ["browse"])
+-         or find_ref(snapshot_text, ["upload", "zip"])
+-     )
+-     )
+-     )
+-     )
+- def has_upload_dialog(snapshot_text: str) -> bool:
+-     lowered = snapshot_text.lower()
+-     lowered = snapshot_text.lower()
+-     return "select file" in lowered and ("dialog" in lowered or "upload new package" in lowered)
+- def find_button_ref(snapshot_text: str, label_phrases: list[str]) -> str | None:
+-     return find_ref(snapshot_text, ["button", *label_phrases]) or find_ref(snapshot_text, label_phrases)
+- def find_link_ref(snapshot_text: str, label_phrases: list[str]) -> str | None:
+-     return find_ref(snapshot_text, ["link", *label_phrases]) or find_ref(snapshot_text, label_phrases)
+- def find_textbox_ref(snapshot_text: str, label_phrases: list[str]) -> str | None:
+-     return find_ref(snapshot_text, ["textbox", *label_phrases])
+- def find_combobox_ref(snapshot_text: str, label_phrases: list[str]) -> str | None:
+-     return find_ref(snapshot_text, ["combobox", *label_phrases]) or find_ref(snapshot_text, label_phrases)
+- def find_option_ref(snapshot_text: str, option_label: str) -> str | None:
+-     return find_ref(snapshot_text, ["option", option_label]) or find_ref(snapshot_text, [option_label])
+- def find_checkbox_ref(snapshot_text: str, label_phrases: list[str]) -> str | None:
+-     return find_ref(snapshot_text, ["checkbox", *label_phrases]) or find_ref(snapshot_text, label_phrases)
+- def find_radio_ref(snapshot_text: str, label_phrases: list[str]) -> str | None:
+-     return find_ref(snapshot_text, ["radio", *label_phrases]) or find_ref(snapshot_text, label_phrases)
+- def line_indent(line: str) -> int:
+-     return len(line) - len(line.lstrip(" "))
+- def matching_line_indices(snapshot_text: str, label_phrases: list[str]) -> list[int]:
+-     lowered_phrases = [phrase.lower() for phrase in label_phrases]
+-     lowered_phrases = [phrase.lower() for phrase in label_phrases]
+-     return [
+-         index
+-         for index, line in enumerate(snapshot_text.splitlines())
+-         if all(phrase in line.lower() for phrase in lowered_phrases)
+-     ]
+- def control_is_checked(snapshot_text: str, label_phrases: list[str]) -> bool:
+-     lines = snapshot_text.splitlines()
+-     lines = snapshot_text.splitlines()
+-     for index in matching_line_indices(snapshot_text, label_phrases):
+-     for index in matching_line_indices(snapshot_text, label_phrases):
+-         line = lines[index].lower()
+-         if ("checkbox" in line or "radio" in line) and "[checked]" in line:
+- def combobox_has_value(snapshot_text: str, label_phrases: list[str], value: str) -> bool:
+-     lowered_value = value.lower()
+-         line = snapshot_text.splitlines()[index].lower()
+-         if "combobox" in line and lowered_value in line:
+- def find_section_button_ref(snapshot_text: str, label_phrases: list[str]) -> str | None:
+-     stack: list[tuple[int, str, str | None]] = []
+-     for index, line in enumerate(lines):
+-         indent = line_indent(line)
+-         while stack and indent <= stack[-1][0]:
+-             stack.pop()
+-         element = line_element(line)
+-         ref = line_ref(line)
+-         if ref:
+-             stack.append((indent, ref, element))
+-         if not all(phrase in lowered for phrase in lowered_phrases):
+-         ancestor_nodes = stack[:-1] if ref else stack
+-         for ancestor_indent, _, _ in reversed(ancestor_nodes):
+-             candidate_buttons: list[tuple[str, str]] = []
+-             for candidate in lines[index + 1 :]:
+-                 candidate_indent = line_indent(candidate)
+-                 if candidate_indent <= ancestor_indent:
+-                     break
+-                 if not candidate.lstrip().lower().startswith("- button"):
+-                     continue
+-                 candidate_ref = line_ref(candidate)
+-                 if candidate_ref:
+-                     candidate_buttons.append((candidate_ref, candidate.lower()))
+-             upload_candidates = [
+-                 candidate_ref
+-                 candidate_ref
+-                 for candidate_ref, candidate_line in candidate_buttons
+-                 for candidate_ref, candidate_line in candidate_buttons
+-                 if any(token in candidate_line for token in ("drop", "select", "upload", "browse"))
+-                 and "remove image" not in candidate_line
+-             ]
+-             ]
+-             if upload_candidates:
+-                 return upload_candidates[0]
+-             safe_candidates = [
+-                 if "remove image" not in candidate_line
+-             if safe_candidates:
+-                 return safe_candidates[0]
+-     return None
+-     return None
+- def dashboard_access_error(snapshot_text: str) -> str | None:
+-     if has_sign_in_control(snapshot_text):
+-         return "signed_out"
+-     if find_new_item_ref(snapshot_text):
+-         return None
+-     if any(marker in lowered for marker in PUBLIC_STORE_MARKERS):
+-         return "storefront_redirect"
+- def fill_text_field(profile: str, snap: str, label_phrases: list[str], value: str) -> bool:
+-     ref = find_textbox_ref(snap, label_phrases)
+-     if not ref:
+-     if not ref:
+-     if not ref:
+-     if not ref:
+-     if not ref:
+-     if not ref:
+-         return False
+-         return False
+-         return False
+-     fill_fields(profile, [{"ref": ref, "type": "textbox", "value": value}])
+-     return True
+-     return True
+- def capture_snapshot(profile: str, snapshot_dir: Path, filename: str) -> str:
+-     snap = snapshot(profile)
+-     dump_snapshot_text(snap, snapshot_dir / filename)
+-     return snap
+- def upload_asset(profile: str, snap: str, label_phrases: list[str], asset_path: str | None) -> bool:
+-     if not asset_path:
+-     ref = find_section_button_ref(snap, label_phrases) or find_button_ref(snap, label_phrases)
+-     arm_upload(profile, asset_path)
+-     click(profile, ref)
+-     click(profile, ref)
+-     click(profile, ref)
+-     click(profile, ref)
+-     click(profile, ref)
+- def navigate_to_section(profile: str, snap: str, label_phrases: list[str], snapshot_dir: Path, filename: str) -> str:
+-     ref = find_link_ref(snap, label_phrases)
+-         raise SystemExit(f"Could not find section link matching {' '.join(label_phrases)}.")
+-     wait_for(profile, ms=4000)
+-     return capture_snapshot(profile, snapshot_dir, filename)
+-     return capture_snapshot(profile, snapshot_dir, filename)
+-     return capture_snapshot(profile, snapshot_dir, filename)
+- def select_combobox_option(
+-     profile: str,
+-     profile: str,
+-     profile: str,
+-     snap: str,
+-     snap: str,
+-     snap: str,
+-     label_phrases: list[str],
+-     option_label: str,
+-     snapshot_dir: Path,
+-     snapshot_dir: Path,
+-     snapshot_dir: Path,
+-     before_filename: str,
+-     after_filename: str,
+- ) -> str:
+- ) -> str:
+- ) -> str:
+-     if not option_label or combobox_has_value(snap, label_phrases, option_label):
+-         return snap
+-         return snap
+-         return snap
+-         return snap
+-     ref = find_combobox_ref(snap, label_phrases)
+-     wait_for(profile, ms=2000)
+-     wait_for(profile, ms=2000)
+-     wait_for(profile, ms=2000)
+-     options_snapshot = capture_snapshot(profile, snapshot_dir, before_filename)
+-     option_ref = find_option_ref(options_snapshot, option_label)
+-     if not option_ref:
+-         raise SystemExit(f"Could not find option '{option_label}' for {' '.join(label_phrases)}.")
+-     click(profile, option_ref)
+-     return capture_snapshot(profile, snapshot_dir, after_filename)
+- def ensure_checkbox(profile: str, snap: str, label_phrases: list[str], snapshot_dir: Path, filename: str) -> str:
+-     if control_is_checked(snap, label_phrases):
+-     if control_is_checked(snap, label_phrases):
+-     ref = find_checkbox_ref(snap, label_phrases)
+-         raise SystemExit(f"Could not find checkbox matching {' '.join(label_phrases)}.")
+-     wait_for(profile, ms=1500)
+-     wait_for(profile, ms=1500)
+-     wait_for(profile, ms=1500)
+- def ensure_radio(profile: str, snap: str, label_phrases: list[str], snapshot_dir: Path, filename: str) -> str:
+-     ref = find_radio_ref(snap, label_phrases)
+-         raise SystemExit(f"Could not find radio matching {' '.join(label_phrases)}.")
+- def upload_package(profile: str, snap: str, zip_path: Path, snapshot_dir: Path, version: str) -> str:
+-     upload_button = find_upload_new_package_ref(snap)
+-     if upload_button:
+-         click(profile, upload_button)
+-         wait_for(profile, ms=2000)
+-         wait_for(profile, ms=2000)
+-         snap = capture_snapshot(profile, snapshot_dir, "dashboard-upload.txt")
+-     upload_ref = find_upload_ref(snap)
+-     if not upload_ref:
+-         raise SystemExit("Could not find the ZIP upload control.")
+-     arm_upload(profile, zip_path)
+-     click(profile, upload_ref)
+-     for _ in range(15):
+-         wait_for(profile, ms=5000)
+-         snap = capture_snapshot(profile, snapshot_dir, "dashboard-package.txt")
+-         if f"Version {version}" in snap or (not has_upload_dialog(snap) and "Permissions" in snap):
+-             return snap
+-     raise SystemExit("ZIP upload did not complete.")
+- def create_new_draft(profile: str, snap: str, zip_path: Path, snapshot_dir: Path, version: str) -> str:
+-     add_ref = find_new_item_ref(snap)
+-     if not add_ref:
+-         raise SystemExit(
+-             "Could not find the New Item control in the dashboard snapshot. "
+-             f"Review {snapshot_dir / 'dashboard-initial.txt'}."
+-         )
+-         )
+-         )
+-     click(profile, add_ref)
+-     wait_for(profile, ms=5000)
+-     upload_snapshot = capture_snapshot(profile, snapshot_dir, "dashboard-upload.txt")
+-     return upload_package(profile, upload_snapshot, zip_path, snapshot_dir, version)
+- def ensure_listing(
+-     launch_manifest: dict,
+-     listing: dict,
+-     listing: dict,
+-     listing_snapshot = navigate_to_section(profile, snap, ["store", "listing"], snapshot_dir, "dashboard-listing.txt")
+-     homepage_url = launch_manifest.get("repo_url", "")
+-     support_url = listing.get("support_url") or launch_manifest.get("support_url") or homepage_url
+-     if "description" in listing_snapshot.lower():
+-         fill_text_field(profile, listing_snapshot, ["description"], listing["detailed_description"])
+-         listing_snapshot = capture_snapshot(profile, snapshot_dir, "dashboard-listing.txt")
+-         listing_snapshot = capture_snapshot(profile, snapshot_dir, "dashboard-listing.txt")
+-         listing_snapshot = capture_snapshot(profile, snapshot_dir, "dashboard-listing.txt")
+-         listing_snapshot = capture_snapshot(profile, snapshot_dir, "dashboard-listing.txt")
+-     listing_snapshot = select_combobox_option(
+-     listing_snapshot = select_combobox_option(
+-         profile,
+-         profile,
+-         profile,
+-         listing_snapshot,
+-         listing_snapshot,
+-         ["category"],
+-         listing.get("category", ""),
+-         snapshot_dir,
+-         snapshot_dir,
+-         snapshot_dir,
+-         "category-options.txt",
+-         "after-category.txt",
+-         ["language"],
+-         listing.get("language", ""),
+-         "language-options.txt",
+-         "after-language.txt",
+-     if homepage_url:
+-         fill_text_field(profile, listing_snapshot, ["homepage", "url"], homepage_url)
+-         wait_for(profile, ms=1500)
+-         wait_for(profile, ms=1500)
+-         wait_for(profile, ms=1500)
+-     if support_url:
+-         fill_text_field(profile, listing_snapshot, ["support", "url"], support_url)
+-     store_assets = listing.get("store_assets", {})
+-     for label_phrases, asset_path in [
+-         (["store", "icon"], store_assets.get("icon")),
+
+### scripts/render_portfolio_entry.py  [code]
+- from __future__ import annotations
+- import argparse
+- from common import dump_text, load_json
+- def main() -> None:
+-     parser = argparse.ArgumentParser(description="Render a portfolio markdown entry from the launch manifest.")
+-     parser.add_argument("--manifest", required=True, help="Launch manifest JSON.")
+-     parser.add_argument("--out", required=True, help="Markdown output path.")
+-     args = parser.parse_args()
+-     manifest = load_json(args.manifest)
+-     extension = manifest["extension"]
+-     repo_url = manifest["repo_url"]
+-     markdown = f"""# {manifest['portfolio']['title']}
+- > Privacy-first Chrome extension and OpenClaw publishing agent for local AI summaries.
+- ## Summary
+- This project pairs a user-facing Chrome extension with an operator-facing release agent. `LocalLens` summarizes, simplifies, translates, and safe-shares page text locally with Chrome built-in AI. `OpenClaw CWS Publisher` inventories local extension repos, generates store assets, scans for leak risks, builds the extension ZIP, and drives Chrome Web Store submission through OpenClaw browser automation.
+- ## Project Link
+- {manifest['portfolio']['project_link']}
+- ## Key Features
+- - Local-first page and selection summaries with Chrome built-in AI
+- - Safe-share mode that redacts obvious sensitive strings before local AI processing
+- - OpenClaw publish agent for Chrome Web Store packaging, dashboard automation, and release metadata generation
+- - Leak-scan workflow before GitHub, ClawHub, and Chrome Web Store release
+- ## Tech Stack
+- - Chrome Extension (Manifest V3)
+- - JavaScript
+- - Python
+- - OpenClaw
+- - ClawHub
+- - GitHub CLI
+- ## Benchmarks & Analytics
+- - Extension version: {extension['version']}
+- - Chrome minimum version: {extension['chrome_min_version']}
+- - Runtime surfaces: 4 (extension, GitHub, ClawHub, portfolio)
+- - Privacy posture: local-only text processing
+- ## Links
+- - [View on GitHub]({repo_url})
+- - [Open on ClawHub](https://clawhub.ai/zack-dev-cm/{manifest['clawhub']['slug']})
+- """
+-     dump_text(args.out, markdown)
+-     print(f"Wrote {args.out}")
+- if __name__ == "__main__":
+-     main()
+
+### scripts/render_publish_commands.py  [code]
+-     clawhub = manifest["clawhub"]
+-     tags = clawhub.get("tags", [])
+-     topic_flags = " ".join(f"--add-topic {topic}" for topic in github_topics)
+-     tag_flags = f' \\\n  --tags "{",".join(tags)}"' if tags else ""
+-     text = f"""# Publish Commands
+- gh repo create zack-dev-cm/{repo_name} --public --source=. --remote=origin --push
+- gh repo edit zack-dev-cm/{repo_name} \\
+-   --description "{github_description}" \\
+-   --homepage "{github_homepage}"
+- gh repo edit zack-dev-cm/{repo_name} {topic_flags}
+- ## ClawHub
+- (cd skill/openclaw-cws-publisher && clawhub publish "$PWD" \\
+-   --changelog "Initial public release."{tag_flags})
+-     dump_text(args.out, text)
++     repo_owner = manifest.get("repo_owner", "example-org")
++     topic_lines = "\n".join(
++         f'gh repo edit {repo_owner}/{repo_name} --add-topic "{topic}"'
++         for topic in github_topics
++     ) or "# add topics if you need them"
++     homepage_line = (
++         f'gh repo edit {repo_owner}/{repo_name} --homepage "{github_homepage}"'
++         if github_homepage
++         else "# set a homepage if the project has one"
++     )
++     sections = [f"""# Publish Commands
++ gh repo create {repo_owner}/{repo_name} --public --source=. --remote=origin --push
++ gh repo edit {repo_owner}/{repo_name} --description "{github_description}"
++ {homepage_line}
++ {topic_lines}
++ """]
++     clawhub = manifest.get("clawhub")
++     if clawhub:
++         tags = clawhub.get("tags", [])
++         tag_flags = f' \\\n  --tags "{",".join(tags)}"' if tags else ""
++         sections.append(
++             f"""## ClawHub
++ (cd skill/openclaw-cws-publisher && npx --yes clawhub publish "$PWD" \\
++   --changelog "{release['title']}"{tag_flags})
++         )
++     dump_text(args.out, "\n".join(sections))
+
+### scripts/render_release_notes.py  [code]
+- from __future__ import annotations
+- import argparse
+- from common import dump_text, load_json
+- def main() -> None:
+-     parser = argparse.ArgumentParser(description="Render concise GitHub release notes from the launch manifest.")
+-     parser.add_argument("--manifest", required=True, help="Launch manifest JSON.")
+-     parser.add_argument("--out", required=True, help="Markdown output path.")
+-     args = parser.parse_args()
+-     manifest = load_json(args.manifest)
+-     extension = manifest["extension"]
+-     text = f"""# {manifest['release']['title']}
+- ## What shipped
+- - `LocalLens` Chrome extension v{extension['version']}
+- - OpenClaw publish skill for Chrome Web Store packaging and dashboard automation
+- - Local extension inventory report for your GitHub workspace
+- - Store assets, privacy copy, portfolio copy, and publish command sheet
+- ## Product position
+- LocalLens is a privacy-first Chrome extension that summarizes, simplifies, translates, and safe-shares active-tab text with Chrome built-in AI.
+- ## Notes
+- - No external inference server required
+- - Minimal extension permissions
+- - Release includes leak-scan and packaging helpers for repeatable future updates
+- - ClawHub package now ships with an explicit MIT license file in the published skill folder
+- """
+-     dump_text(args.out, text)
+-     print(f"Wrote {args.out}")
+- if __name__ == "__main__":
+-     main()
+
+### scripts/run_agent.py  [code]
+- from __future__ import annotations
+- import argparse
+- import subprocess
+- from pathlib import Path
+- from common import abs_path
+- SCRIPT_DIR = Path(__file__).resolve().parent
+- def run_step(*args: str) -> None:
+-     command = ["python3", str(SCRIPT_DIR / args[0]), *args[1:]]
+-     result = subprocess.run(command, text=True, check=False)
+-     if result.returncode != 0:
+-         raise SystemExit(result.returncode)
+- def main() -> None:
+-     parser = argparse.ArgumentParser(description="Run the end-to-end extension publish preparation workflow.")
+-     parser.add_argument("--repo-root", default=".", help="Project root.")
+-     parser.add_argument("--search-root", required=True, help="Filesystem root to scan for local extensions.")
+-     parser.add_argument("--browser-profile", default="openclaw-cws-publisher", help="OpenClaw browser profile.")
+-     parser.add_argument("--publish", action="store_true", help="Attempt browser-driven Chrome Web Store submission.")
+-     args = parser.parse_args()
+-     repo_root = abs_path(args.repo_root)
+-     dist = repo_root / "dist"
+-     dist.mkdir(parents=True, exist_ok=True)
+-     run_step("generate_marketing_assets.py", "--repo-root", str(repo_root))
+-     run_step(
+-     run_step(
+-     run_step(
+-     run_step(
+-     run_step(
+-     run_step(
+-     run_step(
+-     run_step(
+-         "inventory_local_extensions.py",
+-         "--search-root",
+-         args.search_root,
+-         "--markdown-out",
+-         "--markdown-out",
+-         str(repo_root / "docs" / "local_extension_inventory.md"),
+-         "--json-out",
+-         "--json-out",
+-         str(dist / "local_extension_inventory.json"),
+-     )
+-     )
+-     )
+-     )
+-     )
+-     )
+-     )
+-     )
+-         "build_extension_zip.py",
+-         "--extension-dir",
+-         str(repo_root / "extension"),
+-         "--out",
+-         "--out",
+-         "--out",
+-         "--out",
+-         "--out",
+-         "--out",
+-         str(dist / "locallens-extension.zip"),
+-         "scan_publish_surface.py",
+-         "--root",
+-         str(repo_root),
+-         str(repo_root),
+-         str(repo_root),
+-         str(dist / "publish-surface.json"),
+-         str(repo_root / "docs" / "publish_surface.md"),
+-         "generate_launch_manifest.py",
+-         "--repo-root",
+-         "--repo-root",
+-         str(dist / "launch-manifest.json"),
+-         str(dist / "launch-manifest.json"),
+-         str(dist / "launch-manifest.json"),
+-         str(dist / "launch-manifest.json"),
+-         str(dist / "launch-manifest.json"),
+-         "generate_listing_copy.py",
+-         "--manifest",
+-         "--manifest",
+-         "--manifest",
+-         "--manifest",
+-         str(dist / "store-listing.json"),
+-         "render_portfolio_entry.py",
+-         str(dist / "portfolio-entry.md"),
+-         "render_release_notes.py",
+-         str(dist / "github-release-notes.md"),
+-         "render_publish_commands.py",
+-         str(dist / "publish-commands.md"),
+-     if args.publish:
+-         run_step(
+-             "publish_extension.py",
+-             "--repo-root",
+-             str(repo_root),
+-             "--manifest",
+-             str(dist / "launch-manifest.json"),
+-             "--listing",
+-             str(dist / "store-listing.json"),
+-             "--zip-path",
+-             str(dist / "locallens-extension.zip"),
+-             "--browser-profile",
+-             args.browser_profile,
+-         )
+-     print("Agent run completed.")
+- if __name__ == "__main__":
+-     main()
+
+### scripts/scan_publish_surface.py  [code]
+- from common import abs_path, dump_json, dump_text, markdown_table
+- SKIP_DIRS = {".git", ".venv", "node_modules", "dist", "__pycache__"}
+-     for path in root.rglob("*"):
+-         if any(part in SKIP_DIRS for part in path.parts):
+-             continue
+-         if not path.is_file():
+-         if path.name.startswith("test_") or path.name == "scan_publish_surface.py":
+-         if path.name in {"publish_surface.md", "local_extension_inventory.md"}:
+-                         "path": str(path),
+-         [finding["kind"], Path(finding["path"]).name, str(finding["line"]), finding["excerpt"]]
+-             markdown_table(["Kind", "File", "Line", "Excerpt"], rows) if rows else "No findings.",
++ from common import abs_path, dump_json, dump_text, markdown_table, run
++ }
++ TEXT_EXTENSIONS = {
++     ".cjs",
++     ".css",
++     ".html",
++     ".js",
++     ".json",
++     ".jsx",
++     ".md",
++     ".mjs",
++     ".py",
++     ".sh",
++     ".toml",
++     ".ts",
++     ".tsx",
++     ".txt",
++     ".yaml",
++     ".yml",
++ def tracked_files(root: Path) -> list[Path]:
++     result = run(["git", "ls-files", "-z"], cwd=root, timeout=15)
++     if result.returncode != 0:
++         return [path for path in root.rglob("*") if path.is_file()]
++     return [root / path for path in result.stdout.split("\0") if path]
++     for path in tracked_files(root):
++         if not path.exists() or not path.is_file():
++         if path.name == "scan_publish_surface.py":
++         if path.suffix and path.suffix.lower() not in TEXT_EXTENSIONS:
++                         "path": str(path.relative_to(root)),
++         [finding["kind"], finding["path"], str(finding["line"]), finding["excerpt"]]
++             markdown_table(["Kind", "Path", "Line", "Excerpt"], rows) if rows else "No findings.",

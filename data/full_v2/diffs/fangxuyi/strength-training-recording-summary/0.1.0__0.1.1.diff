@@ -1,0 +1,138 @@
+fangxuyi/strength-training-recording-summary  0.1.0 -> 0.1.1
+change_type: instructions   changelog: Simplify public-facing skill page with accepted inputs, invocation examples, and sample WorkoutSummary output
+
+### SKILL.md  [instructions]
+- description: "Convert strength-training audio recordings or transcripts into clean WorkoutSummary notes for future reference, with exercise-name standardization, duration calculation, sets/reps counting, multilingual support, and optional speech-to-text backends."
+- Use this skill to turn a strength-training recording or transcript into a compact `WorkoutSummary <date>` note that is useful for future reference.
+- Load `references/summary-workflow.md` when you need implementation details, suggested commands, output shape, dataset matching guidance, or audio-format caveats.
+- ## Quick Model
+- 1. Accept a local strength-training recording or transcript file, usually `.m4a`, `.mp3`, `.wav`, `.caf`, `.md`, `.txt`, `.srt`, `.vtt`, or `.json`.
+- 2. Pick a transcription backend that is already available, or guide setup if none is ready.
+- 3. Preserve transcript timestamps when available.
+- 4. Produce a concise workout summary in chat or stdout.
+- 5. Do not upload to hosted storage, create remote sessions, or store vector indexes unless the user explicitly asks.
+- ## Workflow
+- 1. Confirm the source file exists; inspect size/container for audio or structure for transcripts.
+- 2. If the audio is not ideal, convert, compress, or split it before transcription.
+- 3. Choose the best ready transcription backend:
+-    - local Whisper CLI when installed and privacy/offline use matters
+-    - Groq Whisper when `GROQ_API_KEY` is configured
+-    - OpenAI or another compatible transcription API when the user provides credentials
+-    - an existing transcript file if audio transcription is unavailable
+- 4. If no backend is ready, explain the options and ask the user which one to set up.
+- 5. Transcribe with timestamps when possible.
+- 6. Summarize the session into:
+-    - title: `WorkoutSummary <date>`
+-    - total workout length
+-    - number of completed exercises
+-    - exercise name
+-    - duration, not raw time range
+-    - groups/sets completed
+-    - reps, duration, or holds completed
+-    - trainer cues only when they add something beyond the reference exercise instructions
+-    - homework or next-session notes
+- 7. Print the summary. Save transcript or summary only when asked.
+- ## Audio Prep
+- Use local preprocessing when the input is too large, has an awkward container, or fails transcription:
+- - Convert CAF/LPCM or unusual containers to WAV or low-bitrate `.m4a`.
+- - Compress long recordings to mono, 16 kHz, around 24 kbps when quality is sufficient for speech.
+- - Split recordings above the chosen backend's limit into ordered chunks, commonly 15-minute parts.
+- - When splitting, preserve part order and add each part's start offset before summarizing timestamps.
+- Useful commands:
+- ```bash
+- ffprobe -hide_banner "$AUDIO"
+- ffmpeg -i input.caf -ac 1 -ar 16000 output.wav
+- ffmpeg -i input.m4a -ac 1 -ar 16000 -b:a 24k output.m4a
+- ffmpeg -i input.m4a -f segment -segment_time 900 -c copy part_%03d.m4a
+- ## API Key
+- Do not embed real API keys in this skill or any publishable package. Read service keys from environment variables such as `GROQ_API_KEY` or provider-specific equivalents, a local secret manager, or an OpenClaw secret mechanism supplied at runtime.
+- ## Backend Options
+- Prefer a backend that is ready on the user's machine. Do not force Groq if its key/session is not set up.
+- - Local Whisper: no API key; good default for privacy and offline use if the `whisper` CLI is installed.
+- - Groq Whisper: fast cloud transcription when `GROQ_API_KEY` is configured.
+- - OpenAI or compatible APIs: use when the user already has that provider configured.
+- - Existing transcript: summarize directly if the user already has `.txt`, `.srt`, `.vtt`, `.json`, or Markdown transcript output.
+- ## Exercise Dataset Matching
+- When possible, standardize exercise names against `hasaneyldrm/exercises-dataset`:
+- - Repository: `https://github.com/hasaneyldrm/exercises-dataset`
+- - Primary file: `data/exercises.json`
+- - Useful fields: `name`, `category`, `body_part`, `equipment`, `target`, `muscle_group`, `secondary_muscles`, `instructions.<lang>`, and `instruction_steps.<lang>`
+- - Supported instruction languages include English, Spanish, Italian, Turkish, Russian, Chinese, Hindi, Polish, and Korean.
+- Dataset workflow rules:
+- - Treat the dataset as an external lookup database, not prompt content.
+- - Do not paste the full `exercises.json` into the conversation.
+- - Load or cache the JSON locally, then build a lightweight searchable index.
+- - Extract candidate exercise names from the transcript first.
+- - Retrieve only the top matching dataset records for those candidates.
+- - Pass only compact matched metadata and relevant instruction snippets into final summarization.
+- - Use code or shell tools for fuzzy matching when available; use the LLM for judgment after narrowing candidates.
+- - Prefer `scripts/match_exercises.py` for the first-pass fuzzy match when this skill package is available.
+- Example:
+- python scripts/match_exercises.py --lang zh --top-k 3 "深蹲" "dumbbell lateral raise"
+- python scripts/match_exercises.py --candidates-file candidates.txt --lang en --pretty
+- Include equipment or variant words in candidates when the transcript provides them, for example `哑铃侧平举` instead of only `侧平举`; generic names intentionally return multiple plausible variants for later disambiguation.
+- Matching rules:
+- - Detect the dominant transcript language and preserve the user's requested output language when known.
+- - For Chinese or mixed Chinese/English sessions, match both translated exercise meaning and any English exercise names the trainer uses.
+- - Normalize spoken names and dataset names by lowercasing where applicable, removing punctuation, and collapsing equipment/side variants.
+- - Use fuzzy matching plus transcript context such as equipment, target body part, and trainer wording.
+- - Use the dataset `name` as the canonical exercise name when confidence is high; include a translated label only if it helps the user.
+- - If confidence is low, keep the trainer/spoken name and mark it as approximate instead of forcing a dataset match.
+- - Do not write `dataset match` in the final summary; use the matched name directly as the exercise name.
+- - Compare trainer cues against the dataset instructions in the transcript language when available, falling back to English.
+- - Only include highlights that are specific, corrective, repeated, or materially different from the dataset's standard instructions.
+- - Do not include generic cues already covered by the dataset unless the trainer personalized them for the user.
+- ## Output Format
+- Prefer this compact format:
+- WorkoutSummary <date>
+- Total length: 45:20
+- Exercises completed: 6
+- 1. Canonical exercise name, ~2 min, 2 groups * 10 reps/side
+- - Direct note or cue; no `trainer-specific cue` label.
+- Use duration on the exercise line, not raw time ranges. For split/non-contiguous groups, show total duration such as `~4 min total`. Use `scripts/calc_duration.py` when helpful. Use `about`, `roughly`, or `~` when the transcript is ambiguous. Count groups/sets and reps from what was actually completed, not just planned. Never invent sets, reps, weights, pain details, or medical conclusions.
+- ## Important Caveats
+- - Groq Whisper is an option, not a requirement.
+- - Keep API keys out of output and committed files.
+- - Cloud providers may have per-file limits; split long recordings when needed.
+- - For Chinese/English mixed sessions, preserve the trainer's intent rather than translating literally when naming exercises or cues.
++ description: "Create WorkoutSummary notes from strength-training recordings or transcripts. Accepts audio (.m4a, .mp3, .wav, .caf) and transcript files (.md, .txt, .srt, .vtt, .json); outputs total time, exercises completed, sets/reps, durations, and concise coach notes."
++ Use this skill when the user wants a strength-training session recording or transcript converted into a compact summary note for future reference.
++ Load `references/summary-workflow.md` only when you need implementation details, transcription backend guidance, audio cleanup commands, dataset matching rules, or helper-script behavior.
++ ## Accepted Inputs
++ - Audio recordings: `.m4a`, `.mp3`, `.wav`, `.caf`
++ - Transcript files: `.md`, `.txt`, `.srt`, `.vtt`, `.json`
++ - Mixed-language trainer sessions, including Chinese/English audio or transcripts
++ ## How To Invoke
++ The user can ask naturally, for example:
++ ```text
++ Use strength-training-recording-summary on /path/to/workout.m4a
++ Summarize this strength training transcript: /path/to/session.md
++ Create a WorkoutSummary for my Chinese/English trainer recording
++ ## Example Output
++ WorkoutSummary 2026-06-20
++ Total length: 01:21:44
++ Exercises completed: 14
++ 1. Dumbbell lateral raise, ~4 min total, 2 groups * 12 reps
++ - Keep shoulders down and stop before shrugging.
++ 2. Goblet squat, ~3 min, 3 groups * 10 reps
++ - Slow the descent and keep pressure through the mid-foot.
++ ## Summary Rules
++ - Start with `WorkoutSummary <date>`.
++ - Include total session length and number of completed exercises.
++ - Use duration on each exercise line, not raw timestamp ranges.
++ - For split/non-contiguous work, show the combined duration, e.g. `~4 min total`.
++ - Count completed groups/sets and reps from the transcript; mark approximate values with `~` when needed.
++ - Standardize exercise names against `hasaneyldrm/exercises-dataset` when practical, but do not mention `dataset match` in the final output.
++ - Put useful coach notes directly under the exercise without labels like `trainer-specific cue`.
++ - Preserve the user's requested output language when known.
++ - Never invent weights, reps, sets, pain details, diagnoses, or medical conclusions.
++ ## Helper Scripts
++ Use bundled helpers when useful:
++ python scripts/calc_duration.py '03:50-05:17 07:51-10:00'
++ python scripts/match_exercises.py --lang zh --top-k 3 "哑铃侧平举"
++ ## Transcription Notes
++ Prefer an input transcript when one already exists. For audio, use the best available transcription backend:
++ - local Whisper CLI when installed
++ - Groq Whisper when `GROQ_API_KEY` is configured
++ - OpenAI or another compatible API when the user has credentials ready
++ Do not embed API keys in the skill or output. If no transcription backend is ready, explain the options and ask which one the user wants to set up.

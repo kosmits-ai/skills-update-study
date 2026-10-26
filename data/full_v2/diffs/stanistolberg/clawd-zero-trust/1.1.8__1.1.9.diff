@@ -1,0 +1,150 @@
+stanistolberg/clawd-zero-trust  1.1.8 -> 1.1.9
+change_type: instructions+docs+code   changelog: clawd-zero-trust v1.2.0 adds dynamic provider whitelisting and improves configuration management.  - Added dynamic whitelisting via scripts/whitelist.sh for secure, user-friendly provider/domain additions. - Introduced config/custom-providers.json and config/providers.txt for external provider/domain configuration. - Updated egress-filter.sh to consume new config files, reducing hardcoding. - Documentation in SKILL.md and README.md clarified to emphasize dynamic whitelist workflow. - Improved st
+
+### README.md  [docs]
+- # clawd-zero-trust v1.1.7
++ # clawd-zero-trust v1.2.0
+
+### SKILL.md  [instructions]
+- version: "1.1.7"
+- # clawd-zero-trust (v1.1.7)
+- # Force apply when script hash changed from stored profile
+- bash /home/claw/.openclaw/workspace/skills/clawd-zero-trust/scripts/egress-filter.sh --apply --force
+- ### 4) Release Gate (v1.1.7)
+- On apply/canary, hash mismatch is refused unless `--force` is provided.
++ version: "1.2.0"
++ # clawd-zero-trust (v1.2.0)
++ ```bash
++ ```
++ ### 4) Dynamic Whitelisting (MAX USER-FRIENDLY API)
++ To open a new port or add a service securely (e.g. for custom email, video extraction, new AI agents), **DO NOT edit the bash script or hardcoded arrays**. Always use the dynamic configuration helper command:
++ bash /home/claw/.openclaw/workspace/skills/clawd-zero-trust/scripts/whitelist.sh <domain> <port>
++ *(Example: `bash whitelist.sh youtu.be 443`). This automatically injects the domain cleanly into the `config/providers.txt` engine, triggers a transactional configuration flush, and instantly applies the changes to UFW.*
++ ### 5) Release Gate (v1.2.0)
++ On apply/canary, hash mismatch is refused unless `--force` is provided. The `whitelist.sh` helper intrinsically handles hash mismatches seamlessly.
+
+### config/custom-providers.json  [code]
++ {
++   "_comment": "Custom egress providers for this OpenClaw instance.",
++   "_format": "Keys are hostnames, values are port numbers. Keys starting with '_' are metadata and are ignored. Use 'verify_tcp' (array of 'host:port') to add TCP-level post-checks after --apply/--canary.",
++   "_docs": "See skills/clawd-zero-trust/SKILL.md#custom-providers for full documentation.",
++   "_example": {
++     "mail.example.com": "993",
++     "smtp.example.com": "587",
++     "db.internal": "5432",
++     "verify_tcp": ["mail.example.com:993", "smtp.example.com:587"]
++   },
++   "verify_tcp": [
++     "imap.hostinger.com:993",
++     "smtp.hostinger.com:587"
++   ],
++   "imap.hostinger.com": "993",
++   "smtp.hostinger.com": "587"
++ }
+
+### config/providers.txt  [docs]
++ # Egress Providers Allowlist
++ #
++ #
++ # FORMAT: [domain] [port]
++ # Lines starting with `#` are ignored.
++ # Example:
++ # customemail.com 587
++ # api.finance.io 443
++ log.tailscale.io 443
++ imap.hostinger.com 993
++ api.telegram.org 443
++ api.github.com 443
++ oauth2.googleapis.com 443
++ youtube.com 443
++ api.openai.com 443
++ api.agentsandbox.co 443
++ login.tailscale.com 443
++ smtp.hostinger.com 587
++ api.anthropic.com 443
++ googlevideo.com 443
++ api.search.brave.com 443
++ youtu.be 443
++ generativelanguage.googleapis.com 443
++ accounts.google.com 443
++ controlplane.tailscale.com 443
++ testing.local 443
+
+### hardening.json  [code]
+-         "allow": ["web_search", "web_fetch", "message", "session_status"]
++   "version": "1.2.0",
++         "allow": [
++           "web_search",
++           "web_fetch",
++           "message",
++           "session_status"
++         ]
+
+### scripts/egress-filter.sh  [code]
+- PROFILE_VERSION="1.1.7"
+- # DNS-based allowlist
+- # shellcheck disable=SC2034
+- declare -A PROVIDERS=(
+-   ["api.anthropic.com"]="443"
+-   ["api.openai.com"]="443"
+-   ["generativelanguage.googleapis.com"]="443"
+-   ["accounts.google.com"]="443"
+-   ["oauth2.googleapis.com"]="443"
+-   ["api.telegram.org"]="443"
+-   ["api.search.brave.com"]="443"
+-   ["controlplane.tailscale.com"]="443"
+-   ["login.tailscale.com"]="443"
+-   ["log.tailscale.io"]="443"
+-   ["api.github.com"]="443"
+-   # registry.npmjs.org — NOT included by default (supply-chain risk: broad npm
+-   # access is not needed at agent runtime). Only add if you run npm-based
+-   # OpenClaw plugins that phone home to npm during normal operation.
+-   # ["registry.npmjs.org"]="443"
+-   # api.agentsandbox.co — OpenClaw Agent Sandbox API (first-party OpenClaw
+-   # infrastructure, NOT a third-party service). Hosts isolated sub-agent
+-   # execution contexts. "agentsandbox" = OpenClaw's VM pool, not a C2 domain.
+-   # Ref: https://docs.openclaw.ai | See: references/false-positives.md
+-   ["api.agentsandbox.co"]="443"
+- )
++ PROFILE_VERSION="1.2.0"
++   exit 1
++ fi
++ # DNS-based allowlist loaded dynamically from plain-text registry
++ declare -A PROVIDERS=()
++ PROVIDERS_FILE="$(dirname "$0")/../config/providers.txt"
++ if [[ -f "$PROVIDERS_FILE" ]]; then
++   while read -r domain port; do
++     if [[ -z "$domain" || "$domain" == \#* ]]; then
++       continue
++     fi
++     fi
++     if [[ -n "$domain" && -n "$port" ]]; then
++       PROVIDERS["$domain"]="$port"
++   done < "$PROVIDERS_FILE"
++ else
++   log "ERROR: Configuration file $PROVIDERS_FILE not found."
+
+### scripts/whitelist.sh  [code]
++ #!/usr/bin/env bash
++ # clawd-zero-trust dynamic egress whitelist wrapper — v1.2.0
++ # Instantly punctures the Zero Trust proxy for the target domain and forces a physical UFW refresh.
++ if [ "$#" -ne 2 ]; then
++     echo "Usage: ./whitelist.sh <domain> <port>"
++     echo "Example: ./whitelist.sh customemail.com 587"
++     exit 1
++     exit 1
++ fi
++ fi
++ DOMAIN=$1
++ PORT=$2
++ CONFIG_DIR="$(dirname "$0")/../config"
++ PROVIDERS_FILE="$CONFIG_DIR/providers.txt"
++ FILTER_SCRIPT="$(dirname "$0")/egress-filter.sh"
++ if [ ! -f "$PROVIDERS_FILE" ]; then
++     echo "❌ Error: $PROVIDERS_FILE not found."
++ # Append seamlessly to the text database
++ echo "$DOMAIN $PORT" >> "$PROVIDERS_FILE"
++ echo "✅ Added $DOMAIN mapping to port $PORT in $PROVIDERS_FILE"
++ # Trigger a transactional UFW deployment
++ echo "🔄 Executing Zero Trust application..."
++ sudo bash "$FILTER_SCRIPT" --apply --force
