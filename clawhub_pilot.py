@@ -21,16 +21,19 @@ What it does (5 stages):
 
 Outputs (inside --out):
   raw/skill_pages/page_XXXXX.json   raw catalog pages (as returned by the API)
-  skills_all.jsonl                  one line per skill in the catalog
-  census.csv                        one row per skill: number of versions, dates
-  census_summary.json               distribution of version counts over the catalog
-  sample.json                       the sampled skills (reused on re-runs)
   skills/<owner>/<slug>/...         per-skill cache: versions, metadata, scans, ZIPs
-  versions.csv                      one row per (skill, version)
-  updates.csv                       one row per consecutive version pair (A -> B)
-  skills_summary.csv                one row per sampled skill
-  summary.json                      overall and per-stratum numbers
   crawl.log                         full log of the run
+  tables/
+    skills_all.jsonl                one line per skill in the catalog
+    skills_catalog_overview.csv     one row per skill: number of versions, dates
+    version_spread_catalog.json     distribution of version counts over the catalog
+    sample.json                     the sampled skills (reused on re-runs)
+    sampled_skill_versions.csv      one row per (sampled skill, version)
+    consecutive_sampled_versions.csv
+                                    one row per consecutive version pair (A -> B)
+    skills_catalog_metadata_overview.csv
+                                    one row per sampled skill
+    summary.json                    overall and per-stratum numbers
 
 Usage:
   pip install requests
@@ -39,8 +42,8 @@ Usage:
   # 1) list the full catalog and run the census, then stop and look at the numbers
   python clawhub_pilot.py --out data/full --census-only --rps 15 --workers 8 --contact you@university.gr
 
-  # 2) two-part sample: 200 random skills + 200 skills with >= 5 versions
-  python clawhub_pilot.py --out data/full --sample 200 --sample-rich 200 --rps 15 --workers 8 --contact you@university.gr
+  # 2) two-part sample: 400 random skills + 1000 skills that were updated at least once
+  python clawhub_pilot.py --out data/full --sample 400 --sample-rich 1000 --rps 15 --workers 8 --contact you@university.gr
 
   # quick smoke test: only 2 catalog pages, 20 skills, no census
   python clawhub_pilot.py --out data/smoke --max-pages 2 --sample 20 --contact you@university.gr
@@ -95,6 +98,18 @@ DOC_EXTENSIONS = {".md", ".markdown", ".txt", ".rst", ".mdx"}
 #   skill-card.md  - ClawHub's generated Skill Card (risk/mitigation text written by
 #                    the registry's LLM; in ~half of the ZIPs, regenerated per version)
 REGISTRY_FILES = {"_meta.json", "skill-card.md"}
+
+# Output tables (inside --out), shared with diff_analysis.py. They all live in
+# tables/ and can be rebuilt offline from raw/ and skills/ (the cache).
+TABLES = "tables"
+CATALOG_FILE = f"{TABLES}/skills_all.jsonl"                            # one line per catalog skill
+CENSUS_FILE = f"{TABLES}/skills_catalog_overview.csv"                  # one row per catalog skill
+CENSUS_SUMMARY_FILE = f"{TABLES}/version_spread_catalog.json"          # version-count distribution
+SAMPLE_FILE = f"{TABLES}/sample.json"                                  # the sampled skills + settings
+VERSIONS_FILE = f"{TABLES}/sampled_skill_versions.csv"                 # one row per (sampled skill, version)
+UPDATES_FILE = f"{TABLES}/consecutive_sampled_versions.csv"            # consecutive pairs A -> B
+SKILLS_SUMMARY_FILE = f"{TABLES}/skills_catalog_metadata_overview.csv" # one row per sampled skill
+SUMMARY_FILE = f"{TABLES}/summary.json"                                # overall and per-stratum numbers
 
 
 def file_group(path):
@@ -314,10 +329,10 @@ class ClawHubClient:
 def list_all_skills(client, out_dir, page_limit, max_pages=None):
     """Page through GET /api/v1/skills?sort=createdAt and save every page.
 
-    Why sort=createdAt: the docs say it is stable for full crawls, while
+    sort=createdAt: the docs say it is stable for full crawls, while
     sort=updated reshuffles whenever a skill is republished.
     Why follow nextCursor until it is null: the docs warn that a short page
-    does NOT mean the end of the results.
+    does NOT mean the end of the results (it may have fewer items than the limit).
 
     Progress is saved after each page (list_state.json), so an interrupted
     crawl continues where it stopped. Returns the de-duplicated skill list."""
@@ -354,23 +369,23 @@ def list_all_skills(client, out_dir, page_limit, max_pages=None):
             seen.add(key)
             skills.append(item)
 
-    with open(out_dir / "skills_all.jsonl", "w", encoding="utf-8") as fh:
+    (out_dir / CATALOG_FILE).parent.mkdir(parents=True, exist_ok=True)
+    with open(out_dir / CATALOG_FILE, "w", encoding="utf-8") as fh:
         for item in skills:
             fh.write(json.dumps(item, ensure_ascii=False) + "\n")
-    log.info("Catalog: %d unique skills saved to skills_all.jsonl", len(skills))
+    log.info("Catalog: %d unique skills saved to %s", len(skills), CATALOG_FILE)
     return skills
 
 
 # ---------------------------------------------------------------------------
-# Eligibility (used by the census and the sample)
+# Eligibility 
 # ---------------------------------------------------------------------------
 
 def eligible_skills(skills):
     """Return (eligible_skills, number_of_ambiguous_slugs).
 
     Slugs are not globally unique on ClawHub (two publishers can use the same
-    slug) but the version endpoints are addressed by slug. To avoid mixing two
-    different skills, we skip slugs owned by more than one publisher and
+    slug) but the version endpoints are addressed by slug. We skip slugs owned by more than one publisher and
     report how many were skipped."""
     owners_per_slug = defaultdict(set)
     for s in skills:
@@ -394,7 +409,7 @@ def skill_folder(out_dir, owner, slug):
 # ---------------------------------------------------------------------------
 
 def run_census(client, skills, out_dir, min_versions, workers=1):
-    """Fetch the version LIST (not the contents) of every eligible skill.
+    """Fetch the version list (not the contents) of every eligible skill.
 
     This costs one request per skill (more only for skills with >100 versions)
     and tells us, for the whole catalog, how many versions each skill has.
@@ -402,12 +417,12 @@ def run_census(client, skills, out_dir, min_versions, workers=1):
     of skills with enough versions to study updates.
 
     With workers > 1 several skills are fetched at the same time. This helps
-    because most of the time is spent waiting for the server to answer; the
+    because most of the time is spent waiting for the server to answer. The
     shared rate limit (--rps) still applies to all threads together.
 
     The version lists are cached in the same place the history stage uses
     (skills/<owner>/<slug>/versions.json), so this work is never repeated.
-    Writes census.csv (one row per skill) and census_summary.json, and
+    Writes CENSUS_FILE (one row per skill) and CENSUS_SUMMARY_FILE, and
     returns a dict {(owner, slug): number_of_versions}."""
     eligible, n_ambiguous = eligible_skills(skills)
 
@@ -458,10 +473,10 @@ def run_census(client, skills, out_dir, min_versions, workers=1):
                         "run the same command again to continue.")
             raise SystemExit(1)
 
-    rows.sort(key=lambda r: (r["owner"], r["slug"]))  # stable order for census.csv
+    rows.sort(key=lambda r: (r["owner"], r["slug"]))  # stable order for CENSUS_FILE
     counts = {(r["owner"], r["slug"]): r["n_versions"] for r in rows}
 
-    write_csv(out_dir / "census.csv", rows)
+    write_csv(out_dir / CENSUS_FILE, rows)
     values = [r["n_versions"] for r in rows]
     census = {
         "generated_at": now_iso(),
@@ -473,7 +488,7 @@ def run_census(client, skills, out_dir, min_versions, workers=1):
         f"skills_with_>={min_versions}_versions": sum(n >= min_versions for n in values),
         "potential_update_records": sum(max(0, n - 1) for n in values),
     }
-    write_json(out_dir / "census_summary.json", census)
+    write_json(out_dir / CENSUS_SUMMARY_FILE, census)
     log.info("Census done: %d skills, %d with >= %d versions",
              len(rows), census[f"skills_with_>={min_versions}_versions"], min_versions)
     return counts
@@ -491,19 +506,19 @@ def draw_sample(skills, out_dir, n_random, n_rich, min_versions, seed, census_co
                   versions (uses the census counts)
     Each returned skill carries a "_stratum" label: random, rich or both.
 
-    If sample.json already exists it is reused, but only if it was drawn with
+    If SAMPLE_FILE already exists it is reused, but only if it was drawn with
     the same settings; otherwise we stop with a clear message rather than
     silently mixing two different samples."""
     settings = {"n_random": n_random, "n_rich": n_rich,
                 "min_versions": min_versions, "seed": seed}
-    sample_file = out_dir / "sample.json"
+    sample_file = out_dir / SAMPLE_FILE
     existing = read_json(sample_file)
     if existing:
         if existing.get("settings") != settings:
-            sys.exit(f"sample.json in {out_dir} was drawn with different settings "
+            sys.exit(f"{sample_file} was drawn with different settings "
                      f"({existing.get('settings')}). Use a new --out folder, or delete "
-                     f"sample.json if you really want a new sample.")
-        log.info("Reusing existing sample.json (%d skills)", len(existing["skills"]))
+                     f"it if you really want a new sample.")
+        log.info("Reusing existing %s (%d skills)", SAMPLE_FILE, len(existing["skills"]))
         return existing["skills"]
 
     eligible, n_ambiguous = eligible_skills(skills)
@@ -907,6 +922,7 @@ def build_updates(version_rows):
 def write_csv(path, rows, fieldnames=None):
     """Write a list of dicts to CSV (UTF-8). Column order follows the first
     row unless fieldnames is given."""
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
     rows = list(rows)
     fieldnames = fieldnames or (list(rows[0].keys()) if rows else [])
     with open(path, "w", newline="", encoding="utf-8") as fh:
@@ -974,9 +990,9 @@ def group_stats(skill_rows, version_rows, updates, min_versions):
 
 def summarise(catalog_size, sample, version_rows, updates, list_statuses,
               client_stats, min_versions, out_dir):
-    """Compute the pilot's headline numbers and save them to summary.json:
+    """Compute the pilot's headline numbers and save them to SUMMARY_FILE:
     once for the whole sample, once for the random part and once for the rich part.
-    Also writes skills_summary.csv (one row per sampled skill)."""
+    Also writes SKILLS_SUMMARY_FILE (one row per sampled skill)."""
     per_skill = defaultdict(list)
     for row in version_rows:
         per_skill[(row["owner"], row["slug"])].append(row)
@@ -998,7 +1014,7 @@ def summarise(catalog_size, sample, version_rows, updates, list_statuses,
             "github_backed": any(r["download_kind"] == "github_handoff" for r in rows),
             "latest_scan": rows[-1]["scan_verdict"] if rows else None,
         })
-    write_csv(out_dir / "skills_summary.csv", skill_rows)
+    write_csv(out_dir / SKILLS_SUMMARY_FILE, skill_rows)
 
     summary = {
         "generated_at": now_iso(),
@@ -1019,7 +1035,7 @@ def summarise(catalog_size, sample, version_rows, updates, list_statuses,
                 [r for r in version_rows if r["stratum"] in labels],
                 [u for u in updates if u["stratum"] in labels],
                 min_versions)
-    write_json(out_dir / "summary.json", summary)
+    write_json(out_dir / SUMMARY_FILE, summary)
     return summary
 
 
@@ -1087,8 +1103,9 @@ def parse_args(argv=None):
     p.add_argument("--sample-rich", type=int, default=0,
                    help="size of the RICH part: skills with >= --min-versions versions. "
                         "Needs the census, which is run automatically (default: 0 = off)")
-    p.add_argument("--min-versions", type=int, default=5,
-                   help="version threshold for the rich part and the summaries (default: 5)")
+    p.add_argument("--min-versions", type=int, default=2,
+                   help="version threshold for the rich part and the summaries (default: 2, "
+                        "i.e. skills with at least one update)")
     p.add_argument("--seed", type=int, default=42, help="random seed for the sample (default: 42)")
     p.add_argument("--census", action="store_true",
                    help="run the census even when --sample-rich is 0")
@@ -1125,7 +1142,7 @@ def setup_logging(out_dir, level):
 
 
 def main(argv=None):
-    """Run the stages in order: list -> (census) -> sample -> history -> analyse."""
+    """Run the stages in order: list skills -> census -> sample -> history -> analyse."""
     args = parse_args(argv)
     out_dir = Path(args.out)
     setup_logging(out_dir, args.log_level)
@@ -1152,7 +1169,7 @@ def main(argv=None):
     census_counts = {}
     if args.census or args.census_only or args.sample_rich > 0:
         census_counts = run_census(client, skills, out_dir, args.min_versions, args.workers)
-        print_census(out_dir / "census_summary.json", args.min_versions)
+        print_census(out_dir / CENSUS_SUMMARY_FILE, args.min_versions)
         if args.census_only:
             print(f"\nHTTP: {dict(client.stats)}")
             return
@@ -1162,7 +1179,7 @@ def main(argv=None):
                          args.min_versions, args.seed, census_counts)
 
     # Stage 4: history - several skills are processed at the same time
-    # (--workers); each skill's versions are handled by one worker, and the
+    # (--workers). Each skill's versions are handled by one worker, and the
     # shared --rps limit applies to all of them together.
     version_rows, list_statuses = [], {}
     with ThreadPoolExecutor(max_workers=max(1, args.workers)) as pool:
@@ -1194,8 +1211,8 @@ def main(argv=None):
 
     # Stage 5: analyse
     updates = build_updates(version_rows)
-    write_csv(out_dir / "versions.csv", version_rows)
-    write_csv(out_dir / "updates.csv", updates)
+    write_csv(out_dir / VERSIONS_FILE, version_rows)
+    write_csv(out_dir / UPDATES_FILE, updates)
     summary = summarise(len(skills), sample, version_rows, updates, list_statuses,
                         client.stats, args.min_versions, out_dir)
     print_report(summary, args.min_versions)

@@ -3,8 +3,8 @@
 diff_analysis.py - What exactly changed in each skill update?
 
 Works OFFLINE on the ZIPs already downloaded by clawhub_pilot.py.
-For every update (version A -> B) in updates.csv it opens both ZIPs in memory,
-compares the files line by line and measures what B ADDED compared to A:
+For every update (version A -> B) in consecutive_sampled_versions.csv it opens
+both ZIPs in memory, compares the files line by line and measures what B ADDED compared to A:
 
   1. How SKILL.md changed:
        none        - SKILL.md identical
@@ -31,18 +31,31 @@ compares the files line by line and measures what B ADDED compared to A:
   4. Changelog check: does the changelog call the update minor ("fix typo", "minor") while
      the update is large or adds security-relevant features?
 
+What screening mode (llm_label.py --mode screen) uses from this script:
+  [SCREEN]    reading versions, classify_skill_md (-> skill_md_change), the line diff
+              (-> lines_changed and the .diff file) and write_screen_sheet.
+  [BASELINE]  the phrase lists and features. Never shown to the screening model; they are
+              the regex baseline compared with the LLM later, and the input of label mode.
+  [LABEL]     write_label_sheet, only for label mode / manual labelling.
+Sections below are tagged with these names.
+
 IMPORTANT: the phrase lists below are a STARTING POINT. Refine them with your manual
 labels (RQ1 taxonomy) and report their precision/recall in the thesis.
 
-Outputs (in --out, default data/full):
-  diff_features.csv      one row per update with all measurements
-  diff_summary.json      overall numbers (base rates of every feature)
-  diffs/<owner>/<slug>/<A>__<B>.diff   readable added/removed lines (for manual labelling)
-  label_sheet.csv        (with --label-sheet N) stratified sample of updates to label by hand
+Outputs (in --data, default data/full):
+  diffs/diff_features.csv              one row per update with all measurements
+  diffs/diff_summary.json              overall numbers (base rates of every feature)
+  diffs/<owner>/<slug>/<A>__<B>.diff   readable added/removed lines (for manual labelling);
+                                       .diff files of updates no longer in the input are removed
+  label_sheet.csv        (with --label-sheet N) stratified sample of updates to label by hand,
+                         to be copied into labelling_data/ (it never overwrites labels there)
+  screen_sheet.csv       (with --screen-sheet) EVERY update with changed content, in the same
+                         format, for screening all of them with llm_label.py --mode screen
 
 Usage (from the folder that contains clawhub_pilot.py):
   python diff_analysis.py --data data/full
   python diff_analysis.py --data data/full --label-sheet 400   # also create the labelling sheet
+  python diff_analysis.py --data data/full --screen-sheet      # also list every update for LLM screening
 
 Safety: ZIPs are only read in memory. Nothing is extracted to disk, nothing is executed.
 """
@@ -60,7 +73,7 @@ from pathlib import Path
 # Reuse the exact same rules as the crawler (folder names, file groups, _meta.json),
 # so both scripts always agree on what "instructions", "docs" and "code" mean.
 try:
-    from clawhub_pilot import file_group, safe_name, skill_folder
+    from clawhub_pilot import UPDATES_FILE, file_group, safe_name, skill_folder
 except ImportError:
     sys.exit("Put diff_analysis.py in the same folder as clawhub_pilot.py and run it from there.")
 
@@ -69,8 +82,15 @@ csv.field_size_limit(sys.maxsize)
 MAX_FILE_BYTES = 2_000_000      # skip larger files (data dumps, minified bundles)
 MAX_DIFF_FILE_BYTES = 200_000   # cap each saved .diff file
 
+# Everything this script writes, inside --data.
+DIFFS_DIR = "diffs"
+FEATURES_FILE = f"{DIFFS_DIR}/diff_features.csv"
+DIFF_SUMMARY_FILE = f"{DIFFS_DIR}/diff_summary.json"
+
 # ---------------------------------------------------------------------------
-# Phrase lists (regular expressions). Starting points - refine with your labels.
+# [BASELINE] Phrase lists (regular expressions). Starting points - refine with your labels.
+# Not shown to the screening model; TRIVIAL_KEYS_RE is the exception ([SCREEN],
+# used by classify_skill_md).
 # ---------------------------------------------------------------------------
 
 URL_RE = re.compile(r"https?://([A-Za-z0-9.-]+\.[A-Za-z]{2,})", re.I)
@@ -179,10 +199,17 @@ LINE_FEATURES = (
 )
 FEATURES = tuple(name for name, _, _ in LINE_FEATURES)
 STRONG = ("conceal_lines", "override_lines", "secret_access_lines", "persistence_lines")
+# Everything listed in a sheet's detected_features column.
+DETECTED_COLS = FEATURES + ("new_domains", "new_cred_env", "combo_secret_and_egress",
+                            "changelog_mismatch")
+# Columns shared by label_sheet.csv and screen_sheet.csv (read by label_tool.py and llm_label.py).
+SHEET_COLUMNS = ["label_id", "sample_reason", "owner", "slug", "from_version", "to_version",
+                 "change_type", "skill_md_change", "lines_changed", "detected_features",
+                 "new_domain_list", "new_cred_env_list", "to_changelog", "diff_file"]
 
 
 # ---------------------------------------------------------------------------
-# Reading a version
+# [SCREEN] Reading a version
 # ---------------------------------------------------------------------------
 
 def load_version(skill_dir, version):
@@ -246,7 +273,8 @@ def added_removed(old, new):
 
 
 # ---------------------------------------------------------------------------
-# Comparing two versions
+# [SCREEN] Comparing two versions. compare() also counts the [BASELINE] features
+# in the same pass over the added lines.
 # ---------------------------------------------------------------------------
 
 def classify_skill_md(old_files, new_files):
@@ -340,7 +368,7 @@ def compare(old_files, new_files):
 # ---------------------------------------------------------------------------
 
 def analyse_update(u, get, data, save_diffs):
-    """Compare one update (a row of updates.csv) and return its feature row."""
+    """Compare one update (a row of UPDATES_FILE) and return its feature row."""
     owner, slug = u["owner"], u["slug"]
     row = {k: u.get(k) for k in ("owner", "slug", "stratum", "from_version", "to_version",
                                  "from_created_at", "to_created_at", "change_type", "to_changelog")}
@@ -395,12 +423,28 @@ def analyse_update(u, get, data, save_diffs):
 
 def diff_path(data, owner, slug, a, b):
     """Where the readable .diff file of one update is stored."""
-    return (data / "diffs" / safe_name(owner) / safe_name(slug)
+    return (data / DIFFS_DIR / safe_name(owner) / safe_name(slug)
             / f"{safe_name(a)}__{safe_name(b)}.diff")
 
 
+def remove_stale_diffs(data, updates):
+    """Delete .diff files that this run did not produce, e.g. left over from an
+    earlier run with different rules, so diffs/ always matches the input."""
+    current = {diff_path(data, u["owner"], u["slug"], u["from_version"], u["to_version"])
+               for u in updates}
+    stale = [p for p in (data / DIFFS_DIR).glob("*/*/*.diff") if p not in current]
+    for p in stale:
+        p.unlink()
+    for folder in sorted((data / DIFFS_DIR).glob("*/*"), reverse=True) + \
+            sorted((data / DIFFS_DIR).glob("*")):
+        if folder.is_dir() and not any(folder.iterdir()):
+            folder.rmdir()
+    if stale:
+        print(f"Removed {len(stale)} stale .diff files from {data / DIFFS_DIR}")
+
+
 def write_label_sheet(rows, data, size, seed):
-    """Create label_sheet.csv: a stratified sample of updates for manual labelling.
+    """[LABEL] Create label_sheet.csv: a stratified sample of updates for manual labelling.
 
     Half of the sheet is a plain random sample of content-changing updates (gives
     unbiased shares for the RQ1 taxonomy). The other half is spread over the
@@ -420,16 +464,12 @@ def write_label_sheet(rows, data, size, seed):
             chosen.append({**r, "sample_reason": reason})
 
     take(pool, size // 2, "random")
-    feature_cols = list(FEATURES) + ["new_domains", "new_cred_env", "combo_secret_and_egress",
-                                     "changelog_mismatch"]
-    per_feature = max(1, (size - len(chosen)) // len(feature_cols))
-    for f in feature_cols:
+    per_feature = max(1, (size - len(chosen)) // len(DETECTED_COLS))
+    for f in DETECTED_COLS:
         take([r for r in pool if int(r.get(f) or 0) > 0], per_feature, f"feature:{f}")
     rng.shuffle(chosen)  # so you do not label all of one kind in a row
 
-    columns = ["label_id", "sample_reason", "owner", "slug", "from_version", "to_version",
-               "change_type", "skill_md_change", "lines_changed", "detected_features",
-               "new_domain_list", "new_cred_env_list", "to_changelog", "diff_file",
+    columns = SHEET_COLUMNS + [
                # --- your labels (fill these in) ---
                "label_category", "label_security_relevant", "label_correct_features",
                "label_wrong_features", "label_notes"]
@@ -437,25 +477,64 @@ def write_label_sheet(rows, data, size, seed):
         w = csv.DictWriter(fh, fieldnames=columns, extrasaction="ignore")
         w.writeheader()
         for i, r in enumerate(chosen, 1):
-            detected = [f for f in feature_cols if int(r.get(f) or 0) > 0]
-            w.writerow({**r, "label_id": i, "detected_features": " ".join(detected),
-                        "diff_file": str(diff_path(Path("."), r["owner"], r["slug"],
-                                                   r["from_version"], r["to_version"]))})
+            w.writerow({**r, "label_id": i, **sheet_fields(r)})
     return len(chosen)
 
 
+def sheet_fields(r):
+    """The detected_features and diff_file columns of one sheet row."""
+    detected = [f for f in DETECTED_COLS if int(r.get(f) or 0) > 0]
+    return {"detected_features": " ".join(detected),
+            "diff_file": str(diff_path(Path("."), r["owner"], r["slug"],
+                                       r["from_version"], r["to_version"]))}
+
+
+def write_screen_sheet(rows, data, seed):
+    """[SCREEN] Create screen_sheet.csv: every update whose content changed, for llm_label.py
+    --mode screen. label_id is "owner/slug/A__B" rather than a number, so it stays
+    the same when this file is rebuilt and an interrupted screening run can resume.
+    Updates without a .diff file (only whitespace or line order changed) are left out.
+
+    The rows are shuffled with a fixed seed and numbered in screen_order. llm_label.py
+    works down the sheet in this order, so whatever it has labelled when the budget
+    runs out (the first N rows) is a simple random sample of all changed updates, and
+    a later run just extends that sample. Same seed = same order on every rebuild.
+    Returns (rows written, rows left out)."""
+    import random
+    chosen, skipped = [], 0
+    for r in rows:
+        if r.get("change_type") in ("identical", "unknown") or r.get("skill_md_change") == "unknown":
+            continue
+        fields = sheet_fields(r)
+        if not (data / fields["diff_file"]).is_file():
+            skipped += 1
+            continue
+        label_id = f"{r['owner']}/{r['slug']}/{r['from_version']}__{r['to_version']}"
+        chosen.append({**r, **fields, "label_id": label_id, "sample_reason": "all"})
+    random.Random(seed).shuffle(chosen)
+    with open(data / "screen_sheet.csv", "w", newline="", encoding="utf-8") as fh:
+        w = csv.DictWriter(fh, fieldnames=["screen_order"] + SHEET_COLUMNS, extrasaction="ignore")
+        w.writeheader()
+        for i, r in enumerate(chosen, 1):
+            w.writerow({**r, "screen_order": i})
+    return len(chosen), skipped
+
+
 def main():
-    """Go through updates.csv, compare every pair of versions and write the outputs."""
+    """Go through UPDATES_FILE, compare every pair of versions and write the outputs."""
     p = argparse.ArgumentParser(description="Offline diff analysis of skill updates")
     p.add_argument("--data", default="data/full", help="folder written by clawhub_pilot.py")
     p.add_argument("--no-diffs", action="store_true", help="do not write the readable .diff files")
     p.add_argument("--label-sheet", type=int, default=0,
                    help="also create label_sheet.csv with this many updates to label (e.g. 400)")
-    p.add_argument("--seed", type=int, default=7, help="random seed for the label sheet")
+    p.add_argument("--screen-sheet", action="store_true",
+                   help="also create screen_sheet.csv with every changed update (for LLM screening)")
+    p.add_argument("--seed", type=int, default=7,
+                   help="random seed for the label sheet and the screen sheet order (default: 7)")
     args = p.parse_args()
 
     data = Path(args.data)
-    updates_file = data / "updates.csv"
+    updates_file = data / UPDATES_FILE
     if not updates_file.exists():
         sys.exit(f"{updates_file} not found - run clawhub_pilot.py first.")
     updates = list(csv.DictReader(open(updates_file, encoding="utf-8")))
@@ -476,13 +555,17 @@ def main():
         if i % 1000 == 0:
             print(f"{i} / {len(updates)} updates analysed")
 
+    if not args.no_diffs:
+        remove_stale_diffs(data, updates)
+
     # Write the per-update table (union of all columns, in a stable order).
     columns = []
     for r in rows:
         for k in r:
             if k not in columns:
                 columns.append(k)
-    with open(data / "diff_features.csv", "w", newline="", encoding="utf-8") as fh:
+    (data / FEATURES_FILE).parent.mkdir(parents=True, exist_ok=True)
+    with open(data / FEATURES_FILE, "w", newline="", encoding="utf-8") as fh:
         w = csv.DictWriter(fh, fieldnames=columns)
         w.writeheader()
         w.writerows(rows)
@@ -514,7 +597,7 @@ def main():
         "top_new_cred_env": Counter(e for r in changed for e in (r.get("new_cred_env_list") or "").split()
                                     ).most_common(25),
     }
-    (data / "diff_summary.json").write_text(json.dumps(summary, indent=2, ensure_ascii=False),
+    (data / DIFF_SUMMARY_FILE).write_text(json.dumps(summary, indent=2, ensure_ascii=False),
                                              encoding="utf-8")
 
     print("\n=== Diff analysis ===")
@@ -543,6 +626,10 @@ def main():
     if args.label_sheet:
         k = write_label_sheet(rows, data, args.label_sheet, args.seed)
         print(f"\nlabel_sheet.csv written with {k} updates to label (see the label_* columns).")
+    if args.screen_sheet:
+        k, skipped = write_screen_sheet(rows, data, args.seed)
+        print(f"\nscreen_sheet.csv written with {k} updates to screen "
+              f"({skipped} changed updates have no .diff file and were left out).")
 
 
 if __name__ == "__main__":

@@ -2,7 +2,8 @@
 """
 label_tool.py - Label skill updates one at a time in the terminal.
 
-Reads label_sheet.csv (made by: python diff_analysis.py --data data/full --label-sheet 400),
+Reads labelling_data/label_sheet.csv (the single, git-tracked copy of the labels;
+first made by: python diff_analysis.py --data data/full --label-sheet 400),
 shows each update (what changed, the detected features with an example line each,
 and the coloured diff), asks for your labels, and SAVES AFTER EVERY ROW.
 You can stop at any time (q or Ctrl+C) and continue later where you left off.
@@ -12,8 +13,17 @@ For each update you are asked:
   2. Security-relevant? y / n / u (unsure)
                        "yes" = the update expands what the skill can access or do
                        without the user's knowledge or approval
+     Direction       - e (expands) / r (reduces) / n (neutral); set to "expands"
+                       automatically when security-relevant is y
+     Declared?       - does the changelog mention it? y / p (partial) / n;
+                       only asked when security-relevant is y or u, otherwise "na"
+     Changelog kind  - 1 (specific) / 2 (boilerplate) / 3 (machine-synced) / 4 (empty);
+                       set to "empty" automatically when there is no changelog
   3. Each detected feature: c (correct) / w (wrong) / u (unsure)
   4. Notes           - one free-text line (Enter to skip)
+
+The direction / declared / changelog questions mirror the LLM's answer schema
+(llm_labeling/codebook.md, sections 3-5), so compare_labels.py can check them.
 
 Commands you can type at any question:
   d  show the full diff (in a pager)      b  go back to the previous update
@@ -21,9 +31,9 @@ Commands you can type at any question:
   Enter on its own keeps the current value (useful when revising with b).
 
 Usage:
-  python label_tool.py                                  # label data/full/label_sheet.csv
+  python label_tool.py                                  # label labelling_data/label_sheet.csv
   python label_tool.py --stats                          # progress + feature precision so far
-  python label_tool.py --annotator B --out data/full/label_sheet_B.csv --fresh --rows 1-80
+  python label_tool.py --annotator B --out labelling_data/label_sheet_B.csv --fresh --rows 1-80
         # a second person labels rows 1-80 into their own file, without seeing your labels
 """
 
@@ -39,6 +49,9 @@ from pathlib import Path
 
 csv.field_size_limit(sys.maxsize)
 
+# The labels live in one place only: labelling_data/ (tracked in git).
+DEFAULT_DATA = Path(__file__).resolve().parent / "labelling_data"
+
 CATEGORIES = {
     "1": ("wording", "rewording, typo, formatting, translation"),
     "2": ("docs", "new/changed explanations, examples, usage notes"),
@@ -52,7 +65,8 @@ CATEGORIES = {
     "0": ("other", "anything else - explain in the notes"),
 }
 NAME_TO_KEY = {name: key for key, (name, _) in CATEGORIES.items()}
-LABEL_COLUMNS = ["label_category", "label_security_relevant", "label_correct_features",
+LABEL_COLUMNS = ["label_category", "label_security_relevant", "label_security_direction",
+                 "label_declared", "label_changelog_kind", "label_correct_features",
                  "label_wrong_features", "label_unsure_features", "label_notes",
                  "label_by", "label_seconds"]
 
@@ -163,8 +177,10 @@ def parse_rows(spec, n):
 
 
 def is_done(row):
-    """A row counts as labelled once it has a category and a security answer."""
-    return bool(row.get("label_category")) and bool(row.get("label_security_relevant"))
+    """A row counts as labelled once it has a category, a security answer and a
+    changelog kind (rows labelled before that question existed come back once)."""
+    return all(row.get(col) for col in ("label_category", "label_security_relevant",
+                                        "label_changelog_kind"))
 
 
 # ---------------------------------------------------------------------------
@@ -262,18 +278,56 @@ def ask_features(row, c):
     return " ".join(result["c"]), " ".join(result["w"]), " ".join(result["u"])
 
 
+def ask_security_details(row, security):
+    """Direction, declared and changelog kind, with the same values as the LLM's
+    schema. Answers that follow from earlier ones are filled in without asking:
+    security "yes" means direction "expands" (codebook section 3), security "no"
+    means declared "na", and an empty changelog is "empty"."""
+    if security == "yes":
+        direction = "expands"
+    else:
+        options = {"r": "reduces", "n": "neutral"}
+        if security == "unsure":
+            options = {"e": "expands", **options}
+        current = row.get("label_security_direction", "")
+        direction = ask_choice(f"   Direction? {'/'.join(options)}", options,
+                               current if current in options.values() else "")
+
+    if security == "no":
+        declared = "na"
+    else:
+        current = row.get("label_declared", "")
+        declared = ask_choice("   Declared in changelog? y/p/n",
+                              {"y": "yes", "p": "partial", "n": "no"},
+                              current if current != "na" else "")
+
+    if not (row.get("to_changelog") or "").strip():
+        changelog_kind = "empty"
+    else:
+        # Digits, because s and b are already the skip / back commands.
+        changelog_kind = ask_choice("   Changelog kind? 1=specific 2=boilerplate 3=machine-synced 4=empty",
+                                    {"1": "specific", "2": "boilerplate", "3": "machine_synced",
+                                     "4": "empty"},
+                                    row.get("label_changelog_kind", ""))
+    return direction, declared, changelog_kind
+
+
 def label_one(row, c, annotator):
     """Ask all questions for one update and store the answers in the row."""
     start = time.time()
     category = ask_category(row.get("label_category", ""))
     security = ask_choice("2) Security-relevant? y/n/u", {"y": "yes", "n": "no", "u": "unsure"},
                           row.get("label_security_relevant", ""))
+    direction, declared, changelog_kind = ask_security_details(row, security)
     correct, wrong, unsure = ask_features(row, c)
     notes = ask("4) Notes (Enter to skip)", row.get("label_notes", ""))
     previous_seconds = float(row.get("label_seconds") or 0)
     row.update({
         "label_category": category,
         "label_security_relevant": security,
+        "label_security_direction": direction,
+        "label_declared": declared,
+        "label_changelog_kind": changelog_kind,
         "label_correct_features": correct,
         "label_wrong_features": wrong,
         "label_unsure_features": unsure,
@@ -303,6 +357,12 @@ def print_stats(rows):
         print(f"  {cat:12s} {n:4d}  {n / max(1, len(random_rows)):6.1%}")
     sec = Counter(r["label_security_relevant"] for r in random_rows)
     print(f"Security-relevant in the random half: {dict(sec)}")
+    for col, title in (("label_security_direction", "Direction"),
+                       ("label_declared", "Declared (security-relevant only)"),
+                       ("label_changelog_kind", "Changelog kind")):
+        values = Counter(r.get(col) or "-" for r in random_rows
+                         if col != "label_declared" or r.get(col) not in ("", "na"))
+        print(f"{title} in the random half: {dict(values)}")
 
     counts = defaultdict(Counter)
     for r in done:
@@ -327,7 +387,9 @@ def print_stats(rows):
 def main():
     """Load the sheet, then show and label updates until done or the user quits."""
     p = argparse.ArgumentParser(description="Label skill updates in the terminal")
-    p.add_argument("--data", default="data/full", help="data folder (default: data/full)")
+    p.add_argument("--data", default=str(DEFAULT_DATA),
+                   help="folder with label_sheet.csv, diffs/ and diff_features.csv "
+                        "(default: labelling_data/ next to this script)")
     p.add_argument("--sheet", default=None, help="sheet to read (default: <data>/label_sheet.csv)")
     p.add_argument("--out", default=None, help="file to save labels in (default: same as --sheet)")
     p.add_argument("--annotator", default="A", help="your initials, stored with each label")
