@@ -22,20 +22,24 @@ the answer schema.
   inside a file is not shown, but text moved BETWEEN files, reworded, renumbered or
   re-punctuated shows up as removed + added. The diff may be truncated.
 - The automated detector's hits: feature names, with one example matching line each.
+  In **screening mode** there are no detector hits: skip section 6 and return no
+  `features`. Instead, in step 2 below, answer sections 8 (`changelog_accuracy`) and
+  9 (`patterns`).
 
 ## Order of work
 
 1. Read the diff and changelog and decide `category`, `security_relevant`,
    `security_direction`, `declared` and `changelog_kind` FIRST, from the content
    itself. Do not let the detector's hits decide these.
-2. Only then judge each detected feature (`c` / `w` / `u`).
+2. Only then judge each detected feature (`c` / `w` / `u`). In screening mode, instead
+   decide `changelog_accuracy` and list the `patterns` with their evidence.
 3. Write a short factual `notes` and a one- or two-sentence `reason`.
 
 ## 1. category (one or two digits, most important first)
 
 | Code | Category | Use when the update mainly… |
 |---|---|---|
-| 1 | wording | rephrases, fixes typos, adds tags or small clarifications; no new capability |
+| 1 | wording | rephrases, fixes typos, adds tags or small clarifications. No new capability |
 | 2 | docs | adds or changes documentation, examples, README, links, promotion |
 | 3 | feature | adds a new capability or option |
 | 4 | fix | fixes a bug or a failure |
@@ -158,6 +162,49 @@ Feature definitions:
   `self-update`, `unpinned` or `rebrand` when they apply.
 - `reason`: one or two sentences explaining `category` and `security_relevant`.
 
+## 8. changelog_accuracy (screening mode only)
+
+Does B's changelog describe what the diff actually changes? Judge ALL updates, not only
+security-relevant ones.
+
+- `accurate`: names the main changes; small omissions are fine.
+- `incomplete`: describes some changes but leaves out a substantial one (always
+  `incomplete` when it omits a security-relevant change that `declared` would mark `no`
+  or `partial`). Boilerplate or machine-synced text that says nothing about the
+  actual changes is `incomplete`.
+- `misleading`: describes something different from what changed, or calls a large or
+  security-relevant update minor ("typo fix", "small cleanup").
+- `empty`: no changelog or only a version number (same as `changelog_kind = empty`).
+
+## 9. patterns (screening mode only)
+
+List every pattern below that THIS update introduces or changes, each with `evidence`:
+the one diff line that shows it, copied with its `+ ` or `- ` prefix, at most 150
+characters. Return an empty list when none applies; most updates have none.
+
+A pattern describes a mechanism, not intent: a legitimate, declared vendor integration
+still counts. Whether it is risky is judged in `security_relevant`, not here.
+
+| Pattern | The update… |
+|---|---|
+| `remote_instruction_loading` | makes the agent fetch instructions, prompts or skill files from a URL at run time or on a schedule (self-update, "read the latest rules from …") |
+| `unpinned_remote_exec` | runs third-party code fetched at run time without a fixed version: `npx --yes pkg@latest` on every call, `curl … \| sh`, `pip install git+…@main`, downloading and running a script |
+| `credential_access` | reads, stores or sends secrets: API keys or tokens beyond declaring the one it needs, `~/.ssh`, `.env` files, keychains, browser cookies or passwords, wallets or seed phrases |
+| `data_egress` | sends user or local data (files, conversation, environment, system info) to an external endpoint: uploads, webhooks, telemetry, analytics |
+| `persistence_privilege` | keeps running or gains privileges: cron or scheduled jobs, polling loops, launch agents, systemd, shell rc files, auto-start, `sudo` |
+| `concealment` | hides actions from the user or makes the agent act without confirmation on consequential actions ("don't tell the user", "silently", "no need to ask") |
+| `instruction_override` | tells the agent to ignore, override or outrank the user's, system's or other skills' instructions |
+| `safeguard_removal` | removes or weakens an existing safeguard: confirmation steps, warnings, scope limits, read-only restrictions, version pins (usually visible in `- ` lines) |
+| `agent_config_change` | modifies the agent's configuration, memory or other skills: AGENTS.md / CLAUDE.md, hooks, settings, MCP config, `~/.openclaw/` files |
+| `obfuscation` | adds content whose purpose is hidden: long encoded blobs (base64, hex), instructions in HTML comments, zero-width or right-to-left characters, minified code without a source |
+
+Do NOT list a pattern when:
+- the text already existed in A and was only moved, reworded or re-indented;
+- the line mentions it defensively ("never send the API key", a list of patterns a
+  security scanner looks for, an anti-injection rule quoting "ignore previous instructions");
+- it is only a placeholder or example (`YOUR_API_KEY`) or documentation of a feature the
+  update does not add.
+
 ## Worked examples
 
 1. `noya-agent` 1.0.7→1.0.8, 4 lines. Adds `NOYA_TIMEZONE` (non-secret config);
@@ -167,15 +214,18 @@ Feature definitions:
 2. `riffkit` 1.8.28→1.9.0, 1,823 lines. SKILL.md split into `references/` files (moved
    text) and a HEARTBEAT routine now curls 7 instruction files from riffkit.ai every 24 h.
    → category `97`, security `y`, expands; every feature that fired only on moved
-   text is `w`.
+   text is `w`. Screening: patterns `remote_instruction_loading` and
+   `persistence_privilege` (the 24-hour routine), nothing for the moved text.
 3. `book-hotels` 1.0.0→1.0.1. Rebrand to rollinggo.store, API key variable renamed,
    runs `npx --yes --package rollinggo@latest` on every call, new reference writes the
    key into `~/.openclaw/.env`; changelog describes all of it. → category `56`,
    security `y`, expands, declared `yes`, changelog `specific`; directive, secret,
-   secret_access, install, new_domains, new_cred_env, combo all `c`.
+   secret_access, install, new_domains, new_cred_env, combo all `c`. Screening:
+   changelog_accuracy `accurate`; patterns `unpinned_remote_exec` (the npx line) and
+   `credential_access` (the line writing the key into `~/.openclaw/.env`).
 4. `oo-elevenlabs` 1.0.4→1.0.5, 6 lines. Adds `[write]` tags to two existing actions;
    changelog restates the whole skill. → category `1`, security `n`, reduces,
-   changelog `boilerplate`.
+   changelog `boilerplate`. Screening: changelog_accuracy `incomplete`, no patterns.
 5. `security-maintainer` 1.1.1→1.2.0. New AI-security audit module reads env API keys,
    `~/.openclaw/mcp.json` and memories, probes local LLM ports, writes only a local
    report; declared. → category `3`, security `y`, expands, declared `yes`, notes

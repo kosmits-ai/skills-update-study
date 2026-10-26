@@ -5,15 +5,16 @@ compare_labels.py - compare the LLM's labels with yours, and summarise them.
 Reads label_sheet.csv (your labels) and label_sheet_llm.csv (the LLM's), matched
 by label_id, and reports:
   - agreement on the rows both have labelled: category (exact, and sharing at
-    least one code), security relevance (with Cohen's kappa), and per-feature
-    verdicts;
+    least one code), security relevance (with Cohen's kappa), security direction,
+    declared (only on updates you judged security-relevant), changelog kind, and
+    per-feature verdicts;
   - from the LLM labels: precision of each detector feature (share of hits judged
     correct), the category mix and the security-relevant share on the RANDOM half
     only (the feature half over-samples unusual updates).
 
 Writes compare_summary.json and compare_disagreements.csv next to the LLM file.
 
-    python compare_labels.py --data data/full
+    python compare_labels.py          # reads labelling_data/
 """
 
 import argparse
@@ -24,6 +25,8 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 csv.field_size_limit(sys.maxsize)
+
+DEFAULT_DATA = Path(__file__).resolve().parent.parent / "labelling_data"
 
 
 def read(path):
@@ -65,6 +68,15 @@ def verdicts(row):
     return out
 
 
+# Extra fields asked by label_tool.py and answered by the LLM:
+# (column in your sheet, column in the LLM sheet). Same values in both files.
+EXTRA_FIELDS = {
+    "direction": ("label_security_direction", "security_direction"),
+    "declared": ("label_declared", "declared"),
+    "changelog_kind": ("label_changelog_kind", "changelog_kind"),
+}
+
+
 def kappa(pairs):
     """Cohen's kappa for a list of (a, b) labels."""
     n = len(pairs)
@@ -78,7 +90,8 @@ def kappa(pairs):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--data", type=Path, default=Path("data/full"))
+    p.add_argument("--data", type=Path, default=DEFAULT_DATA,
+                   help="folder with both label sheets (default: labelling_data/)")
     p.add_argument("--human", type=Path, default=None, help="default: <data>/label_sheet.csv")
     p.add_argument("--llm", type=Path, default=None, help="default: <data>/label_sheet_llm.csv")
     args = p.parse_args()
@@ -90,6 +103,7 @@ def main():
     both = [k for k in llm if human.get(k, {}).get("label_category")]
     cat_exact = cat_overlap = 0
     sec_pairs, feat_pairs, disagreements = [], [], []
+    extra_pairs = {name: [] for name in EXTRA_FIELDS}
     for k in both:
         h, m = human[k], llm[k]
         hc, mc = categories(h["label_category"]), categories(m["label_category"])
@@ -98,18 +112,30 @@ def main():
         hc, mc = "+".join(sorted(hc)), "+".join(sorted(mc))
         hs, ms = security(h["label_security_relevant"]), security(m["label_security_relevant"])
         sec_pairs.append((hs, ms))
+        extra_diff = {}
+        for name, (h_col, m_col) in EXTRA_FIELDS.items():
+            hx, mx = (h.get(h_col) or "").strip(), (m.get(m_col) or "").strip()
+            # Rows labelled before these questions existed have no answer yet;
+            # "declared" only means something when you judged the update relevant.
+            if not hx or (name == "declared" and hs != "y"):
+                continue
+            extra_pairs[name].append((hx, mx))
+            if hx != mx:
+                extra_diff[name] = (hx, mx)
         hv, mv = verdicts(h), verdicts(m)
         feat_diff = []
         for f in sorted(set(hv) | set(mv)):
             feat_pairs.append((hv.get(f, "-"), mv.get(f, "-")))
             if hv.get(f) != mv.get(f):
                 feat_diff.append(f"{f}: you={hv.get(f, '-')} llm={mv.get(f, '-')}")
-        if hc != mc or hs != ms or feat_diff:
+        if hc != mc or hs != ms or feat_diff or extra_diff:
             disagreements.append({
                 "label_id": k, "skill": f"{m['owner']}/{m['slug']}",
                 "update": f"{m['from_version']}->{m['to_version']}",
                 "category_you": hc, "category_llm": mc,
                 "security_you": hs, "security_llm": ms,
+                **{f"{name}_{who}": vals[i] for name, vals in extra_diff.items()
+                   for i, who in enumerate(("you", "llm"))},
                 "feature_differences": "; ".join(feat_diff),
                 "llm_reason": m.get("llm_reason", ""), "your_notes": h.get("label_notes", "")})
 
@@ -135,6 +161,9 @@ def main():
             "category_share_a_code": f"{cat_overlap}/{len(both)}",
             "security_same": f"{sum(a == b for a, b in sec_pairs)}/{len(sec_pairs)}",
             "security_kappa": kappa(sec_pairs),
+            **{f"{name}_same": f"{sum(a == b for a, b in pairs)}/{len(pairs)}"
+               for name, pairs in extra_pairs.items()},
+            **{f"{name}_kappa": kappa(pairs) for name, pairs in extra_pairs.items()},
             "feature_verdicts_same": f"{sum(a == b for a, b in feat_pairs)}/{len(feat_pairs)}",
             "feature_verdict_kappa": kappa(feat_pairs),
         },
@@ -156,8 +185,10 @@ def main():
     (out_dir / "compare_summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     with open(out_dir / "compare_disagreements.csv", "w", newline="", encoding="utf-8") as fh:
         cols = ["label_id", "skill", "update", "category_you", "category_llm", "security_you",
-                "security_llm", "feature_differences", "llm_reason", "your_notes"]
-        w = csv.DictWriter(fh, fieldnames=cols)
+                "security_llm"]
+        cols += [f"{name}_{who}" for name in EXTRA_FIELDS for who in ("you", "llm")]
+        cols += ["feature_differences", "llm_reason", "your_notes"]
+        w = csv.DictWriter(fh, fieldnames=cols, restval="")
         w.writeheader()
         w.writerows(disagreements)
 
@@ -166,6 +197,8 @@ def main():
     print(f"Compared with your labels on {a['rows_compared']} rows:")
     print(f"  category exact      {a['category_exact']}   (share a code: {a['category_share_a_code']})")
     print(f"  security same       {a['security_same']}   kappa {a['security_kappa']}")
+    for name in EXTRA_FIELDS:
+        print(f"  {name:19s} {a[name + '_same']}   kappa {a[name + '_kappa']}")
     print(f"  feature verdicts    {a['feature_verdicts_same']}   kappa {a['feature_verdict_kappa']}")
     print("Detector precision according to the LLM (correct / (correct + wrong)):")
     for f, s in summary["feature_precision_llm"].items():

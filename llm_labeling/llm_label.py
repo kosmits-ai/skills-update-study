@@ -18,10 +18,19 @@ Your own labels in label_sheet.csv are never modified; results go to a separate
 file. Re-running skips rows that already have a successful answer.
 
 Typical use:
-    python llm_label.py --data data/full --rows 1-11      # check against your labels
-    python llm_label.py --data data/full --limit 20       # measure cost/usage
-    python llm_label.py --data data/full                  # everything that is left
-    python llm_label.py --data data/full --dry-run --rows 8   # show the prompt only
+    python llm_label.py --rows 1-11      # check against your labels
+    python llm_label.py --limit 20       # measure cost/usage
+    python llm_label.py                  # everything that is left
+    python llm_label.py --dry-run --rows 8   # show the prompt only
+--data defaults to labelling_data/ (the single, git-tracked copy of the labels).
+
+Screening mode (--mode screen) labels EVERY changed update instead of the label
+sheet: it reads <data>/screen_sheet.csv (made by diff_analysis.py --screen-sheet),
+uses Sonnet by default, and does NOT show the detector's hits, so the model judges
+each update only from the diff and changelog. It answers the same questions
+except the feature verdicts, and writes <data>/screen_llm.csv:
+    python llm_label.py --mode screen --data data/full_v2 --limit 50   # measure cost first
+    python llm_label.py --mode screen --data data/full_v2 --workers 6  # everything that is left
 """
 
 import argparse
@@ -38,6 +47,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+DEFAULT_DATA = HERE.parent / "labelling_data"
 csv.field_size_limit(sys.maxsize)
 
 # Columns written to label_sheet_llm.csv. The label_* names match label_tool.py,
@@ -51,6 +61,18 @@ OUT_COLUMNS = [
     "llm_model", "llm_status", "llm_error", "llm_attempts", "llm_seconds",
     "llm_cost_usd", "llm_input_tokens", "llm_output_tokens", "diff_truncated",
 ]
+
+# Columns written to screen_llm.csv: the same, minus the feature verdicts the
+# screening model is not asked for, plus the two screening-only answers.
+SCREEN_COLUMNS = ["screen_order"] + [c for c in OUT_COLUMNS
+                                     if not c.endswith("_features") or c == "detected_features"]
+SCREEN_COLUMNS[SCREEN_COLUMNS.index("changelog_kind") + 1:
+               SCREEN_COLUMNS.index("changelog_kind") + 1] = ["changelog_accuracy", "patterns",
+                                                              "pattern_evidence"]
+
+# Pattern names allowed in screening mode, taken from the schema so both stay in sync.
+PATTERNS = set(json.loads((HERE / "screen_schema.json").read_text(encoding="utf-8"))
+               ["properties"]["patterns"]["items"]["properties"]["pattern"]["enum"])
 
 CATEGORY_RE = re.compile(r"^[0-9]{1,2}$")
 GROUP_ORDER = {"instructions": 0, "docs": 1, "code": 2}
@@ -139,9 +161,9 @@ def trim_diff(text, max_chars, max_line=400):
     return "\n\n".join(out), truncated
 
 
-def build_prompt(row, diff_text, examples):
+def build_prompt(row, diff_text, examples, show_detector=True):
     """The user message for one update. Everything from the skill author sits
-    inside <untrusted_update>; the detector hits come after it."""
+    inside <untrusted_update>; the detector hits come after it (label mode only)."""
     detected = row.get("detected_features", "").split()
     hits = []
     for f in detected:
@@ -152,8 +174,18 @@ def build_prompt(row, diff_text, examples):
             ex = row.get("new_cred_env_list", "")
         hits.append(f"- {f}" + (f": {ex}" if ex else ""))
     features_part = "\n".join(hits) if hits else "(none detected; return an empty features object)"
+    if show_detector:
+        intro = "Label this update according to the codebook.\n\n"
+        detector_part = (
+            "Detector hits (judge each one AFTER deciding category and security; give a "
+            "verdict for every name listed, using exactly these names as keys):\n"
+            f"{features_part}\n")
+    else:
+        intro = ("Label this update according to the codebook, in screening mode "
+                 "(no detector hits; judge it only from the diff and changelog).\n\n")
+        detector_part = ""
     return (
-        "Label this update according to the codebook.\n\n"
+        intro +
         "<untrusted_update>\n"
         f"skill: {row['owner']}/{row['slug']}\n"
         f"versions: {row['from_version']} -> {row['to_version']}\n"
@@ -163,9 +195,7 @@ def build_prompt(row, diff_text, examples):
         f"changelog of {row['to_version']}: {row.get('to_changelog', '') or '(empty)'}\n\n"
         f"{diff_text}\n"
         "</untrusted_update>\n\n"
-        "Detector hits (judge each one AFTER deciding category and security; give a "
-        "verdict for every name listed, using exactly these names as keys):\n"
-        f"{features_part}\n"
+        f"{detector_part}"
     )
 
 
@@ -212,17 +242,37 @@ def validate(answer, detected):
     if bad:
         return None, f"bad verdicts {bad}"
     answer["features"] = {f: feats[f] for f in detected}  # drop any extra keys
+    patterns = answer.get("patterns")
+    if patterns is not None:  # screening mode
+        if not isinstance(patterns, list) or any(
+                not isinstance(p, dict) or p.get("pattern") not in PATTERNS for p in patterns):
+            return None, f"bad patterns {str(patterns)[:200]}"
     return answer, None
+
+
+def screen_fields(answer):
+    """The screening-only answers as CSV columns. patterns is a space-separated list
+    of names; pattern_evidence keeps each pattern with its diff line, as JSON."""
+    found = answer.get("patterns") or []
+    return {
+        "changelog_accuracy": answer.get("changelog_accuracy", ""),
+        "patterns": " ".join(sorted({p["pattern"] for p in found})),
+        "pattern_evidence": json.dumps([{"pattern": p["pattern"],
+                                         "evidence": str(p.get("evidence", ""))[:200]}
+                                        for p in found], ensure_ascii=False),
+    }
 
 
 def label_one(row, args, system_prompt, schema, examples, workdir):
     """Label one update end to end and return the output row."""
     started = time.monotonic()
-    out = {c: row.get(c, "") for c in ("label_id", "sample_reason", "owner", "slug",
+    out = {c: row.get(c, "") for c in ("label_id", "screen_order", "sample_reason", "owner", "slug",
                                        "from_version", "to_version", "change_type",
                                        "detected_features")}
-    out.update(llm_model=args.model, label_by=f"llm-{args.model}")
-    detected = row.get("detected_features", "").split()
+    screen = args.mode == "screen"
+    out.update(llm_model=args.model, label_by=f"llm-{args.model}" + ("-screen" if screen else ""))
+    # In screening mode the model sees no detector hits, so it owes no feature verdicts.
+    detected = [] if screen else row.get("detected_features", "").split()
 
     diff_path = args.data / row.get("diff_file", "")
     if not row.get("diff_file") or not diff_path.exists():
@@ -232,7 +282,7 @@ def label_one(row, args, system_prompt, schema, examples, workdir):
                                      args.max_diff_chars)
     out["diff_truncated"] = int(truncated)
     key = (row["owner"], row["slug"], row["from_version"], row["to_version"])
-    prompt = build_prompt(row, diff_text, examples.get(key, {}))
+    prompt = build_prompt(row, diff_text, examples.get(key, {}), show_detector=not screen)
 
     cost, in_tok, out_tok, problem = 0.0, 0, 0, None
     for attempt in range(1, args.retries + 2):
@@ -266,6 +316,7 @@ def label_one(row, args, system_prompt, schema, examples, workdir):
                 declared=answer["declared"],
                 changelog_kind=answer["changelog_kind"],
                 llm_reason=answer["reason"],
+                **(screen_fields(answer) if screen else {}),
                 llm_status="ok", llm_error="", llm_attempts=attempt)
             break
     else:
@@ -281,13 +332,19 @@ def label_one(row, args, system_prompt, schema, examples, workdir):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--data", type=Path, default=Path("data/full"),
-                   help="folder with label_sheet.csv and diffs/ (default: data/full)")
-    p.add_argument("--sheet", type=Path, default=None, help="default: <data>/label_sheet.csv")
+    p.add_argument("--mode", choices=("label", "screen"), default="label",
+                   help="label: the label sheet, with detector hits (default). "
+                        "screen: every changed update, without detector hits")
+    p.add_argument("--data", type=Path, default=DEFAULT_DATA,
+                   help="folder with the sheet and diffs/ (default: labelling_data/)")
+    p.add_argument("--sheet", type=Path, default=None,
+                   help="default: <data>/label_sheet.csv, or <data>/screen_sheet.csv in screen mode")
     p.add_argument("--features", type=Path, default=None,
                    help="diff_features.csv for example lines (default: <data>/diff_features.csv, optional)")
-    p.add_argument("--out", type=Path, default=None, help="default: <data>/label_sheet_llm.csv")
-    p.add_argument("--model", default="opus", help="model alias or ID passed to claude (default: opus)")
+    p.add_argument("--out", type=Path, default=None,
+                   help="default: <data>/label_sheet_llm.csv, or <data>/screen_llm.csv in screen mode")
+    p.add_argument("--model", default=None,
+                   help="model alias or ID passed to claude (default: opus; sonnet in screen mode)")
     p.add_argument("--rows", default=None, help="only these label_ids, e.g. 1-11 or 1,5,9-12")
     p.add_argument("--limit", type=int, default=None, help="label at most this many new rows")
     p.add_argument("--workers", type=int, default=3, help="parallel calls (default: 3)")
@@ -303,8 +360,10 @@ def main():
                    help="run even if ANTHROPIC_API_KEY is set (that bills the API, not your plan)")
     args = p.parse_args()
 
-    sheet = args.sheet or args.data / "label_sheet.csv"
-    out_path = args.out or args.data / "label_sheet_llm.csv"
+    screen = args.mode == "screen"
+    args.model = args.model or ("sonnet" if screen else "opus")
+    sheet = args.sheet or args.data / ("screen_sheet.csv" if screen else "label_sheet.csv")
+    out_path = args.out or args.data / ("screen_llm.csv" if screen else "label_sheet_llm.csv")
     features_csv = args.features or args.data / "diff_features.csv"
 
     if os.environ.get("ANTHROPIC_API_KEY") and not args.allow_api_key and not args.dry_run:
@@ -315,8 +374,9 @@ def main():
     if not rows:
         sys.exit(f"No rows in {sheet}")
     system_prompt = (HERE / "codebook.md").read_text(encoding="utf-8")
-    schema = json.dumps(json.loads((HERE / "label_schema.json").read_text(encoding="utf-8")))
-    examples = load_examples(features_csv)
+    schema_file = "screen_schema.json" if screen else "label_schema.json"
+    schema = json.dumps(json.loads((HERE / schema_file).read_text(encoding="utf-8")))
+    examples = {} if screen else load_examples(features_csv)  # only label mode shows hits
 
     done = {r["label_id"] for r in read_csv(out_path)
             if r.get("llm_status") == "ok" or (r.get("llm_status") == "failed" and not args.redo_failed)}
@@ -332,7 +392,7 @@ def main():
         diff_text, _ = trim_diff((args.data / r["diff_file"]).read_text(encoding="utf-8", errors="replace"),
                                  args.max_diff_chars)
         key = (r["owner"], r["slug"], r["from_version"], r["to_version"])
-        print(build_prompt(r, diff_text, examples.get(key, {})))
+        print(build_prompt(r, diff_text, examples.get(key, {}), show_detector=not screen))
         return
 
     print(f"{len(rows)} rows in sheet, {len(done)} already done, {len(todo)} to label "
@@ -346,7 +406,8 @@ def main():
     workdir = tempfile.mkdtemp(prefix="llm_label_")  # empty folder: no project files or CLAUDE.md
 
     with open(out_path, "a", newline="", encoding="utf-8") as fh:
-        writer = csv.DictWriter(fh, fieldnames=OUT_COLUMNS, extrasaction="ignore")
+        writer = csv.DictWriter(fh, fieldnames=SCREEN_COLUMNS if screen else OUT_COLUMNS,
+                                extrasaction="ignore")
         if new_file:
             writer.writeheader()
 
