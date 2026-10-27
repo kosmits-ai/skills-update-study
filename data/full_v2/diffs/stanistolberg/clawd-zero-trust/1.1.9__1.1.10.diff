@@ -527,6 +527,546 @@ change_type: instructions+docs+code   changelog: **Breaking release with enhance
 +     *)
 +       # Generic TCP check
 +           echo -e "  ${GREEN}✅ ${domain}:${port}${NC} (TCP — open)"
++           echo -e "  ${GREEN}✅ ${domain}:${port}${NC} (TCP — open)"
++       echo -e "  ${RED}❌ ${domain}:${port}${NC} (TCP — TIMEOUT/REFUSED)"
++ verify_all_providers() {
++   log "Running per-provider verification (all providers in providers.txt)..."
++   echo -e "\n${BOLD}Per-Provider Verification${NC}"
++   echo "────────────────────────────────────────────"
++   echo "────────────────────────────────────────────"
++   echo "────────────────────────────────────────────"
++   echo "────────────────────────────────────────────"
++   echo "────────────────────────────────────────────"
++   echo "────────────────────────────────────────────"
++   local checked=0
++   local providers_file
++   local providers_file
++   providers_file="$(dirname "$0")/../config/providers.txt"
++   providers_file="$(dirname "$0")/../config/providers.txt"
++   if [ ! -f "$providers_file" ]; then
++   if [ ! -f "$providers_file" ]; then
++     log "ERROR: providers.txt not found at $providers_file"
++   while read -r domain port; do
++   while read -r domain port; do
++     # Skip empty lines and comments
++     [[ -z "$domain" || "$domain" == \#* ]] && continue
++     [[ -z "$domain" || "$domain" == \#* ]] && continue
++     [ -z "$port" ] && continue
++     [ -z "$port" ] && continue
++     checked=$((checked + 1))
++     verify_provider "$domain" "$port" || failed=$((failed + 1))
++   done < "$providers_file"
++   done < "$providers_file"
++     echo -e "${RED}[VERIFY-ALL]${NC} ${failed}/${checked} providers failed"
++     log "Per-provider verification: ${failed}/${checked} failed"
++   echo -e "${GREEN}[VERIFY-ALL]${NC} All ${checked} providers reachable"
++   log "Per-provider verification: all ${checked} providers OK"
++ # [IMP-1 v1.3.0] Egress violation audit log
++ # Parse UFW logs for blocked outbound traffic, aggregate by dest IP+port.
++ audit_log() {
++   echo -e "\n${BOLD}BLOCKED EGRESS — last 24h${NC}"
++   echo "════════════════════════════════════════════════════════════════════════"
++   echo "════════════════════════════════════════════════════════════════════════"
++   local cutoff
++   cutoff="$(date -u -d '24 hours ago' '+%Y-%m-%dT%H:%M:%S' 2>/dev/null || date -u '+%Y-%m-%dT%H:%M:%S')"
++   # [FINDING-5 v1.3.0-r2] Explicit exit states for log source availability
++   local log_lines=""
++   local log_source_found=0
++   local log_access_denied=0
++   # Source 1: /var/log/ufw.log
++   if [ -f /var/log/ufw.log ]; then
++     if [ -r /var/log/ufw.log ]; then
++       log_source_found=1
++       log_lines="$(grep '\[UFW BLOCK\]' /var/log/ufw.log 2>/dev/null || true)"
++     else
++       log_access_denied=1
++       log "WARN: /var/log/ufw.log exists but is not readable (permission denied)"
++     fi
++     fi
++     fi
++     fi
++     fi
++   # Source 2: journalctl (fallback/supplement)
++   if [ -z "$log_lines" ]; then
++   if [ -z "$log_lines" ]; then
++     if command -v journalctl >/dev/null 2>&1; then
++       local jctl_out
++       if jctl_out="$(journalctl -k --since '24 hours ago' --no-pager 2>&1)"; then
++         log_source_found=1
++         log_lines="$(echo "$jctl_out" | grep '\[UFW BLOCK\]' || true)"
++         if echo "$jctl_out" | grep -qi 'permission\|access denied\|not allowed'; then
++           log_access_denied=1
++           log "WARN: journalctl access denied"
++   # [FINDING-5 v1.3.0-r2] Emit explicit exit states
++   if [ "$log_source_found" -eq 0 ] && [ "$log_access_denied" -eq 0 ]; then
++     echo -e "  ${YELLOW}NO_LOG_SOURCE:${NC} Neither /var/log/ufw.log nor journalctl available."
++     echo "════════════════════════════════════════════════════════════════════════"
++     echo "════════════════════════════════════════════════════════════════════════"
++     echo "════════════════════════════════════════════════════════════════════════"
++   if [ "$log_source_found" -eq 0 ] && [ "$log_access_denied" -eq 1 ]; then
++     echo -e "  ${RED}LOG_ACCESS_DENIED:${NC} Log sources exist but permission denied. Run with sudo."
++     echo -e "  ${GREEN}NO_BLOCKS_FOUND:${NC} No blocked egress traffic in logs. Clean."
++   # [FINDING-3 v1.3.0-r2] Strict parser: only [UFW BLOCK] lines, validate IP+port format
++   python3 - "$cutoff" <<'PYEOF' <<< "$log_lines"
++ import sys, re
++ from collections import defaultdict
++ cutoff = sys.argv[1]
++ lines = sys.stdin.read().strip().split('\n')
++ if not lines or lines == ['']:
++     print("  NO_BLOCKS_FOUND: No blocked egress entries.")
++     sys.exit(0)
++     sys.exit(0)
++ # Strict regex patterns for validation
++ IP_RE = re.compile(r'^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$|^[0-9a-fA-F:]+$')
++ PORT_RE = re.compile(r'^[0-9]{1,5}$')
++ UFW_BLOCK_RE = re.compile(r'\[UFW BLOCK\]')
++ agg = defaultdict(lambda: {'count': 0, 'first': '', 'last': ''})
++ malformed_count = 0
++ for line in lines:
++     # [FINDING-3] Only parse lines with [UFW BLOCK] prefix
++     if not UFW_BLOCK_RE.search(line):
++         malformed_count += 1
++         malformed_count += 1
++         malformed_count += 1
++         malformed_count += 1
++         malformed_count += 1
++         malformed_count += 1
++         continue
++         continue
++         continue
++         continue
++         continue
++         continue
++     # Must have OUT= (outbound) and DPT= (destination port)
++     if 'OUT=' not in line or 'DPT=' not in line:
++     # Strict regex extraction for SRC, DST, DPT
++     dst_match = re.search(r'DST=(\S+)', line)
++     dpt_match = re.search(r'DPT=(\S+)', line)
++     if not dst_match or not dpt_match:
++     dst = dst_match.group(1)
++     dpt = dpt_match.group(1)
++     # Validate IP format
++     if not IP_RE.match(dst):
++     # Validate port is integer in valid range
++     if not PORT_RE.match(dpt):
++     port_int = int(dpt)
++     if port_int < 1 or port_int > 65535:
++     key = (dst, dpt)
++     # Extract timestamp
++     ts_match = re.search(r'^(\w+\s+\d+\s+[\d:]+)', line)
++     ts = ts_match.group(1) if ts_match else 'unknown'
++     agg[key]['count'] += 1
++     if not agg[key]['first']:
++         agg[key]['first'] = ts
++     agg[key]['last'] = ts
++ if not agg:
++     print("  NO_BLOCKS_FOUND: No parseable blocked egress entries.")
++     if malformed_count > 0:
++         print(f"  (debug: {malformed_count} malformed lines discarded)")
++ # Print table
++ print(f"  {'IP':<40} {'PORT':<8} {'COUNT':<8} {'FIRST_SEEN':<20} {'LAST_SEEN':<20}")
++ print(f"  {'─'*40} {'─'*8} {'─'*8} {'─'*20} {'─'*20}")
++ for (ip, port), data in sorted(agg.items(), key=lambda x: x[1]['count'], reverse=True):
++     print(f"  {ip:<40} {port:<8} {data['count']:<8} {data['first']:<20} {data['last']:<20}")
++ total = sum(d['count'] for d in agg.values())
++ unique = len(agg)
++ print(f"\n  Total: {total} blocked packets to {unique} unique destinations")
++ if malformed_count > 0:
++     print(f"  (debug: {malformed_count} malformed lines discarded)")
++ PYEOF
++ PYEOF
++ PYEOF
++ # [IMP-1 v1.3.0] Ensure UFW LOG rule for egress violations during --apply
++ # Inserts a deny+log rule before the default deny outgoing, but only if
++ # not already present. Uses UFW comment "ZT:egress-violation" for identification.
++ ensure_egress_log_rule() {
++     echo -e "${YELLOW}[DRY-RUN]${NC} Would check/add UFW egress violation LOG rule"
++   # [FINDING-4 v1.3.0-r2] Delete ALL existing ZT:egress-violation rules first
++   # to guarantee idempotency regardless of format drift or duplicate insertion.
++   local ufw_status
++   ufw_status="$(sudo ufw status numbered 2>&1 || true)"
++   # Delete in reverse order to keep indices stable
++   local existing_nums
++   existing_nums="$(echo "$ufw_status" \
++     | grep 'ZT:egress-violation' \
++     | awk -F'[][]' '{print $2}' \
++     | tr -d ' ' \
++     | grep -E '^[0-9]+$' \
++     | sort -rn || true)"
++   if [ -n "$existing_nums" ]; then
++     log "  Removing existing ZT:egress-violation rules for clean re-insert..."
++     while IFS= read -r num; do
++       [ -z "$num" ] && continue
++       sudo ufw --force delete "$num" >/dev/null 2>&1 || \
++         log "  WARN: Failed to delete ZT:egress-violation rule #${num}"
++     done <<< "$existing_nums"
++   log "  Inserting fresh egress violation LOG rule (deny log out to any)"
++   # Insert at position 1 so it captures traffic before other deny rules
++   sudo ufw insert 1 deny log out to any comment "ZT:egress-violation" 2>/dev/null || {
++     log "  WARN: insert with comment failed, trying alternative..."
++     sudo ufw deny out log to any comment "ZT:egress-violation" 2>/dev/null || {
++       log "  WARN: Could not add egress violation LOG rule (non-fatal)"
++     }
++     }
++     }
++   }
++   }
++   }
++   log "  ✅ Egress violation LOG rule inserted (fresh)"
++ # [IMP-3 v1.3.0] IP snapshot auto-refresh
++ # Re-resolve DNS, diff against last-applied IPs, apply only delta to UFW.
++ # Transactional: backup rules → apply delta → verify → rollback on failure.
++ save_applied_ips() {
++   # Save the current IP snapshot to applied-ips.json after a successful apply
++   python3 - "$APPLIED_IPS_FILE" <<'PYEOF'
++ import json, sys, os, subprocess, re
++ import json, sys, os, subprocess, re
++ outfile = sys.argv[1]
++ os.makedirs(os.path.dirname(outfile), exist_ok=True)
++ # Read providers.txt
++ script_dir = os.path.dirname(os.path.abspath(__file__)) if '__file__' in dir() else '.'
++ # We'll use env or hardcoded path
++ providers_file = os.path.join(
++     os.path.dirname(os.path.dirname(outfile)),
++     'config', 'providers.txt'
++ )
++ providers = {}
++ providers = {}
++ if os.path.exists(providers_file):
++     with open(providers_file, 'r') as f:
++         for line in f:
++             line = line.strip()
++             line = line.strip()
++             line = line.strip()
++             line = line.strip()
++             line = line.strip()
++             if not line or line.startswith('#'):
++                 continue
++             parts = line.split()
++             if len(parts) >= 2:
++                 domain, port = parts[0], parts[1]
++                 providers[domain] = port
++ snapshot = {}
++ from datetime import datetime, timezone
++ now = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
++ for domain, port in providers.items():
++ for domain, port in providers.items():
++     ips_v4 = []
++     ips_v6 = []
++     try:
++     try:
++     try:
++     try:
++     try:
++         result = subprocess.run(
++         result = subprocess.run(
++             ['dig', '+short', '+time=5', '+tries=2', domain, 'A'],
++             capture_output=True, text=True, timeout=15
++             capture_output=True, text=True, timeout=15
++         )
++         )
++         for line in result.stdout.strip().split('\n'):
++         for line in result.stdout.strip().split('\n'):
++             if re.match(r'^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$', line):
++             if re.match(r'^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$', line):
++                 ips_v4.append(line)
++     except Exception:
++     except Exception:
++     except Exception:
++     except Exception:
++     except Exception:
++         pass
++         pass
++         pass
++         pass
++         pass
++             ['dig', '+short', '+time=5', '+tries=2', domain, 'AAAA'],
++             if re.match(r'^[0-9a-fA-F:]+$', line):
++             if re.match(r'^[0-9a-fA-F:]+$', line):
++                 ips_v6.append(line)
++     snapshot[domain] = {
++         'port': port,
++         'ips_v4': sorted(ips_v4),
++         'ips_v6': sorted(ips_v6),
++         'resolvedAt': now
++ with open(outfile, 'w') as f:
++     json.dump({
++         'version': '1.3.0',
++         'snapshotAt': now,
++         'providers': snapshot
++     }, f, indent=2)
++     f.write('\n')
++ do_refresh() {
++   # [NEW-2 v1.3.0-r3] Defensive root check (guards against sourced invocation)
++   # [NEW-2 v1.3.0-r3] Defensive root check (guards against sourced invocation)
++   # [NEW-2 v1.3.0-r3] Defensive root check (guards against sourced invocation)
++   # [NEW-2 v1.3.0-r3] Defensive root check (guards against sourced invocation)
++   require_root
++   require_root
++   require_root
++   require_root
++   require_root
++   require_root
++   require_root
++   log "=== IP Refresh: Re-resolving DNS and applying delta ==="
++   echo -e "\n${BOLD}IP Snapshot Auto-Refresh${NC}"
++     log "ERROR: providers.txt not found"
++   # [FINDING-6 v1.3.0-r2] Require non-empty resolved IP set before mutating
++   require_nonempty_resolved_ipset "$providers_file" || return 1
++   # Step 1: Load old applied IPs (if any)
++   if [ -f "$APPLIED_IPS_FILE" ]; then
++     log "  Loaded previous IP snapshot from $APPLIED_IPS_FILE"
++   else
++   else
++     log "  No previous IP snapshot found — will do full resolution"
++   # [NEW-2 v1.3.0-r4] Python-driven delta computation.
++   # Python resolves DNS, diffs against applied-ips.json, and outputs simple
++   # newline-delimited commands: "ADD <ip> <port> <proto> <comment>" or
++   # "DEL <ip> <port> <proto>". Zero IFS='|' splitting of structured data.
++   local delta_commands
++   delta_commands="$(python3 - "$providers_file" "$APPLIED_IPS_FILE" <<'PYEOF'
++ providers_file = sys.argv[1]
++ applied_ips_file = sys.argv[2]
++ # Load providers
++ with open(providers_file, 'r') as f:
++     for line in f:
++         line = line.strip()
++         if not line or line.startswith('#'):
++             continue
++         parts = line.split()
++         if len(parts) >= 2:
++             providers[parts[0]] = parts[1]
++ # Load old snapshot
++ old_providers = {}
++ if os.path.exists(applied_ips_file):
++         with open(applied_ips_file, 'r') as f:
++             old_data = json.load(f)
++         old_providers = old_data.get('providers', {})
++ # Resolve current IPs
++ current = {}
++     ips_v4 = set()
++     ips_v6 = set()
++         r = subprocess.run(['dig', '+short', '+time=5', '+tries=2', domain, 'A'],
++                           capture_output=True, text=True, timeout=15)
++                           capture_output=True, text=True, timeout=15)
++         for line in r.stdout.strip().split('\n'):
++         for line in r.stdout.strip().split('\n'):
++                 ips_v4.add(line)
++         r = subprocess.run(['dig', '+short', '+time=5', '+tries=2', domain, 'AAAA'],
++                 ips_v6.add(line)
++     current[domain] = {'port': port, 'ips_v4': sorted(ips_v4), 'ips_v6': sorted(ips_v6)}
++ # Compute delta and output simple commands (one per line)
++ # Format: ADD <ip> <port> <proto> <comment>
++ #         DEL <ip> <port> <proto>
++ # Fields are space-separated; comment is the remainder of the line after the 4th field.
++ commands = []
++ for domain, data in current.items():
++     port = data['port']
++     old = old_providers.get(domain, {})
++     old_v4 = set(old.get('ips_v4', []))
++     old_v6 = set(old.get('ips_v6', []))
++     cur_v4 = set(data['ips_v4'])
++     cur_v6 = set(data['ips_v6'])
++     for ip in sorted(cur_v4 - old_v4):
++         commands.append(f"ADD {ip} {port} tcp ZT: {domain}")
++     for ip in sorted(cur_v6 - old_v6):
++         commands.append(f"ADD {ip} {port} tcp ZT: {domain} IPv6")
++     for ip in sorted(old_v4 - cur_v4):
++         commands.append(f"DEL {ip} {port} tcp")
++         commands.append(f"DEL {ip} {port} tcp")
++     for ip in sorted(old_v6 - cur_v6):
++ for domain in old_providers:
++     if domain not in current:
++         old = old_providers[domain]
++         port = old.get('port', '443')
++         for ip in sorted(old.get('ips_v4', [])):
++             commands.append(f"DEL {ip} {port} tcp")
++             commands.append(f"DEL {ip} {port} tcp")
++         for ip in sorted(old.get('ips_v6', [])):
++ for cmd in commands:
++     print(cmd)
++   )"
++   local add_count=0
++   local remove_count=0
++   if [ -n "$delta_commands" ]; then
++     add_count="$(echo "$delta_commands" | grep -c '^ADD ' || true)"
++     remove_count="$(echo "$delta_commands" | grep -c '^DEL ' || true)"
++   log "  Delta: +${add_count} IPs to add, -${remove_count} IPs to remove"
++   echo -e "  ${CYAN}Delta:${NC} +${add_count} add, -${remove_count} remove"
++   if [ "$add_count" -eq 0 ] && [ "$remove_count" -eq 0 ]; then
++     echo -e "  ${GREEN}No IP changes detected — providers are current.${NC}"
++     echo "────────────────────────────────────────────"
++     save_applied_ips
++     save_applied_ips
++   # [F-2 v1.3.0-r4] Truly transactional refresh via iptables-save/restore.
++   # On ANY failure during mutation, raw iptables rules are fully restored.
++   # Pattern: iptables-save → explicit _refresh_failed() on every error → verify → commit.
++   # NO ERR trap is used. Every mutation checks its exit code explicitly.
++   # Step 3: Take raw iptables backup (authoritative ruleset, not UFW abstraction)
++   local ufw_backup
++   ufw_backup="$(make_temp /tmp/zt-iptables-refresh.XXXXXX)"
++   log "  Saving iptables snapshot to $ufw_backup"
++   if ! iptables-save > "$ufw_backup" 2>/dev/null; then
++     log "ERROR: iptables-save failed — refusing to proceed without backup"
++   # [F-2 v1.3.0-r4] Explicit rollback function — called directly on any failure.
++   # Does NOT rely on ERR trap. Each failing command calls this explicitly.
++   _refresh_failed() {
++     if [[ ! -s "$ufw_backup" ]]; then
++       log "🚨 CRITICAL: backup file missing or empty — cannot restore. Manual intervention required."
++     log "ROLLBACK: restoring iptables from $ufw_backup"
++     iptables-restore < "$ufw_backup" 2>/dev/null || {
++       log "🚨 CRITICAL: iptables-restore FAILED. Manual recovery required."
++       log "🚨 Backup file preserved at: $ufw_backup"
++       return  # preserve backup file for manual recovery
++     rm -f "$ufw_backup" 2>/dev/null
++     log "Refresh rolled back after failure"
++   # Helper: run a UFW mutation command; on failure, call _refresh_failed.
++   # Returns 1 on failure so callers can propagate: _ufw_checked ... || { _refresh_failed; return 1; }
++   _ufw_checked() {
++     if ! "$@"; then
++       log "ERROR: UFW command failed: $*"
++   # Step 4: Apply delta — process each command from Python output.
++   # DEL commands are fail-closed (trigger rollback on failure).
++   # ADD commands are fail-closed (trigger rollback on failure).
++   local _refresh_ok=1
++   while read -r cmd_action cmd_ip cmd_port cmd_proto cmd_comment_rest; do
++     [ -z "$cmd_action" ] && continue
++     case "$cmd_action" in
++       DEL)
++         log "  DEL: $cmd_ip:$cmd_port"
++         echo -e "    ${RED}−${NC} $cmd_ip:$cmd_port"
++         # [F-2 v1.3.0-r4] Deletions are fail-closed — rollback on failure
++         _ufw_checked sudo ufw delete allow out to "$cmd_ip" port "$cmd_port" proto "$cmd_proto" || {
++           _refresh_failed
++           _refresh_failed
++           _refresh_ok=0
++           _refresh_ok=0
++           break
++           break
++         }
++         }
++         ;;
++         ;;
++         ;;
++       ADD)
++         log "  ADD: $cmd_ip:$cmd_port ($cmd_comment_rest)"
++         echo -e "    ${GREEN}+${NC} $cmd_ip:$cmd_port ($cmd_comment_rest)"
++         _ufw_checked sudo ufw allow out to "$cmd_ip" port "$cmd_port" proto "$cmd_proto" comment "$cmd_comment_rest" || {
++       *)
++         log "  WARN: Unknown delta command: $cmd_action (skipped)"
++     esac
++   done <<< "$delta_commands"
++   if [ "$_refresh_ok" -eq 0 ]; then
++   # Step 5: Reload UFW
++   log "  Reloading UFW..."
++   _ufw_checked sudo ufw reload || { _refresh_failed; return 1; }
++   # Step 6: Verify critical endpoints — failure triggers full iptables restore
++   if ! verify_critical_endpoints; then
++     log "ERROR: Post-refresh verification failed — triggering iptables restore"
++     echo -e "\n  ${RED}Post-refresh verification FAILED — rolling back via iptables-restore${NC}"
++     _refresh_failed
++   # Step 7: Commit — cleanup backup, save new snapshot.
++   # Only reached on full success.
++   rm -f "$ufw_backup"
++   save_applied_ips
++   save_applied_ips
++   log "  IP snapshot updated"
++   echo -e "  ${GREEN}[REFRESH]${NC} Delta applied successfully (+${add_count}/-${remove_count})"
++   if ! sudo ufw status 2>/dev/null | grep -Fq "Status: active"; then
++ # [NEW-3 v1.3.0-r4] --status: Read-only summary of current egress profile.
++ # Prints: profile version, last applied timestamp, provider count, UFW state.
++ # No root required. No mutations.
++ show_status() {
++   echo -e "\n${BOLD}Egress Profile Status${NC}"
++   echo -e "  ${CYAN}Profile version:${NC} ${PROFILE_VERSION}"
++   # Last apply result from state file
++   if [ -f "$STATE_FILE" ]; then
++     local last_applied last_result
++     last_applied="$(python3 -c "
++ with open(sys.argv[1],'r') as f: d=json.load(f)
++ with open(sys.argv[1],'r') as f: d=json.load(f)
++ print(d.get('lastAppliedAt','unknown'))
++ " "$STATE_FILE" 2>/dev/null || echo 'unknown')"
++ " "$STATE_FILE" 2>/dev/null || echo 'unknown')"
++     last_result="$(python3 -c "
++ print(d.get('lastResult','unknown'))
++     echo -e "  ${CYAN}Last applied:${NC}    ${last_applied}"
++     echo -e "  ${CYAN}Last result:${NC}     ${last_result}"
++     echo -e "  ${YELLOW}Last applied:${NC}    never (no state file)"
++   # Provider count from providers.txt
++   local provider_count=0
++   if [ -f "$PROVIDERS_FILE" ]; then
++     provider_count="$(grep -cvE '^\s*$|^\s*#' "$PROVIDERS_FILE" 2>/dev/null || echo 0)"
++   echo -e "  ${CYAN}Providers:${NC}       ${provider_count} (in providers.txt)"
++   # UFW status (best-effort, no root required for status check on most systems)
++   local ufw_state
++   ufw_state="$(sudo ufw status 2>/dev/null | head -1 || echo 'unknown (sudo required)')"
++   echo -e "  ${CYAN}UFW:${NC}             ${ufw_state}"
++ # [FINDING-6 v1.3.0-r2] Centralized check: resolved IP set must be non-empty
++ # Call from ALL mutating paths (apply, canary, refresh) before touching UFW.
++ require_nonempty_resolved_ipset() {
++   local providers_file="${1:-$PROVIDERS_FILE}"
++   local resolved_count=0
++     local ips
++     ips="$(dig +short +time=5 +tries=2 "$domain" A 2>/dev/null | grep -cE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' || true)"
++     local ips6
++     ips6="$(dig +short +time=5 +tries=2 "$domain" AAAA 2>/dev/null | grep -cE '^[0-9a-fA-F:]+$' || true)"
++     if [ "$((ips + ips6))" -gt 0 ]; then
++       resolved_count=$((resolved_count + 1))
++   if [ "$resolved_count" -eq 0 ]; then
++     log "FATAL: Zero providers resolved any IPs. DNS failure or network down."
++     log "FATAL: Refusing to proceed — applying deny-outgoing with no IP rules would lock out all traffic."
++     echo -e "${RED}[FATAL]${NC} Zero providers resolved. Aborting to prevent lockout."
++   log "  IP resolution check: ${resolved_count} providers resolved successfully"
++   # [F-13 v1.3.0-r3] timeout 15s wrapper (defense-in-depth)
++   api_cidrs="$(timeout 15s curl -fsSL --max-time 10 https://api.github.com/meta 2>/dev/null | \
++   # [FINDING-6 v1.3.0-r2] Centralized IP resolution check before any mutation
++   require_nonempty_resolved_ipset "$PROVIDERS_FILE" || return 1
++   # [IMP-1 v1.3.0] Add egress violation LOG rule before default deny
++   ensure_egress_log_rule
++ # Handle standalone modes first (no apply/canary required)
++ # [NEW-3 v1.3.0-r4] --status: read-only profile summary
++ if [ "$STATUS_MODE" -eq 1 ]; then
++   show_status
++   # If combined with other flags, continue; if standalone, exit
++   # If combined with other flags, continue; if standalone, exit
++   if [ "$VERIFY_MODE" -eq 0 ] && [ "$VERIFY_ALL_MODE" -eq 0 ] && \
++   if [ "$VERIFY_MODE" -eq 0 ] && [ "$VERIFY_ALL_MODE" -eq 0 ] && \
++      [ "$APPLY_MODE" -eq 0 ] && [ "$CANARY_MODE" -eq 0 ] && \
++      [ "$APPLY_MODE" -eq 0 ] && [ "$CANARY_MODE" -eq 0 ] && \
++      [ "$RESET_MODE" -eq 0 ] && [ "$REFRESH_MODE" -eq 0 ] && \
++      [ "$AUDIT_LOG_MODE" -eq 0 ]; then
++     exit 0
++     exit 0
++ if [ "$AUDIT_LOG_MODE" -eq 1 ]; then
++   audit_log
++   rc=$?
++   rc=$?
++   if [ "$VERIFY_ALL_MODE" -eq 0 ] && [ "$APPLY_MODE" -eq 0 ] && \
++      [ "$CANARY_MODE" -eq 0 ] && [ "$RESET_MODE" -eq 0 ] && \
++      [ "$REFRESH_MODE" -eq 0 ]; then
++     exit "$rc"
++     exit "$rc"
++ if [ "$VERIFY_ALL_MODE" -eq 1 ]; then
++   verify_all_providers
++   if [ "$APPLY_MODE" -eq 0 ] && [ "$CANARY_MODE" -eq 0 ] && \
++ if [ "$REFRESH_MODE" -eq 1 ]; then
++   check_ufw_active
++   do_refresh
++     # [IMP-3] Save applied IPs snapshot
++     # [IMP-4] Run per-provider verification
++     verify_all_providers || log "WARN: Some providers failed verification (non-fatal after canary pass)"
++   # [IMP-3] Save applied IPs snapshot for future --refresh delta
++   log "Applied IPs snapshot saved for future --refresh"
++   # [IMP-4] Run per-provider verification after successful apply
++   verify_all_providers || log "WARN: Some providers failed verification (non-fatal after apply success)"
++ echo -e "To apply:      bash $0 --apply"
++ echo -e "To canary:     bash $0 --canary"
++ echo -e "To verify:     bash $0 --verify"
++ echo -e "To verify all: bash $0 --verify-all"
++ echo -e "To refresh:    bash $0 --refresh"
++ echo -e "To audit log:  bash $0 --audit-log"
++ echo -e "To reset:      bash $0 --reset"
 
 ### scripts/plugin-integrity.sh  [code]
 + #!/bin/bash
@@ -829,6 +1369,114 @@ change_type: instructions+docs+code   changelog: **Breaking release with enhance
 +         print(f"  {RED}⚠️  REMOVED:{NC} {pname} — plugin directory no longer exists")
 +         missing += 1
 +     js_path = find_plugin_js(pdir)
++         print(f"  {RED}⚠️  CHANGED:{NC} {pname} — JS entry point no longer exists")
++         mismatches += 1
++         mismatches += 1
++         mismatches += 1
++         mismatches += 1
++     current_hash = sha256_file(js_path)
++     if current_hash is None:
++         print(f"  {RED}⚠️  CHANGED:{NC} {pname} — cannot read file")
++     if current_hash == stored_hash:
++         print(f"  {GREEN}✅ MATCH:{NC}   {pname}")
++         print(f"  {RED}⚠️  CHANGED:{NC} {pname}")
++         print(f"     Stored:  {stored_hash[:16]}...")
++         print(f"     Current: {current_hash[:16]}...")
++ # Check for new plugins not in snapshot
++ stored_names = set(stored_plugins.keys())
++ for pname in sorted(current_dirs.keys()):
++     if pname not in stored_names:
++         print(f"  {YELLOW}⚠️  NEW:{NC}     {pname} — not in snapshot (run --snapshot to add)")
++ print()
++ if mismatches > 0 or missing > 0:
++     print(f"{RED}[INTEGRITY FAILURE]{NC} {mismatches} changed, {missing} removed out of {checked} checked")
++ print(f"{GREEN}[INTEGRITY OK]{NC} All {checked} plugins match stored hashes")
++   return $?
++ # do_drift: Compare loaded plugins against hardening.json allowlist
++ do_drift() {
++   echo -e "${CYAN}[DRIFT]${NC} Checking plugins against hardening.json allowlist..."
++   if [ ! -f "$HARDENING_FILE" ]; then
++     echo -e "${RED}[ERROR]${NC} hardening.json not found: $HARDENING_FILE"
++   # [FINDING-9 v1.3.0-r2] Safe JSON parsing — handle missing keys, malformed JSON
++   local allowed_json
++   if ! allowed_json="$(python3 -c "
++ import json, sys
++ import json, sys
++     with open(sys.argv[1], 'r') as f:
++         d = json.load(f)
++ except (json.JSONDecodeError, ValueError) as e:
++     print(f'JSON_ERROR: {e}', file=sys.stderr)
++ except Exception as e:
++     print(f'READ_ERROR: {e}', file=sys.stderr)
++ allow = d.get('plugins', {}).get('allow', [])
++ print(json.dumps(allow))
++ " "$HARDENING_FILE" 2>&1)"; then
++     echo -e "${RED}[ERROR]${NC} hardening.json is malformed: $allowed_json"
++   local allowed_plugins
++   allowed_plugins="$(python3 -c "
++ allow = json.loads(sys.argv[1])
++ for p in sorted(allow):
++     print(p)
++ " "$allowed_json" 2>/dev/null)"
++   if [ -z "$allowed_plugins" ]; then
++     echo -e "${YELLOW}[WARN]${NC} plugins.allow key missing or empty in hardening.json — treating as empty allowlist []"
++     # Not fatal — continue with empty allowlist to still detect unauthorized plugins
++   # Get currently installed plugins from filesystem (authoritative source)
++   local installed_plugins=""
++   if [ -d "$EXTENSIONS_DIR" ]; then
++     for pdir in "$EXTENSIONS_DIR"/*/; do
++       [ ! -d "$pdir" ] && continue
++       local pname
++       pname="$(basename "$pdir")"
++       if [ -n "$installed_plugins" ]; then
++         installed_plugins="${installed_plugins}"$'\n'"${pname}"
++       else
++         installed_plugins="${pname}"
++       fi
++     done
++   # Deduplicate and clean
++   local all_loaded
++   all_loaded="$(echo "$installed_plugins" | sort -u | grep -v '^$')"
++   local drift_found=0
++   echo -e "\n  ${CYAN}Allowlisted plugins:${NC}"
++   while IFS= read -r ap; do
++     [ -z "$ap" ] && continue
++     # [FINDING-11 v1.3.0-r2] Use grep -Fx for exact fixed-string line matching
++     # [FINDING-11 v1.3.0-r2] Use grep -Fx for exact fixed-string line matching
++     if echo "$all_loaded" | grep -Fxq "$ap" 2>/dev/null; then
++       echo -e "    ${GREEN}✅${NC} $ap — present"
++       echo -e "    ${YELLOW}⚠️${NC}  $ap — allowlisted but NOT installed"
++       drift_found=$((drift_found + 1))
++       drift_found=$((drift_found + 1))
++   done <<< "$allowed_plugins"
++   echo -e "\n  ${CYAN}Installed plugins:${NC}"
++   while IFS= read -r ip; do
++     [ -z "$ip" ] && continue
++     if echo "$allowed_plugins" | grep -Fxq "$ip" 2>/dev/null; then
++       echo -e "    ${GREEN}✅${NC} $ip — allowlisted"
++       echo -e "    ${RED}🚨 UNAUTHORIZED:${NC} $ip — NOT in hardening.json allowlist"
++   done <<< "$all_loaded"
++   echo ""
++   echo ""
++   echo ""
++   echo ""
++   if [ "$drift_found" -gt 0 ]; then
++     echo -e "${RED}[DRIFT DETECTED]${NC} $drift_found discrepancies between installed plugins and allowlist"
++   echo -e "${GREEN}[NO DRIFT]${NC} All installed plugins match allowlist"
++   return 0
++ # Main execution
++ echo ""
++ echo "🔐 Plugin Integrity Check — $(date -u '+%Y-%m-%d %H:%M UTC')"
++ echo "=================================================="
++ echo "=================================================="
++ exit_code=0
++ if [ "$SNAPSHOT_MODE" -eq 1 ]; then
++   do_snapshot || exit_code=1
++ if [ "$VERIFY_MODE" -eq 1 ]; then
++   do_verify || exit_code=1
++ if [ "$DRIFT_MODE" -eq 1 ]; then
++   do_drift || exit_code=1
++ exit "$exit_code"
 
 ### scripts/whitelist.sh  [code]
 - # clawd-zero-trust dynamic egress whitelist wrapper — v1.2.0

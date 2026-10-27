@@ -884,6 +884,150 @@ change_type: docs+code   changelog: - Initial public release of contribution, se
 +     log "ERROR: Aborting — applying deny-outgoing with no IP rules would lock out all traffic."
 +   log "Snapshot complete: ${resolved}/${total} providers resolved."
 + # [v1.1.0 / Issue 5] Flush all existing ZT-tagged UFW rules before re-apply.
++ # Without this, every apply/canary run appends duplicate provider IP rules.
++ # UFW has no native dedup — rules stack linearly, degrading perf and readability.
++ # Strategy: parse `ufw status numbered`, extract rule numbers for lines
++ # containing 'ZT:', delete in reverse numeric order so earlier indices stay
++ # stable during the deletion sequence.
++ # Non-fatal by design: if some rules fail to delete (e.g., rule already gone),
++ # we log a warning and continue. The new rules will still be applied correctly;
++ # worst case is a leftover duplicate, which is the pre-v1.1.0 baseline behavior.
++ flush_zt_rules() {
++   # Capture UFW status output with explicit failure detection.
++   # Do NOT use 2>/dev/null here — we need to know if sudo/ufw itself failed.
++   # A permission error would produce empty output, causing us to falsely report
++   # "no ZT rules — clean slate" and silently skip the flush.
++   local ufw_status
++   if ! ufw_status=$(sudo ufw status numbered 2>&1); then
++     log "  ⚠️  WARNING: 'sudo ufw status numbered' failed — flush skipped."
++     log "  Output: ${ufw_status}"
++     local preview_count
++     preview_count=$(echo "$ufw_status" | grep -c "ZT:" || true)
++     echo -e "${YELLOW}[DRY-RUN]${NC} Would flush ${preview_count} ZT-tagged UFW rule(s)"
++   log "Flushing existing ZT-tagged egress rules..."
++   # Extract rule numbers (between [ ]) for ZT lines, sort reverse-numeric.
++   # awk -F'[][]' splits on [ and ], field $2 is the number.
++   local numbers
++   numbers=$(echo "$ufw_status" \
++     | grep "ZT:" \
++     | awk -F'[][]' '{print $2}' \
++     | tr -d ' ' \
++     | grep -E '^[0-9]+$' \
++     | sort -rn)
++   if [ -z "$numbers" ]; then
++     log "  No ZT rules found — clean slate, nothing to flush"
++   local flushed=0
++   while IFS= read -r num; do
++     [ -z "$num" ] && continue
++     if sudo ufw --force delete "$num" >/dev/null 2>&1; then
++       flushed=$((flushed+1))
++       log "  ⚠️  WARNING: Failed to delete rule #${num} — may already be gone"
++       failed=$((failed+1))
++   done <<< "$numbers"
++     log "  Flush complete: ${flushed} deleted, ${failed} warnings (non-fatal)"
++     return 1  # Signal partial failure so apply_policy() can log the warning
++   log "  Flush complete: ${flushed} ZT rules removed cleanly"
++ apply_policy() {
++   # [FIX-6] Propagate snapshot failure — do not proceed to deny-outgoing
++   snapshot_ips || return 1
++   # [v1.1.0] Flush stale ZT rules before re-applying — prevents accumulation.
++   # Non-fatal: flush failure is warned but does not abort apply.
++   flush_zt_rules || log "WARN: flush_zt_rules had warnings — continuing apply"
++   log "Step 1: Preserving critical access"
++   cmd sudo ufw allow out on lo                                          || return 1
++   cmd sudo ufw allow out 53/tcp                                         || return 1
++   cmd sudo ufw allow out 53/udp                                         || return 1
++   cmd sudo ufw allow out 22/tcp                                         || return 1
++   cmd sudo ufw allow out 41641/udp                                      || return 1
++   cmd sudo ufw allow out 3478/udp comment "Tailscale STUN"              || return 1
++   cmd sudo ufw allow out 80/tcp comment "Tailscale DERP fallback"       || return 1
++   cmd sudo ufw allow out 443/tcp comment "Tailscale DERP fallback / HTTPS" || return 1
++   log "Step 2: Applying provider IP rules from snapshot"
++     local port ips_v4 ips_v6 ip
++     port="${PROVIDERS[$domain]}"
++     ips_v4="${IP_SNAPSHOT_V4[$domain]}"
++     ips_v6="${IP_SNAPSHOT_V6[$domain]}"
++     [ -z "$ips_v4" ] && [ -z "$ips_v6" ] && continue
++     for ip in $ips_v4; do
++       log "  ✅ $domain -> $ip:$port (IPv4)"
++       cmd sudo ufw allow out to "$ip" port "$port" proto tcp comment "ZT: $domain" || return 1
++     done
++     done
++     for ip in $ips_v6; do
++       log "  ✅ $domain -> [$ip]:$port (IPv6)"
++       cmd sudo ufw allow out to "$ip" port "$port" proto tcp comment "ZT: $domain IPv6" || return 1
++   log "Step 3: Setting default deny outgoing"
++   cmd sudo ufw default deny outgoing || return 1
++   log "Step 4: Reloading UFW"
++ enforce_profile_gate() {
++   # First-run: recorded hash is empty — gate skipped intentionally (TOFU).
++   # Gate only fires on subsequent runs when the script has been modified,
++   # requiring explicit --force to accept a new profile.
++   local current recorded
++   current="$(script_hash)"
++   recorded="$(state_get_hash)"
++   if [ -n "$recorded" ] && [ "$recorded" != "$current" ] && [ "$FORCE_MODE" -ne 1 ]; then
++     echo -e "${RED}[REFUSED]${NC} Script hash mismatch with recorded profile in $STATE_FILE"
++     echo "Recorded: $recorded"
++     echo "Current : $current"
++     echo "Re-run with --force to accept and apply this new profile."
++     exit 2
++ run_canary() {
++   log "CANARY MODE: temporary policy apply started"
++   if ! apply_policy; then
++   if ! apply_policy; then
++     log "Canary apply failed during rule application. Auto-rollback triggered."
++     perform_reset_or_die "canary-apply-failed"
++     write_state "canary-apply-failed-rolled-back"
++   local elapsed=0
++   while [ "$elapsed" -lt "$CANARY_SECONDS" ]; do
++     log "Canary verification check (t=${elapsed}s/${CANARY_SECONDS}s)"
++     if ! verify_critical_endpoints; then
++       log "Canary verification failed. Auto-rollback triggered."
++       perform_reset_or_die "canary-verify-failed"
++       write_state "canary-failed-rolled-back"
++       return 1
++     sleep "$CANARY_INTERVAL"
++     elapsed=$((elapsed + CANARY_INTERVAL))
++   log "Canary verification passed for ${CANARY_SECONDS}s. Committing final policy."
++   write_state "canary-pass-committed"
++ log "=== Egress Filter v${PROFILE_VERSION} started $([ "$DRY_RUN" -eq 1 ] && echo '[DRY-RUN]') ==="
++ if [ "$VERIFY_MODE" -eq 1 ]; then
++   verify_critical_endpoints
++   exit $?
++ if [ "$RESET_MODE" -eq 1 ]; then
++   if perform_reset; then
++     [ "$DRY_RUN" -eq 0 ] && write_state "reset"
++     exit 0
++     exit 0
++   [ "$DRY_RUN" -eq 0 ] && write_state "reset-failed"
++ if [ "$APPLY_MODE" -eq 1 ] || [ "$CANARY_MODE" -eq 1 ]; then
++   enforce_profile_gate
++   check_ufw_active
++ if [ "$CANARY_MODE" -eq 1 ]; then
++   if run_canary; then
++     log "Canary complete: final policy active"
++ if [ "$APPLY_MODE" -eq 1 ]; then
++   log "APPLY MODE: transactional apply"
++     log "Apply failed during rule application. Auto-rollback triggered."
++     perform_reset_or_die "apply-policy-failed"
++     write_state "apply-failed-rolled-back"
++   if ! verify_critical_endpoints; then
++     log "Post-check failed. Auto-rollback triggered."
++     perform_reset_or_die "apply-postcheck-failed"
++     write_state "apply-failed-postcheck-rolled-back"
++   write_state "apply-success"
++   log "Transactional apply complete: policy active"
++   exit 0
++ # Default: dry-run preview
++ apply_policy
++ echo -e "\n${GREEN}Dry-run complete. No changes applied.${NC}"
++ echo -e "Canonical path: ${YELLOW}/home/claw/.openclaw/workspace/skills/clawd-zero-trust/scripts/egress-filter.sh${NC}"
++ echo -e "To apply:  bash $0 --apply"
++ echo -e "To canary: bash $0 --canary"
++ echo -e "To verify: bash $0 --verify"
++ echo -e "To reset:  bash $0 --reset"
++ log "=== Done ==="
 
 ### scripts/harden.sh  [code]
 + #!/bin/bash
@@ -1424,6 +1568,210 @@ change_type: docs+code   changelog: - Initial public release of contribution, se
 + mode = state.get("mode", "graceful")
 + synced_at = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
 + # Model tiers: flash-class models get PLP restriction
++ # Anthropic/Claude models are trusted (no restriction pushed here)
++ FLASH_MODEL = "google-antigravity/gemini-3-flash"
++ if "tools" not in oc:
++     oc["tools"] = {}
++ if "byProvider" not in oc["tools"]:
++     oc["tools"]["byProvider"] = {}
++ existing = oc["tools"]["byProvider"].get(FLASH_MODEL, {})
++ if mode in ("strict", "graceful"):
++     # Merge: existing openclaw allow list UNION plp-config allowed list
++     existing_allow = existing.get("allow", [])
++     merged = sorted(set(existing_allow) | set(allowed) - set(denied))
++     oc["tools"]["byProvider"][FLASH_MODEL] = {
++     oc["tools"]["byProvider"][FLASH_MODEL] = {
++         "profile": existing.get("profile", "coding"),
++         "allow": merged,
++         "_plp_mode": mode,
++         "_plp_synced_at": synced_at
++         "_plp_synced_at": synced_at
++ elif mode == "audit-only":
++     # audit-only: preserve existing config, just tag it
++         **existing,
++         "_plp_mode": "audit-only",
++ print(json.dumps(oc, indent=2))
++ # --- State helpers ---
++ ensure_state_dir() {
++   mkdir -p "$STATE_DIR"
++   chmod 700 "$STATE_DIR"
++ write_state() {
++   local new_json="$1"
++   local context="$2"
++   if [ "$DRY_RUN" -eq 1 ]; then
++   if [ "$DRY_RUN" -eq 1 ]; then
++   if [ "$DRY_RUN" -eq 1 ]; then
++     dryrun "$context (dry-run — pass --apply to write)"
++     echo "$new_json" | python3 -c "
++     echo "$new_json" | python3 -c "
++ import json,sys
++ d=json.load(sys.stdin)
++ print(f\"  mode: {d['mode']} | allowed: {len(d['tools']['allowed'])} | denied: {len(d['tools']['denied'])}\")
++ "
++ "
++ "
++   else
++   else
++   else
++     ensure_state_dir
++     local tmp
++     local tmp
++     local tmp
++     tmp=$(mktemp "$STATE_DIR/.tmp.XXXXXX")
++     tmp=$(mktemp "$STATE_DIR/.tmp.XXXXXX")
++     echo "$new_json" > "$tmp"
++     echo "$new_json" > "$tmp"
++     mv "$tmp" "$STATE_FILE"
++     mv "$tmp" "$STATE_FILE"
++     chmod 600 "$STATE_FILE"
++     chmod 600 "$STATE_FILE"
++     ok "$context"
++     log_event "$context"
++   fi
++   fi
++   fi
++   fi
++   fi
++   fi
++   fi
++   fi
++   fi
++   fi
++   fi
++   fi
++ # --- Actions ---
++ action_show() {
++   ensure_state_dir
++   ensure_state_dir
++   ensure_state_dir
++   ensure_state_dir
++   ensure_state_dir
++   ensure_state_dir
++   echo ""
++   echo -e "${BOLD}🔐 Zero Trust Tool Access Policy${NC}"
++   echo "   State: $STATE_FILE"
++   echo "=================================================="
++   local data
++   if ! data=$(py_load_or_default); then
++     fail "Failed to load config"
++     exit 1
++     exit 1
++     exit 1
++     exit 1
++     exit 1
++     exit 1
++     exit 1
++     exit 1
++     exit 1
++   if [ ! -f "$STATE_FILE" ]; then
++   if [ ! -f "$STATE_FILE" ]; then
++     warn "Config not yet initialized — showing defaults."
++     warn "Run: bash plp-config.sh --reset --apply  to write defaults to disk."
++   local tmpf
++   tmpf=$(mktemp /tmp/plp-show.XXXXXX)
++   echo "$data" > "$tmpf"
++   py_show "$tmpf"
++   rm -f "$tmpf"
++ action_set_mode() {
++   if [ -z "$MODE_ARG" ]; then
++     fail "--set-mode requires a value: strict | graceful | audit-only"
++   local current new_json
++   local current new_json
++   local current new_json
++   local current new_json
++   current=$(py_load_or_default) || exit 1
++   current=$(py_load_or_default) || exit 1
++   current=$(py_load_or_default) || exit 1
++   current=$(py_load_or_default) || exit 1
++   new_json=$(echo "$current" | py_mutate "set-mode" "$MODE_ARG") || exit 1
++   write_state "$new_json" "Mode set to: $MODE_ARG"
++ action_allow_tool() {
++   if [ -z "$TOOL_ARG" ]; then
++   if [ -z "$TOOL_ARG" ]; then
++     fail "--allow-tool requires a tool name"
++   new_json=$(echo "$current" | py_mutate "allow-tool" "$TOOL_ARG") || exit 1
++   write_state "$new_json" "Allowed tool: $TOOL_ARG"
++ action_deny_tool() {
++     fail "--deny-tool requires a tool name"
++   new_json=$(echo "$current" | py_mutate "deny-tool" "$TOOL_ARG") || exit 1
++   write_state "$new_json" "Denied tool: $TOOL_ARG"
++ action_plan_first() {
++   if [ -z "$PF_TOOL_ARG" ]; then
++     fail "--plan-first / --no-plan-first requires a tool name"
++   new_json=$(echo "$current" | py_mutate "$op" "$PF_TOOL_ARG") || exit 1
++   write_state "$new_json" "$op applied: $PF_TOOL_ARG"
++ action_reset() {
++   local dummy new_json
++   dummy='{}'
++   new_json=$(echo "$dummy" | py_mutate "reset" "") || exit 1
++     dryrun "Would reset $STATE_FILE to safe defaults:"
++ d = json.load(sys.stdin)
++ d = json.load(sys.stdin)
++ print(f\"  mode: {d['mode']}\")
++ print(f\"  allowed: {', '.join(d['tools']['allowed'])}\")
++ print(f\"  denied: {', '.join(d['tools']['denied']) or '(none)'}\")
++ print(f\"  plan-first: {', '.join(d['tools']['require_plan_first'])}\")
++     dryrun "Pass --apply to write."
++     dryrun "Pass --apply to write."
++     if [ -f "$STATE_FILE" ]; then
++       local bak
++       bak="$STATE_FILE.bak.$(date -u +%Y%m%d%H%M%S)"
++       cp "$STATE_FILE" "$bak"
++       info "Backup: $bak"
++     fi
++     ok "Config reset to defaults (graceful mode)"
++     log_event "config reset to defaults"
++ action_sync_openclaw() {
++     fail "No config at $STATE_FILE — run: bash plp-config.sh --reset --apply"
++   if [ ! -f "$OC_CONFIG" ]; then
++     fail "openclaw.json not found: $OC_CONFIG"
++   info "Computing PLP sync into tools.byProvider..."
++   local new_oc
++   if ! new_oc=$(py_sync_openclaw); then
++     fail "Sync computation failed — aborting. openclaw.json untouched."
++     dryrun "Would write tools.byProvider to $OC_CONFIG:"
++     echo "$new_oc" | python3 -c "
++ bp = d.get('tools', {}).get('byProvider', {})
++ print(json.dumps(bp, indent=4))
++     local bak
++     bak="$OC_CONFIG.bak.plp.$(date -u +%Y%m%d%H%M%S)"
++     cp "$OC_CONFIG" "$bak"
++     info "Backed up openclaw.json → $bak"
++     tmp=$(mktemp /tmp/oc-plp.XXXXXX)
++     echo "$new_oc" > "$tmp"
++     mv "$tmp" "$OC_CONFIG"
++     ok "Synced PLP policy into openclaw.json (tools.byProvider)"
++     log_event "synced policy to openclaw.json backup=$bak"
++     warn "OpenClaw restart may be required for changes to take effect."
++ # --- Pre-flight ---
++ echo ""
++ echo ""
++ echo -e "${BOLD}🔐 plp-config.sh${NC} — Zero Trust Tool Access Policy  [clawd-zero-trust v1.0.0]"
++ echo "=========================================================================="
++ if [ "$DRY_RUN" -eq 1 ]; then
++   echo -e "${YELLOW}  Mode: DRY-RUN (default). Pass --apply to commit changes.${NC}"
++ else
++   echo -e "${RED}  Mode: APPLY — changes will be written to disk.${NC}"
++ fi
++ fi
++ if ! command -v python3 &>/dev/null; then
++   fail "python3 is required but not found. Install: sudo apt install python3"
++   exit 1
++ # --- Dispatch ---
++ case "$ACTION" in
++   show)          action_show ;;
++   set-mode)      action_set_mode ;;
++   allow-tool)    action_allow_tool ;;
++   deny-tool)     action_deny_tool ;;
++   plan-first)    action_plan_first "plan-first" ;;
++   no-plan-first) action_plan_first "no-plan-first" ;;
++   reset)         action_reset ;;
++   sync)          action_sync_openclaw ;;
++   *)
++     fail "Unknown action: $ACTION"
++     usage
++     ;;
++ esac
 
 ### scripts/quick_validate.py  [code]
 + #!/usr/bin/env python3

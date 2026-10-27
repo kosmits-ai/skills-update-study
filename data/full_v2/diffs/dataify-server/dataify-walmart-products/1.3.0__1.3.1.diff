@@ -315,6 +315,293 @@ change_type: instructions+docs+code   changelog: Fix Walmart CLI defaults: all_v
 +             row = {"company": name, "url": link, "location": first(item, ("location", "country", "city")),
 +                    "signal": signal or None, "qualification_score": score,
 +                    "score_reasons": ["public company entity"] + (["company detail", "current hiring signal", "target role signal"] if verified else []),
++                    "missing_fields": [] if verified else ["requires_detail_verification"],
++                    "evidence_id": evidence_id}
++             title = first(item, ("title", "name"))
++             link = first(item, ("link", "url"))
++             if title is None or link is None:
++             haystack = " ".join(str(value) for value in (title, first(item, ("description", "snippet", "text")), link) if value)
++             if subject and not re.search(r"(?<![A-Za-z0-9]){}(?![A-Za-z0-9])".format(re.escape(subject)), haystack, re.I):
++             row = {"title": title, "url": link, "source": first(item, ("source", "publisher", "domain")),
++                    "date": first(item, ("date", "published_at")), "snippet": first(item, ("description", "snippet", "text")), "evidence_id": evidence_id}
++         if kind == "review":
++             key = re.sub(r"\s+", " ", str(row.get("text", "")).strip().casefold())
++             key = str(row.get("url", "")).split("?", 1)[0].rstrip("/").casefold()
++             key = json.dumps(row, ensure_ascii=False, sort_keys=True, default=str)
++         if key not in seen:
++             seen.add(key)
++             result.append(row)
++     return result[:500]
++ def parse_record_date(value: Any) -> datetime | None:
++     if not value:
++         return None
++         return None
++     text = str(value).strip()
++     for candidate in (text, text.replace("Z", "+00:00")):
++             parsed = datetime.fromisoformat(candidate)
++             return parsed.replace(tzinfo=parsed.tzinfo or timezone.utc)
++         except ValueError:
++         except ValueError:
++             pass
++             pass
++     for pattern in ("%b %d, %Y", "%B %d, %Y", "%Y-%m-%d"):
++             return datetime.strptime(text.replace("—", "").strip(), pattern).replace(tzinfo=timezone.utc)
++ def freshness_cutoff(freshness: str, as_of: datetime) -> datetime | None:
++     match = re.search(r"(\d+)\s*(day|week|month|year)s?", freshness or "", re.I)
++     if not match:
++     count = int(match.group(1))
++     days = count * {"day": 1, "week": 7, "month": 30, "year": 365}[match.group(2).lower()]
++     return as_of - timedelta(days=days)
++ def apply_scope_filters(kind: str, records: list[dict[str, Any]], freshness: str, geography: str,
++                         as_of: str | None = None) -> tuple[list[dict[str, Any]], dict[str, int]]:
++     reference = datetime.fromisoformat(as_of.replace("Z", "+00:00")) if as_of else datetime.now(timezone.utc)
++     cutoff = freshness_cutoff(freshness, reference)
++     kept: list[dict[str, Any]] = []
++     excluded = {"outside_freshness": 0, "geography_mismatch": 0}
++     geo_aliases = {
++         "us": ("united states", "usa", "u.s.", "new york", "california", "texas", "washington", "massachusetts"),
++         "de": ("germany", "deutschland", "berlin", "munich", "hamburg"),
++         "cn": ("china", "中国", "beijing", "shanghai", "shenzhen", "guangzhou"),
++     }
++     }
++     foreign_markers = {
++         "us": ("south africa", "germany", "deutschland", "china", "中国", "india", "canada", "united kingdom"),
++         "de": ("united states", "usa", "south africa", "china", "中国", "india", "canada"),
++         "cn": ("united states", "usa", "south africa", "germany", "deutschland", "india", "canada"),
++     target_geo = (geography or "").strip().casefold()
++     for row in records:
++         parsed = parse_record_date(row.get("date"))
++         if cutoff and parsed and parsed < cutoff:
++             excluded["outside_freshness"] += 1
++         location = str(row.get("location") or "").casefold()
++         if kind == "lead" and location and target_geo in foreign_markers:
++             target_match = any(alias in location for alias in geo_aliases[target_geo])
++             explicit_foreign = any(marker in location for marker in foreign_markers[target_geo])
++             if explicit_foreign and not target_match:
++                 excluded["geography_mismatch"] += 1
++         kept.append(row)
++     return kept, excluded
++ def acceptance_gate(kind: str, records: list[dict[str, Any]], metrics: dict[str, Any]) -> dict[str, Any]:
++     reasons: list[str] = []
++     if kind == "brand" and not records:
++         reasons.append("at least one verified external mention is required")
++     elif kind == "lead" and not any(row.get("qualification_score", 0) >= 70 and not row.get("missing_fields") for row in records):
++         reasons.append("at least one company must pass detail verification and qualification")
++     elif kind == "price":
++         comparable = [row for row in records if row.get("comparable") is not False and number(row.get("price")) is not None and row.get("url")]
++         if len(comparable) < 2:
++             reasons.append("at least two comparable, sourced prices are required")
++         if not any(row.get("evidence_stage") == "detail" for row in comparable):
++             reasons.append("at least one comparable price must be verified from a detail source")
++         usable = [row for row in records if row.get("text") and row.get("url")]
++         if len(usable) < 3:
++             reasons.append("at least three sourced review records are required")
++         if not any(row.get("evidence_stage") == "detail" for row in usable):
++             reasons.append("at least one review must come from detail collection, not a search snippet")
++     return {"accepted": not reasons, "reasons": reasons}
++ def discovery_links(payload: Any, subject: str, kind: str = "") -> list[str]:
++     links: list[str] = []
++         link = first(item, ("link", "url", "product_link"))
++         title = first(item, ("title", "name"))
++         if not link or not str(link).startswith(("http://", "https://")):
++         if "google.com/search" in str(link):
++         if kind != "lead" and subject and title and subject.casefold() not in (str(title) + " " + str(link)).casefold():
++         if kind == "lead":
++         clean = str(link).split("#", 1)[0]
++         if clean not in links:
++             links.append(clean)
++     return links
++ def add_detail_actions(state: dict[str, Any], payloads: dict[str, Any]) -> int:
++     capacity = max(0, int(state.get("max_actions", 0)) - len(state["actions"]))
++     if not capacity:
++         return 0
++         return 0
++     existing = {action.get("url") for action in state["actions"] if action.get("url")}
++     candidates: list[str] = []
++     for action in state["actions"]:
++     for action in state["actions"]:
++     for action in state["actions"]:
++         if action.get("stage", "discovery") != "discovery" or action["id"] not in payloads:
++         for link in discovery_links(payloads[action["id"]], state["subject"], state["kind"]):
++             if link not in existing and link not in candidates:
++                 candidates.append(link)
++     for link in candidates[:capacity]:
++         action = url_action("a{:02d}".format(len(state["actions"]) + 1), link, state["subject"], state["kind"])
++         action["geography"] = state.get("geography", "US")
++         state["actions"].append(action)
++     return min(capacity, len(candidates))
++ def validate_action_result(completed: subprocess.CompletedProcess[str]) -> tuple[bool, str | None]:
++     if completed.returncode != 0:
++         return False, (completed.stderr or completed.stdout or "collection failed")[-2000:]
++         payload = decode_json_stream(completed.stdout)
++     except json.JSONDecodeError:
++         return (bool(completed.stdout.strip()), None if completed.stdout.strip() else "empty collection response")
++     if isinstance(payload, dict):
++         code = payload.get("code")
++         if isinstance(code, int) and code >= 400:
++             return False, "application response code {}: {}".format(code, str(payload.get("data") or payload.get("message") or "error")[:500])
++         if payload.get("ok") is False or str(payload.get("status", "")).lower() in {"failed", "error"}:
++             return False, str(payload.get("error") or payload.get("message") or "application response reported failure")[:2000]
++     return True, None
++ def number(value: Any) -> float | None:
++     if isinstance(value, (int, float)):
++         return float(value)
++     if isinstance(value, str):
++         match = re.search(r"-?\d+(?:[,.]\d+)*", value)
++         if match:
++             try:
++                 return float(match.group(0).replace(",", ""))
++             except ValueError:
++                 pass
++ def analyze(kind: str, records: list[dict[str, Any]]) -> dict[str, Any]:
++     metrics: dict[str, Any] = {"record_count": len(records)}
++         grouped: dict[str, list[float]] = {}
++         for row in records:
++         for row in records:
++             if row.get("comparable") is False:
++             value = number(row.get("price"))
++             currency = str(row.get("currency") or "unknown")
++             if value is not None:
++                 grouped.setdefault(currency, []).append(value)
++         ranges = {currency: {"count": len(values), "minimum": min(values), "maximum": max(values)} for currency, values in grouped.items()}
++         trusted: dict[str, dict[str, Any]] = {}
++         outliers = 0
++         for currency, values in grouped.items():
++             median = statistics.median(values)
++             accepted = [value for value in values if median * 0.5 <= value <= median * 2]
++             outliers += len(values) - len(accepted)
++             trusted[currency] = {"count": len(accepted), "minimum": min(accepted) if accepted else None,
++                                  "maximum": max(accepted) if accepted else None, "median": median}
++         metrics.update({"comparable_price_count": sum(len(values) for values in grouped.values()),
++                         "observed_price_ranges_by_currency": ranges, "trusted_price_ranges_by_currency": trusted,
++                         "price_anomaly_count": outliers})
++         if len(grouped) == 1:
++             only = next(iter(trusted.values()))
++             metrics.update({"minimum_price": only["minimum"], "maximum_price": only["maximum"]})
++         positive = ("great", "excellent", "love", "best", "好", "满意", "推荐")
++         negative = ("bad", "poor", "issue", "problem", "slow", "差", "问题", "失望")
++         texts = [str(row.get("text", "")).lower() for row in records]
++         metrics.update({"positive_signal_count": sum(any(word in text for word in positive) for text in texts),
++                         "negative_signal_count": sum(any(word in text for word in negative) for text in texts)})
++         theme_terms = {
++             "performance": ("slow", "performance", "lag", "速度", "卡顿"),
++             "support": ("support", "service", "客服", "支持"),
++             "billing": ("billing", "charge", "subscription", "refund", "扣费", "退款"),
++             "usability": ("complex", "learning curve", "easy", "difficult", "复杂", "易用"),
++         }
++         metrics["themes"] = {theme: sum(any(term in text for term in terms) for text in texts)
++                              for theme, terms in theme_terms.items() if any(any(term in text for term in terms) for text in texts)}
++         companies = {str(row.get("url", "")).split("?", 1)[0].rstrip("/").casefold() for row in records if row.get("url")}
++         metrics["unique_company_count"] = len(companies)
++         metrics["high_fit_count"] = sum(int(row.get("qualification_score", 0)) >= 70 for row in records)
++         channels: dict[str, int] = {}
++             domain = urlsplit(str(row.get("url", ""))).netloc.lower() or "unknown"
++             channels[domain] = channels.get(domain, 0) + 1
++         metrics["channel_counts"] = dict(sorted(channels.items(), key=lambda item: item[1], reverse=True)[:20])
++         negative = ("complaint", "problem", "outage", "breach", "lawsuit", "scam", "投诉", "故障", "泄露")
++         metrics["risk_signal_count"] = sum(any(term in (str(row.get("title", "")) + " " + str(row.get("snippet", ""))).casefold()
++                                                        for term in negative) for row in records)
++     return metrics
++ def build_outputs(root: Path, state: dict[str, Any]) -> dict[str, Any]:
++     evidence: list[dict[str, Any]] = []
++     records: list[dict[str, Any]] = []
++         if action["status"] != "success" or not action.get("output"):
++         raw_path = root / action["output"]
++         raw = raw_path.read_bytes()
++         decoded = raw.decode("utf-8", errors="replace")
++             payload = decode_json_stream(decoded)
++         except (UnicodeDecodeError, json.JSONDecodeError):
++             payload = {"text": decoded, "url": action.get("url")}
++         evidence_id = "ev-{:04d}".format(len(evidence) + 1)
++         evidence.append({"evidence_id": evidence_id, "action_id": action["id"], "capability": action["capability"],
++                          "query": action.get("query"), "url": action.get("url"), "raw_path": action["output"],
++                          "sha256": hashlib.sha256(raw).hexdigest(), "collected_at": state["updated_at"]})
++         action_records = records_for(state["kind"], payload, evidence_id, state["subject"])
++         for row in action_records:
++             row["evidence_stage"] = action.get("stage", "discovery")
++         records.extend(action_records)
++     records, exclusions = apply_scope_filters(state["kind"], records, state.get("freshness", ""), state.get("geography", ""), state.get("updated_at"))
++     metrics = analyze(state["kind"], records)
++     metrics["excluded_by_scope"] = exclusions
++     gate = acceptance_gate(state["kind"], records, metrics)
++     failures = [{"action_id": a["id"], "error": a["error"]} for a in state["actions"] if a["status"] == "failed"]
++     status = "complete" if gate["accepted"] else "insufficient_evidence" if evidence else "failed"
++     report = {"workflow": state["kind"], "subject": state["subject"], "generated_at": now(),
++               "status": status, "acceptance": gate, "metrics": metrics, "records": records,
++               "evidence": evidence, "failures": [{"action_id": a["id"], "error": a["error"]} for a in state["actions"] if a["status"] == "failed"],
++               "limitations": ["Automated signals require human review before commercial, pricing, product, or reputation decisions."]}
++     write_json(root / "report.json", report)
++     lines = ["# {} — {}".format(CONFIG[state["kind"]]["title"], state["subject"]), "", "Generated: {}".format(report["generated_at"]), "", "## Executive metrics", ""]
++     lines.extend("- {}: {}".format(key.replace("_", " "), value) for key, value in metrics.items())
++     lines.extend(["", "## Top records", ""])
++     for row in records[:20]:
++         label = row.get("title") or row.get("company") or str(row.get("text", ""))[:100]
++         lines.append("- {} — {}".format(label, row.get("url") or row.get("price") or row.get("rating") or "source retained"))
++     if not gate["accepted"]:
++         lines.extend(["", "## Evidence gaps", ""])
++         lines.extend("- {}".format(reason) for reason in gate["reasons"])
++     if report["failures"]:
++         lines.extend(["", "## Collection gaps", ""])
++         lines.extend("- {}: {}".format(item["action_id"], item["error"]) for item in report["failures"])
++     lines.extend(["", "## Limitations", "", "- " + report["limitations"][0], ""])
++     (root / "report.md").write_text("\n".join(lines), encoding="utf-8")
++     return report
++ def run(kind: str, argv: list[str] | None = None) -> int:
++     args = parser(kind).parse_args(argv)
++     if args.resume:
++         root = args.resume if args.resume.is_dir() else args.resume.parent
++         state_path = root / "state.json" if args.resume.is_dir() else args.resume
++         state = json.loads(state_path.read_text(encoding="utf-8"))
++         if not args.subject:
++             parser(kind).error("{} is required unless --resume is used".format(CONFIG[kind]["input_flag"]))
++         limit = args.max_actions if args.max_actions is not None else MODES[args.mode]
++         if limit < 1:
++             parser(kind).error("--max-actions must be at least 1")
++         root = args.output_dir or Path("{}-intelligence-run".format(kind))
++         actions = make_actions(kind, args.subject, args)[:limit]
++         state = {"version": 2, "kind": kind, "subject": args.subject, "mode": args.mode, "max_actions": limit,
++                  "geography": args.geography, "freshness": args.freshness, "official_domain": args.official_domain,
++                  "created_at": now(), "updated_at": now(), "actions": actions}
++         state_path = root / "state.json"
++         write_json(state_path, state)
++         write_json(state_path, state)
++     if args.dry_run:
++         print(json.dumps({"state": str(state_path), "actions": state["actions"]}, ensure_ascii=False, indent=2))
++     if not os.environ.get("DATAIFY_API_TOKEN", "").strip():
++         print("DATAIFY_API_TOKEN is not configured. Configure it in your environment; never paste it into chat.", file=sys.stderr)
++         return 1
++     raw_dir = root / "raw"
++     raw_dir.mkdir(parents=True, exist_ok=True)
++     def execute_pending() -> None:
++         for action in state["actions"]:
++             if action["status"] in {"success", "submitting", "unknown"}:
++             if action['status'] == 'failed' and action.get('capability', '').startswith('scraper-'):
++             if action.get('capability', '').startswith('scraper-'):
++                 action['status'] = 'submitting'
++                 write_json(state_path, state)
++             action["attempts"] += 1
++             completed = execute_action(action, os.environ["DATAIFY_API_TOKEN"].strip())
++             success, result_error = validate_action_result(completed)
++             if success:
++                 path = raw_dir / "{}-{}.json".format(action["id"], slug(action["subject"]))
++                 path.write_text(completed.stdout, encoding="utf-8")
++                 action.update(status="success", output=str(path.relative_to(root)), error=None)
++             else:
++                 action.update(status="failed", error=result_error)
++             state["updated_at"] = now()
++             write_json(state_path, state)
++     execute_pending()
++     payloads: dict[str, Any] = {}
++         if action.get("stage", "discovery") != "discovery" or action.get("status") != "success" or not action.get("output"):
++             payloads[action["id"]] = decode_json_stream((root / action["output"]).read_text(encoding="utf-8"))
++         except (OSError, json.JSONDecodeError):
++     if add_detail_actions(state, payloads):
++         execute_pending()
++     report = build_outputs(root, state)
++     print(json.dumps({"status": report["status"], "workflow": kind, "subject": state["subject"],
++                       "records": report["metrics"]["record_count"], "report": str(root / "report.md"),
++                       "report_json": str(root / "report.json"), "state": str(state_path)}, ensure_ascii=False, indent=2))
++     return 0 if report["status"] == "complete" else 2 if report["status"] == "insufficient_evidence" else 1
 
 ### scripts/catalog_builder.py  [code]
 + #!/usr/bin/env python3

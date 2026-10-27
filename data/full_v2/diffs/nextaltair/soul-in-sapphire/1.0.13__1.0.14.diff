@@ -400,6 +400,20 @@ change_type: instructions+docs+code   changelog: OpenClaw sessions_spawn direct 
 - - Search durable memory with `ltm_search.js`.
 - - Pull recent state snapshots with `state_recall.js`.
 - - Run `continuity_check.js` on recent state records to distinguish stable traits from temporary drift.
+- ### 3) Make proposed identity changes explicit
+- - Draft proposed text separately.
+- - Compare current vs proposed with `identity_diff.js`.
+- - If the impulse to change identity is driven by unresolved tension, log it first with `conflict_track.js`.
+- ### 4) Preserve unresolved tensions
+- Not every tension should become an edit. If the self-model is still unstable, append a conflict record instead of forcing a premature rewrite.
+- ### 5) Write durable memory about the change
+- If a change is real and repeats over time, record it in LTM as a decision/preference/fact rather than burying it in raw logs.
+- ## Evolution triggers worth tracking
+- - Repeated mood/intent patterns across recent state snapshots
+- - Stable preferences that show up in multiple work sessions
+- - Recurring internal conflicts that stop being one-off and become part of the personality pattern
+- - Identity claims that survive comparison against recent memory instead of being just a momentary mood
+- This skill should help build a continuous self-model, not just a pile of notes.
 + name: "soul-in-sapphire"
 + description: "Continuity, durable memory, mood/state, journal, identity diff, heartbeat state, and profile promotion for Valentina/OpenClaw."
 + metadata: {"openclaw":{"emoji":"💠","requires":{"bins":["node"],"env":["NOTION_API_KEY"]},"primaryEnv":"NOTION_API_KEY","dependsOnSkills":["notion-api-automation"],"optionalEnv":["NOTION_TOKEN","NOTION_API_TOKEN","NOTIONCTL_PATH"]}}
@@ -822,6 +836,166 @@ change_type: instructions+docs+code   changelog: OpenClaw sessions_spawn direct 
 +   return readDreamRem(workspace) || readDreamLight(workspace) || readDreamDiary(workspace);
 + function readLatestDailyMemory(workspace) {
 +   const file = newestFiles(path.join(workspace, 'memory'), '.md', 1)[0];
++   if (!file) return null;
++   const text = markdownText(fs.readFileSync(file, 'utf-8'));
++   if (!text) return null;
++   return candidate('Recent daily memory', text, {
++     type: 'workspace_memory',
++ function readDailyMarker(workspace) {
++   const files = newestFiles(path.join(workspace, 'memory'), '.md', 40);
++     const line = lines.find(l => MARKERS.some(m => l.toLowerCase().includes(m)));
++     if (!line) continue;
++     return candidate('Unresolved memory marker', line, {
++       type: 'workspace_memory',
++       path: relativePath(workspace, file),
++     });
++     });
++ function readUnresolved(workspace) {
++   const hit = readFirstExistingJsonl([
++     path.join(workspace, 'memory', 'soul-in-sapphire', 'conflicts.jsonl'),
++     path.join(workspace, 'memory', 'conflicts.jsonl'),
++     path.join(workspace, 'soul-in-sapphire', 'state', 'conflicts.jsonl'),
++   ]);
++   if (hit) {
++     const r = hit.obj;
++     const content = [
++       r.tension,
++       r.current_pull ? `current_pull: ${r.current_pull}` : '',
++       r.next_signal ? `next_signal: ${r.next_signal}` : '',
++       r.note,
++     ].filter(Boolean).join(' ');
++     const title = r.tension || 'Unresolved tension';
++     return candidate(title, content, {
++       type: 'local_conflict',
++       path: relativePath(workspace, hit.file),
++   return readDailyMarker(workspace);
++ function normalizeStatePage(page) {
++   const p = page?.properties || {};
++   const p = page?.properties || {};
++   const p = page?.properties || {};
++   const title = textOf(p.reason) || textOf(p.Name) || textOf(p.when) || 'Recent state';
++   const parts = [
++   const parts = [
++     textOf(p.when),
++     textOf(p.when),
++     textOf(p.mood_label),
++     textOf(p.intent),
++     textOf(p.need_stack),
++     textOf(p.reason),
++   ].flat().filter(Boolean).join(' ');
++   ].flat().filter(Boolean).join(' ');
++   return candidate(title, parts, {
++   return candidate(title, parts, {
++     type: 'notion_state',
++     id: page?.id,
++     id: page?.id,
++     id: page?.id,
++     url: page?.url,
++     url: page?.url,
++     url: page?.url,
++ function normalizeJournalPage(page) {
++   const title = textOf(p.Name) || textOf(p.when) || 'Recent journal';
++     textOf(p.body),
++     textOf(p.worklog),
++     textOf(p.future),
++     type: 'notion_journal',
++ function readRecent(args) {
++   if (args.stateDsid) {
++     const pages = queryRecent(args.stateDsid, 1);
++     if (pages[0]) return normalizeStatePage(pages[0]);
++   if (args.journalDsid) {
++     const pages = queryRecent(args.journalDsid, 1);
++     if (pages[0]) return normalizeJournalPage(pages[0]);
++   return readLatestDailyMemory(args.workspace);
++ async function readDurable(args) {
++   const cfg = { data_source_id: args.memDsid, database_id: args.memDbid };
++   requireIds(cfg);
++   const res = await queryDataSource(args.memDsid, {
++     page_size: 25,
++     sorts: [{ timestamp: 'created_time', direction: 'descending' }],
++   const pages = res?.results || [];
++   if (!pages.length) return null;
++   const page = pages[crypto.randomInt(0, pages.length)];
++   return candidate(textOf(p.Name) || 'Durable memory', textOf(p.Content), {
++     type: 'notion_memory',
++ async function readShelf(shelf, args) {
++   if (shelf === 'recent') return readRecent(args);
++   if (shelf === 'unresolved') return readUnresolved(args.workspace);
++   if (shelf === 'durable') return await readDurable(args);
++   if (shelf === 'dream') return readDream(args.workspace);
++ function buildStaged(candidateObj, shelf, roll, args, at) {
++   const expires = new Date(new Date(at).getTime() + args.ttlMinutes * 60 * 1000).toISOString();
++     kind: 'ambient_recall',
++     shelf,
++     shelf,
++     staged_at: at,
++     expires_at: expires,
++     roll,
++     roll,
++     title: truncateText(candidateObj.title, TITLE_LIMIT),
++     content: truncateText(candidateObj.content, CONTENT_LIMIT),
++     source: candidateObj.source || { type: shelf },
++ function cleanExpired(stagedFile) {
++   if (!fs.existsSync(stagedFile)) return false;
++     const obj = readJsonFile(stagedFile);
++     if (obj?.expires_at && new Date(obj.expires_at).getTime() < Date.now()) {
++       fs.unlinkSync(stagedFile);
++       return true;
++   } catch {
++     fs.unlinkSync(stagedFile);
++     return true;
++   return false;
++ async function main() {
++   const args = parseArgs(process.argv);
++   if (args.help) {
++     process.stdout.write(usage());
++     return;
++   const stateFile = path.join(args.stateDir, 'ambient-recall-state.json');
++   const stagedFile = path.join(args.stateDir, 'ambient-recall.json');
++   const at = nowIso();
++   let state = loadState(stateFile, args.dailyCap, args.timezone);
++   const loadError = state._loadError;
++   delete state._loadError;
++   const roll = args.forceRoll ?? randomRoll();
++   const shelf = shelfForRoll(roll);
++   let staged = null;
++   let cleanedExpired = false;
++   state.rollsToday = Number(state.rollsToday || 0) + 1;
++   state.lastRollAt = at;
++   state.dailyCap = args.dailyCap;
++   state.lastError = loadError || null;
++     if (state.hitsToday >= args.dailyCap && shelf) {
++       state.lastError = `dailyCap reached (${args.dailyCap}); skipped ${shelf}`;
++     } else if (shelf) {
++       const c = await readShelf(shelf, args);
++       if (c) {
++         staged = buildStaged(c, shelf, roll, args, at);
++         state.hitsToday = Number(state.hitsToday || 0) + 1;
++         state.lastHitAt = at;
++         state.lastError = `no ambient candidate for shelf: ${shelf}`;
++     } else if (!args.dryRun) {
++       cleanedExpired = cleanExpired(stagedFile);
++     state.lastError = truncateText(err?.message || String(err), 240);
++   if (!args.dryRun) {
++     fs.mkdirSync(args.stateDir, { recursive: true });
++     atomicWriteJson(stateFile, state);
++     if (staged) atomicWriteJson(stagedFile, staged);
++   console.log(JSON.stringify({
++     ok: true,
++     dryRun: args.dryRun,
++     staged: !!staged,
++     cleanedExpired,
++     stateFile,
++     stagedFile,
++     timezone: args.timezone,
++     lastError: state.lastError,
++     recall: staged,
++   }, null, 2));
++ try {
++   await main();
++ } catch (err) {
++   console.error(String(err?.stack || err));
++   process.exit(1);
 
 ### state/subagent-models.json  [code]
 - {

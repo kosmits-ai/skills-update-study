@@ -565,6 +565,470 @@ change_type: docs+code   changelog: The helper connects through Beatra's mainlan
 +             "lifetime": lifetime,
 +         }
 +     if ai is not None and ai["route"] == "cn":
++         if cn is not None:
++             return decided("cn", "server", ai, _clamp_ttl(ai["ttl_seconds"]))
++         return decided("ai", "cn_unreachable", ai, ROUTE_SHORT_TTL_SECONDS)
++     if ai is not None and ai["route"] == "ai":
++         return decided("ai", "server", ai, _clamp_ttl(ai["ttl_seconds"]))
++     if cn is not None and cn["route"] in ROUTE_HOSTS:
++         return decided(cn["route"], "cn_geoip", cn, _clamp_ttl(cn["ttl_seconds"]))
++     fallback = previous if previous in ROUTE_HOSTS else "ai"
++     return decided(fallback, "undecided", None, ROUTE_SHORT_TTL_SECONDS)
++ def _still_valid(record: dict[str, Any], now: float) -> bool:
++     expires_at = record.get("expires_at")
++     return isinstance(expires_at, (int, float)) and not isinstance(expires_at, bool) and now < expires_at
++ def _update_network(
++     state_dir: Path,
++     state_dir: Path,
++     state_dir: Path,
++     state_dir: Path,
++     changes: dict[str, Any],
++     remove: tuple[str, ...] = (),
++ ) -> None:
++     """Read-modify-write `network.json`, keeping `approval_link` and any key a
++     newer helper added. Concurrent processes: the last writer wins."""
++     record = _read_network(state_dir)
++     record = _read_network(state_dir)
++     record = _read_network(state_dir)
++     record.update(changes)
++     for key in remove:
++         record.pop(key, None)
++     record["schema_version"] = NETWORK_SCHEMA_VERSION
++     _write_private_json(state_dir.expanduser() / NETWORK_FILE, record)
++ def resolve_route(
++     state_dir: Path | None = None,
++     state_dir: Path | None = None,
++     now: float | None = None,
++     now: float | None = None,
++     now: float | None = None,
++     probe: RouteProbe | None = None,
++     probe: RouteProbe | None = None,
++     cn_after_seconds: float = ROUTE_PROBE_CN_AFTER_SECONDS,
++     deadline_seconds: float = ROUTE_PROBE_DEADLINE_SECONDS,
++     deadline_seconds: float = ROUTE_PROBE_DEADLINE_SECONDS,
++ ) -> str:
++ ) -> str:
++     """Decide once per process which network this computer uses (spec §5.2).
++     Only `auto` builds decide; the cn channel is fixed and never asks. Every
++     outcome is recorded so an offline computer does not ask on every command,
++     and nothing here can fail the command that follows.
++     """
++     global _ACTIVE_ROUTE, _ROUTE_STATE_DIR
++         _ACTIVE_ROUTE = policy
++     resolved = (state_dir or Path.home() / ".beatra").expanduser()
++     _ROUTE_STATE_DIR = resolved
++     observed = time.time() if now is None else now
++     observed = time.time() if now is None else now
++     observed = time.time() if now is None else now
++     observed = time.time() if now is None else now
++     record = _read_network(resolved)
++     recorded = record.get("route")
++     # A route another helper wrote may be any JSON value: only a known name counts.
++     previous = recorded if isinstance(recorded, str) and recorded in ROUTE_HOSTS else None
++     if previous is not None and (record.get("pinned") is True or _still_valid(record, observed)):
++         _ACTIVE_ROUTE = previous
++         return previous
++         ai, cn = _probe_routes(
++             probe or _default_route_probe,
++             cn_after_seconds=cn_after_seconds,
++             deadline_seconds=deadline_seconds,
++         )
++         decision = decide_route(ai, cn, previous=previous)
++     except Exception:
++         decision = decide_route(None, None, previous=previous)
++     _ACTIVE_ROUTE = decision["route"]
++     with suppress(Exception):
++     with suppress(Exception):
++     with suppress(Exception):
++     with suppress(Exception):
++     with suppress(Exception):
++     with suppress(Exception):
++     with suppress(Exception):
++     with suppress(Exception):
++         _update_network(
++             resolved,
++                 "route": decision["route"],
++                 "basis": decision["basis"],
++                 "pinned": False,
++                 "country_code": decision["country_code"],
++                 "country_source": decision["country_source"],
++                 "decided_at": int(observed),
++                 "expires_at": int(observed) + decision["lifetime"],
++                 "last_probe_at": int(observed),
++                 "policy_version": ROUTE_POLICY_VERSION,
++     return decision["route"]
++ def note_route_failure(state_dir: Path | None = None, *, now: float | None = None) -> None:
++     """A connection failure or gateway error on this computer's route: let the
++     next process decide again (spec §5.5), at most once every two minutes and
++     never for a route the user pinned. The failed request itself is never
++     resent; it returns the error it always did."""
++     if route_policy() != "auto":
++     if route_policy() != "auto":
++         return
++     resolved = state_dir or _ROUTE_STATE_DIR
++     if resolved is None:
++         record = _read_network(resolved)
++         if record.get("route") not in ROUTE_HOSTS or record.get("pinned") is True:
++             return
++             return
++             return
++         expires = record.get("expires_at")
++         if isinstance(expires, (int, float)) and not isinstance(expires, bool) and expires <= observed:
++             return  # already due for a new decision; later failures add nothing
++         last = record.get("last_probe_at")
++             isinstance(last, (int, float))
++             and not isinstance(last, bool)
++             and observed - last < ROUTE_REPROBE_INTERVAL_SECONDS
++         _update_network(resolved, {"expires_at": int(observed)})
++ _ROUTE_NAMES = {"ai": "the international network", "cn": "the mainland China network"}
++ def approval_link_preference(state_dir: Path) -> str:
++     """`ai` when the user chose to open approval links on Beatra's international
++     site (`authorize.py --approval-link ai`), else `auto` (spec §5.7)."""
++     return "ai" if _read_network(state_dir).get("approval_link") == "ai" else "auto"
++ def set_approval_link_preference(state_dir: Path, choice: str) -> None:
++     if choice == "ai":
++         _update_network(state_dir, {"approval_link": "ai"})
++     elif choice == "auto":
++         _update_network(state_dir, {}, remove=("approval_link",))
++     else:
++         raise RuntimeError("Choose ai or auto for the approval link")
++ def _probe_one(probe: RouteProbe, route: str, *, deadline_seconds: float) -> dict[str, Any] | None:
++     replies: list[dict[str, Any] | None] = []
++     done = threading.Event()
++     def ask() -> None:
++             replies.append(_route_answer(probe(route)))
++             replies.append(None)
++         finally:
++             done.set()
++     threading.Thread(target=ask, name=f"beatra-route-{route}", daemon=True).start()
++     done.wait(deadline_seconds)
++     return replies[0] if replies else None
++ def pin_route(
++     choice: str,
++     """`network --use`: keep one network until `--use auto` (spec §5.4). A
++     network that does not answer right now is refused, so a computer is never
++     locked onto a route it cannot reach."""
++     global _ACTIVE_ROUTE
++         raise RuntimeError("This installation always uses the mainland China network; its network cannot be changed.")
++     if choice == "auto":
++     if choice == "auto":
++         _update_network(state_dir, {"pinned": False, "expires_at": 0})
++         _ACTIVE_ROUTE = None
++         return resolve_route(state_dir, now=observed, probe=probe)
++     if choice not in ROUTE_HOSTS:
++         raise RuntimeError("Choose cn, ai or auto")
++     reply = _probe_one(probe or _default_route_probe, choice, deadline_seconds=deadline_seconds)
++     if reply is None:
++         raise RuntimeError(
++             f"Beatra did not answer over {_ROUTE_NAMES[choice]} just now, so it was not selected. "
++             "Check the connection and try again."
++     _update_network(
++         state_dir,
++         {
++         {
++             "route": choice,
++             "basis": "pinned",
++             "pinned": True,
++             "country_code": reply["country_code"],
++             "country_source": reply["country_source"],
++             "decided_at": int(observed),
++             "expires_at": None,
++             "last_probe_at": int(observed),
++             "policy_version": ROUTE_POLICY_VERSION,
++     _ACTIVE_ROUTE = choice
++     return choice
++ def network_status(state_dir: Path) -> dict[str, Any]:
++     status: dict[str, Any] = {
++         "policy": policy,
++         "route": current_route(state_dir),
++         "approval_link": approval_link_preference(state_dir),
++         status["basis"] = "channel"
++         return status
++     if record.get("route") in ROUTE_HOSTS:
++         for key in ("basis", "pinned", "country_code", "expires_at"):
++             if key in record:
++                 status[key] = record[key]
++     return status
++ def _network_command(choice: str | None, state_dir: Path) -> None:
++         route = pin_route(choice, state_dir) if choice is not None else None
++         raise RuntimeError(f"Could not save the network choice: {exc}") from exc
++         print(f"Beatra chooses this computer's network automatically again; it now uses {_ROUTE_NAMES[route]}.")
++     elif choice is not None:
++         print(
++             f"Beatra will use {_ROUTE_NAMES[route]} until you run "
++             "`python3 scripts/mcp_client.py network --use auto`."
++     print(json.dumps(network_status(state_dir), ensure_ascii=False, separators=(",", ":")))
++         or parsed.hostname not in {hosts[3] for hosts in ROUTE_HOSTS.values()}
++     route: str | None = None,
++     route: str | None = None,
++     route: str | None = None,
++         _update_get(
++             _site_url,
++             route=route,
++             route=route,
++             timeout=UPDATE_DISCOVERY_TIMEOUT_SECONDS,
++             limit=MAX_UPDATE_DISCOVERY_BYTES,
++             get_bytes=get_bytes,
++     manifest_content = _update_get(
++     manifest_content = _update_get(
++         _cdn_url,
++         _cdn_url,
++         _cdn_url,
++         route=route,
++         route=route,
++         route=route,
++         timeout=UPDATE_DOWNLOAD_TIMEOUT_SECONDS,
++         timeout=UPDATE_DOWNLOAD_TIMEOUT_SECONDS,
++         timeout=UPDATE_DOWNLOAD_TIMEOUT_SECONDS,
++         limit=MAX_UPDATE_MANIFEST_BYTES,
++         limit=MAX_UPDATE_MANIFEST_BYTES,
++         get_bytes=get_bytes,
++         get_bytes=get_bytes,
++         get_bytes=get_bytes,
++     archive = _update_get(
++         limit=MAX_UPDATE_ARCHIVE_BYTES,
++     install_root: Path | None = None,
++     install_root: Path | None = None,
++     resolved_state = state_dir or Path.home() / ".beatra"
++             try:
++             except OSError as exc:
++                 )
++     return None
++     return None
++     return None
++     return None
++     return None
++     install_root: Path,
++     install_root: Path,
++             "schema_version": 1,
++     route = current_route(resolved_state)
++         checked = check_update(get_bytes=get_bytes, route=route)
++         manifest, new_files = download_update(discovery, get_bytes=get_bytes, route=route)
++ ) -> bool:
++         route = current_route(resolved_state)
++             checked = check_update(get_bytes=get_bytes, route=route)
++                 route=route,
++             manifest, new_files = download_update(discovery, get_bytes=get_bytes, route=route)
++         _identity_url, token = _credentials(state_dir)
++         self.url = route_mcp_url(current_route(state_dir))
++ def _small_regular_json(path: Path, limit: int) -> Any:
++     """The JSON value of a regular file no larger than `limit` bytes, else None.
++     Symbolic links, directories, oversized or undecodable files are ignored."""
++         info = os.lstat(path)
++         if not stat.S_ISREG(info.st_mode) or info.st_size > limit:
++         with path.open("rb") as handle:
++             raw = handle.read(limit + 1)
++     except OSError:
++     if len(raw) > limit:
++     except (ValueError, RecursionError):
++ def _channel_identity() -> tuple[str, str] | None:
++     """The channel and locale fixed at build time, when this build has a real
++     one (the WorkBuddy connector keeps placeholders and reports none)."""
++     channel = globals().get("PACKAGE_CHANNEL")
++     locale_name = globals().get("PACKAGE_LOCALE")
++         isinstance(channel, str)
++         and isinstance(locale_name, str)
++         and _CHANNEL_VALUE.fullmatch(channel)
++         and _LOCALE_TAG.fullmatch(locale_name)
++         return channel, locale_name
++ def _route_report(state_dir: Path) -> tuple[str, str] | None:
++         return policy, "channel"
++     route = record.get("route")
++     if route not in ROUTE_HOSTS:
++     if record.get("pinned") is True:
++         return route, "pinned"
++     basis = record.get("basis")
++     return (route, basis) if basis in _ROUTE_BASES else None
++ def _os_release(system: str | None) -> str | None:
++     if system == "darwin":
++         # macOS only. On Windows the platform module may query WMI or start a
++         # shell, which endpoint security reads as reconnaissance (spec §7).
++         import platform
++         return platform.mac_ver()[0] or None
++     if system == "windows":
++         version = sys.getwindowsversion()
++         return f"{version.major}.{version.minor}.{version.build}"
++     if system == "linux":
++         return os.uname().release
++ def _environment() -> dict[str, Any]:
++     """Coarse runtime facts for distribution analytics (spec §7): no user name,
++     path, environment variable or address. A fact outside the shape Beatra
++     records is left out rather than sent."""
++     facts: dict[str, Any] = {}
++     system = _OS_NAMES.get(sys.platform) or ("linux" if sys.platform.startswith("linux") else None)
++     if system is not None:
++         facts["os"] = system
++         release = _os_release(system)
++         if isinstance(release, str) and _OS_VERSION.fullmatch(release):
++             facts["os_version"] = release
++         arch = sysconfig.get_platform().lower()
++         if _ARCH_VALUE.fullmatch(arch):
++             facts["arch"] = arch
++     facts["python"] = ".".join(str(part) for part in sys.version_info[:3])
++         language = locale.getlocale()[0]
++         if isinstance(language, str):
++             tag = language.replace("_", "-")
++             if _LOCALE_TAG.fullmatch(tag):
++                 facts["locale"] = tag
++         offset = datetime.now().astimezone().utcoffset()
++         if offset is not None:
++             minutes = int(offset.total_seconds() // 60)
++             if -720 <= minutes <= 840:
++                 facts["tz_offset_minutes"] = minutes
++     return facts
++ def _own_install_root() -> Path | None:
++         return _current_install_root()
++ def _stamped_source(install_root: Path) -> str | None:
++     """The `install-source.json` Beatra adds to a copy it hands to a store or
++     site (spec §6.1). It is in no manifest, so updates leave it in place."""
++     value = _small_regular_json(install_root / INSTALL_SOURCE_FILE, MAX_INSTALL_SOURCE_BYTES)
++     if isinstance(value, dict) and value.get("schema_version") == 1 and value.get("source") in INSTALL_SOURCES:
++         return value["source"]
++ def _store_marker_source(install_root: Path) -> str | None:
++     """A store client's own record inside this installation, for the stores
++     whose record format is verified (spec §6.3: ClawHub only)."""
++     for relative in _CLAWHUB_ORIGINS:
++         value = _small_regular_json(install_root / relative, MAX_LOCAL_RECORD_BYTES)
++         if value is None:
++             continue  # unreadable or unparsable: the CLI tries the legacy name
++         # A file that parses decides, as in the CLI's `readSkillOrigin`.
++         if not isinstance(value, dict) or value.get("version") != 1:
++         installed_at = value.get("installedAt")
++             all(isinstance(value.get(key), str) and value[key] for key in ("registry", "slug", "installedVersion"))
++             and isinstance(installed_at, (int, float))
++             and not isinstance(installed_at, bool)
++             and math.isfinite(installed_at)
++             return "github" if value.get("sourceKind") == "skills-sh" else "clawhub"
++ def _read_source_record(update_home: Path) -> dict[str, Any] | None:
++     value = _small_regular_json(update_home / SOURCE_RECORD_FILE, MAX_LOCAL_RECORD_BYTES)
++     basis, source = value.get("basis"), value.get("value")
++     if not isinstance(basis, str) or not isinstance(source, str) or basis not in _SOURCE_BASIS_RANK:
++     if source in INSTALL_SOURCES or (source == "other" and basis == "inferred"):
++         return value
++ def record_install_source(value: str, basis: str, *, update_home: Path, now: float) -> dict[str, Any]:
++     """Keep the strongest evidence (spec §6.3): a stamp always wins because the
++     file is the current fact; otherwise only a stronger basis replaces."""
++     stored = _read_source_record(update_home)
++     if stored is not None:
++         same = stored["value"] == value and stored["basis"] == basis
++         not_stronger = _SOURCE_BASIS_RANK[basis] <= _SOURCE_BASIS_RANK[stored["basis"]]
++         if same or (basis != "stamp" and not_stronger):
++             return stored
++     record = {"value": value, "basis": basis, "recorded_at": int(now)}
++     _write_private_json(update_home / SOURCE_RECORD_FILE, record)
++     return record
++ def _install_source(state_dir: Path, install_root: Path, *, now: float) -> tuple[str, str] | None:
++     # Evidence in the installation decides, even when the state directory is
++     # read-only; saving the record is best effort (spec §6.3).
++     stamped = _stamped_source(install_root)
++     marker = None if stamped is not None else _store_marker_source(install_root)
++     found = (stamped, "stamp") if stamped is not None else (marker, "store_marker") if marker is not None else None
++     if found is not None:
++         with suppress(Exception):
++         with suppress(Exception):
++             kept = record_install_source(found[0], found[1], update_home=_update_home(state_dir, install_root), now=now)
++             return kept["value"], kept["basis"]
++         return found
++     record = _read_source_record(_update_home(state_dir, install_root))
++     return (record["value"], record["basis"]) if record else None
++ def guess_install_source(
++     value: str,
++     """`install-source --guess`: the agent's reading of how this Skill was
++     installed, from the conversation. It never replaces a stamp or a store
++     record (spec §6.3)."""
++     if value not in GUESSABLE_SOURCES:
++         raise RuntimeError("Unknown install source")
++     root = (install_root or _current_install_root()).resolve()
++     return record_install_source(value, "inferred", update_home=_update_home(resolved_state, root), now=observed)
++ def _registration_arguments(
++     install_root: Path | None,
++     now: float,
++     now: float,
++     arguments: dict[str, Any] = {
++         "package_slug": PACKAGE_SLUG,
++         "external_installation_ref": _registration_reference(state_dir),
++     identity = _channel_identity()
++     if identity is not None:
++         arguments["channel"], arguments["channel_locale"] = identity
++         route = _route_report(state_dir)
++         if route is not None:
++             arguments["route"], arguments["route_basis"] = route
++     if install_root is not None:
++             source = _install_source(state_dir, install_root, now=now)
++             if source is not None:
++                 arguments["install_source"], arguments["install_source_basis"] = source
++         environment = _environment()
++         if environment:
++             arguments["environment"] = environment
++     return arguments
++ def _registration_key(arguments: dict[str, Any]) -> dict[str, Any]:
++     return {key: arguments.get(key) for key in _REGISTRATION_KEY}
++ def _registration_is_fresh(
++     arguments: dict[str, Any],
++     arguments: dict[str, Any],
++     value = _small_regular_json(
++         _update_home(state_dir, install_root) / REGISTRATION_CACHE_FILE, MAX_LOCAL_RECORD_BYTES
++     registered_at = value.get("registered_at")
++         value.get("key") == _registration_key(arguments)
++         and isinstance(registered_at, (int, float))
++         and not isinstance(registered_at, bool)
++         and now - float(registered_at) < REGISTRATION_MAX_AGE_SECONDS
++     _write_private_json(
++         _update_home(state_dir, install_root) / REGISTRATION_CACHE_FILE,
++             "key": _registration_key(arguments),
++             "registered_at": now,
++             "recognized": recognized,
++     """Best-effort registration of this installation (spec 2026-10-09 §7), the
++     one report the Skill sends: package, channel, network route, install source
++     and coarse runtime facts. It never blocks the requested creative operation."""
++         root = install_root or _own_install_root()
++         arguments = _registration_arguments(state_dir, root, now=observed_at)
++         cached = dict(arguments)
++         fresh = False
++         if root is not None:
++         if root is not None:
++             # An unreadable or unwritable state directory means "not fresh":
++             # the registration is still sent.
++             with suppress(Exception):
++             with suppress(Exception):
++                 fresh = _registration_is_fresh(state_dir, root, cached, now=observed_at)
++         if fresh:
++             {"name": "beatra.installations.register", "arguments": arguments},
++             # Registration does not get the business-call time budget: a
++             # The cache is best effort; its failure never undoes a sent registration.
++                 _write_registration_cache(
++                     state_dir,
++                     root,
++                     cached,
++                     now=observed_at,
++                     recognized=recognized if isinstance(recognized, bool) else None,
++         # Registration is deliberately best effort. No transport, protocol,
++         # cache, or future client error may block the creative call that follows.
++     network = subparsers.add_parser("network", help="Show or choose the Beatra network this computer uses")
++     network.add_argument(
++         "--use",
++         choices=("cn", "ai", "auto"),
++         help="Keep the mainland China (cn) or international (ai) network until --use auto",
++     source = subparsers.add_parser(
++         "install-source",
++         help="Record where this Skill was installed from, when the conversation shows it",
++     source.add_argument("--guess", required=True, choices=GUESSABLE_SOURCES)
++         # One route decision per process, before the update check and any
++         # request (spec §5.2).
++         resolve_route(state_dir)
++             else:
++         elif args.command == "network":
++             _network_command(args.use, state_dir)
++         elif args.command == "install-source":
++                 recorded = guess_install_source(args.guess, state_dir=state_dir)
++                 raise RuntimeError(f"Could not save the install source: {exc}") from exc
++             if (recorded["value"], recorded["basis"]) == (args.guess, "inferred"):
++                 print(f"Recorded where this Skill was installed from: {args.guess}.")
++                 print(f"Kept the recorded install source: {recorded['value']} ({recorded['basis']}).")
++     # authorize.py's `import mcp_client` must get this running module, not run
++     # a second copy that cannot see the route this process decided (one host
++     # per process, spec §5.5).
++     os.sys.modules["mcp_client"] = os.sys.modules[__name__]
 
 ### scripts/uninstall.py  [code]
 - AUTHORIZATION_ORIGIN = "https://api.beatra.ai"

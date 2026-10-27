@@ -541,6 +541,112 @@ change_type: instructions+docs+code   changelog: Release 0.0.10 via CI
 +     return await response.text();
 +   } catch (error) {
 +   } catch (error) {
++     // Re-throw security policy violations - these should never be silently caught
++     if (error instanceof SecurityPolicyError) {
++     if (error instanceof SecurityPolicyError) {
++       throw error;
++     // Network errors, timeouts, etc. return null (graceful degradation)
++  * @param {string} feedPath
++  * @param {{
++  * @param {{
++  *   signaturePath?: string;
++  *   checksumsPath?: string;
++  *   checksumsSignaturePath?: string;
++  *   publicKeyPem?: string;
++  *   publicKeyPem?: string;
++  *   checksumsPublicKeyPem?: string;
++  *   checksumsPublicKeyPem?: string;
++  *   allowUnsigned?: boolean;
++  *   allowUnsigned?: boolean;
++  *   verifyChecksumManifest?: boolean;
++  *   verifyChecksumManifest?: boolean;
++  *   checksumFeedEntry?: string;
++  *   checksumFeedEntry?: string;
++  *   checksumSignatureEntry?: string;
++  *   checksumSignatureEntry?: string;
++  *   checksumPublicKeyEntry?: string;
++  * }} [options]
++  * }} [options]
++  * @returns {Promise<import("./types.ts").FeedPayload>}
++ export async function loadLocalFeed(feedPath, options = {}) {
++   const signaturePath = options.signaturePath ?? `${feedPath}.sig`;
++   const checksumsPath = options.checksumsPath ?? path.join(path.dirname(feedPath), "checksums.json");
++   const checksumsSignaturePath = options.checksumsSignaturePath ?? `${checksumsPath}.sig`;
++   const publicKeyPem = String(options.publicKeyPem ?? "");
++   const publicKeyPem = String(options.publicKeyPem ?? "");
++   const checksumsPublicKeyPem = String(options.checksumsPublicKeyPem ?? publicKeyPem);
++   const checksumsPublicKeyPem = String(options.checksumsPublicKeyPem ?? publicKeyPem);
++   const allowUnsigned = options.allowUnsigned === true;
++   const allowUnsigned = options.allowUnsigned === true;
++   const verifyChecksumManifest = options.verifyChecksumManifest !== false;
++   const verifyChecksumManifest = options.verifyChecksumManifest !== false;
++   const payloadRaw = await fs.readFile(feedPath, "utf8");
++   if (!allowUnsigned) {
++   if (!allowUnsigned) {
++     const signatureRaw = await fs.readFile(signaturePath, "utf8");
++     if (!verifySignedPayload(payloadRaw, signatureRaw, publicKeyPem)) {
++     if (!verifySignedPayload(payloadRaw, signatureRaw, publicKeyPem)) {
++       throw new Error(`Feed signature verification failed for local feed: ${feedPath}`);
++     if (verifyChecksumManifest) {
++     if (verifyChecksumManifest) {
++       const checksumsRaw = await fs.readFile(checksumsPath, "utf8");
++       const checksumsSignatureRaw = await fs.readFile(checksumsSignaturePath, "utf8");
++       if (!verifySignedPayload(checksumsRaw, checksumsSignatureRaw, checksumsPublicKeyPem)) {
++         throw new Error(`Checksum manifest signature verification failed: ${checksumsPath}`);
++       const checksumsManifest = parseChecksumsManifest(checksumsRaw);
++       const checksumFeedEntry = options.checksumFeedEntry ?? path.basename(feedPath);
++       const checksumSignatureEntry = options.checksumSignatureEntry ?? path.basename(signaturePath);
++       const expectedEntries = /** @type {Record<string, string>} */ ({
++         [checksumFeedEntry]: payloadRaw,
++         [checksumSignatureEntry]: signatureRaw,
++       });
++       if (options.checksumPublicKeyEntry) {
++         expectedEntries[options.checksumPublicKeyEntry] = publicKeyPem;
++       verifyChecksums(checksumsManifest, expectedEntries);
++   const payload = JSON.parse(payloadRaw);
++   if (!isValidFeedPayload(payload)) {
++     throw new Error(`Invalid advisory feed format: ${feedPath}`);
++   return payload;
++  *   signatureUrl?: string;
++  *   checksumsUrl?: string;
++  *   checksumsSignatureUrl?: string;
++ export async function loadRemoteFeed(feedUrl, options = {}) {
++   // Use secure fetch with TLS 1.2+ enforcement and domain validation
++   const fetchFn = secureFetch;
++   const signatureUrl = options.signatureUrl ?? `${feedUrl}.sig`;
++   const checksumsUrl = options.checksumsUrl ?? defaultChecksumsUrl(feedUrl);
++   const checksumsSignatureUrl = options.checksumsSignatureUrl ?? `${checksumsUrl}.sig`;
++     const payloadRaw = await fetchText(fetchFn, feedUrl);
++     if (!payloadRaw) return null;
++     const signatureRaw = await fetchText(fetchFn, signatureUrl);
++     if (!signatureRaw) return null;
++     // Only verify checksums if explicitly requested AND both checksum files are available.
++     // Note: Many upstream workflows (e.g., GitHub raw content) don't publish checksums.json,
++     // so we gracefully skip verification when these files are missing.
++       const checksumsRaw = await fetchText(fetchFn, checksumsUrl);
++       const checksumsSignatureRaw = await fetchText(fetchFn, checksumsSignatureUrl);
++       // Only proceed if BOTH checksum files are present
++       if (checksumsRaw && checksumsSignatureRaw) {
++         if (!verifySignedPayload(checksumsRaw, checksumsSignatureRaw, checksumsPublicKeyPem)) {
++           return null;  // Fail-closed: invalid signature
++         }
++         const checksumsManifest = parseChecksumsManifest(checksumsRaw);
++         // Derive checksum entry names from actual URLs (supports any filename, not just feed.json)
++         const checksumFeedEntry = options.checksumFeedEntry ?? safeBasename(feedUrl, "feed.json");
++         const checksumSignatureEntry = options.checksumSignatureEntry ?? safeBasename(signatureUrl, "feed.json.sig");
++         verifyChecksums(checksumsManifest, {
++           [checksumFeedEntry]: payloadRaw,
++           [checksumSignatureEntry]: signatureRaw,
++         });
++       // If checksum files missing: continue without checksum verification
++       // (feed signature was already verified above at line 328)
++       const payload = JSON.parse(payloadRaw);
++       if (!isValidFeedPayload(payload)) return null;
++       return payload;
++     // Security policy violations (invalid URLs, non-HTTPS, disallowed domains) return null
++     // to allow graceful fallback to local feed
++     // Re-throw unexpected errors
++     throw error;
 
 ### hooks/clawsec-advisory-guardian/lib/types.ts  [code]
 +   version: string;
@@ -1186,6 +1292,202 @@ change_type: instructions+docs+code   changelog: Release 0.0.10 via CI
 + // Test: verifySignedPayload - malformed signature
 + async function testVerifySignedPayload_MalformedSignature() {
 +   const testName = "verifySignedPayload: malformed signature fails";
++     const { publicKeyPem } = generateEd25519KeyPair();
++     const { publicKeyPem } = generateEd25519KeyPair();
++     const { publicKeyPem } = generateEd25519KeyPair();
++     const result = verifySignedPayload(payload, "not-valid-base64!!!", publicKeyPem);
++       fail(testName, "Expected false for malformed signature, got true");
++ // Test: verifySignedPayload - empty signature
++ async function testVerifySignedPayload_EmptySignature() {
++   const testName = "verifySignedPayload: empty signature fails";
++     const result = verifySignedPayload(payload, "", publicKeyPem);
++       fail(testName, "Expected false for empty signature, got true");
++ // Test: verifySignedPayload - JSON-wrapped signature format
++ async function testVerifySignedPayload_JsonWrappedSignature() {
++   const testName = "verifySignedPayload: JSON-wrapped signature passes";
++     const signatureBase64 = signPayload(payload, privateKeyPem);
++     const jsonWrapped = JSON.stringify({ signature: signatureBase64 });
++     const result = verifySignedPayload(payload, jsonWrapped, publicKeyPem);
++       fail(testName, "Expected true for JSON-wrapped signature, got false");
++ // Test: loadLocalFeed - valid signed feed
++ async function testLoadLocalFeed_ValidSignedFeed() {
++   const testName = "loadLocalFeed: valid signed feed loads successfully";
++     const feedContent = createValidFeed();
++     const feedContent = createValidFeed();
++     const feedContent = createValidFeed();
++     const feedContent = createValidFeed();
++     const feedContent = createValidFeed();
++     const feedSignature = signPayload(feedContent, privateKeyPem);
++     const feedSignature = signPayload(feedContent, privateKeyPem);
++     const feedSignature = signPayload(feedContent, privateKeyPem);
++     // Create checksum manifest
++     const checksumManifest = createChecksumManifest({
++       "feed.json": feedContent,
++       "feed.json.sig": feedSignature + "\n",
++       "feed-signing-public.pem": publicKeyPem,
++     });
++     });
++     });
++     const checksumSignature = signPayload(checksumManifest, privateKeyPem);
++     // Write files
++     const feedPath = path.join(tempDir, "feed.json");
++     const sigPath = path.join(tempDir, "feed.json.sig");
++     const checksumPath = path.join(tempDir, "checksums.json");
++     const checksumSigPath = path.join(tempDir, "checksums.json.sig");
++     const keyPath = path.join(tempDir, "feed-signing-public.pem");
++     await fs.writeFile(feedPath, feedContent);
++     await fs.writeFile(feedPath, feedContent);
++     await fs.writeFile(feedPath, feedContent);
++     await fs.writeFile(feedPath, feedContent);
++     await fs.writeFile(sigPath, feedSignature + "\n");
++     await fs.writeFile(sigPath, feedSignature + "\n");
++     await fs.writeFile(sigPath, feedSignature + "\n");
++     await fs.writeFile(checksumPath, checksumManifest);
++     await fs.writeFile(checksumSigPath, checksumSignature + "\n");
++     await fs.writeFile(checksumSigPath, checksumSignature + "\n");
++     await fs.writeFile(keyPath, publicKeyPem);
++     const feed = await loadLocalFeed(feedPath, {
++     const feed = await loadLocalFeed(feedPath, {
++       signaturePath: sigPath,
++       checksumsPath: checksumPath,
++       checksumsSignaturePath: checksumSigPath,
++       publicKeyPem,
++       verifyChecksumManifest: true,
++       checksumPublicKeyEntry: "feed-signing-public.pem",
++     if (feed && feed.version === "1.0.0" && feed.advisories.length === 1) {
++       fail(testName, "Feed did not load with expected content");
++ // Test: loadLocalFeed - tampered feed fails (fail-closed)
++ async function testLoadLocalFeed_TamperedFeedFails() {
++   const testName = "loadLocalFeed: tampered feed fails (fail-closed)";
++     // Tamper with feed after signing
++     const tamperedFeed = feedContent.replace("TEST-001", "TAMPERED-001");
++     const feedPath = path.join(tempDir, "tampered-feed.json");
++     const sigPath = path.join(tempDir, "tampered-feed.json.sig");
++     await fs.writeFile(feedPath, tamperedFeed);
++     let didFail = false;
++     let didFail = false;
++     let didFail = false;
++     try {
++     try {
++     try {
++       await loadLocalFeed(feedPath, {
++       await loadLocalFeed(feedPath, {
++       await loadLocalFeed(feedPath, {
++         signaturePath: sigPath,
++         signaturePath: sigPath,
++         signaturePath: sigPath,
++         publicKeyPem,
++         publicKeyPem,
++         publicKeyPem,
++         verifyChecksumManifest: false,
++         verifyChecksumManifest: false,
++       });
++       });
++       });
++     } catch {
++     } catch {
++     } catch {
++       didFail = true;
++       didFail = true;
++       didFail = true;
++     if (didFail) {
++     if (didFail) {
++     if (didFail) {
++       fail(testName, "Expected failure for tampered feed, but it loaded");
++ // Test: loadLocalFeed - missing signature fails (fail-closed)
++ async function testLoadLocalFeed_MissingSignatureFails() {
++   const testName = "loadLocalFeed: missing signature fails (fail-closed)";
++     const feedPath = path.join(tempDir, "nosig-feed.json");
++     const sigPath = path.join(tempDir, "nosig-feed.json.sig");
++     // Don't write signature file
++       fail(testName, "Expected failure for missing signature, but it loaded");
++ // Test: loadLocalFeed - allowUnsigned bypasses verification
++ async function testLoadLocalFeed_AllowUnsignedBypasses() {
++   const testName = "loadLocalFeed: allowUnsigned=true bypasses verification";
++     const feedPath = path.join(tempDir, "unsigned-feed.json");
++       allowUnsigned: true,
++       verifyChecksumManifest: false,
++     if (feed && feed.version === "1.0.0") {
++       fail(testName, "Feed did not load with allowUnsigned=true");
++ // Test: loadLocalFeed - checksum mismatch fails
++ async function testLoadLocalFeed_ChecksumMismatchFails() {
++   const testName = "loadLocalFeed: checksum mismatch fails";
++     // Create checksum manifest with WRONG hash
++     const badChecksumManifest = JSON.stringify(
++       {
++         schema_version: "1.0",
++         algorithm: "sha256",
++         files: {
++           "feed.json": "0".repeat(64), // Wrong hash
++           "feed.json.sig":
++             crypto.createHash("sha256").update(feedSignature + "\n").digest("hex"),
++       },
++       null,
++       2,
++     );
++     const checksumSignature = signPayload(badChecksumManifest, privateKeyPem);
++     const feedPath = path.join(tempDir, "badcs-feed.json");
++     const sigPath = path.join(tempDir, "badcs-feed.json.sig");
++     const checksumPath = path.join(tempDir, "badcs-checksums.json");
++     const checksumSigPath = path.join(tempDir, "badcs-checksums.json.sig");
++     await fs.writeFile(checksumPath, badChecksumManifest);
++         checksumsPath: checksumPath,
++         checksumsSignaturePath: checksumSigPath,
++         verifyChecksumManifest: true,
++       fail(testName, "Expected failure for checksum mismatch, but it loaded");
++ // Test: isValidFeedPayload - valid feed
++ async function testIsValidFeedPayload_Valid() {
++   const testName = "isValidFeedPayload: valid feed passes";
++     const feed = {
++     const feed = {
++     const feed = {
++     };
++     };
++     };
++     if (isValidFeedPayload(feed)) {
++       fail(testName, "Expected valid feed to pass validation");
++ // Test: isValidFeedPayload - missing version fails
++ async function testIsValidFeedPayload_MissingVersion() {
++   const testName = "isValidFeedPayload: missing version fails";
++           affected: [],
++           affected: [],
++     if (!isValidFeedPayload(feed)) {
++     if (!isValidFeedPayload(feed)) {
++       fail(testName, "Expected feed without version to fail validation");
++ // Test: isValidFeedPayload - advisory missing id fails
++ async function testIsValidFeedPayload_AdvisoryMissingId() {
++   const testName = "isValidFeedPayload: advisory missing id fails";
++       fail(testName, "Expected advisory without id to fail validation");
++ // Main test runner
++ async function runTests() {
++   console.log("=== ClawSec Feed Verification Tests ===\n");
++   await setupTestDir();
++     // Signature verification tests
++     await testVerifySignedPayload_ValidSignature();
++     await testVerifySignedPayload_InvalidSignature();
++     await testVerifySignedPayload_WrongKey();
++     await testVerifySignedPayload_MalformedSignature();
++     await testVerifySignedPayload_EmptySignature();
++     await testVerifySignedPayload_JsonWrappedSignature();
++     // Local feed loading tests
++     await testLoadLocalFeed_ValidSignedFeed();
++     await testLoadLocalFeed_TamperedFeedFails();
++     await testLoadLocalFeed_MissingSignatureFails();
++     await testLoadLocalFeed_AllowUnsignedBypasses();
++     await testLoadLocalFeed_ChecksumMismatchFails();
++     // Feed payload validation tests
++     await testIsValidFeedPayload_Valid();
++     await testIsValidFeedPayload_MissingVersion();
++     await testIsValidFeedPayload_AdvisoryMissingId();
++   } finally {
++     await cleanupTestDir();
++   console.log(`\n=== Results: ${passCount} passed, ${failCount} failed ===`);
++   if (failCount > 0) {
++     process.exit(1);
++ runTests().catch((error) => {
++   console.error("Test runner failed:", error);
++   process.exit(1);
++ });
 
 ### test/guarded_install.test.mjs  [code]
 + #!/usr/bin/env node
@@ -1488,3 +1790,35 @@ change_type: instructions+docs+code   changelog: Release 0.0.10 via CI
 +     await fs.writeFile(feedPath, feedContent);
 +     await fs.writeFile(feedPath, feedContent);
 +       CLAWSEC_LOCAL_FEED: feedPath,
++       CLAWSEC_LOCAL_FEED: feedPath,
++       CLAWSEC_ALLOW_UNSIGNED_FEED: "1",
++       CLAWSEC_VERIFY_CHECKSUM_MANIFEST: "0",
++       CLAWSEC_FEED_URL: "file:///nonexistent",
++       CLAWSEC_FEED_URL: "file:///nonexistent",
++     if (result.stderr.includes("CLAWSEC_ALLOW_UNSIGNED_FEED")) {
++       fail(testName, `Expected unsigned mode warning, got: ${result.stderr}`);
++ // Test: Missing signature fails without allowUnsigned
++ async function testMissingSignatureFails() {
++   const testName = "guarded_install: missing signature fails without allowUnsigned";
++     const feedPath = path.join(tempDir, "nosig-feed.json");
++     if (result.code === 1) {
++       fail(testName, `Expected exit 1 for missing signature, got ${result.code}`);
++ // Main test runner
++ async function runTests() {
++   console.log("=== ClawSec Guarded Install Tests ===\n");
++   await setupTestDir();
++     await testConservativeMatchingWithoutVersion();
++     await testPreciseVersionMatching();
++     await testVersionMatchTriggersConfirmation();
++     await testConfirmAdvisoryAllowsProceeding();
++     await testAllowUnsignedWarning();
++     await testMissingSignatureFails();
++   } finally {
++     await cleanupTestDir();
++   console.log(`\n=== Results: ${passCount} passed, ${failCount} failed ===`);
++   if (failCount > 0) {
++     process.exit(1);
++ runTests().catch((error) => {
++   console.error("Test runner failed:", error);
++   process.exit(1);
++ });

@@ -794,6 +794,14 @@ change_type: instructions+docs+code   changelog: **Major update: Skill refactore
 - curl -s https://api.github.com/repos/openclaw/phd-research-companion/releases/latest | jq '.tag_name'
 - # Compare local version
 - grep "Version:" run
+- ## 📬 Support & Attribution
+- **OpenClaw AI Lab Research Tools**
+- This skill is released under MIT License for academic research purposes.
+- **For questions:**
+- - Review SKILL.md examples in this directory
+- - Check individual script `--help` documentation
+- - Contact: research-tools@openclaw.ai (not affiliated with any specific university)
+- *Designed for reproducible, traceable science in Computer Science PhD research programs.*
 + name: phd-research-companion
 + description: Full-lifecycle research management for CS PhD students — literature search over real APIs, LaTeX skeletons that compile, proof ledgers, priority checks, exact-arithmetic certificates, revision tracking and pre-submission audit. Use when a research project needs to be set up, tracked, checked for novelty, or audited before submission. Supports --track=theory (proof-first) and --track=empirical (experiment-first).
 + version: 2.4.0
@@ -2422,6 +2430,51 @@ change_type: instructions+docs+code   changelog: **Major update: Skill refactore
 +     return {"version": version, "skill_id": COZE_SKILL_ID,
 +             "files": len(written) + 1, "zip": str(zip_path),
 +             "sha256": hashlib.sha256(zip_path.read_bytes()).hexdigest(),
++             "store_name": COZE_STORE_NAME, "store_desc_len": len(COZE_STORE_DESC)}
++ def main() -> int:
++     ap = argparse.ArgumentParser(description=__doc__,
++                                  formatter_class=argparse.RawDescriptionHelpFormatter)
++     ap.add_argument("--out", default=str(ROOT / "dist" / "coze"),
++                     help="output directory (default: dist/coze)")
++     ap.add_argument("--check-only", action="store_true",
++                     help="validate without writing the zip")
++     a = ap.parse_args()
++     out = Path(a.out).resolve()
++     out.mkdir(parents=True, exist_ok=True)
++     if a.check_only:
++         version = _version()
++         tmp = out / "_check"
++         if tmp.exists():
++             shutil.rmtree(tmp)
++         tmp.mkdir(parents=True)
++             (tmp / COZE_SKILL_ID).mkdir()
++             for p in _shipped(ROOT):
++                 t = tmp / COZE_SKILL_ID / p.relative_to(ROOT)
++                 t.parent.mkdir(parents=True, exist_ok=True)
++                 shutil.copy2(p, t)
++             (tmp / COZE_SKILL_ID / "SKILL.md").write_text(
++                 build_skill_md(version), encoding="utf-8")
++             a_ = tmp / COZE_SKILL_ID / "assets"
++             a_.mkdir(exist_ok=True)
++             if (ROOT / "_icon.png").exists():
++                 shutil.copy2(ROOT / "_icon.png", a_ / "icon.png")
++             errs = validate(tmp / COZE_SKILL_ID)
++         finally:
++             shutil.rmtree(tmp, ignore_errors=True)
++         if errs:
++             print("FAIL\n  - " + "\n  - ".join(errs))
++             return 1
++         print(f"OK  coze package valid ({COZE_SKILL_ID} {version})")
++         return 0
++     info = build(out)
++     print(f"exported {info['files']} files -> {info['zip']}")
++     print(f"skill_id {info['skill_id']}")
++     print(f"version {info['version']}")
++     print(f"store name {info['store_name']} ({len(info['store_name'])}/20 chars)")
++     print(f"sha256  {info['sha256']}")
++     return 0
++ if __name__ == "__main__":
++     sys.exit(main())
 
 ### scripts/generate_latex_template.py  [code]
 - Generates complete LaTeX templates compliant with various journal/conference formats.
@@ -3585,6 +3638,70 @@ change_type: instructions+docs+code   changelog: **Major update: Skill refactore
 +         if tracker:
 +         if tracker:
 +             tracker.update(stage, 10 + int(70 * (i - 1) / n))
++         else:
++         else:
++             print(f"[..] {stage}")
++             got = DISPATCH[src](args.query, args.limit, args.year_from, args.year_to)
++             collected.extend(got)
++             print(f"     {src}: {len(got)} records")
++         except SourceError as e:
++             failures.append(str(e))
++             print(f"     {src}: FAILED - {e}", file=sys.stderr)
++     if not collected:
++         print("\nNo records retrieved from any source. Nothing was written.",
++               file=sys.stderr)
++         for f in failures:
++             print(f"  - {f}", file=sys.stderr)
++             tracker.complete({"total_papers_found": 0, "failures": failures})
++         return 2
++     unique = dedupe(collected)
++     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
++     entries, skipped = [], 0
++     for idx, p in enumerate(unique, 1):
++         e = to_bibtex(p, idx)
++         if e:
++             entries.append(e)
++             skipped += 1
++     bib_path = out_dir / f"search-results-{ts}.bibtex"
++     bib_path.write_text(
++         "% Generated by phd-research-companion 2.4.0\n"
++         f"% Query: {args.query}\n"
++         f"% Sources: {','.join(args.sources)}\n"
++         f"% Retrieved: {datetime.now().isoformat(timespec='seconds')}\n"
++         f"% Verified entries: {len(entries)}  (skipped incomplete: {skipped})\n"
++         + (f"% FAILED SOURCES: {'; '.join(failures)}\n" if failures else "")
++         + "\n" + "\n\n".join(entries) + "\n",
++         encoding="utf-8")
++     md_path = out_dir / f"search-summary-{ts}.md"
++     lines = [f"# Literature search: {args.query}", "",
++              f"- Retrieved: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
++              f"- Sources: {', '.join(args.sources)}",
++              f"- Unique records: {len(unique)}",
++              f"- Verified BibTeX entries: {len(entries)}",
++              f"- Skipped (incomplete record): {skipped}"]
++     if failures:
++         lines += ["", "## Failed sources (no data from these)", ""]
++         lines += [f"- {f}" for f in failures]
++     lines += ["", "## Records", ""]
++     for i, p in enumerate(unique, 1):
++         lines.append(f"{i}. **{p['title']}**  ")
++         lines.append(f"   {', '.join(p.get('authors')[:5]) or 'n/a'}  ")
++         lines.append(f"   {p.get('year') or 'n/a'} | {p.get('venue') or 'n/a'} | via {p.get('source')}  ")
++         if p.get("url"):
++             lines.append(f"   <{p['url']}>")
++         lines.append("")
++     md_path.write_text("\n".join(lines), encoding="utf-8")
++     summary = {"query": args.query, "sources_used": list(args.sources),
++                "total_papers_found": len(unique),
++                "verified_bibtex_entries": len(entries),
++                "failed_sources": failures,
++                "output_bibtex": str(bib_path), "output_summary": str(md_path)}
++         tracker.complete(summary)
++     print(f"\nBibTeX : {bib_path}")
++     print(f"Summary: {md_path}")
++     print(f"Verified entries: {len(entries)} / {len(unique)} records")
++     return 0 if not failures else 1
++     sys.exit(main())
 
 ### scripts/package_skill.py  [code]
 + #!/usr/bin/env python3
@@ -3989,4 +4106,3364 @@ change_type: instructions+docs+code   changelog: **Major update: Skill refactore
 -             idx += 1
 -         md += f"""
 - ## 🎯 Research Gaps Identified
-- {chr(10).join([f"- {gap}" for gap in matrix.get('research_gaps', ['Need empirical vali
+- {chr(10).join([f"- {gap}" for gap in matrix.get('research_gaps', ['Need empirical validation from PDF reading'])])}
+- **Next Steps:** Use this comparison to position your novel contribution relative to prior art.
+-             f.write(md.format(datetime.now().strftime("%Y-%m-%d %H:%M"),
+-                             len(self.analyzed_papers),
+-                             matrix['summary_statistics']['year_range']))
+- def main():
+-     parser = argparse.ArgumentParser(
+-         description="Deep PDF Paper Analyzer - Extracts structured methodology, contributions, and comparisons for literature review"
+-     )
+-     parser.add_argument("-i", "--input-dir", required=True,
+-                        help="Directory containing PDF papers to analyze")
+-     parser.add_argument("-o", "--output-dir", default="./04-experiments/paper-analyses",
+-                        help="Output directory for analysis results")
+-     parser.add_argument("--mode", choices=["quick", "deep"], default="deep",
+-                        help="Analysis depth mode (quick=metadata only, deep=full extraction)")
+-     args = parser.parse_args()
+-     print("=" * 70)
+-     print("=" * 70)
+-     print("🔬 PhD Research Companion - Paper Analyzer Engine")
+-     print(f"\nInput Directory:    {args.input_dir}")
+-     print(f"Output Directory:   {args.output_dir}")
+-     print(f"Analysis Mode:      {args.mode.upper()}")
+-     # Find all PDF files
+-     pdf_files = list(Path(args.input_dir).rglob("*.pdf")) + \
+-                [Path(args.input_dir) for _ in range(1)]  # Handle directory input
+-     # Filter actual PDFs
+-     actual_pdfs = []
+-     search_path = Path(args.input_dir) if os.path.exists(args.input_dir) else Path("./pdf")
+-     try:
+-         actual_pdfs = list(search_path.glob("*.pdf")) + \
+-                      list(Path(search_path).parent.glob("*/*.pdf"))
+-         # Remove duplicates
+-         actual_pdfs = list(set(actual_pdfs))
+-         if not actual_pdfs:
+-             print(f"\n❌ No PDF files found in {search_path}")
+-             print("Trying broader search...")
+-         # Alternative: Check known paths
+-         alt_search_dirs = [
+-             "/home/user/workspace/pdf",
+-             "/home/user/workspace/网站指纹",
+-             "/home/user/workspace"
+-         ]
+-         ]
+-         for alt_dir in alt_search_dirs:
+-             dir_path = Path(alt_dir)
+-             if dir_path.exists():
+-                 pdfs_here = list(dir_path.glob("*.pdf"))
+-                 actual_pdfs.extend(pdfs_here)
+-         actual_pdfs = list(set(actual_pdfs))  # Deduplicate
+-     except Exception as e:
+-         print(f"Warning during PDF discovery: {e}")
+-     if not actual_pdfs:
+-         print("\n⚠️ No PDFs found - Creating sample analysis based on known literature...")
+-         # Create sample analyses for common works in this domain
+-         samples = [
+-             {"title": "k-Fingerprinting Robust Website Attack", "year": "2015"},
+-             {"title": "Adaptive Encrypted Traffic Detection", "year": "2016"},
+-             {"title": "Deep Learning Network Fingerprint Classification", "year": "2020"}
+-         analyzer = PaperAnalyzer(args.output_dir)
+-         for sample in samples:
+-             mock_path = str(Path(args.input_dir) / f"{sample['title'].replace(' ', '-')}.pdf")
+-             analysis_result = analyzer.analyze_pdf_path(mock_path)
+-             analysis_result["filename_clean"] = sample["title"]
+-             analysis_result["year"] = sample["year"]
+-             # Write mock analysis
+-             output_file = Path(args.output_dir) / f"analysis-{sample['title'].replace(' ', '-').replace('.', '')}.md"
+-             analyzer._write_paper_analysis_md(analysis_result, output_file)
+-         print(f"✅ Created mock analyses for demonstration")
+-         return
+-     print(f"\n📚 Found {len(actual_pdfs)} PDF files to analyze:")
+-     for pdf in actual_pdfs[:10]:
+-         print(f"  • {pdf.name}")
+-     # Run analyzer
+-     analyzer = PaperAnalyzer(args.output_dir)
+-     results = analyzer.analyze_multiple([str(p) for p in actual_pdfs])
+-     print(f"\n✅ Analysis complete! Results saved to: {args.output_dir}/")
+-     print(f"   - Individual analyses: {len(results['results'])} files")
+-     print(f"   - Comparison matrix: 1 file")
+-     print(f"   - Research gaps identified: {len(results['research_gaps'])}")
+-     if results['research_gaps']:
+-         print("\n🔍 Top Research Gaps:")
+-         for gap in results['research_gaps'][:3]:
+-             print(f"  💡 {gap}")
+-     main()
++ Paper Analyzer - extracts structure from downloaded PDFs.
++ Extraction is real: text is pulled from the PDF via pypdf (or PyPDF2/pymupdf
++ if installed). If a PDF cannot be parsed it is reported as UNEXTRACTABLE.
++ Nothing is invented: absent text yields an explicit gap, never a guess.
++     python paper_analyzer.py -i "./lit/*.pdf" --mode deep -o ./analysis
++     python paper_analyzer.py -i ./lit --mode quick
++ from __future__ import annotations
++ import glob as globmod
++ import sys
++ SECTION_HINTS = {
++     "contribution": r"contribut|our (?:main )?(?:result|approach)|we propose",
++     "method": r"method|algorithm|approach|framework|formulation",
++     "theory": r"theorem|lemma|proof|bound|regret|convergence|guarantee",
++     "experiments": r"experiment|dataset|baseline|ablation|empirical",
++     "limitations": r"limitation|future work|open problem|cannot|fail",
++ }
++ MATH_RE = re.compile(r"\\(?:begin\{(theorem|lemma|proposition|definition|corollary)\}|"
++                      r"(?:mathbb|mathcal|mathbf)\{?[A-Za-z]\}?)")
++ def _loader():
++     for mod in ("pypdf", "PyPDF2", "fitz"):
++         try:
++         try:
++             return mod, __import__(mod)
++         except ImportError:
++             continue
++     return None, None
++ def extract_text(path: Path, max_pages: int) -> tuple[str, int]:
++     name, lib = _loader()
++     if lib is None:
++         raise RuntimeError("no PDF backend: install pypdf (pip install pypdf)")
++     if name == "fitz":
++         doc = lib.open(str(path))
++         npages = doc.page_count
++         chunks = [doc[i].get_text() for i in range(min(npages, max_pages))]
++         return "\n".join(chunks), npages
++     reader = lib.PdfReader(str(path))
++     npages = len(reader.pages)
++     chunks = [reader.pages[i].extract_text() or "" for i in range(min(npages, max_pages))]
++     return "\n".join(chunks), npages
++ def guess_title(text: str, fallback: str) -> str:
++     for line in text.splitlines()[:25]:
++         s = line.strip()
++         if 20 <= len(s) <= 160 and not s.lower().startswith(("abstract", "arxiv", "http")):
++             return " ".join(s.split())
++     return fallback
++ def analyse(text: str, path: Path, npages: int) -> dict:
++     lower = text.lower()
++     sections = {}
++     for key, pat in SECTION_HINTS.items():
++         hits = [m.start() for m in re.finditer(pat, lower)]
++         sections[key] = {"mentions": len(hits), "present": len(hits) >= 3}
++     symbols = sorted({s if isinstance(s, str) else s[0] for s in MATH_RE.findall(text)})
++     words = len(text.split())
++     return {
++         "file": path.name,
++         "pages": npages,
++         "extracted_chars": len(text),
++         "word_count": words,
++         "title_guess": guess_title(text, path.stem),
++         "sections": sections,
++         "math_macros": symbols[:60],
++         "has_theorem_env": any(t in text for t in
++                                ("begin{theorem}", "begin{lemma}", "begin{proposition}")),
++         "unextractable": words < 50,
++     }
++ def render_md(r: dict) -> str:
++     if r["unextractable"]:
++         return (f"# {r['file']}\n\n"
++                 "**Status: UNEXTRACTABLE** - fewer than 50 words of text could be\n"
++                 "pulled from this PDF (most likely a scanned image).\n"
++                 "No content is inferred. Run OCR first.\n")
++     lines = [f"# {r['title_guess']}", "",
++              f"- File: `{r['file']}`",
++              f"- Pages: {r['pages']}",
++              f"- Extracted words: {r['word_count']}",
++              f"- Formal theorem environment: {'yes' if r['has_theorem_env'] else 'no'}", "",
++              "## Section signals (keyword frequency, not semantic judgement)", ""]
++     for k, v in r["sections"].items():
++         lines.append(f"- {k}: {v['mentions']} mentions"
++                      f"{'  [likely present]' if v['present'] else ''}")
++     if r["math_macros"]:
++         lines += ["", "## Math macros detected", "",
++                   ", ".join(f"`{m}`" for m in r["math_macros"][:40])]
++     lines += ["", "---", "Auto-generated by phd-research-companion 2.4.0"]
++     return "\n".join(lines)
++ def main() -> int:
++     ap = argparse.ArgumentParser(description="Analyse PDFs and extract paper structure")
++     ap.add_argument("--input", "-i", nargs="+", required=True,
++                     help="PDF paths, globs, or directories")
++     ap.add_argument("--mode", choices=["quick", "deep"], default="quick")
++     ap.add_argument("--output-dir", "-o", default="./analysis")
++     ap.add_argument("--max-pages", type=int, default=12)
++     args = ap.parse_args()
++     paths: list[Path] = []
++     for spec in args.input:
++         p = Path(spec)
++         if p.is_dir():
++             paths += sorted(p.glob("*.pdf"))
++         elif any(ch in spec for ch in "*?["):
++             paths += [Path(x) for x in globmod.glob(spec)]
++         elif p.exists():
++             paths.append(p)
++     paths = sorted(set(paths))
++     if not paths:
++         print("No PDF inputs matched.", file=sys.stderr)
++         return 2
++         return 2
++     out_dir = Path(args.output_dir).expanduser().resolve()
++     out_dir.mkdir(parents=True, exist_ok=True)
++     results, failed = [], []
++     for p in paths:
++             text, npages = extract_text(p, args.max_pages)
++             r = analyse(text, p, npages)
++             if args.mode == "deep":
++                 m = re.search(r"abstract\s*(.{200,1200}?)", text, re.I | re.S)
++                 r["abstract_guess"] = " ".join(m.group(1).split())[:900] if m else ""
++             results.append(r)
++             (out_dir / f"analysis-{p.stem}.md").write_text(render_md(r), encoding="utf-8")
++             print(f"ok   {p.name} ({r['word_count']} words)")
++         except Exception as e:  # noqa: BLE001
++             failed.append(f"{p.name}: {type(e).__name__}: {e}")
++             print(f"FAIL {p.name}: {e}", file=sys.stderr)
++     if not results:
++         print(f"\nNo PDF could be analysed. {len(failed)} failure(s):", file=sys.stderr)
++         for f in failed:
++             print(f"  - {f}", file=sys.stderr)
++     unex = [r["file"] for r in results if r["unextractable"]]
++     matrix = ["# Analysis comparison matrix", "",
++               f"Generated: {datetime.now().isoformat(timespec='seconds')}",
++               f"Papers analysed: {len(results)} | failed: {len(failed)} | "
++               f"unextractable: {len(unex)}", "",
++               "| File | Pages | Words | Theorem env | Theory signal | Experiment signal |",
++               "|---|---:|---:|:-:|---:|---:|"]
++     for r in results:
++         matrix.append(
++             f"| {r['file']} | {r['pages']} | {r['word_count']} | "
++             f"{'yes' if r['has_theorem_env'] else 'no'} | "
++             f"{r['sections']['theory']['mentions']} | "
++             f"{r['sections']['experiments']['mentions']} |")
++     if unex:
++         matrix += ["", "## Unextractable (likely scanned, OCR required)", ""]
++         matrix += [f"- {u}" for u in unex]
++     if failed:
++         matrix += ["", "## Failures", ""] + [f"- {f}" for f in failed]
++     (out_dir / "analysis-comparison-report.md").write_text("\n".join(matrix), encoding="utf-8")
++     (out_dir / "analysis-index.json").write_text(
++         json.dumps({"generated": datetime.now().isoformat(timespec="seconds"),
++                     "results": results, "failures": failed}, indent=2), encoding="utf-8")
++     print(f"\nAnalysed {len(results)} paper(s); {len(unex)} unextractable; {len(failed)} failed.")
++     print(f"Report: {out_dir / 'analysis-comparison-report.md'}")
++     return 0 if not (failed or unex) else 1
++     sys.exit(main())
+
+### scripts/priority_check.py  [code]
++ #!/usr/bin/env python3
++ """
++ """
++ Priority / novelty check - MUST run before claiming novelty.
++ Searches arXiv, DBLP and OpenAlex for prior art on a claim and records the
++ candidates. The verdict defaults to UNCHECKED. The tool never declares a claim
++ novel on its own; a human resolves it against the listed sources, with a URL
++ and a date, and that resolution is written to the audit trail.
++ Usage:
++     python priority_check.py -d 02-methodology-dev --claim "C(d,n) = A_leq d(n)"
++     python priority_check.py -d 02-methodology-dev --list
++     python priority_check.py -d 02-methodology-dev --resolve P1 --verdict covered \
++         --evidence https://arxiv.org/abs/2502.xxxxx --note "same identity in Thm 3"
++ from __future__ import annotations
++ import argparse
++ import hashlib
++ import importlib.util
++ import json
++ import sys
++ from datetime import datetime
++ from pathlib import Path
++ FILE = "priority-records.json"
++ VERDICTS = ("novel", "covered", "partial", "unchecked")
++ UNCHECKED = "unchecked"
++ def _search_api():
++     spec = importlib.util.spec_from_file_location(
++         "mss", Path(__file__).resolve().parent / "multi_source_search.py")
++     mod = importlib.util.module_from_spec(spec)
++     spec.loader.exec_module(mod)
++     return mod
++ def record_id(text: str) -> str:
++     """Stable, collision-resistant ID.
++     A truncated slug collides: two claims sharing a prefix silently overwrite
++     each other's record. A hash of the full claim text does not.
++     """
++     return "P" + hashlib.sha1(text.strip().lower().encode("utf-8")).hexdigest()[:8]
++ def load(d: Path) -> dict:
++     p = d / FILE
++     if not p.exists():
++         return {"created": datetime.now().isoformat(timespec="seconds"), "records": {}}
++     return json.loads(p.read_text(encoding="utf-8"))
++ def save(d: Path, data: dict) -> None:
++     d.mkdir(parents=True, exist_ok=True)
++     (d / FILE).write_text(json.dumps(data, indent=2), encoding="utf-8")
++ def gather(claim: str, limit: int) -> tuple[list[dict], list[str]]:
++     mod = _search_api()
++     hits, failures = [], []
++     for src in ("arxiv", "dblp", "openalex"):
++         try:
++             hits += mod.DISPATCH[src](claim, limit, None, None)
++         except Exception as e:  # noqa: BLE001
++             failures.append(f"{src}: {type(e).__name__}: {e}")
++     return hits, failures
++ def main() -> int:
++     ap = argparse.ArgumentParser(description="Priority / novelty check before claiming novelty")
++     ap.add_argument("-d", "-p", "--dir", default="02-methodology-dev")
++     ap.add_argument("--claim", help="the claim or identity to check")
++     ap.add_argument("--limit", type=int, default=8)
++     ap.add_argument("--resolve", metavar="ID")
++     ap.add_argument("--verdict", choices=VERDICTS)
++     ap.add_argument("--evidence", default="", help="URL of the covering/confirming source")
++     ap.add_argument("--note", default="")
++     ap.add_argument("--list", action="store_true")
++     ap.add_argument("--strict", action="store_true",
++                     help="exit 1 if any record is still UNCHECKED")
++     args = ap.parse_args()
++     d = Path(args.dir).expanduser().resolve()
++     data = load(d)
++     if args.claim:
++         rid = record_id(args.claim)
++         hits, failures = gather(args.claim, args.limit)
++         data["records"][rid] = {
++             "claim": args.claim,
++             "checked_at": datetime.now().isoformat(timespec="seconds"),
++             "sources_queried": ["arxiv", "dblp", "openalex"],
++             "failures": failures,
++             "candidates": [{"title": h.get("title"), "year": h.get("year"),
++                             "venue": h.get("venue"), "url": h.get("url"),
++                             "via": h.get("source")} for h in hits[:25]],
++             "verdict": UNCHECKED,
++             "evidence": None,
++             "note": None,
++         }
++         save(d, data)
++         save(d, data)
++         print(f"record {rid}: {len(hits)} candidate(s) from prior-art search")
++         for h in hits[:10]:
++             print(f"  - [{h.get('source')}] {h.get('title','')[:80]}")
++         if failures:
++             print("\nSources that FAILED (verdict cannot rely on them):")
++             for f in failures:
++                 print(f"  - {f}")
++         print(f"\nVerdict is UNCHECKED. Resolve it with --resolve {rid} --verdict ... "
++               f"--evidence <url>")
++         return 0
++         return 0
++     if args.resolve:
++         if args.resolve not in data["records"]:
++             print(f"error: unknown record {args.resolve}", file=sys.stderr)
++             return 2
++             return 2
++             return 2
++         if not args.verdict:
++             print("error: --verdict required", file=sys.stderr)
++         if args.verdict != UNCHECKED and not args.evidence.startswith(("http://", "https://")):
++             print("error: a resolved verdict requires --evidence <http(s) URL> to the "
++                   "source page that was actually consulted", file=sys.stderr)
++         rec = data["records"][args.resolve]
++         rec.update({"verdict": args.verdict,
++                     "evidence": args.evidence or None,
++                     "note": args.note or None,
++                     "resolved_at": datetime.now().isoformat(timespec="seconds")})
++         print(f"{args.resolve} -> {args.verdict}")
++     recs = data.get("records", {})
++     unchecked = [k for k, v in recs.items() if v.get("verdict") == UNCHECKED]
++     print(f"Priority records: {len(recs)} | unresolved: {len(unchecked)}")
++     for k, v in recs.items():
++         print(f"  {k}: {v.get('verdict')}  {v.get('claim','')[:60]}"
++               + (f"  <{v.get('evidence')}>" if v.get("evidence") else ""))
++     if unchecked:
++         print("\nBLOCKER: these claims must not be described as novel until resolved:")
++         for k in unchecked:
++             print(f"  - {k}")
++     return 1 if (args.strict and unchecked) else 0
++ if __name__ == "__main__":
++     sys.exit(main())
+
+### scripts/proof_ledger.py  [code]
++ #!/usr/bin/env python3
++ """
++ """
++ Proof Ledger - the dependency DAG of every claim in the paper.
++ A claim is one of: theorem, lemma, proposition, corollary, conjecture,
++ definition, assumption. Its status is one of:
++     open        - stated, not proved
++     conditional - proved only under an assumption that is itself open
++     proven      - proved, with a pointer to the proof artifact
++     refuted     - counterexample found
++ The ledger refuses to mark a claim `proven` unless every claim it depends on
++ is itself `proven`: no circular or unsupported promotion.
++ Usage:
++     python proof_ledger.py --init 02-methodology-dev
++     python proof_ledger.py -d 02-methodology-dev --add L1 lemma "bound on B1" --status proven \
++         --proof proofs/lemma1.tex
++     python proof_ledger.py -d 02-methodology-dev --add T1 theorem "main" --depends L1,L2
++     python proof_ledger.py -d 02-methodology-dev --set T1 proven
++     python proof_ledger.py -d 02-methodology-dev --report
++ from __future__ import annotations
++ import argparse
++ import json
++ import sys
++ from datetime import datetime
++ from pathlib import Path
++ KINDS = ("theorem", "lemma", "proposition", "corollary",
++          "conjecture", "definition", "assumption")
++ STATUSES = ("open", "conditional", "proven", "refuted")
++ TERMINAL_PROVEN = "proven"
++ FILE = "claims.json"
++ def load(ledger_dir: Path) -> dict:
++     p = ledger_dir / FILE
++     if not p.exists():
++         return {"created": datetime.now().isoformat(timespec="seconds"), "claims": {}}
++     return json.loads(p.read_text(encoding="utf-8"))
++ def save(ledger_dir: Path, data: dict) -> None:
++     ledger_dir.mkdir(parents=True, exist_ok=True)
++     (ledger_dir / FILE).write_text(json.dumps(data, indent=2), encoding="utf-8")
++ def deps_of(claim: dict) -> list[str]:
++     return list(claim.get("depends_on") or [])
++ def find_cycles(claims: dict) -> list[list[str]]:
++     cycles, seen = [], set()
++     def walk(node, path):
++         if node in path:
++             cycles.append(path[path.index(node):] + [node])
++             return
++             return
++         if node in seen:
++         for d in deps_of(claims.get(node, {})):
++             if d in claims:
++                 walk(d, path + [node])
++         seen.add(node)
++     for cid in claims:
++         walk(cid, [])
++     return [c for c in cycles if len(c) > 1]
++ def missing_deps(claims: dict) -> dict[str, list[str]]:
++     return {cid: [d for d in deps_of(c) if d not in claims]
++             for cid, c in claims.items() if any(d not in claims for d in deps_of(c))}
++ def unproven_support(claims: dict) -> dict[str, list[str]]:
++     out = {}
++     for cid, c in claims.items():
++         bad = [d for d in deps_of(c)
++                if d in claims and claims[d].get("status") != TERMINAL_PROVEN]
++         if bad:
++             out[cid] = bad
++     return out
++ def report_markdown(data: dict) -> str:
++     claims = data.get("claims", {})
++     cycles = find_cycles(claims)
++     miss = missing_deps(claims)
++     unsup = unproven_support(claims)
++     by_status = {s: [c for c in claims.values() if c.get("status") == s] for s in STATUSES}
++     lines = ["# Proof Ledger", "",
++              f"Generated: {datetime.now().isoformat(timespec='seconds')}",
++              f"Claims: {len(claims)}", ""]
++     for s in STATUSES:
++         lines.append(f"- {s}: {len(by_status[s])}")
++     lines.append("")
++     lines.append("")
++     if cycles:
++         lines += ["## CIRCULAR DEPENDENCIES", ""]
++         lines += ["- " + " -> ".join(c) for c in cycles]
++         lines.append("")
++         lines.append("")
++         lines.append("")
++     if miss:
++         lines += ["## REFERENCES TO NON-EXISTENT CLAIMS", ""]
++         for cid, ds in miss.items():
++             lines.append(f"- {cid} depends on unknown: {', '.join(ds)}")
++     lines += ["## Claims", "", "| ID | Kind | Status | Depends on | Proof artifact |",
++               "|---|---|---|---|---|"]
++     for cid in sorted(claims):
++     for cid in sorted(claims):
++         c = claims[cid]
++         c = claims[cid]
++         lines.append(f"| {cid} | {c.get('kind','')} | {c.get('status','')} | "
++                      f"{', '.join(deps_of(c)) or '-'} | {c.get('proof') or '-'} |")
++     lines += ["## Statements", ""]
++         lines.append(f"### {cid} ({c.get('kind','')}) - {c.get('status','')}")
++         lines.append(f"{c.get('statement','') or '_statement not recorded_'}")
++         if c.get("proof"):
++             lines.append(f"\nProof: `{c['proof']}`")
++     lines += ["---", "Generated by phd-research-companion 2.4.0"]
++     return "\n".join(lines)
++ def main() -> int:
++     ap = argparse.ArgumentParser(description="Claim ledger for a theory paper")
++     # -p is accepted as an alias: `check`/`audit` use -p for the project dir
++     ap.add_argument("-d", "-p", "--dir", default="02-methodology-dev")
++     ap.add_argument("--init", action="store_true", help="initialise an empty ledger")
++     ap.add_argument("--add", metavar="ID", help="add or replace a claim")
++     ap.add_argument("--kind", choices=KINDS, default="lemma")
++     ap.add_argument("--statement", default="")
++     ap.add_argument("--depends", "--deps", default="",
++                     help="comma-separated claim IDs")
++     ap.add_argument("--status", choices=STATUSES, default="open")
++     ap.add_argument("--proof", default="", help="path to proof artifact (tex/pdf)")
++     ap.add_argument("--set", metavar="ID", dest="set_id", help="change status of a claim")
++     ap.add_argument("--to", choices=STATUSES, dest="set_status")
++     ap.add_argument("--report", action="store_true")
++     ap.add_argument("--strict", action="store_true",
++                     help="exit 1 if cycles, dangling deps, or unproven support exist")
++     args = ap.parse_args()
++     ledger_dir = Path(args.dir).expanduser().resolve()
++     if args.init:
++         ledger_dir.mkdir(parents=True, exist_ok=True)
++         ledger_dir.mkdir(parents=True, exist_ok=True)
++         save(ledger_dir, {"created": datetime.now().isoformat(timespec="seconds"),
++                           "claims": {}})
++         print(f"initialised ledger at {ledger_dir / FILE}")
++         return 0
++         return 0
++         return 0
++     data = load(ledger_dir)
++     if args.add:
++         deps = [d.strip() for d in args.depends.split(",") if d.strip()]
++         data["claims"][args.add] = {
++             "kind": args.kind, "statement": args.statement,
++             "depends_on": deps, "status": args.status,
++             "proof": args.proof or None,
++             "updated": datetime.now().isoformat(timespec="seconds"),
++         }
++         save(ledger_dir, data)
++         save(ledger_dir, data)
++         print(f"claim {args.add} recorded ({args.kind}, {args.status})")
++     if args.set_id:
++         if args.set_id not in data["claims"]:
++             print(f"error: unknown claim {args.set_id}", file=sys.stderr)
++             return 2
++         new_status = args.set_status or data["claims"][args.set_id]["status"]
++         if new_status == TERMINAL_PROVEN:
++             blockers = [d for d in deps_of(data["claims"][args.set_id])
++                         if d not in data["claims"]
++                         or data["claims"][d].get("status") != TERMINAL_PROVEN]
++             if blockers:
++                 print(f"refusing: {args.set_id} depends on unproven/unknown "
++                       f"{', '.join(blockers)}", file=sys.stderr)
++                 print("mark it `conditional` instead, or prove the dependencies first.",
++                       file=sys.stderr)
++                 return 1
++         data["claims"][args.set_id]["status"] = new_status
++         data["claims"][args.set_id]["updated"] = datetime.now().isoformat(timespec="seconds")
++         print(f"{args.set_id} -> {new_status}")
++     if args.report or not any([args.init, args.add, args.set_id]):
++         out = ledger_dir / "proof-ledger.md"
++         out.write_text(report_markdown(data), encoding="utf-8")
++         claims = data.get("claims", {})
++         print(f"claims: {len(claims)}  "
++               f"proven: {sum(1 for c in claims.values() if c.get('status')=='proven')}  "
++               f"open: {sum(1 for c in claims.values() if c.get('status')=='open')}")
++         print(f"report: {out}")
++         problems = bool(find_cycles(claims) or missing_deps(claims)
++                         or unproven_support(claims))
++         return 1 if (args.strict and problems) else 0
++ if __name__ == "__main__":
++     sys.exit(main())
+
+### scripts/rational_certificate.py  [code]
++ #!/usr/bin/env python3
++ """
++ """
++ Exact rational-arithmetic certificates.
++ A numerical claim in a theory paper must be backed by a script that runs in
++ EXACT arithmetic (fractions.Fraction, integers, sympy.Rational). Floats are not
++ evidence: they can be wrong by an amount invisible at 1e-16.
++ This tool:
++   1. statically scans the certificate script for float contamination
++      (float literals, bare `/` division, math/numpy float paths);
++   2. executes it and requires an explicit CERTIFIED / REFUTED verdict line;
++   3. writes a machine-readable certificate with a hash of the script.
++ Usage:
++     python rational_certificate.py --script 07-audit-trail/check_bound.py
++     python rational_certificate.py --demo
++ from __future__ import annotations
++ import argparse
++ import ast
++ import hashlib
++ import json
++ import re
++ import subprocess
++ import sys
++ import tempfile
++ from datetime import datetime
++ from pathlib import Path
++ CONTAMINATION_RULES = {
++     "float_literal": lambda t: any(isinstance(n, ast.Constant) and isinstance(n.value, float)
++                                    for n in ast.walk(t)),
++                                    for n in ast.walk(t)),
++     "float_call": lambda t: any(isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
++                                 and n.func.id == "float" for n in ast.walk(t)),
++     "bare_division": lambda t: any(isinstance(n, ast.BinOp) and isinstance(n.op, ast.Div)
++     "float_module": lambda t: any(
++         (isinstance(n, ast.Import) and any(a.name.split(".")[0] in ("math", "numpy", "scipy")
++                                            for a in n.names))
++         or (isinstance(n, ast.ImportFrom) and (n.module or "").split(".")[0]
++             in ("math", "numpy", "scipy"))
++         for n in ast.walk(t)),
++ }
++ DEMO = '''\
++ """Demo certificate: sum_{i=1}^{n} 1/(i(i+1)) == n/(n+1)  (exact)."""
++ from fractions import Fraction
++ def check():
++     for n in range(1, 21):
++         lhs = sum(Fraction(1, i * (i + 1)) for i in range(1, n + 1))
++         rhs = Fraction(n, n + 1)
++         if lhs != rhs:
++             print(f"REFUTED at n={n}: {lhs} != {rhs}")
++             return False
++     # a claim that is FALSE, checked exactly:
++     if sum(Fraction(1, i * (i + 1)) for i in range(1, 6)) == Fraction(1, 1):
++         print("REFUTED: unexpected equality")
++         return False
++     print("CERTIFIED: identity holds exactly for n=1..20")
++     return True
++ check()
++ '''
++ def scan(path: Path) -> list[str]:
++     try:
++         tree = ast.parse(path.read_text(encoding="utf-8"))
++     except SyntaxError as e:
++         return [f"script does not parse: {e}"]
++     return [name for name, fn in CONTAMINATION_RULES.items() if fn(tree)]
++ def run_script(path: Path) -> tuple[int, str, str]:
++     r = subprocess.run([sys.executable, str(path)], capture_output=True,
++                        text=True, timeout=300)
++     return r.returncode, r.stdout, r.stderr
++ def parse_verdict(stdout: str) -> str:
++     for line in stdout.splitlines():
++         s = line.strip().upper()
++         if s.startswith("CERTIFIED"):
++             return "CERTIFIED"
++         if s.startswith("REFUTED"):
++             return "REFUTED"
++     return "NO_VERDICT"
++ def main() -> int:
++     ap = argparse.ArgumentParser(description="Exact rational-arithmetic certificate runner")
++     ap.add_argument("--script", help="path to a certificate script")
++     # -o matches every other command that takes an output path
++     ap.add_argument("--out", "-o", default="07-audit-trail")
++     ap.add_argument("--demo", action="store_true", help="run a built-in exact example")
++     ap.add_argument("--strict", action="store_true",
++                     help="exit 1 unless the verdict is CERTIFIED with no float contamination")
++     args = ap.parse_args()
++     if args.demo:
++         with tempfile.TemporaryDirectory() as td:
++             p = Path(td) / "demo_certificate.py"
++             p.write_text(DEMO, encoding="utf-8")
++             rc, out, err = run_script(p)
++             print(out.strip() or err.strip())
++             print(f"\nfloat contamination scan: {scan(p) or 'none'}")
++             return 0 if parse_verdict(out) == "CERTIFIED" else 1
++     if not args.script:
++         print("error: --script or --demo required", file=sys.stderr)
++         return 2
++         return 2
++     script = Path(args.script).expanduser().resolve()
++     if not script.is_file():
++         print(f"error: script not found: {script}", file=sys.stderr)
++     contamination = scan(script)
++     rc, out, err = run_script(script)
++     verdict = parse_verdict(out)
++     digest = hashlib.sha256(script.read_bytes()).hexdigest()
++     cert = {
++         "script": str(script),
++         "sha256": digest,
++         "executed_at": datetime.now().isoformat(timespec="seconds"),
++         "exit_code": rc,
++         "verdict": verdict,
++         "float_contamination": contamination,
++         "stdout_tail": out[-2000:],
++         "stderr_tail": err[-1000:],
++     }
++     out_dir = Path(args.out).expanduser().resolve()
++     out_dir.mkdir(parents=True, exist_ok=True)
++     cert_path = out_dir / f"certificate-{script.stem}.json"
++     cert_path.write_text(json.dumps(cert, indent=2), encoding="utf-8")
++     print(f"verdict           : {verdict}")
++     print(f"exit code         : {rc}")
++     print(f"float contamination: {contamination or 'none'}")
++     if contamination:
++         print("  WARNING: floats detected. This is not machine-precision evidence.")
++         print("  Use fractions.Fraction / integers / sympy.Rational and integer division.")
++     print(f"certificate       : {cert_path}")
++     if args.strict:
++         return 0 if (verdict == "CERTIFIED" and not contamination and rc == 0) else 1
++     return 0 if rc == 0 else 1
++ if __name__ == "__main__":
++     sys.exit(main())
+
+### scripts/revision_tracker.py  [code]
+- """
+- """
+- Revision Tracking System
+- Manages the systematic review and revision cycle for academic papers.
+- This tracks the 6-8 round systematic improvement process:
+- 1. Initial Review (self-check before submission)
+- 2. Major Revisions (first-pass improvements)
+- 3. Additional Validation (new experiments/proofs if needed)
+- 4. Language Polishing (grammar, clarity, structure refinement)
+- 5. Final Pre-submission Review
+-     python revision_tracker.py --action add_revision --round 1 --issues "x issues found"
+- from typing import Dict, List
+-     """Track systematic improvements across multiple review rounds."""
+-     REVISION_ROUNDS = [
+-         {"number": 1, "phase": "initial_review", "focus": "Major structural issues and clarity"},
+-         {"number": 2, "phase": "major_revisions", "focus": "Comprehensive improvements from reviewers"},
+-         {"number": 3, "phase": "additional_validation", "focus": "New experiments, proofs, or missing sections"},
+-         {"number": 4, "phase": "language_polishing", "focus": "Grammar refinement and word economy"},
+-         {"number": 5, "phase": "final_review", "focus": "Pre-submission quality assurance"}
+-     ]
+-         self.tracking_dir = tracking_dir.mkdir(parents=True, exist_ok=True)
+-         self.compliance_json = self.tracking_dir / "../../00-dashboard/compliance-status.json"
+-         # Ensure parent directories exist for JSON link
+-         try:
+-         try:
+-             if not self.compliance_json.parent.exists():
+-                 print("⚠️  Dashboard directory not found - creating compliance tracking in local folder")
+-                 self.compliance_json = self.tracking_dir / "local-compliance-status.json"
+-         except Exception:
+-             self.compliance_json = self.tracking_dir / "local-compliance-status.json"
+-     def load_revision_history(self) -> Dict:
+-         """Load the revision tracking state file."""
+-         history_file = self.tracking_dir / "revision-history.json"
+-         history_file = self.tracking_dir / "revision-history.json"
+-         if not history_file.exists():
+-             return {
+-                 "initial_setup_time": datetime.now().isoformat(),
+-                 "last_updated": None,
+-                 "revision_rounds_completed": 0,
+-                 "total_issues_found": 0,
+-                 "revisions": []
+-             }
+-             }
+-         with open(history_file, 'r') as f:
+-             return json.load(f)
+-     def save_revision_history(self, history: Dict):
+-         """Persist revision tracking state."""
+-         history["last_updated"] = datetime.now().isoformat()
+-         with open(history_file, 'w') as f:
+-             json.dump(history, f, indent=2, default=str)
+-     def add_revision(self, round_num: int, issues_list: List[str], actions_taken: str):
+-         """Record a revision instance in the tracking history."""
+-         # Validate round number
+-         if round_num < 1 or round_num > 6:  # Maximize to 6 rounds typically
+-             print(f"⚠️  Warning: Revision {round_num} exceeds standard 5-round cycle")
+-         revision_record = {
+-             "revision_round": round_num,
+-             "date_submitted": datetime.now().isoformat(),
+-             "issues_found": issues_list,
+-             "actions_taken": actions_taken,
+-             "status": "completed" if len(actions_taken) > 0 else "pending",
+-             "effectiveness_assessment": None  # Filled after round completes
+-         history = self.load_revision_history()
+-         history = self.load_revision_history()
+-         history = self.load_revision_history()
+-         history["revisions"].append(revision_record)
+-         history["revision_rounds_completed"] = round_num
+-         history["total_issues_found"] += len(issues_list)
+-         self.save_revision_history(history)
+-         print(f"✅ Recorded revision round {round_num}: {len(issues_list)} issues tracked")
+-         # Update compliance JSON
+-         self._update_compliance_status(history)
+-     def _update_compliance_status(self, history: Dict):
+-         """Update the main project compliance tracking file."""
+-         if not self.compliance_json.exists():
+-             self.compliance_json.write_text(json.dumps({"compliance_history": {}}))
+-             with open(self.compliance_json, 'r') as f:
+-                 data = json.load(f)
+-             data["compliance_history"]["revision_tracking"] = {
+-                 "rounds_completed": history["revision_rounds_completed"],
+-                 "total_issues_addressed": sum(len(r.get("issues_found", [])) for r in history["revisions"]),
+-                 "current_status": "in_progress" if history["revision_rounds_completed"] < 5 else "preparing_for_submission"
+-             with open(self.compliance_json, 'w') as f:
+-                 json.dump(data, f, indent=2)
+-         except Exception as e:
+-             print(f"⚠️  Could not update compliance JSON: {e}")
+-     def generate_effectiveness_report(self) -> str:
+-         """Compare effectiveness across revision rounds."""
+-         revisions = history.get("revisions", [])
+-         if not revisions:
+-             return "No revision data available yet."
+-         report = f"""# Revision Effectiveness Analysis Report
+- 📅 **Generated:** {datetime.now().strftime("%Y-%m-%d %H:%M")}
+- 🔄 **Revisions Completed:** {history['revision_rounds_completed']} out of 5 typical rounds
+- ⚠️ **Total Issues Addressed:** {sum(len(r.get("issues_found", [])) for r in revisions)}
+- ## Per-Round Breakdown:
+-         for revision in revisions:
+-             round_num = revision["revision_round"]
+-             phase_desc = next((d["phase"].replace("_", " ") + " (" + d["focus"] + ")").capitalize() \n                            for d in self.REVISION_ROUNDS if d["number"] == round_num), f"Round {round_num}")
+-             issue_count = len(revision.get("issues_found", []))
+-             action_summary = revision.get("actions_taken", "None recorded")[:100] + ("..." if len(revision.get("actions_taken", ""))) > 100 else "")
+-             report += f"""### Round {round_num}: {phase_desc}
+- 📅 **Date:** {revision['date_submitted'][:10]}
+- ️ **Issues Found:** {issue_count}
+- ✅ **Actions Summary:** {action_summary}\n\n"""
+-         report += """---
+- *Auto-generated by PhD Research Companion - Scientific Traceability System*
+- *For advisor meeting preparation and self-assessment tracking.*\n"""
+-         return report
+-     def generate_markdown_report(self, filename: str = "revision-tracking-report.md"):
+-         """Generate human-readable markdown report for advisors/stakeholders."""
+-         report_content = self.generate_effectiveness_report()
+-         output_path = self.tracking_dir / filename
+-         with open(output_path, 'w') as f:
+-             f.write(report_content)
+-         print(f"✅ Revision tracking report saved to: {output_path}")
+-     def prepare_advisor_meeting_summary(self):
+-         """Generate concise summary for advisor meetings."""
+-         current_round = history.get("revision_rounds_completed", 0)
+-         next_phase = "initial_review" if current_round == 0 else "major_revisions" if current_round < 3 else "preparing_for_submission"
+-         summary = f"""## Revision Progress Update for Advisor Meeting
+- ### Current Status: {next_phase.upper()}
+- - **Completed Rounds:** {current_round}/5
+- - **Total Issues Addressed:** {history.get('total_issues_found', 0)}
+- - **Latest Activity:** {history.get('last_updated', 'Not updated')[:16]}
+- ### Next Actions Needed:
+- - [ ] Complete {self.REVISION_ROUNDS[current_round]["phase"].replace('_', ' ')} (if not already started)
+- - [ ] Review effectiveness assessment from previous round
+- - [ ] Prepare additional materials/validation if gaps identified
+- See detailed `revision-tracking-report.md` for comprehensive breakdown.
+-         print(summary)
+- def main():
+-     parser = argparse.ArgumentParser(
+-         description="Track systematic improvements across 6-8 rounds of paper refinement"
+-     )
+-     parser.add_argument("--action", "-a", required=True,
+-                        choices=["add_revision", "report", "summary"],
+-                        help="Action to perform")
+-     parser.add_argument("--round", "-r", type=int, default=None,
+-                        help="Revision round number (1-6) for add_revision action")
+- parser.add_argument("--issues", "-i", nargs='+', default=["Issue list"],
+-                        help="List of issues found in this round (for add_revision)")
+-     parser.add_argument("--actions", "-x", type=str, default="",
+-                        help="Description of actions taken to address issues")
+-     parser.add_argument("--tracking-dir", "-d", type=str,
+-                        default=None,
+-                        help="Revision tracking directory (default: current dir)")
+-     args = parser.parse_args()
+-     # Setup tracking directory
+-     if args.tracking_dir:
+-         tracking_dir = Path(args.tracking_dir)
+-     else:
+-         timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+-         tracking_dir = Path(f"revision-round-{args.round or 'summary'}-{timestamp}")
+-     tracker = RevisionTracker(tracking_dir)
+-     if args.action == "add_revision":
+-         if not args.round:
+-             print("❌ Error: --round required for add_revision action")
+-             parser.print_help()
+-             sys.exit(1)
+-         tracker.add_revision(
+-             round_num=args.round,
+-             issues_list=args.issues,
+-             actions_taken=args.actions
+-         )
+-     elif args.action == "report":
+-         tracker.generate_markdown_report()
+-     elif args.action == "summary":
+-         tracker.prepare_advisor_meeting_summary()
+-     main()
++ Revision Round Tracker
++ Records each improvement cycle of a paper: issues found, actions taken,
++ evidence artifacts. Evidence paths are checked for existence and recorded
++ with size + sha256 so an audit trail cannot be rewritten unnoticed.
++     python revision_tracker.py --action add_round -r 2 \
++         -i "missing baseline" "weak lemma 4" \
++         -x "added 3 SOTA baselines; strengthened lemma 4" \
++         -e ./05-revision-rounds/round2.diff
++     python revision_tracker.py --action report -d ./05-revision-rounds
++     python revision_tracker.py --action summary -d ./05-revision-rounds
++ from __future__ import annotations
++ import hashlib
++ import sys
++ PHASES = {
++     1: "initial_review",
++     2: "major_revisions",
++     3: "additional_validation",
++     4: "language_polishing",
++     5: "final_review",
++ }
++ MIN_ROUNDS_FOR_SUBMISSION = 5
++ def sha256_of(path: Path) -> str:
++     h = hashlib.sha256()
++     with open(path, "rb") as f:
++         for chunk in iter(lambda: f.read(65536), b""):
++             h.update(chunk)
++     return h.hexdigest()
++         self.tracking_dir = Path(tracking_dir)
++         self.tracking_dir.mkdir(parents=True, exist_ok=True)
++         self.history_file = self.tracking_dir / "revision-history.json"
++     def load(self) -> dict:
++         if not self.history_file.exists():
++             return {"created": datetime.now().isoformat(timespec="seconds"),
++                     "last_updated": None,
++                     "rounds_completed": 0,
++                     "total_issues": 0,
++                     "rounds": []}
++         return json.loads(self.history_file.read_text(encoding="utf-8"))
++     def save(self, history: dict) -> None:
++         history["last_updated"] = datetime.now().isoformat(timespec="seconds")
++         self.history_file.write_text(json.dumps(history, indent=2), encoding="utf-8")
++     def add_round(self, round_num: int, issues: list[str], actions: str,
++                   evidence: list[str]) -> dict:
++         if round_num < 1:
++             raise ValueError("round number must be >= 1")
++         evidence_records = []
++         for e in evidence or []:
++             p = Path(e).expanduser()
++             if not p.exists():
++                 evidence_records.append({"path": str(p), "exists": False,
++                                          "bytes": 0, "sha256": None})
++                 print(f"warning: evidence missing -> {p}", file=sys.stderr)
++             else:
++                 evidence_records.append({"path": str(p.resolve()), "exists": True,
++                                          "bytes": p.stat().st_size,
++                                          "sha256": sha256_of(p)})
++         record = {
++             "round": round_num,
++             "phase": PHASES.get(round_num, f"round_{round_num}"),
++             "date": datetime.now().isoformat(timespec="seconds"),
++             "issues": list(issues or []),
++             "actions_taken": actions or "",
++             "status": "resolved" if (actions or "").strip() else "open",
++             "evidence": evidence_records,
++         history = self.load()
++         history = self.load()
++         history = self.load()
++         history["rounds"] = [r for r in history["rounds"] if r.get("round") != round_num]
++         history["rounds"].append(record)
++         history["rounds"].sort(key=lambda r: r["round"])
++         history["rounds_completed"] = max([r["round"] for r in history["rounds"]] or [0])
++         history["total_issues"] = sum(len(r.get("issues", [])) for r in history["rounds"])
++         self.save(history)
++         print(f"recorded round {round_num}: {len(record['issues'])} issue(s), "
++               f"{sum(1 for e in evidence_records if e['exists'])} evidence file(s) verified")
++         return record
++     def report(self) -> Path:
++         rounds = history.get("rounds", [])
++         lines = ["# Revision Effectiveness Report", "",
++                  f"Generated: {datetime.now().isoformat(timespec='seconds')}",
++                  f"Rounds completed: {history.get('rounds_completed', 0)} "
++                  f"(>= {MIN_ROUNDS_FOR_SUBMISSION} expected before submission)",
++                  f"Total issues logged: {history.get('total_issues', 0)}", ""]
++         if not rounds:
++             lines.append("No revision rounds recorded yet.")
++         for r in rounds:
++             resolved = sum(1 for i in r.get("issues", []) if r.get("actions_taken"))
++             lines += [f"## Round {r['round']} - {r.get('phase', '')}",
++                       f"- Date: {r.get('date', '')[:10]}",
++                       f"- Issues: {len(r.get('issues', []))} "
++                       f"(addressed in this round: {resolved})",
++                       f"- Actions: {r.get('actions_taken') or 'NONE RECORDED'}",
++                       f"- Status: {r.get('status')}", ""]
++             for i in r.get("issues", []):
++                 lines.append(f"  - {i}")
++             if r.get("evidence"):
++                 lines.append("- Evidence:")
++                 for e in r["evidence"]:
++                     if e["exists"]:
++                         lines.append(f"  - `{e['path']}` ({e['bytes']} B, "
++                                      f"sha256 {e['sha256'][:12]}...)")
++                     else:
++                         lines.append(f"  - `{e['path']}` MISSING")
++             lines.append("")
++         missing = sum(1 for r in rounds for e in r.get("evidence", []) if not e["exists"])
++         lines += ["---", "## Audit summary", "",
++                   f"- Rounds: {len(rounds)}",
++                   f"- Missing evidence artifacts: {missing}",
++                   f"- Submission gate (>= {MIN_ROUNDS_FOR_SUBMISSION} rounds): "
++                   f"{'PASS' if history.get('rounds_completed', 0) >= MIN_ROUNDS_FOR_SUBMISSION else 'NOT MET'}"]
++         out = self.tracking_dir / "revision-tracking-report.md"
++         out.write_text("\n".join(lines), encoding="utf-8")
++         return out
++     def summary(self) -> str:
++         done = history.get("rounds_completed", 0)
++         gap = max(0, MIN_ROUNDS_FOR_SUBMISSION - done)
++         text = (f"Revision progress: {done}/{MIN_ROUNDS_FOR_SUBMISSION} rounds\n"
++                 f"Total issues logged: {history.get('total_issues', 0)}\n"
++                 f"Last update: {history.get('last_updated') or 'never'}\n"
++                 f"Remaining before submission gate: {gap} round(s)\n")
++         return text
++ def main() -> int:
++     ap = argparse.ArgumentParser(description="Track systematic paper revision rounds")
++     ap.add_argument("--action", "-a", required=True,
++                     choices=["add_round", "add", "report", "summary"])
++     ap.add_argument("--round", "-r", type=int, default=None)
++     ap.add_argument("--issues", "-i", nargs="*", default=[])
++     ap.add_argument("--actions", "-x", default="")
++     ap.add_argument("--evidence", "-e", nargs="*", default=[])
++     ap.add_argument("--tracking-dir", "-d", "-p", default="./05-revision-rounds")
++     args = ap.parse_args()
++     tracker = RevisionTracker(Path(args.tracking_dir).expanduser().resolve())
++     if args.action in ("add_round", "add"):
++         if args.round is None:
++             print("error: --round required for add_round", file=sys.stderr)
++             return 2
++         tracker.add_round(args.round, args.issues, args.actions, args.evidence)
++         return 0
++         return 0
++         return 0
++     if args.action == "report":
++         print(tracker.report())
++     if args.action == "summary":
++         print(tracker.summary())
++     return 2
++     sys.exit(main())
+
+### scripts/score_selftest.py  [code]
++ #!/usr/bin/env python3
++ """
++ """
++ Mutation test for the scorer itself.
++ A score of 100 means nothing if the scorer cannot go down. This script copies
++ the skill to a temp directory, injects ONE known defect per dimension, and
++ checks that the corresponding score actually drops.
++ A dimension that does not react to its own defect is a BLIND SPOT: it is
++ reporting a number, not measuring anything.
++ Phase 2 (vacuity) asks the opposite question: can a skill with NO substance
++ still score 100? Mutation testing cannot answer that -- it only ever ADDS a
++ defect to real code. Vacuity attacks REMOVE the substance and check that the
++ total stays under a ceiling.
++ Usage:
++     python score_selftest.py
++     python score_selftest.py --verbose
++     python score_selftest.py --phase mutation|vacuity
++ from __future__ import annotations
++ import argparse
++ import json
++ import shutil
++ import subprocess
++ import sys
++ import tempfile
++ from pathlib import Path
++ SKILL_ROOT = Path(__file__).resolve().parent.parent
++ PY = sys.executable
++ EXCLUDE_DIRS = {"__pycache__", ".git", ".pytest_cache"}
++ EXCLUDE_FILES = {"score-history.json", "score-report.md", "score-selftest-report.md"}
++ # dimension -> (relative file, mutation callable, human description)
++ MUTATIONS = {
++     "compilability": ("scripts/verify_math_notation.py",
++                       lambda s: s.replace("def main() -> int:", "def main(: -> int:\n    pass\ndef _old() -> int:", 1),
++                       "syntax error injected into a shipped script"),
++     "runnability": ("scripts/revision_tracker.py",
++                     lambda s: s.replace("def main() -> int:", "def main() -> int:\n    sys.exit(3)", 1),
++                     "script made to exit non-zero even for --help"),
++     "authenticity": ("scripts/check_compliance.py",
++                      lambda s: s + "\n\nmock_results = []  # TODO: Implement\n",
++                      "mock placeholder injected into shipped code"),
++     "doc_consistency": ("SKILL.md",
++                         lambda s: s + "\nSee scripts/definitely_missing_module.py for details.\n",
++                         "documentation references a file that does not exist"),
++     "test_integrity": ("tests/test_skill.py",
++                        lambda s: s.replace("self.assertEqual(r.returncode, 2)",
++                                            "self.assertEqual(r.returncode, 999)", 1),
++                        "an assertion made unsatisfiable"),
++     "portability": ("scripts/create_experiment_design.py",
++                     lambda s: s.replace('default="."', 'default="/tmp/phd-default"', 1),
++                     "unix-only absolute path hardcoded"),
++     "fitness": ("scripts/proof_ledger.py", None, "theory module deleted"),
++     "substance": (None, None, "every shipped module replaced by a stub"),
++     "hygiene": ("README.md",
++                 lambda s: s.replace("v2.4.0", "v9.9.9", 1),
++                 "version string made inconsistent"),
++ }
++ }
++ # A module that compiles, answers --help, and does nothing.
++ STUB = ("import argparse\n\n\ndef main() -> int:\n"
++         "    argparse.ArgumentParser(description='stub').parse_args()\n"
++         "    return 0\n\n\nif __name__ == '__main__':\n    raise SystemExit(main())\n")
++ def stub_all_modules(root: Path) -> None:
++     for f in list((root / "scripts").glob("*.py")) + list(root.glob("*.py")):
++         if f.name == "self_score.py":
++             continue          # the scorer itself must survive
++         f.write_text(STUB, encoding="utf-8")
++ def tautological_suite(root: Path) -> None:
++     body = ["import unittest", "", "", "class T(unittest.TestCase):"]
++     for i in range(37):
++         body += [f"    def test_{i}(self):", "        assert True",
++                  "        self.assertEqual(1, 1)", ""]
++     (root / "tests").mkdir(exist_ok=True)
++     (root / "tests" / "test_skill.py").write_text("\n".join(body), encoding="utf-8")
++ def empty_shell(root: Path) -> None:
++     for name in ("scripts", "tests", "references", ".github"):
++         d = root / name
++         if d.is_dir():
++             shutil.rmtree(d, ignore_errors=True)
++     for name in ("run.py", "init_research_project.py", "install_verify.sh",
++                  "requirements.txt", "README.md", "BACKGROUND-RUN.md", "_meta.json",
++                  "_skillhub_meta.json"):
++         p = root / name
++         if p.exists():
++             p.unlink()
++     (root / "scripts").mkdir(exist_ok=True)
++     shutil.copy2(SKILL_ROOT / "scripts" / "self_score.py", root / "scripts" / "self_score.py")
++     (root / "SKILL.md").write_text("# Empty Skill\n\nIt does nothing. See docs.\n",
++                                    encoding="utf-8")
++ # name -> (attack, ceiling). Observed: 60.0 / 60.0 / 50.0 / 23.2
++ VACUITY = {
++     "no tests at all": (
++         lambda root: shutil.rmtree(root / "tests", ignore_errors=True), 70.0),
++     "suite of 37 tautological tests": (tautological_suite, 70.0),
++     "every module stubbed out": (stub_all_modules, 60.0),
++     "empty shell (no code, no tests)": (empty_shell, 40.0),
++ def copy_skill(dest: Path) -> None:
++     dest.mkdir(parents=True, exist_ok=True)
++     for item in SKILL_ROOT.iterdir():
++         if item.name in EXCLUDE_DIRS or item.name in EXCLUDE_FILES:
++             continue
++             continue
++         if item.is_dir():
++             shutil.copytree(item, dest / item.name,
++                             ignore=shutil.ignore_patterns(*EXCLUDE_DIRS, *EXCLUDE_FILES))
++         else:
++             shutil.copy2(item, dest / item.name)
++ def score_dim(root: Path, dim: str) -> float | None:
++     with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tf:
++     with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tf:
++         out = tf.name
++         out = tf.name
++     r = subprocess.run(
++         [PY, str(root / "scripts" / "self_score.py"), "--only", dim,
++          "--no-history", "--quiet", "--json", out],
++          "--no-history", "--quiet", "--json", out],
++         capture_output=True, text=True, timeout=300, cwd=str(root))
++     try:
++     try:
++         data = json.loads(Path(out).read_text(encoding="utf-8"))
++         data = json.loads(Path(out).read_text(encoding="utf-8"))
++         return data["dimensions"][dim]["score"]
++     except Exception:
++     except Exception:
++         print(f"    scorer failed on {dim}: rc={r.returncode} {r.stderr[:200]}", file=sys.stderr)
++         return None
++ def score_total(root: Path) -> tuple[float | None, list[str]]:
++     """Full score (all dimensions) of a skill tree, plus any caps applied."""
++     subprocess.run(
++         [PY, str(root / "scripts" / "self_score.py"),
++         capture_output=True, text=True, timeout=600, cwd=str(root))
++         return data["total"], data.get("caps", [])
++         return None, []
++ def apply_mutation(root: Path, rel: str | None, mutator) -> None:
++     if rel is None and mutator is None:
++         stub_all_modules(root)          # substance: the vacuity attack
++     elif mutator is None:
++         (root / rel).unlink()
++     else:
++     else:
++     else:
++         p = root / rel
++         p.write_text(mutator(p.read_text(encoding="utf-8")), encoding="utf-8")
++ def phase_mutation(verbose: bool) -> tuple[int, list]:
++     print("Phase 1 - mutation: every dimension must react to its own defect\n")
++     with tempfile.TemporaryDirectory() as td:
++         clean_root = Path(td) / "clean"
++         copy_skill(clean_root)
++         baseline = {dim: score_dim(clean_root, dim) for dim in MUTATIONS}
++     if any(v is None for v in baseline.values()):
++         print("baseline scoring failed; aborting", file=sys.stderr)
++         return 2, []
++     results = []
++     for dim, (rel, mutator, desc) in MUTATIONS.items():
++         with tempfile.TemporaryDirectory() as td:
++         with tempfile.TemporaryDirectory() as td:
++             root = Path(td) / "mut"
++             copy_skill(root)
++             copy_skill(root)
++             apply_mutation(root, rel, mutator)
++             after = score_dim(root, dim)
++         before = baseline[dim]
++         if after is None:
++             results.append((dim, before, None, desc, "ERROR"))
++         results.append((dim, before, after, desc,
++                         "FALSIFIABLE" if after < before else "BLIND SPOT"))
++     print(f"{'dimension':<16}{'clean':>7}{'mutated':>9}   verdict")
++     print("-" * 58)
++     blind = 0
++     for dim, before, after, desc, verdict in results:
++         a = f"{after:.2f}" if after is not None else "err"
++         print(f"{dim:<16}{before:>7.2f}{a:>9}   {verdict}")
++         if verbose:
++         if verbose:
++             print(f"{'':<16}defect: {desc}")
++         if verdict != "FALSIFIABLE":
++             blind += 1
++     print()
++     print()
++     if blind:
++         print(f"{blind} dimension(s) do NOT react to their own defect.")
++         print("Those numbers are decoration, not measurement.")
++         print(f"All {len(results)} dimensions are falsifiable: "
++               "each drops when its own defect is injected.")
++     return blind, results
++ def phase_vacuity(verbose: bool) -> tuple[int, list]:
++     print("\nPhase 2 - vacuity: a skill with no substance must NOT score high\n")
++     rows = []
++     bad = 0
++     for name, (attack, ceiling) in VACUITY.items():
++             root = Path(td) / "vac"
++             attack(root)
++             total, caps = score_total(root)
++         ok = total is not None and total <= ceiling
++         if not ok:
++             bad += 1
++         rows.append((name, total, ceiling, caps, "OK" if ok else "VACUOUS PASS"))
++         t = f"{total:.2f}" if total is not None else "err"
++         print(f"{name:<34}{t:>8}   ceiling {ceiling:>5.1f}   "
++               f"{'OK' if ok else 'VACUOUS PASS'}")
++             for c in caps:
++                 print(f"{'':<34}cap: {c}")
++     if bad:
++         print(f"{bad} vacuity attack(s) still score above their ceiling.")
++         print("The scorer rewards the APPEARANCE of quality over its presence.")
++         print(f"All {len(rows)} vacuity attacks are held below their ceiling.")
++     return bad, rows
++ def main() -> int:
++     ap = argparse.ArgumentParser(description="Audit the quality scorer itself")
++     ap.add_argument("--verbose", "-v", action="store_true")
++     ap.add_argument("--phase", choices=("mutation", "vacuity", "all"), default="all")
++     args = ap.parse_args()
++     blind = vac = 0
++     mut_rows: list = []
++     vac_rows: list = []
++     if args.phase in ("mutation", "all"):
++         blind, mut_rows = phase_mutation(args.verbose)
++         if blind == 2:
++             return 2
++     if args.phase in ("vacuity", "all"):
++         vac, vac_rows = phase_vacuity(args.verbose)
++     lines = ["# Scorer audit", "",
++              f"Run: {__import__('datetime').datetime.now().isoformat(timespec='seconds')}", ""]
++     if mut_rows:
++         lines += ["## Phase 1 - mutation (a dimension must react to its own defect)", "",
++                   "| Dimension | Clean | Mutated | Verdict | Defect injected |",
++                   "|---|---:|---:|---|---|"]
++                   "|---|---:|---:|---|---|"]
++         for dim, before, after, desc, verdict in mut_rows:
++             a = f"{after:.2f}" if after is not None else "error"
++             lines.append(f"| {dim} | {before:.2f} | {a} | **{verdict}** | {desc} |")
++         lines.append("")
++         lines.append("")
++     if vac_rows:
++         lines += ["## Phase 2 - vacuity (no substance must not score high)", "",
++                   "| Attack | Total | Ceiling | Verdict |",
++         for name, total, ceiling, caps, verdict in vac_rows:
++             t = f"{total:.2f}" if total is not None else "error"
++             lines.append(f"| {name} | {t} | {ceiling:.1f} | **{verdict}** |")
++     lines += ["A dimension that does not drop is reporting a number without measuring",
++               "anything. An attack that scores above its ceiling means the scorer",
++               "rewards the appearance of quality over its presence.", ""]
++     report = SKILL_ROOT / "score-selftest-report.md"
++     report.write_text("\n".join(lines), encoding="utf-8")
++     print(f"\nReport: {report}")
++     return 1 if (blind or vac) else 0
++ if __name__ == "__main__":
++     sys.exit(main())
+
+### scripts/self_audit.py  [code]
++ #!/usr/bin/env python3
++ """
++ """
++ Self-audit: the gap between "mathematically proven" and "publishable".
++ Running the proof once is not the same as being able to defend it in review.
++ This script cross-reads the proof ledger, the priority records, the exact
++ certificates and the revision history, then prints the blockers that would stop
++ a submission today.
++ Every blocker is either resolved or listed. There is no optimistic default.
++ Usage:
++     python self_audit.py -p ./my-project
++ from __future__ import annotations
++ import argparse
++ import json
++ import sys
++ from datetime import datetime
++ from pathlib import Path
++ def _j(path: Path) -> dict | None:
++     if not path.is_file():
++         return None
++         return None
++     try:
++         return json.loads(path.read_text(encoding="utf-8"))
++     except json.JSONDecodeError:
++ def audit(project: Path) -> dict:
++     blockers: list[str] = []
++     warnings: list[str] = []
++     facts: list[str] = []
++     ledger = _j(project / "02-methodology-dev" / "claims.json")
++     prio = _j(project / "02-methodology-dev" / "priority-records.json")
++     rev = _j(project / "05-revision-rounds" / "revision-history.json")
++     cert_dir = project / "07-audit-trail"
++     # --- ledger
++     if ledger is None:
++         blockers.append("no proof ledger (02-methodology-dev/claims.json); "
++                         "run: run.py ledger --init 02-methodology-dev")
++     else:
++     else:
++     else:
++         claims = ledger.get("claims", {})
++         facts.append(f"{len(claims)} claim(s) in ledger")
++         if not claims:
++             blockers.append("proof ledger is empty")
++         for cid, c in sorted(claims.items()):
++             st = c.get("status")
++             if st == "open":
++                 warnings.append(f"{cid} is still OPEN: it must be stated as open in the paper")
++             if st == "proven" and not c.get("proof"):
++                 blockers.append(f"{cid} marked proven but has no proof artifact")
++             if st == "conditional":
++                 warnings.append(f"{cid} is CONDITIONAL: the assumption must be explicit")
++             for d in (c.get("depends_on") or []):
++                 if d not in claims:
++                     blockers.append(f"{cid} depends on unknown claim {d}")
++                 elif claims[d].get("status") not in ("proven", "definition", "assumption") \
++                         and st == "proven":
++                     blockers.append(
++                         f"{cid} marked proven while dependency {d} is "
++                         f"{claims[d].get('status')}")
++     # --- priority
++     if prio is None:
++         warnings.append("no priority records; any novelty claim is currently unsupported")
++         recs = prio.get("records", {})
++         unresolved = [k for k, v in recs.items() if v.get("verdict") == "unchecked"]
++         facts.append(f"{len(recs)} priority record(s), {len(unresolved)} unresolved")
++         for k in unresolved:
++             blockers.append(f"priority record {k} unresolved - "
++                             f"the claim must not be called novel")
++     # --- certificates
++     certs = sorted(cert_dir.glob("certificate-*.json")) if cert_dir.is_dir() else []
++     facts.append(f"{len(certs)} certificate(s) in 07-audit-trail")
++     if not certs:
++         warnings.append("no exact-arithmetic certificate; numerical claims are unsupported")
++     for c in certs:
++         data = _j(c)
++         if data and data.get("float_contamination"):
++             blockers.append(f"{c.name}: float contamination "
++                             f"{data['float_contamination']} - not machine-precision evidence")
++         if data and data.get("verdict") != "CERTIFIED":
++             warnings.append(f"{c.name}: verdict {data.get('verdict')}")
++     # --- revisions
++     if rev is None:
++         blockers.append("no revision history")
++         done = int(rev.get("rounds_completed", 0))
++         facts.append(f"{done} revision round(s)")
++         if done < 5:
++             blockers.append(f"only {done} revision round(s); >= 5 expected before submission")
++     return {"blockers": blockers, "warnings": warnings, "facts": facts,
++             "publishable": not blockers}
++ def render(result: dict, project: Path) -> str:
++     verdict = "PUBLISHABLE (no blockers)" if result["publishable"] else "NOT PUBLISHABLE"
++     lines = ["# Self-audit: proven vs publishable", "",
++              f"Project: {project.name}",
++              f"Audit date: {datetime.now().isoformat(timespec='seconds')}",
++              f"Verdict: {verdict}", "",
++              "## Facts", ""]
++     lines += [f"- {f}" for f in result["facts"]] or ["- none"]
++     lines += ["", "## Blockers", ""]
++     lines += [f"- {b}" for b in result["blockers"]] or ["- none"]
++     lines += ["", "## Warnings (must be disclosed, do not block)", ""]
++     lines += [f"- {w}" for w in result["warnings"]] or ["- none"]
++     lines += ["", "---",
++               "A clean audit is a necessary condition, not a sufficient one.",
++               "Generated by phd-research-companion 2.4.0"]
++     return "\n".join(lines)
++ def main() -> int:
++     ap = argparse.ArgumentParser(description="Proven vs publishable gap report")
++     ap.add_argument("-p", "--project", default=".")
++     ap.add_argument("--strict", action="store_true", help="exit 1 if any blocker exists")
++     args = ap.parse_args()
++     project = Path(args.project).expanduser().resolve()
++     if not project.is_dir():
++         print(f"error: project dir not found: {project}", file=sys.stderr)
++         return 2
++     result = audit(project)
++     out = project / f"self-audit-{datetime.now().strftime('%Y%m%d-%H%M%S')}.md"
++     out.write_text(render(result, project), encoding="utf-8")
++     print(f"Verdict: {'PUBLISHABLE' if result['publishable'] else 'NOT PUBLISHABLE'}")
++     print(f"Blockers: {len(result['blockers'])}  Warnings: {len(result['warnings'])}")
++     for b in result["blockers"]:
++         print(f"  [BLOCKER] {b}")
++     for w in result["warnings"]:
++         print(f"  [warn]    {w}")
++     print(f"Report: {out}")
++     return 1 if (args.strict and not result["publishable"]) else 0
++ if __name__ == "__main__":
++     sys.exit(main())
+
+### scripts/self_score.py  [code]
++ #!/usr/bin/env python3
++ """
++ """
++ PhD Research Companion - Automated Skill Quality Scorer
++ Scores this skill on 9 weighted dimensions by ACTUALLY running things
++ (compile check, --help smoke test, mock detection, doc/code cross-check,
++ test-integrity probe, portability scan, theory-track presence, substance,
++ hygiene).
++ Nothing here is self-reported: every score is derived from an executable probe.
++ Two failure modes are guarded against:
++   * mutation   - does a dimension drop when ITS OWN defect is injected?
++                  (scripts/score_selftest.py)
++   * vacuity    - can a skill with no substance still score 100?
++                  dimension caps + the substance dimension below.
++ Usage:
++     python self_score.py                 # score + append to score-history.json
++     python self_score.py --no-history    # score only, do not append
++     python self_score.py --markdown out.md
++     python self_score.py --fast          # skip the mutation-catch probe (slow)
++ from __future__ import annotations
++ import argparse
++ import ast
++ import json
++ import os
++ import py_compile
++ import re
++ import shutil
++ import subprocess
++ import sys
++ import tempfile
++ from datetime import datetime
++ from pathlib import Path
++ SKILL_ROOT = Path(__file__).resolve().parent.parent
++ # Weight must sum to 1.0
++ WEIGHTS = {
++     "compilability": 0.12,
++     "runnability": 0.12,
++     "authenticity": 0.12,
++     "doc_consistency": 0.10,
++     "test_integrity": 0.14,
++     "portability": 0.08,
++     "fitness": 0.10,
++     "substance": 0.18,
++     "hygiene": 0.04,
++ }
++ }
++ }
++ # A dimension score below `floor` caps the TOTAL at `cap`, because one
++ # catastrophic failure must not be diluted by the other dimensions' weights.
++ # (dim, floor, cap, reason)
++ CAPS = [
++     ("test_integrity", 5.0, 60.0, "the test suite cannot fail"),
++     ("substance", 3.0, 50.0, "the shipped code has no substance"),
++     ("authenticity", 4.0, 70.0, "results are mocked or fabricated"),
++ ]
++ ]
++ ]
++ ]
++ # Minimum substance for full credit. Deliberately set BELOW this repo's actual
++ # numbers (LOC ~2400, defs ~68, help >= 227 chars, ~31 documented commands) so
++ # that passing is not calibrated to this repo alone.
++ SUBSTANCE_TARGET = {
++     "loc": 1200,          # non-blank, non-comment lines across shipped modules
++     "defs": 50,           # top-level functions/classes
++     "help_chars": 150,    # --help output length for a real CLI
++     "cmds": 12,           # runnable command examples documented in SKILL.md
++ THEORY_MODULES = [
++     "proof_ledger.py",
++     "priority_check.py",
++     "rational_certificate.py",
++     "self_audit.py",
++     "long_horizon_session.py",
++ # Set to False by --fast: skips the expensive mutation-catch probe.
++ DEEP = True
++ # Fragments are concatenated so this file does not match its own patterns.
++ MOCK_PATTERNS = [
++     r"\bmock[_\- ]?(results?|data|path|analys|implement)",
++     r"TODO:\s*Implement",
++     "simulated" + r"\s+for now",
++     r"replace with actual",
++     r"real implementation would",
++ # Files that HOLD mock patterns as data (the linters themselves) must not be
++ # scanned by those same patterns, or the scorer reports on itself.
++ MOCK_SCAN_EXCLUDE = {"self_score.py", "score_selftest.py"}
++ REAL_API_HOSTS = [
++     "export.arxiv.org",
++     "api.semanticscholar.org",
++     "dblp.org",
++     "api.openalex.org",
++     "api.crossref.org",
++ def _py_files() -> list[Path]:
++     files = sorted(SKILL_ROOT.glob("scripts/*.py"))
++     files += sorted(p for p in SKILL_ROOT.glob("*.py") if p.name != "self_score.py")
++     return files
++ def _shipped_files() -> list[Path]:
++     """Functional modules only: the linters hold probe patterns as data."""
++     return [f for f in _py_files() if f.name not in MOCK_SCAN_EXCLUDE]
++ def _read(path: Path) -> str:
++     try:
++     try:
++     try:
++     try:
++     try:
++     try:
++     try:
++         return path.read_text(encoding="utf-8", errors="replace")
++     except Exception:
++     except Exception:
++     except Exception:
++     except Exception:
++         return ""
++ # ---------------------------------------------------------------- probes
++ def probe_compilability() -> tuple[float, list[str]]:
++     notes = []
++     notes = []
++     notes = []
++     notes = []
++     notes = []
++     notes = []
++     notes = []
++     notes = []
++     notes = []
++     files = _py_files()
++     if not files:
++     if not files:
++     if not files:
++     if not files:
++         return 0.0, ["no python files found"]
++     ok = 0
++     ok = 0
++     with tempfile.TemporaryDirectory() as td:
++     with tempfile.TemporaryDirectory() as td:
++         for f in files:
++             try:
++             try:
++                 py_compile.compile(str(f), cfile=os.path.join(td, "x.pyc"), doraise=True)
++                 ok += 1
++                 ok += 1
++             except Exception as e:
++                 notes.append(f"FAIL compile {f.name}: {type(e).__name__}: {str(e)[:70]}")
++     score = 10.0 * ok / len(files)
++     score = 10.0 * ok / len(files)
++     if ok == len(files):
++         notes.append(f"all {len(files)} modules compile")
++     return round(score, 2), notes
++     return round(score, 2), notes
++     return round(score, 2), notes
++     return round(score, 2), notes
++     return round(score, 2), notes
++     return round(score, 2), notes
++     return round(score, 2), notes
++     return round(score, 2), notes
++     return round(score, 2), notes
++ def probe_runnability() -> tuple[float, list[str]]:
++     """Every script must answer --help with exit code 0."""
++     files = [f for f in _py_files() if f.name != "self_score.py"]
++     for f in files:
++     for f in files:
++     for f in files:
++     for f in files:
++         try:
++         try:
++         try:
++         try:
++         try:
++             r = subprocess.run(
++                 [sys.executable, str(f), "--help"],
++                 capture_output=True, text=True, timeout=30, cwd=str(SKILL_ROOT),
++             )
++             if r.returncode == 0:
++             else:
++                 tail = (r.stderr or r.stdout).strip().splitlines()[-1:] or [""]
++                 notes.append(f"FAIL --help {f.name} (rc={r.returncode}): {tail[0][:70]}")
++         except subprocess.TimeoutExpired:
++             notes.append(f"FAIL --help {f.name}: timeout")
++         except Exception as e:
++             notes.append(f"FAIL --help {f.name}: {e}")
++         return 0.0, ["no runnable files"]
++ def probe_authenticity() -> tuple[float, list[str]]:
++     """Mock placeholders are penalised; real API hosts are credited."""
++     files = [f for f in _py_files() if f.name not in MOCK_SCAN_EXCLUDE]
++         return 0.0, ["no files"]
++     dirty, total = 0, 0
++         src = _read(f)
++         total += 1
++         hits = [p for p in MOCK_PATTERNS if re.search(p, src, re.I)]
++         if hits:
++             dirty += 1
++             notes.append(f"MOCK in {f.name}: {hits}")
++     clean_ratio = 1.0 - dirty / total
++     all_src = "\n".join(_read(f) for f in files)
++     api_hits = sum(1 for h in REAL_API_HOSTS if h in all_src)
++     api_ratio = min(1.0, api_hits / 3.0)  # 3 real sources = full credit
++     score = 10.0 * (0.6 * clean_ratio + 0.4 * api_ratio)
++     if api_hits:
++         notes.append(f"real API hosts wired: {api_hits}")
++     else:
++     else:
++     else:
++     else:
++     else:
++         notes.append("no real academic API host found anywhere")
++ def _run_commands() -> dict[str, Path]:
++     """command -> script path, parsed out of run.py's COMMANDS table."""
++     src = _read(SKILL_ROOT / "run.py")
++     out: dict[str, Path] = {}
++     for m in re.finditer(
++             r'"([a-z][a-z\-]*)"\s*:\s*\[\s*(ROOT|SCRIPTS)\s*/\s*"([^"]+\.py)"', src):
++         cmd, where, name = m.group(1), m.group(2), m.group(3)
++         out[cmd] = (SKILL_ROOT / name) if where == "ROOT" else (SKILL_ROOT / "scripts" / name)
++     return out
++     return out
++ FLAG_RE = re.compile(r"(?<![\w\-])(--?[A-Za-z][A-Za-z0-9_\-]*)")
++ def _documented_flags(md: str) -> list[tuple[str, str]]:
++     """[(command, flag)] from every `run.py <cmd> ...` example in the docs.
++     Backslash continuations are joined first, otherwise a wrapped command loses
++     half its flags.
++     """
++     """
++     """
++     """
++     """
++     """
++     """
++     """
++     """
++     """
++     joined, buf = [], ""
++     for line in md.splitlines():
++         s = line.rstrip()
++         if s.endswith("\\"):
++             buf += s[:-1] + " "
++             continue
++             continue
++             continue
++             continue
++             continue
++             continue
++             continue
++             continue
++             continue
++             continue
++             continue
++         joined.append(buf + s)
++         buf = ""
++     if buf:
++         joined.append(buf)
++     out = []
++     out = []
++     for line in joined:
++         for m in re.finditer(r"run\.py\s+([a-z][a-z\-]*)", line):
++             cmd = m.group(1)
++             for flag in FLAG_RE.findall(line[m.end():]):
++                 if flag not in ("-h", "--help"):
++                     out.append((cmd, flag))
++ def _flag_in_help(flag: str, help_text: str) -> bool:
++     """Boundary-aware: `-p` must NOT match inside `--proof`."""
++     return re.search(re.escape(flag) + r"(?![A-Za-z0-9_\-])", help_text) is not None
++ def probe_documented_flags(notes: list[str]) -> float:
++     """Every flag the docs show must exist in that command's real CLI.
++     Existence checks (does the file exist? is the subcommand wired?) say nothing
++     about whether the documented invocation actually runs. This does.
++     cmds = _run_commands()
++     if not cmds:
++         notes.append("could not parse run.py COMMANDS table")
++         return 0.0
++         return 0.0
++     md = "\n".join(_read(SKILL_ROOT / n) for n in ("SKILL.md", "README.md"))
++     pairs = _documented_flags(md)
++     if not pairs:
++         notes.append("no documented command examples found")
++     help_cache: dict[str, str] = {}
++     def help_of(cmd: str) -> str:
++         if cmd in help_cache:
++             return help_cache[cmd]
++         script = cmds.get(cmd)
++         txt = ""
++         if script and script.exists():
++                 r = subprocess.run([sys.executable, str(script), "--help"],
++                                    capture_output=True, text=True, timeout=30,
++                                    cwd=str(SKILL_ROOT))
++                 txt = (r.stdout or "") + (r.stderr or "")
++             except Exception:
++                 txt = ""
++         help_cache[cmd] = txt
++         return txt
++     unknown: list[str] = []
++     seen: set[tuple[str, str]] = set()
++     for cmd, flag in pairs:
++         if (cmd, flag) in seen:
++         seen.add((cmd, flag))
++         if cmd not in cmds:
++             unknown.append(f"{cmd} {flag} (no such command)")
++         if not _flag_in_help(flag, help_of(cmd)):
++             unknown.append(f"run.py {cmd} {flag}")
++     for u in unknown:
++         notes.append(f"documented flag does not exist: {u}")
++     notes.append(f"{len(seen)} documented flag(s) checked against real CLIs")
++     return 1.0 - len(unknown) / max(1, len(seen))
++ def probe_doc_consistency() -> tuple[float, list[str]]:
++     """Every .py / ./run subcommand that SKILL.md advertises must exist."""
++     skill_md = _read(SKILL_ROOT / "SKILL.md")
++     skill_md = _read(SKILL_ROOT / "SKILL.md")
++     skill_md = _read(SKILL_ROOT / "SKILL.md")
++     if not skill_md:
++         return 0.0, ["SKILL.md missing"]
++     refs = set(re.findall(r"scripts/([A-Za-z0-9_\-]+\.py)", skill_md))
++     refs |= set(re.findall(r"(?<![/\w])([A-Za-z0-9_\-]+\.py)(?![/\w])", skill_md))
++     refs = {r for r in refs if not r.startswith("test")}
++     missing = [r for r in sorted(refs) if not (SKILL_ROOT / "scripts" / r).exists()
++                and not (SKILL_ROOT / r).exists()]
++     for m in missing:
++         notes.append(f"SKILL.md references missing file: {m}")
++     subcmds = set(re.findall(r"(?:\./run|run\.py)\s+([a-z][a-z\-]*)", skill_md))
++     run_py = SKILL_ROOT / "run.py"
++     run_py = SKILL_ROOT / "run.py"
++     wired = 0
++     if run_py.exists():
++         rsrc = _read(run_py)
++         wired = sum(1 for c in subcmds if f'"{c}"' in rsrc or f"'{c}'" in rsrc)
++         notes.append("run.py entrypoint missing (SKILL.md uses ./run)")
++     for c in sorted(subcmds):
++         if run_py.exists() and c not in _read(run_py):
++             notes.append(f"./run {c} documented but not wired in run.py")
++     ref_score = 1.0 - (len(missing) / max(1, len(refs)))
++     cmd_score = wired / max(1, len(subcmds)) if subcmds else 0.0
++     flag_score = probe_documented_flags(notes)
++     score = 10.0 * (0.35 * ref_score + 0.30 * cmd_score + 0.35 * flag_score)
++ def _taut_call(call: ast.Call) -> bool:
++     """assertTrue(True) / assertEqual(x, x) / assertIsNone(None) ..."""
++     f = call.func
++     if not isinstance(f, ast.Attribute) or not f.attr.startswith("assert"):
++         return False
++     name, a = f.attr, call.args
++     lit = lambda i: a[i] if len(a) > i else None            # noqa: E731
++     c0 = lit(0)
++     if name == "assertTrue" and isinstance(c0, ast.Constant) and c0.value is True:
++         return True
++         return True
++         return True
++     if name == "assertFalse" and isinstance(c0, ast.Constant) and c0.value is False:
++     if name == "assertIsNone" and isinstance(c0, ast.Constant) and c0.value is None:
++     if name in ("assertEqual", "assertIs", "assertIn", "assertNotEqual",
++                 "assertNotIn", "assertIsNot") and len(a) == 2:
++             if ast.dump(a[0]) == ast.dump(a[1]):
++                 return True
++         except Exception:
++         except Exception:
++         except Exception:
++         except Exception:
++             pass
++     return False
++     return False
++     return False
++ def _taut_expr(t: ast.expr) -> bool:
++     """Bare `assert <expr>` that cannot fail."""
++     if isinstance(t, ast.Constant):
++         return t.value is True
++     if isinstance(t, ast.Call):
++         return _taut_call(t)
++     if isinstance(t, ast.Compare) and len(t.comparators) == 1:
++             return ast.dump(t.left) == ast.dump(t.comparators[0])
++             return False
++ def _is_tautological(node: ast.AST) -> bool:
++     """True if this assertion node is structurally incapable of failing."""
++     if isinstance(node, ast.Assert):
++         return _taut_expr(node.test)
++     if isinstance(node, ast.Call):
++         return _taut_call(node)
++ def _classify_tests(src: str) -> tuple[int, int] | None:
++     """(total_assertion_slots, tautological_slots) for one test module.
++     Counts BARE `assert` statements AND unittest `self.assertX(...)` calls --
++     a suite written with unittest methods has no bare asserts at all.
++         tree = ast.parse(src)
++         tree = ast.parse(src)
++         tree = ast.parse(src)
++     except SyntaxError:
++     except SyntaxError:
++     except SyntaxError:
++         return None
++         return None
++         return None
++     slots = []
++     for n in ast.walk(tree):
++     for n in ast.walk(tree):
++         if isinstance(n, ast.Assert):
++             slots.append(n)
++             slots.append(n)
++         elif (isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
++               and n.func.attr.startswith("assert")):
++     taut = sum(1 for n in slots if _is_tautological(n))
++     empty = 0
++         if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name.startswith("test"):
++             body = [s for s in n.body
++                     if not (isinstance(s, ast.Expr) and isinstance(s.value, ast.Constant))]
++             if not body or all(isinstance(s, ast.Pass) for s in body):
++                 empty += 1
++     return len(slots) + empty, taut + empty
++ _RUNNER: list[str] = []
++ def _detect_runner() -> list[str]:
++     """Resolve the test runner ONCE. Probing pytest on every call cost 0.6s and,
++     when pytest is absent, hid the real 2-minute unittest run behind a
++     misleading `ModuleNotFoundError` fallback."""
++     if _RUNNER:
++         return _RUNNER
++         r = subprocess.run([sys.executable, "-m", "pytest", "--version"],
++                            capture_output=True, text=True, timeout=120)
++         _RUNNER.extend((["pytest"], ) if r.returncode == 0 else (["unittest"], ))
++         _RUNNER.append("unittest")
++     return _RUNNER
++ def _run_suite(root: Path, extra: list[str] | None = None) -> tuple[int, str]:
++     """Run the test suite under `root`; returns (returncode, combined output).
++     `extra` is passed to BOTH runners. unittest's `-k` is a substring filter and
++     may be repeated; pytest's `-k` ANDs the expressions and also accepts repeats,
++     so the same selector list is meaningful either way.
++     runner = _detect_runner()[0]
++     if runner == "pytest":
++         cmd = [sys.executable, "-m", "pytest", "-q", "--no-header", str(root / "tests")]
++         cmd = [sys.executable, "-m", "unittest", "discover", "-s", "tests"]
++         r = subprocess.run(cmd + (extra or []), capture_output=True, text=True,
++                            timeout=900, cwd=str(root))
++         return r.returncode, (r.stdout or "") + (r.stderr or "")
++         if runner == "pytest":                       # last-resort fallback
++             r = subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "tests"]
++                                + (extra or []), capture_output=True, text=True,
++                                timeout=900, cwd=str(root))
++             return r.returncode, (r.stdout or "") + (r.stderr or "")
++         raise
++ def _ran_no_tests(out: str) -> bool:
++     """True when a filtered run selected zero tests.
++     pytest says `no tests ran`; unittest says `Ran 0 tests`. Both spellings
++     are checked because a silent zero-test run is indistinguishable from a
++     pass unless you look.
++     low = out.lower()
++     return "ran 0 tests" in low or "no tests ran" in low or "0 selected" in low
++ def _break_module(src: str) -> str:
++     """Make a module fail at import time, so BOTH import and CLI paths break.
++     The naive version (append `raise ...` at end of file) is inert: a script
++     that ends with `if __name__ == '__main__': sys.exit(main())` raises
++     SystemExit before reaching the appended line. Inject after the last
++     top-level import instead.
++     marker = "\nraise RuntimeError('MUTATION')\n"
++         last = 0
++         for n in tree.body:
++             if isinstance(n, (ast.Import, ast.ImportFrom)):
++                 last = max(last, getattr(n, "end_lineno", 0) or 0)
++         if last:
++             lines = src.splitlines(keepends=True)
++             return "".join(lines[:last]) + marker + "".join(lines[last:])
++         pass
++     return marker + src
++ def _mutation_catch(notes: list[str], clean_ok: bool) -> float | None:
++     """Break the most-tested module in a temp copy; the suite MUST fail.
++     Returns None when the probe does not apply so the caller can renormalise
++     instead of scoring a non-applicable check as zero. In particular, a suite
++     that is ALREADY red cannot demonstrate that it catches a regression.
++     if not clean_ok:
++         notes.append("suite is already failing; mutation catch not applicable "
++                      "(a red suite cannot demonstrate it catches regressions)")
++     tests = sorted(list(SKILL_ROOT.glob("tests/test_*.py")) + list(SKILL_ROOT.glob("test*.py")))
++     tests = sorted(list(SKILL_ROOT.glob("tests/test_*.py")) + list(SKILL_ROOT.glob("test*.py")))
++     tsrc = "\n".join(_read(t) for t in tests)
++     ranked = []
++     for f in _shipped_files():
++         stem = f.stem
++         variants = {v for v in (stem, stem.replace("_", ""),
++                                "".join(w.title() for w in stem.split("_")))
++                     if len(v) > 3}
++         n = sum(tsrc.count(v) for v in variants)
++         ranked.append((-n, f.name, f, variants))
++     ranked.sort(key=lambda r: (r[0], r[1]))
++     if not ranked:
++     if ranked[0][0] == 0:
++         # No test names any module. That is not "not applicable" -- a suite that
++         # never names the code it covers cannot be trusted to cover it. Break
++         # the largest module instead: the suite must at least react to that.
++         target = max(_shipped_files(), key=lambda f: _module_shape(f)[1])
++         notes.append("no test names any shipped module; "
++                      f"falling back to the largest one ({target.name})")
++         target = ranked[0][2]
++     # Recompute the selector for the CHOSEN target. Deriving it from the loop
++     # variable instead silently selected whatever module happened to be last,
++     # which produced an empty `-k` list and a full-suite run -- the mutation
++     # probe then cost as much as the score it was supposed to be cheap.
++     variants = {v for v in (target.stem, target.stem.replace("_", ""),
++                            "".join(w.title() for w in target.stem.split("_")))
++                 if len(v) > 3}
++         dst = Path(td) / "skill"
++         shutil.copytree(SKILL_ROOT, dst, ignore=shutil.ignore_patterns(
++             "__pycache__", ".pytest_cache", ".git", "score-*", "dist"))
++         p = dst / target.relative_to(SKILL_ROOT)
++         p.write_text(_break_module(_read(p)), encoding="utf-8")
++         # Only the tests whose id names this module: the question is whether
++         # THIS module's tests notice. Running the whole suite a second time
++         # doubles the cost of every score for no extra signal.
++         sel: list[str] = []
++         for v in sorted(variants):
++             sel += ["-k", v]
++         rc, out = _run_suite(dst, sel)
++         if _ran_no_tests(out):
++             # No test *id* names this module (it may be referenced by path only).
++             # Correctness beats speed here: fall back to the full suite rather
++             # than reporting a false failure. This branch is rare.
++             notes.append(f"no test id matched {target.name}; running the full suite")
++             rc, out = _run_suite(dst)
++     caught = rc != 0
++     if caught:
++         tail = [l for l in out.splitlines() if "FAILED" in l or "FAIL:" in l or "Error" in l]
++         tail = [l for l in out.splitlines() if "FAILED" in l or "FAIL:" in l or "Error" in l]
++         notes.append(f"mutation in {target.name} caught by suite"
++                      + (f": {tail[0].strip()[:80]}" if tail else ""))
++         notes.append(f"MUTATION SURVIVED: breaking {target.name} does not fail "
++                      "the suite -> the suite does not test it")
++     return 1.0 if caught else 0.0
++ def probe_test_integrity() -> tuple[float, list[str]]:
++     """A test suite that cannot fail is worse than no test suite."""
++     if not tests:
++         return 0.0, ["no test files found"]
++     total_slots = 0
++     taut_slots = 0
++     for t in tests:
++         got = _classify_tests(_read(t))
++         if got is None:
++             notes.append(f"{t.name} does not parse")
++         a, taut = got
++         total_slots += a
++         taut_slots += taut
++         if a == 0:
++             notes.append(f"{t.name}: zero assertions -> cannot fail")
++         elif taut == a:
++             notes.append(f"{t.name}: every assertion is tautological -> cannot fail")
++     assert_ratio = (total_slots - taut_slots) / max(1, total_slots)
++     if taut_slots:
++         notes.append(f"{taut_slots}/{total_slots} assertion slot(s) are tautological")
++     # legacy self-confirming suite still present?
++     legacy = SKILL_ROOT / "test_suit.py"
++     rc, out = _run_suite(SKILL_ROOT)
++     executed, passed = True, rc == 0
++     runner = "pytest" if "pytest" in out[:200] or "passed" in out else "unittest"
++     notes.append(f"{runner} rc={rc}")
++     if not passed:
++         notes += [t.strip()[:110] for t in tail[:5]]
++     if legacy.exists():
++         notes.append("legacy self-confirming test_suit.py still shipped")
++     # (weight, value) components; None = not applicable / skipped -> renormalise
++     components = [
++         (0.25, assert_ratio),
++         (0.25, 1.0 if (executed and passed) else 0.0),
++         (0.40, _mutation_catch(notes, passed) if DEEP else None),
++         (0.10, 1.0 if not legacy.exists() else 0.0),
++     ]
++     ]
++     live = [(w, v) for w, v in components if v is not None]
++     if not DEEP:
++         notes.append("fast mode: mutation-catch probe skipped")
++     score = 10.0 * sum(w * v for w, v in live) / sum(w for w, _ in live)
++ def probe_portability() -> tuple[float, list[str]]:
++     checks = {}
++     checks = {}
++     checks["cross-platform run.py"] = run_py.exists()
++     if not run_py.exists():
++         notes.append("no run.py (bash-only ./run is unusable on Windows)")
++     # shebang lines are portable; only flag python3 used as an invocation
++     all_src = "\n".join(
++         re.sub(r"^#!.*$", "", _read(f), flags=re.M) for f in _shipped_files())
++     checks["no hardcoded python3"] = not re.search(r"python3\s", all_src)
++     if not checks["no hardcoded python3"]:
++         notes.append("hardcoded 'python3' invocation found")
++     unix_tmp = len(re.findall(r"/tmp/|/home/[a-z]+/", all_src))
++     checks["no unix-only paths"] = unix_tmp == 0
++     if unix_tmp:
++         notes.append(f"{unix_tmp} unix-only absolute path(s) hardcoded")
++     checks["requirements declared"] = (SKILL_ROOT / "requirements.txt").exists()
++     if not checks["requirements declared"]:
++         notes.append("requirements.txt missing")
++     checks["references/ present"] = (SKILL_ROOT / "references").is_dir()
++     if not checks["references/ present"]:
++         notes.append("references/ directory missing (declared in SKILL.md)")
++     score = 10.0 * sum(1 for v in checks.values() if v) / len(checks)
++     score = 10.0 * sum(1 for v in checks.values() if v) / len(checks)
++ def _module_shape(path: Path) -> tuple[int, int]:
++     """(top-level defs/classes, non-blank non-comment lines)."""
++     src = _read(path)
++     loc = len([l for l in src.splitlines() if l.strip() and not l.strip().startswith("#")])
++         return 0, loc
++     defs = sum(1 for n in tree.body
++                if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)))
++     return defs, loc
++ def _module_is_real(path: Path) -> bool:
++     """A file that merely exists is not a module; it must have a shape."""
++     defs, loc = _module_shape(path)
++     return defs >= 3 and loc >= 40
++ def probe_fitness() -> tuple[float, list[str]]:
++     """Theory-track coverage: this user is a theory ML PhD, not a CV empiricist.
++     Presence alone is NOT credited: a stub named proof_ledger.py does not make
++     this a theory skill.
++     present = []
++     for m in THEORY_MODULES:
++         p = SKILL_ROOT / "scripts" / m
++         if not p.exists():
++         if not p.exists():
++             notes.append(f"theory module missing: {m}")
++         elif not _module_is_real(p):
++             defs, loc = _module_shape(p)
++             notes.append(f"theory module is a stub: {m} (defs={defs}, loc={loc})")
++         else:
++         else:
++             present.append(m)
++     routed = bool(re.search(r"--track\s*=\s*(theory|empirical)", skill_md))
++     if not routed:
++         notes.append("SKILL.md has no --track=theory|empirical routing")
++     score = 10.0 * (0.75 * len(present) / len(THEORY_MODULES) + 0.25 * (1.0 if routed else 0.0))
++ def probe_substance() -> tuple[float, list[str]]:
++     """Does the skill contain real code, or only files with the right names?
++     Guards the vacuity failure mode: stubs compile, answer --help, carry no
++     mock markers, and satisfy every existence check.
++     files = _shipped_files()
++         return 0.0, ["no shipped modules"]
++     loc = 0
++     defs = 0
++         d, l = _module_shape(f)
++         defs += d
++         loc += l
++     help_ok, help_total, help_bad = 0, 0, []
++             r = subprocess.run([sys.executable, str(f), "--help"],
++                                capture_output=True, text=True, timeout=30,
++                                cwd=str(SKILL_ROOT))
++         help_total += 1
++         if r.returncode == 0 and len(r.stdout or "") >= SUBSTANCE_TARGET["help_chars"]:
++             help_ok += 1
++             help_bad.append(f.name)
++     if help_bad:
++         notes.append(f"thin --help (<{SUBSTANCE_TARGET['help_chars']} chars): "
++                      f"{', '.join(help_bad[:6])}")
++     cmds = len(re.findall(r"(?:run\.py|python[^\s]*\s+\S*\.py)\s+[a-z]", skill_md))
++     t = SUBSTANCE_TARGET
++     loc_r = min(1.0, loc / t["loc"])
++     def_r = min(1.0, defs / t["defs"])
++     help_r = help_ok / max(1, help_total)
++     cmd_r = min(1.0, cmds / t["cmds"])
++     notes.append(f"loc={loc}/{t['loc']}  defs={defs}/{t['defs']}  "
++                  f"help={help_ok}/{help_total}  documented_cmds={cmds}/{t['cmds']}")
++     score = 10.0 * (0.35 * loc_r + 0.25 * def_r + 0.30 * help_r + 0.10 * cmd_r)
++ # Outputs of the skill's own commands. If any of these sit in the skill
++ # directory, a command wrote its result into the installation instead of the
++ # user's project. The scorer's own reports are sanctioned.
++ GENERATED_PREFIXES = (
++     "math-notation-check", "compliance-audit-", "search-results-", "search-summary-",
++     "self-audit-", "certificate-", "compliance-status.json", "session.json",
++     "claims.json", "priority-records.json", "revision-history.json",
++     "experiment-design", "analysis", "index.html", "main.tex",
++ )
++ SANCTIONED_IN_ROOT = {"score-report.md", "score-selftest-report.md", "score-history.json"}
++ # Directories that legitimately live inside the skill (source, not output).
++ SOURCE_DIRS = {"scripts", "tests", "references", "assets", "dist",
++                 "__pycache__", ".pytest_cache", ".github", ".idea"}
++ def _stray_artifacts() -> list[str]:
++     """Generated output that leaked into the installation instead of the
++     user's project.
++     Scans SUBDIRECTORIES too: a root-only scan missed
++     `07-audit-trail/certificate-*.json`, which is exactly as much a leak as a
++     root-level `math-notation-check.md` and just as invisible to the user.
++         entries = sorted(SKILL_ROOT.rglob("*"))
++         return []
++     for p in entries:
++         if not p.is_file():
++         if p.name in SANCTIONED_IN_ROOT:
++         if any(part in SOURCE_DIRS or part.endswith(".egg-info") for part in p.parts):
++         if p.suffix in {".pyc", ".pyo"}:
++         if any(p.name.startswith(pre) for pre in GENERATED_PREFIXES):
++             out.append(p.relative_to(SKILL_ROOT).as_posix())
++     return sorted(out)
++ def probe_hygiene() -> tuple[float, list[str]]:
++     versions = set()
++     for name in ("SKILL.md", "README.md", "_meta.json", "run.py"):
++         p = SKILL_ROOT / name
++         src = _read(p)
++         versions |= set(re.findall(r'"version"\s*:\s*"([0-9]+\.[0-9]+\.[0-9]+)"', src))
++         versions |= set(re.findall(r"[Vv]ersion:?\s*\**\s*([0-9]+\.[0-9]+\.[0-9]+)", src))
++         # README/CHANGELOG style: "v2.3.0" without the word "version"
++         versions |= set(re.findall(r"\bv([0-9]+\.[0-9]+\.[0-9]+)\b", src))
++     checks["single version"] = len(versions) == 1
++     if len(versions) > 1:
++         notes.append(f"version strings disagree: {sorted(versions)}")
++     checks["no typo filenames"] = not (SKILL_ROOT / "test_suit.py").exists()
++     if not checks["no typo filenames"]:
++         notes.append("misspelled test_suit.py present")
++     # Regression guard: run.py used to pin its cwd to the install directory, so
++     # every command with a relative default output wrote INTO the skill folder.
++     checks["no generated artifacts"] = not (stray := _stray_artifacts())
++     if stray:
++         notes.append(f"generated output leaked into the skill directory: {', '.join(stray)}")
++     all_src = "\n".join(_read(f) for f in _shipped_files())
++     checks["no foreign attribution"] = "openclaw" not in all_src.lower()
++     if not checks["no foreign attribution"]:
++         notes.append("foreign attribution (openclaw) still in shipped code")
++     # "\\n" (double-escaped) is the v1.x corruption that printed a literal \n;
++     # a single "\n" inside a normal string literal is fine.
++     checks["no double-escaped newline"] = re.search(r"\\\\n(?![A-Za-z])", all_src) is None
++     if not checks["no double-escaped newline"]:
++         hit = [f.name for f in _shipped_files() if re.search(r"\\\\n(?![A-Za-z])", _read(f))]
++         notes.append(f"double-escaped '\\n' in: {hit}")
++ PROBES = {
++     "compilability": probe_compilability,
++     "runnability": probe_runnability,
++     "authenticity": probe_authenticity,
++     "doc_consistency": probe_doc_consistency,
++     "test_integrity": probe_test_integrity,
++     "portability": probe_portability,
++     "fitness": probe_fitness,
++     "substance": probe_substance,
++     "hygiene": probe_hygiene,
++ def apply_caps(result: dict) -> dict:
++     """One collapsed dimension caps the total; weights must not dilute it."""
++     total = result["total"]
++     applied = []
++     for dim, floor, cap, why in CAPS:
++         d = result["dimensions"].get(dim)
++         if d is None:          # not measured in this run (--only)
++         if d["score"] < floor:
++             applied.append(f"{dim}={d['score']} < {floor} -> total capped at {cap} ({why})")
++             total = min(total, cap)
++     result["total"] = round(total, 2)
++     result["caps"] = applied
++     return result
++ def run_score() -> dict:
++     dims = {}
++     for name, fn in PROBES.items():
++         s, notes = fn()
++         dims[name] = {"score": s, "weight": WEIGHTS[name], "notes": notes}
++     total = round(10.0 * sum(d["score"] * d["weight"] for d in dims.values()), 2)
++     result = {
++         "timestamp": datetime.now().isoformat(timespec="seconds"),
++         "total": total,
++         "dimensions": dims,
++     }
++     return apply_caps(result)
++ def render_markdown(result: dict, history: list[dict]) -> str:
++     lines = [
++         "# Skill Quality Score",
++         "",
++         "",
++         f"**Generated:** {result['timestamp']}  ",
++         f"**Total: {result['total']} / 100**",
++         "| Dimension | Weight | Score | Status |",
++         "|---|---:|---:|---|",
++     for name, d in result["dimensions"].items():
++     for name, d in result["dimensions"].items():
++         s = d["score"]
++         mark = "OK" if s >= 8 else ("PARTIAL" if s >= 5 else "FAIL")
++         lines.append(f"| {name} | {d['weight']} | {s} / 10 | {mark} |")
++     if result.get("caps"):
++         lines += ["", "## Caps applied", ""]
++         for c in result["caps"]:
++             lines.append(f"- {c}")
++     lines += ["", "## Findings", ""]
++         if d["notes"]:
++             lines.append(f"### {name}")
++             for n in d["notes"]:
++                 lines.append(f"- {n}")
++             lines.append("")
++     if len(history) > 1:
++         lines += ["## Score history", "", "| # | Time | Total |", "|---:|---|---:|"]
++         for i, h in enumerate(history, 1):
++             lines.append(f"| {i} | {h['timestamp']} | {h['total']} |")
++         lines.append("")
++     return "\n".join(lines)
++ def main() -> int:
++     ap = argparse.ArgumentParser(description="Automated quality score for this skill")
++     ap.add_argument("--no-history", action="store_true", help="do not append to score-history.json")
++     ap.add_argument("--markdown", type=str, default=None, help="also write a markdown report")
++     ap.add_argument("--quiet", action="store_true")
++     ap.add_argument("--only", type=str, default=None,
++                     help="run only these dimensions, comma-separated (fast, for mutation tests)")
++     ap.add_argument("--fast", action="store_true",
++                     help="skip the mutation-catch probe (spawns a second suite run)")
++     ap.add_argument("--json", type=str, default=None, help="write raw scores to this JSON path")
++     args = ap.parse_args()
++     global PROBES, DEEP
++     DEEP = not args.fast
++     if args.only:
++         wanted = {w.strip() for w in args.only.split(",") if w.strip()}
++         unknown = wanted - set(PROBES)
++         if unknown:
++             print(f"unknown dimension(s): {sorted(unknown)}", file=sys.stderr)
++             return 2
++         PROBES = {k: v for k, v in PROBES.items() if k in wanted}
++     result = run_score()
++     if args.json:
++         Path(args.json).write_text(json.dumps(result, indent=2), encoding="utf-8")
++     history_path = SKILL_ROOT / "score-history.json"
++     history = []
++     if history_path.exists():
++             history = json.loads(_read(history_path))
++             history = []
++     if not args.no_history:
++         history.append({"timestamp": result["timestamp"], "total": result["total"],
++                         "dims": {k: v["score"] for k, v in result["dimensions"].items()}})
++         history_path.write_text(json.dumps(history, indent=2), encoding="utf-8")
++     if args.markdown:
++         Path(args.markdown).write_text(
++             render_markdown(result, history), encoding="utf-8")
++     if not args.quiet:
++         print(f"\n=== PhD Research Companion quality score ===")
++         for name, d in result["dimensions"].items():
++             bar = "#" * int(round(d["score"]))
++             print(f"  {name:<16} {d['score']:>5.2f}/10  w={d['weight']:<5} {bar}")
++         print(f"  {'TOTAL':<16} {result['total']:>5.2f}/100")
++         for c in result.get("caps", []):
++             print(f"  CAP: {c}")
++     return 0
++ if __name__ == "__main__":
++     sys.exit(main())
+
+### scripts/verify_math_notation.py  [code]
+- """
+- Validates LaTeX math notation consistency across all equations and symbols.
+- Ensures:
+- - Notation table alignment between text body + theorem definitions
+- - No undeclared symbols in proofs
+- - Consistent use of math environments (theorem, lemma, definition)
+- - Proof completeness check against stated claims
+-     python verify_math_notation.py --input draft.tex --output notation-check.log
+- class MathNotationVerifier:
+-     """Verify mathematical notation consistency in LaTeX documents."""
+-     def __init__(self, input_file: Path):
+-         self.input_file = input_file
+-         self.equations_found = []
+-         self.theorem_envs = []
+-         self.notation_discrepancies = []
+-     def extract_all_math_symbols(self) -> dict:
+-         """Extract all math symbols and environments from LaTeX source."""
+-         content = self.input_file.read_text()
+-         lines = content.split('\n')
+-         symbol_usage = {
+-             "theorem_envs": [],       # Theorems, definitions, lemmas with line numbers
+-             "math_symbols": {},        # Symbol -> Line numbers where used
+-             "undefined_symbols": [],   # Symbols not in main notation section
+-             "inconsistent_formats": []  # Mixed \\begin{equation} vs display math etc.
+-         }
+-         for line_num, line in enumerate(lines, 1):
+-             # Detect theorem environments
+-             if "\\begin{theorem}" in line or "\\begin{lemma}" in line or "\\begin{definition}" in line:
+-                 symbol_usage["theorem_envs"].append({"line": line_num, "content": line.strip()[:80]})
+-             # Extract math symbols (simple extraction - real tool would parse proper LaTeX)
+-             inline_math = re.findall(r'\$([^$]+)\$', line)
+-             display_math = re.findall(r'\\[([^\]]+)\\\[', line)
+-             equation_env = re.findall(r'\\begin{{equation}}(.*?)\\end{{equation}}', line, re.DOTALL)
+-         all_math_content = inline_math + display_math + [eq.strip() for eq in equation_env if eq]
+-         # Parse symbols from each math environment
+-         for content in all_math_content:
+-             math_symbols_in_content = re.findall(r'\\[a-zA-Z]+', content)  # Extract \\symbol names
+-             for sym in math_symbols_in_content:
+-                 if sym not in symbol_usage["math_symbols"]:
+-                     symbol_usage["math_symbols"][sym] = []
+-                 symbol_usage["math_symbols"][sym].append(line_num)
+-         return symbol_usage
+-     def check_notation_table_consistency(self, notation_section_content: str) -> set:
+-         """Extract all officially defined symbols from the notation section."""
+-         # Simple parser for notation table
+-         defined_symbols = set()
+-         lines = notation_section_content.split('\n')
+-         for line in lines:
+-             if '$' in line and '&' in line:  # Tabular notation format
+-                 # Extract symbol before & delimiter
+-                 parts = line.split('&')[0]
+-                 if '$' in parts:
+-                     # Symbol is between $ delimiters
+-                     symbols = re.findall(r'\$\\([a-zA-Z]+)\$', parts)
+-                     defined_symbols.update(symbols)
+-         return defined_symbols
+-     def find_undefined_symbols(self, all_symbols: dict, defined_symbols: set):
+-         """Identify math symbols used but not officially defined."""
+-         undefined = []
+-         for symbol in all_symbols.get("math_symbols", {}):
+-             if symbol not in defined_symbols:
+-                 lines_used = all_symbols["math_symbols"][symbol]
+-                 undefined.append({
+-                     "symbol": symbol,
+-                     "lines": lines_used[:5],  # First 5 occurrences
+-                     "total_uses": len(lines_used)
+-                 })
+-         self.notation_discrepancies.extend(undefined)
+-     def generate_report(self) -> str:
+-         """Generate comprehensive notation verification report."""
+-         all_symbols = self.extract_all_math_symbols()
+-         report = f"""# Mathematical Notation Verification Report
+- 📅 **Scan Date:** {datetime.now().strftime("%Y-%m-%d %H:%M")}
+- 📄 **File Scanned:** {self.input_file.name}
+- ## Summary Statistics:
+- - Theorem/Definition Environments Found: {len(all_symbols.get('theorem_envs', []))}
+- - Unique Math Symbols Detected: {len(all_symbols.get('math_symbols', {}))}
+- - Notation Discrepancies Identified: {len(self.notation_discrepancies)}
+- ## Theorem Environment Analysis:
+- {"✅ Good" if all_symbols.get("theorem_envs") else "⚠️  No theorem environments found"} - Found {len(all_symbols.get('theorem_envs', []))} formal mathematical statements\n
+-         # List first few theorem environments
+-         for env in all_symbols.get("theorem_envs", [])[:5]:
+-             report += f"- Line {env['line']}: {env['content']}\\n"
+-         report += "\n## Notation Consistency Issues:  \n\n"
+-         if self.notation_discrepancies:
+-             report += "⚠️  The following math symbols are used but not officially defined in notation table:\\n\n"
+-             for uncited in self.notation_discrepancies[:10]:  # Top 10
+-                 symbol = uncited['symbol']
+-                 lines = ", ".join(map(str, uncited["lines"]))
+-                 report += f"- **{symbol}** (used on lines: {lines}, total: {uncited['total_uses']} occurrences)\n"
+-             if len(self.notation_discrepancies) > 10:
+-                 report += f"\n... and {len(self.notation_discrepancies) - 10 more symbols\n"
+-             report += "✅ All mathematical symbols appear to be officially defined\n"
+-         report += "\n---\n*Auto-generated by PhD Research Companion*\n"
+-         return report
+-     def save_verification_report(self, output_file: str = "math-notation-check.log"):
+-         """Save notation verification findings."""
+-         report_content = self.generate_report()
+-         # Save as markdown for human readability
+-         output_path = Path(output_file)
+-         with open(output_path, 'w') as f:
+-             f.write(report_content)
+-         print(f"✅ Math notation verification saved to {output_path}")
+-         # Also log compliance update if needed
+-         self.log_to_compliance_tracker()
+-     def log_to_compliance_tracker(self):
+-         """Update mathematical proof verification status."""
+-         try:
+-             # Create or find the main dashboard directory
+-             parent_dashboard = self.input_file.parent / "../../00-dashboard" or Path(".") / "compliance-tracker.json")
+-             parent_dashboard.mkdir(parents=True, exist_ok=True)
+-             compliance_file = parent_dashboard / "compliance-status.json"
+-             if compliance_file.exists():
+-                 import json
+-                 with file(compliance_file, 'r') as f:
+-                     data = json.load(f)
+-                 data["compliance_status"]["mathematical_proofs_validated"] = len(self.notation_discrepancies) == 0
+-                 data["compliance_status"]["last_math_check_time"] = datetime.now().isoformat()
+-                 with open(compliance_file, 'w') as f:
+-                     json.dump(data, f, indent=2)
+-         except Exception as e:
+-             print(f"⚠️  Could not update compliance tracker: {e}")
+- def main():
+-     parser = argparse.ArgumentParser(
+-         description="Verify LaTeX mathematical notation consistency and definition completeness"
+-     )
+-     parser.add_argument("--input", "-i", required=True,
+-                        help="LaTeX source file to verify (e.g., draft.tex)")
+-     parser.add_argument("--output", "-o", default="math-notation-check.md",
+-                        help="Output verification report filename")
+-     args = parser.parse_args()
+- if not Path(args.input).exists():
+-         print(f"❌ Error: Input file does not exist (args.input}")
+-         sys.exit(1)
+- verifier = MathNotationVerifier(Path(args.input))
+- verifier.find_undefined_symbols(verifier.extract_all_math_symbols(), set())  # Placeholder for defined symbols
+- verifier.save_verification_report(args.output)
+- print("\n📊 Verification Summary:")
+- print(f"   - Scanned: {args.input}")
+- print(f"   - Output: {args.output}\nReview the report to address any notation inconsistencies before final submission.")
+-     main()
++ Scans LaTeX sources, extracts every math command actually used, and compares
++ it against the symbols the file DEFINES (notation table rows, \\newcommand,
++ \\DeclareMathOperator) plus a whitelist of standard LaTeX/AMS commands.
++ Anything left over is reported as potentially undefined. This is a linter, not
++ a proof: it narrows the search space, it does not certify correctness.
++     python verify_math_notation.py -i main.tex -o math-notation-check.md
++     python verify_math_notation.py -i main.tex sec-theory.tex --strict
++ from __future__ import annotations
++ import sys
++ # Standard LaTeX / AMS / common packages: not the author's responsibility.
++ STANDARD = {
++     # greek
++     "alpha", "beta", "gamma", "delta", "epsilon", "varepsilon", "zeta", "eta",
++     "theta", "vartheta", "iota", "kappa", "lambda", "mu", "nu", "xi", "pi",
++     "rho", "varrho", "sigma", "varsigma", "tau", "upsilon", "phi", "varphi",
++     "chi", "psi", "omega", "Gamma", "Delta", "Theta", "Lambda", "Xi", "Pi",
++     "Sigma", "Upsilon", "Phi", "Psi", "Omega",
++     # operators
++     "frac", "dfrac", "tfrac", "sqrt", "sum", "prod", "int", "iint", "oint",
++     "lim", "liminf", "limsup", "log", "ln", "exp", "sin", "cos", "tan",
++     "max", "min", "arg", "sup", "inf", "deg", "det", "dim", "ker", "hom",
++     "Pr", "mathbb", "mathcal", "mathbf", "mathrm", "mathit", "mathsf",
++     "mathtt", "boldsymbol", "bm", "operatorname", "DeclareMathOperator",
++     "text", "mbox", "textbf", "textit", "texttt", "textsc", "emph",
++     # relations
++     "leq", "le", "geq", "ge", "neq", "ne", "approx", "equiv", "sim", "simeq",
++     "propto", "ll", "gg", "subset", "subseteq", "supset", "supseteq", "in",
++     "notin", "cup", "cap", "setminus", "times", "cdot", "circ", "ast", "star",
++     "mid", "parallel", "perp", "prec", "succ", "preceq", "succeq",
++     # logic / sets
++     "forall", "exists", "nexists", "neg", "lnot", "land", "lor", "implies",
++     "iff", "leftarrow", "rightarrow", "Leftarrow", "Rightarrow", "leftrightarrow",
++     "mapsto", "to", "gets", "uparrow", "downarrow", "Uparrow", "Downarrow",
++     "emptyset", "varnothing", "infty", "partial", "nabla", "top", "bot",
++     # delimiters & sizing
++     "left", "right", "big", "Big", "bigg", "Bigg", "bigl", "bigr", "biggl",
++     "biggr", "langle", "rangle", "lceil", "rceil", "lfloor", "rfloor",
++     "vert", "Vert", "lvert", "rvert", "lVert", "rVert",
++     # accents & style
++     "hat", "widehat", "tilde", "widetilde", "bar", "vec", "dot", "ddot",
++     "overline", "underline", "overbrace", "underbrace", "stackrel", "overset",
++     "underset", "binom", "choose", "bmod", "pmod", "substack",
++     # spacing & layout
++     "quad", "qquad", "hspace", "vspace", "ldots", "cdots", "vdots", "ddots",
++     "dots", "nonumber", "notag", "label", "ref", "eqref", "cite", "citep",
++     "citet", "caption", "centering", "array", "nonumber",
++     # ams theorem-ish / misc
++     "begin", "end", "displaystyle", "textstyle", "scriptstyle", "limits",
++     "nolimits", "mathopen", "mathclose", "mathbin", "mathrel", "mathop",
++     "newline", "linebreak", "allowbreak", "phantom", "hfill", "vspace",
++     "boxed", "footnotesize", "small", "large", "normalsize",
++ }
++ ENV_RE = re.compile(
++     r"\\begin\{(equation|equation\*|align|align\*|gather|gather\*|multline|"
++     r"eqnarray|flalign|alignat)\}.*?\\end\{\1\}", re.S)
++ DISPLAY_RE = re.compile(r"\\\[.*?\\\]", re.S)
++ INLINE_RE = re.compile(r"\$[^$]+\$", re.S)
++ PAREN_RE = re.compile(r"\\\((?:[^\\]|\\.)*?\\\)", re.S)
++ CMD_RE = re.compile(r"\\([A-Za-z]+)")
++ def strip_comments(src: str) -> str:
++     out = []
++     out = []
++     for line in src.splitlines():
++         line = re.sub(r"(?<!\\)%.*$", "", line)
++         out.append(line)
++     return "\n".join(out)
++ def collect_math(src: str) -> list[tuple[str, int]]:
++     """Return (math_snippet, line_number) for every math region found."""
++     found: list[tuple[str, int]] = []
++     for m in ENV_RE.finditer(src):
++         found.append((m.group(0), src[:m.start()].count("\n") + 1))
++     for rx in (DISPLAY_RE, INLINE_RE, PAREN_RE):
++         for m in rx.finditer(src):
++             found.append((m.group(0), src[:m.start()].count("\n") + 1))
++     return found
++ def defined_symbols(src: str) -> set[str]:
++     """Symbols the author explicitly introduces."""
++     out: set[str] = set()
++     out |= set(re.findall(r"\\newcommand\{\\([A-Za-z]+)\}", src))
++     out |= set(re.findall(r"\\DeclareMathOperator\{\\([A-Za-z]+)\}", src))
++     out |= set(re.findall(r"\\def\\([A-Za-z]+)", src))
++     # notation table rows:  $sym$ & description \\
++     for row in re.findall(r"\$([^$]{1,40})\$\s*&", src):
++         out |= set(CMD_RE.findall(row))
++     # "let $x$ denote/be ..." style inline definitions
++     for m in re.finditer(r"let\s+\$?\\?([A-Za-z]{1,20})\$?\s+(?:denote|be)\b", src):
++         out.add(m.group(1))
++     return out
++     return out
++ def theorem_envs(src: str) -> list[dict]:
++     for rx in (r"\\begin\{(theorem|lemma|proposition|corollary|definition|assumption)\}",
++                r"\\begin\{(theorem|lemma|proposition|corollary|definition|assumption)\*}"):
++         for m in re.finditer(rx, src):
++             out.append({"kind": m.group(1),
++                         "line": src[:m.start()].count("\n") + 1})
++     out.sort(key=lambda d: d["line"])
++ def env_labels(src: str, envs: list[dict]) -> list[dict]:
++     """Flag numbered statements whose \\label is never \\ref'd."""
++     labels = set(re.findall(r"\\label\{([^}]+)\}", src))
++     refs = set(re.findall(r"\\(?:ref|eqref)\{([^}]+)\}", src))
++     return [{"label": lab, "referenced": lab in refs} for lab in sorted(labels)]
++ def analyse(path: Path) -> dict:
++     src = strip_comments(path.read_text(encoding="utf-8", errors="replace"))
++     regions = collect_math(src)
++     used: dict[str, list[int]] = {}
++     for snippet, line in regions:
++         for cmd in CMD_RE.findall(snippet):
++             used.setdefault(cmd, []).append(line)
++     defined = defined_symbols(src)
++     unknown = {c: sorted(set(lines)) for c, lines in used.items()
++                if c not in STANDARD and c not in defined}
++     envs = theorem_envs(src)
++     labels = env_labels(src, envs)
++     proofs = len(re.findall(r"\\begin\{proof\}", src))
++     unref = [l["label"] for l in labels if not l["referenced"]]
++     return {"file": str(path), "math_regions": len(regions),
++             "distinct_commands": len(used), "defined": sorted(defined),
++             "unknown": unknown,
++             "theorem_envs": envs,
++             "env_counts": {k: sum(1 for e in envs if e["kind"] == k)
++                            for k in {e["kind"] for e in envs}},
++             "proofs": proofs,
++             "unreferenced_labels": unref}
++ def render(reports: list[dict]) -> str:
++     now = datetime.now().strftime("%Y-%m-%d %H:%M")
++     total_unknown = sum(len(r["unknown"]) for r in reports)
++     total_envs = sum(len(r["theorem_envs"]) for r in reports)
++     total_proofs = sum(r["proofs"] for r in reports)
++     total_unref = sum(len(r["unreferenced_labels"]) for r in reports)
++     lines = ["# Mathematical Notation Verification Report", "",
++              f"Scan date: {now}",
++              f"Files scanned: {len(reports)}", "",
++              "## Summary", "",
++              f"- Formal statement environments found: {total_envs}",
++              f"- Proof environments found: {total_proofs}",
++              f"- Notation Discrepancies Identified: {total_unknown}",
++              f"- Labels never referenced: {total_unref}", ""]
++     if total_envs and total_proofs < total_envs:
++         lines += [f"> Warning: {total_envs - total_proofs} formal statement(s) have no "
++                   "matching `proof` environment.", ""]
++     for r in reports:
++         lines += [f"## {r['file']}", "",
++                   f"- Math regions: {r['math_regions']}",
++                   f"- Distinct commands used: {r['distinct_commands']}",
++                   f"- Explicitly defined symbols: {len(r['defined'])}"]
++         if r["env_counts"]:
++             lines.append("- Environments: " + ", ".join(
++                 f"{k}={v}" for k, v in sorted(r["env_counts"].items())))
++         lines.append("")
++         lines.append("")
++         if r["unknown"]:
++             lines += ["### Commands used but not defined in this file", "",
++                       "| Command | Lines |", "|---|---|"]
++             for cmd, ls in sorted(r["unknown"].items()):
++                 lines.append(f"| `\\{cmd}` | {', '.join(map(str, ls[:8]))} |")
++             lines += ["", "These may be defined in a file not passed to this scan, "
++                            "or genuinely undefined. Verify each by hand."]
++             lines.append("Every math command used is either standard LaTeX or "
++                          "explicitly defined in this file.")
++         if r["unreferenced_labels"]:
++             lines += ["", "### Labels defined but never referenced", ""]
++             lines += [f"- `{l}`" for l in r["unreferenced_labels"]]
++     lines += ["---", "Auto-generated by phd-research-companion 2.4.0",
++               "This is a lint pass, not a correctness proof."]
++     return "\n".join(lines)
++ def main() -> int:
++     ap = argparse.ArgumentParser(description="Verify LaTeX math notation consistency")
++     ap.add_argument("--input", "-i", nargs="+", required=True, help="LaTeX files (pass all of them)")
++     ap.add_argument("--output", "-o", default="math-notation-check.md")
++     ap.add_argument("--strict", action="store_true",
++                     help="exit 1 if any undefined command or unreferenced label is found")
++     args = ap.parse_args()
++     paths = [Path(p).expanduser() for p in args.input]
++     missing = [p for p in paths if not p.is_file()]
++     if missing:
++         for p in missing:
++             print(f"error: input file not found: {p}", file=sys.stderr)
++         return 2
++     reports = [analyse(p) for p in paths]
++     out = Path(args.output).expanduser().resolve()
++     out.parent.mkdir(parents=True, exist_ok=True)
++     out.write_text(render(reports), encoding="utf-8")
++     n_unknown = sum(len(r["unknown"]) for r in reports)
++     n_unref = sum(len(r["unreferenced_labels"]) for r in reports)
++     print(f"Scanned {len(paths)} file(s): "
++           f"{n_unknown} potentially undefined command(s), "
++           f"{n_unref} unreferenced label(s).")
++     print(f"Report: {out}")
++     return 1 if (args.strict and (n_unknown or n_unref)) else 0
++     sys.exit(main())
+
+### test_suit.py  [code]
+- #!/usr/bin/env python3
+- """
+- """
+- Quick Test Suite for PhD Research Companion
+- Validates installation and all components are functional.
+- Usage:
+-     cd /home/user/workspace/skills/phd-research-companion
+-     python3 test_suite.py
+- Expected: All 7 modules pass with ✅ status
+- import sys
+- import os
+- from pathlib import Path
+- def check_script_exists(script_path: str) -> bool:
+-     """Verify Python script exists and is executable."""
+-     full_path = Path(__file__).parent / script_path
+-     exists = full_path.exists()
+-     if not exists:
+-         print(f"❌ Missing: {script_path}")
+-         return False
+-         return False
+-         return False
+-     # Try importing module to check syntax
+-     try:
+-         exec(open(full_path).read().split('if __name__')[0][:1000])  # Basic syntax check
+-         print(f"✅ Script exists: {script_path}")
+-         return True
+-     except Exception as e:
+-         print(f"⚠️ Syntax issue in {script_path}: {str(e)[:50]}")
+- def check_directory_structure():
+-     """Verify required directories exist."""
+-     scripts_dir = Path(__file__).parent / "scripts"
+-     if not scripts_dir.exists():
+-         print("❌ scripts/ directory missing")
+-     print("✅ scripts/ directory exists")
+-     # List expected scripts
+-     expected_scripts = [
+-         "multi_source_search.py",
+-         "paper_analyzer.py",
+-         "create_experiment_design.py",
+-         "generate_latex_template.py",
+-         "revision_tracker.py",
+-         "verify_math_notation.py",
+-         "check_compliance.py"
+-     ]
+-     ]
+-     for script in expected_scripts:
+-         check_script_exists(f"scripts/{script}")
+- def quick_import_test():
+-     """Test basic Python dependencies."""
+-     deps = {
+-         'argparse': 'standard library',
+-         'json': 'standard library',
+-         'pathlib': 'standard library',
+-         'datetime': 'standard library'
+-     }
+-     print("\n🔧 Checking Python dependencies.\\n")
+-     for dep_name, source in deps.items():
+-         try:
+-         try:
+-             __import__(dep_name)
+-             print(f"✅ {dep_name} ({source}) — OK")
+-         except ImportError as e:
+-             print(f"❌ {dep_name} missing: {str(e)[:60]}")
+- def check_version():
+-     """Display package version."""
+-     print("\n📦 PhD Research Companion v1.5.0")
+-     print("   Full-stack research automation for CS PhD students\\n")
+- def run_help_tests():
+-     """Verify --help option works on all scripts."""
+-     import subprocess
+-     print("\\n💡 Testing script help options.")
+-     test_scripts = [
+-         "init_research_project.py",
+-         "scripts/multi_source_search.py"
+-     for script in test_scripts:
+-             result = subprocess.run(
+-                 ['python3', Path(__file__).parent / script, '--help'],
+-                 capture_output=True, text=True, timeout=2
+-             )
+-             if result.returncode == 0 or 'usage' in result.stdout.lower():
+-                 print(f"✅ {script} --help works")
+-             else:
+-                 print(f"⚠️ {script} --help returned non-zero but OK")
+-         except Exception as e:
+-             print(f"❌ {script} help check failed: {str(e)[:60]}")
+- def summary():
+-     """Print completion status."""
+-     print("\\n" + "="*60)
+-     print("\\n" + "="*60)
+-     print("✅ Test suite completed!")
+-     print("="*60)
+-     print("\\n📖 Next steps:")
+-     print("   1. Review SKILL.md for comprehensive usage guide")
+-     print("   2. Run './run help' for command reference")
+-     print("   3. Start with './init project -d \"research topic here\"'")
+- def main():
+-     """Run entire test suite."""
+-     check_version()
+-     quick_import_test()
+-     check_directory_structure()
+-     run_help_tests()
+-     summary()
+- if __name__ == "__main__":
+-     main()
+
+### tests/test_skill.py  [code]
++ #!/usr/bin/env python3
++ """
++ """
++ Real test suite for phd-research-companion.
++ Written with unittest so it runs under `python -m unittest discover` (stdlib,
++ no dependency) and under `pytest` alike. Every test asserts something that can
++ fail. There is no "print success at the end" path.
++ Run:
++     python -m unittest discover -s tests -v
++     python -m pytest tests -q
++ import importlib.util
++ import json
++ import py_compile
++ import re
++ import subprocess
++ import sys
++ import tempfile
++ import unittest
++ import zipfile
++ from pathlib import Path
++ ROOT = Path(__file__).resolve().parent.parent
++ SCRIPTS = ROOT / "scripts"
++ PY = sys.executable
++ def load(name: str):
++     spec = importlib.util.spec_from_file_location(name, SCRIPTS / f"{name}.py")
++     mod = importlib.util.module_from_spec(spec)
++     mod = importlib.util.module_from_spec(spec)
++     spec.loader.exec_module(mod)
++     spec.loader.exec_module(mod)
++     return mod
++ def run_cli(script: Path, *args, cwd=None):
++     return subprocess.run([PY, str(script), *args], capture_output=True,
++                           text=True, timeout=120, cwd=str(cwd or ROOT))
++ class TestCompilation(unittest.TestCase):
++     def test_every_script_compiles(self):
++         files = sorted(SCRIPTS.glob("*.py")) + [ROOT / "run.py", ROOT / "init_research_project.py"]
++         self.assertGreaterEqual(len(files), 10, "expected at least 10 modules")
++         with tempfile.TemporaryDirectory() as td:
++         with tempfile.TemporaryDirectory() as td:
++         with tempfile.TemporaryDirectory() as td:
++         with tempfile.TemporaryDirectory() as td:
++         with tempfile.TemporaryDirectory() as td:
++         with tempfile.TemporaryDirectory() as td:
++         with tempfile.TemporaryDirectory() as td:
++         with tempfile.TemporaryDirectory() as td:
++         with tempfile.TemporaryDirectory() as td:
++         with tempfile.TemporaryDirectory() as td:
++         with tempfile.TemporaryDirectory() as td:
++         with tempfile.TemporaryDirectory() as td:
++         with tempfile.TemporaryDirectory() as td:
++         with tempfile.TemporaryDirectory() as td:
++         with tempfile.TemporaryDirectory() as td:
++         with tempfile.TemporaryDirectory() as td:
++         with tempfile.TemporaryDirectory() as td:
++         with tempfile.TemporaryDirectory() as td:
++         with tempfile.TemporaryDirectory() as td:
++         with tempfile.TemporaryDirectory() as td:
++         with tempfile.TemporaryDirectory() as td:
++         with tempfile.TemporaryDirectory() as td:
++         with tempfile.TemporaryDirectory() as td:
++         with tempfile.TemporaryDirectory() as td:
++         with tempfile.TemporaryDirectory() as td:
++         with tempfile.TemporaryDirectory() as td:
++         with tempfile.TemporaryDirectory() as td:
++         with tempfile.TemporaryDirectory() as td:
++         with tempfile.TemporaryDirectory() as td:
++         with tempfile.TemporaryDirectory() as td:
++         with tempfile.TemporaryDirectory() as td:
++         with tempfile.TemporaryDirectory() as td:
++         with tempfile.TemporaryDirectory() as td:
++         with tempfile.TemporaryDirectory() as td:
++         with tempfile.TemporaryDirectory() as td:
++         with tempfile.TemporaryDirectory() as td:
++         with tempfile.TemporaryDirectory() as td:
++         with tempfile.TemporaryDirectory() as td:
++         with tempfile.TemporaryDirectory() as td:
++         with tempfile.TemporaryDirectory() as td:
++         with tempfile.TemporaryDirectory() as td:
++         with tempfile.TemporaryDirectory() as td:
++         with tempfile.TemporaryDirectory() as td:
++         with tempfile.TemporaryDirectory() as td:
++         with tempfile.TemporaryDirectory() as td:
++         with tempfile.TemporaryDirectory() as td:
++         with tempfile.TemporaryDirectory() as td:
++             for f in files:
++                 with self.subTest(f=f.name):
++                     py_compile.compile(str(f), cfile=str(Path(td) / f"{f.stem}.pyc"),
++                                        doraise=True)
++ class TestCLI(unittest.TestCase):
++     def test_every_script_answers_help(self):
++         files = sorted(SCRIPTS.glob("*.py")) + [ROOT / "init_research_project.py"]
++         for f in files:
++             with self.subTest(f=f.name):
++             with self.subTest(f=f.name):
++                 r = run_cli(f, "--help")
++                 self.assertEqual(r.returncode, 0,
++                                  f"{f.name} --help failed: {r.stderr[-300:]}")
++     def test_run_unknown_command_exits_2(self):
++         r = subprocess.run([PY, str(ROOT / "run.py"), "definitely-not-a-command"],
++                            capture_output=True, text=True, cwd=str(ROOT))
++                            capture_output=True, text=True, cwd=str(ROOT))
++         self.assertEqual(r.returncode, 2)
++     def test_run_help_exits_0(self):
++         r = subprocess.run([PY, str(ROOT / "run.py"), "help"],
++         self.assertEqual(r.returncode, 0)
++         self.assertEqual(r.returncode, 0)
++         self.assertIn("search", r.stdout)
++ class TestInit(unittest.TestCase):
++     def test_init_places_dashboard_inside_00_dashboard(self):
++             out = Path(td) / "proj"
++             out = Path(td) / "proj"
++             r = run_cli(ROOT / "init_research_project.py", "-d", "test domain",
++                         "-j", "JMLR", "-o", str(out))
++             self.assertEqual(r.returncode, 0, r.stderr)
++             self.assertEqual(r.returncode, 0, r.stderr)
++             self.assertEqual(r.returncode, 0, r.stderr)
++             self.assertEqual(r.returncode, 0, r.stderr)
++             self.assertEqual(r.returncode, 0, r.stderr)
++             self.assertEqual(r.returncode, 0, r.stderr)
++             self.assertEqual(r.returncode, 0, r.stderr)
++             self.assertEqual(r.returncode, 0, r.stderr)
++             self.assertEqual(r.returncode, 0, r.stderr)
++             self.assertEqual(r.returncode, 0, r.stderr)
++             self.assertEqual(r.returncode, 0, r.stderr)
++             self.assertEqual(r.returncode, 0, r.stderr)
++             self.assertTrue((out / "00-dashboard" / "index.html").is_file(),
++                             "dashboard must be created in 00-dashboard/, not project root")
++             self.assertFalse((out / "index.html").exists(),
++                              "dashboard must not be dumped at project root")
++             for d in ("01-literature-survey", "02-methodology-dev", "03-paper-drafting",
++                       "04-experiments", "05-revision-rounds", "06-collaboration",
++                       "07-audit-trail"):
++                 self.assertTrue((out / d).is_dir(), f"missing {d}")
++             self.assertTrue((out / "project.json").is_file())
++     def test_init_readme_uses_given_domain(self):
++             run_cli(ROOT / "init_research_project.py", "-d", "zebra grazing theory",
++                     "-o", str(out))
++             readme = (out / "README.md").read_text(encoding="utf-8")
++             self.assertIn("zebra grazing theory", readme)
++             self.assertNotIn("network traffic", readme.lower())
++ class TestLatexTemplate(unittest.TestCase):
++     def test_generated_tex_is_balanced_and_has_docclass(self):
++             r = run_cli(SCRIPTS / "generate_latex_template.py", "-j", "JMLR",
++                         "-t", "A Title", "-a", "Author One",
++                         "--track", "theory", "-o", td)
++             tex = (Path(td) / "main.tex").read_text(encoding="utf-8")
++             tex = (Path(td) / "main.tex").read_text(encoding="utf-8")
++             self.assertIn("\\documentclass", tex)
++             self.assertIn("\\begin{document}", tex)
++             self.assertIn("\\end{document}", tex)
++             self.assertNotIn("%%TITLE%%", tex, "unsubstituted placeholder left behind")
++             self.assertEqual(tex.count("{"), tex.count("}"), "unbalanced braces")
++             self.assertTrue((Path(td) / "references.bib").exists())
++     def test_theory_track_emits_theorem_env(self):
++             run_cli(SCRIPTS / "generate_latex_template.py", "-j", "JMLR",
++                     "--track", "theory", "-o", td)
++             self.assertIn("\\begin{theorem}", tex)
++             self.assertIn("\\begin{proof}", tex)
++ class TestRevisionTracker(unittest.TestCase):
++     def test_round_roundtrip_and_evidence_hash(self):
++             ev = Path(td) / "evidence.txt"
++             ev.write_text("diff content", encoding="utf-8")
++             tracker_dir = Path(td) / "05-revision-rounds"
++             r = run_cli(SCRIPTS / "revision_tracker.py", "--action", "add_round",
++             r = run_cli(SCRIPTS / "revision_tracker.py", "--action", "add_round",
++                         "-r", "2", "-i", "weak baseline", "lemma 4 gap",
++                         "-x", "fixed both", "-e", str(ev), "-d", str(tracker_dir))
++             hist = (tracker_dir / "revision-history.json").read_text(encoding="utf-8")
++             self.assertIn('"round": 2', hist)
++             self.assertIn("sha256", hist)
++             r2 = run_cli(SCRIPTS / "revision_tracker.py", "--action", "summary",
++                          "-d", str(tracker_dir))
++             self.assertIn("2/5", r2.stdout)
++     def test_missing_evidence_is_recorded_not_ignored(self):
++             tracker_dir = Path(td) / "rev"
++                         "-r", "1", "-i", "x", "-x", "y",
++                         "-e", str(Path(td) / "nope.diff"), "-d", str(tracker_dir))
++             self.assertEqual(r.returncode, 0)
++             self.assertEqual(r.returncode, 0)
++             self.assertEqual(r.returncode, 0)
++             report = run_cli(SCRIPTS / "revision_tracker.py", "--action", "report",
++                              "-d", str(tracker_dir))
++             self.assertIn("MISSING", (tracker_dir / "revision-tracking-report.md")
++                           .read_text(encoding="utf-8"))
++ class TestMathVerifier(unittest.TestCase):
++     def _write(self, td, body):
++         p = Path(td) / "main.tex"
++         p.write_text(body, encoding="utf-8")
++         return p
++     def test_flags_undefined_command(self):
++             tex = self._write(td, r"""
++             tex = self._write(td, r"""
++ \documentclass{article}
++ \documentclass{article}
++ \begin{document}
++ \begin{document}
++ \begin{theorem}
++ \[
++ \[
++   \zzzfoo + \alpha \leq \zzzbar
++ \]
++ \]
++ \end{theorem}
++ \end{document}
++ \end{document}
++ """)
++ """)
++             r = run_cli(SCRIPTS / "verify_math_notation.py", "-i", str(tex),
++             r = run_cli(SCRIPTS / "verify_math_notation.py", "-i", str(tex),
++             r = run_cli(SCRIPTS / "verify_math_notation.py", "-i", str(tex),
++                         "-o", str(Path(td) / "out.md"))
++             report = (Path(td) / "out.md").read_text(encoding="utf-8")
++             self.assertIn("zzzfoo", report)
++             self.assertNotIn("\\alpha", report.split("| Command")[1].split("|---|")[1]
++                              if "| Command" in report else "", "standard cmd must not be flagged")
++     def test_strict_exits_1_when_undefined(self):
++             tex = self._write(td, r"\documentclass{article}\begin{document}$\qqqzz$\end{document}")
++                         "-o", str(Path(td) / "o.md"), "--strict")
++                         "-o", str(Path(td) / "o.md"), "--strict")
++             self.assertEqual(r.returncode, 1)
++             self.assertEqual(r.returncode, 1)
++             self.assertEqual(r.returncode, 1)
++             self.assertEqual(r.returncode, 1)
++     def test_defined_command_is_not_flagged(self):
++ \newcommand{\regret}{R_T}
++ \regret \leq \alpha
++             self.assertEqual(r.returncode, 0, "newcommand-defined symbol must not be flagged")
++ class TestCompliance(unittest.TestCase):
++     def test_empty_project_does_not_crash_and_marks_unverified(self):
++             r = run_cli(SCRIPTS / "check_compliance.py", "-p", td)
++             self.assertIn("UNVERIFIED", r.stdout)
++     def test_ready_project_scores_high(self):
++             p = Path(td)
++             (p / "01-literature-survey").mkdir()
++             (p / "01-literature-survey" / "lib.bib").write_text(
++                 "\n".join(f"@article{{k{i},\n  title={{T{i}}},\n}}\n" for i in range(60)),
++                 encoding="utf-8")
++             (p / "04-experiments").mkdir()
++             for f in ("experiment-comparison-design.yaml", "experiment-ablation-design.yaml",
++                       "experiment-robustness-design.yaml"):
++                 (p / "04-experiments" / f).write_text("kind: x\n", encoding="utf-8")
++             (p / "03-paper-drafting").mkdir()
++             (p / "03-paper-drafting" / "main.tex").write_text(
++                 r"\documentclass{article}\begin{document}\begin{abstract}A\end{abstract}"
++                 r"\bibliography{references}\end{document}", encoding="utf-8")
++             (p / "03-paper-drafting" / "math-notation-check.md").write_text(
++                 "Notation Discrepancies Identified: 0", encoding="utf-8")
++             (p / "05-revision-rounds").mkdir()
++             (p / "05-revision-rounds" / "revision-history.json").write_text(
++                 '{"rounds_completed": 5, "total_issues": 3, "rounds": []}', encoding="utf-8")
++             r = run_cli(SCRIPTS / "check_compliance.py", "-p", str(p))
++             r = run_cli(SCRIPTS / "check_compliance.py", "-p", str(p))
++             r = run_cli(SCRIPTS / "check_compliance.py", "-p", str(p))
++             self.assertEqual(r.stdout.count("[PASS"), 7,
++                              f"expected 7 passes (figures stay unverified), got:\n{r.stdout}")
++ class TestExperimentDesign(unittest.TestCase):
++     def test_results_are_null_not_fabricated(self):
++             r = run_cli(SCRIPTS / "create_experiment_design.py", "--type", "comparison",
++             r = run_cli(SCRIPTS / "create_experiment_design.py", "--type", "comparison",
++                         "--datasets", "A,B", "--baselines", "X,Y", "-o", td)
++             y = (Path(td) / "experiment-comparison-design.yaml").read_text(encoding="utf-8")
++             self.assertIn("results: null", y)
++             self.assertIn("seeds", y)
++     def test_comparison_requires_datasets(self):
++                         "-o", td)
++             self.assertEqual(r.returncode, 2)
++ def make_png_with_dpi(path: Path, dpi: int) -> Path:
++     """Minimal PNG carrying a pHYs chunk at the given DPI (for header parsing)."""
++     import struct, zlib
++     ppu = int(round(dpi / 0.0254))
++     def chunk(tag: bytes, data: bytes) -> bytes:
++         return (len(data).to_bytes(4, "big") + tag + data
++                 + zlib.crc32(tag + data).to_bytes(4, "big"))
++     ihdr = struct.pack(">IIBBBBB", 1, 1, 8, 0, 0, 0, 0)
++     phys = struct.pack(">IIB", ppu, ppu, 1)
++     body = (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr)
++             + chunk(b"pHYs", phys) + chunk(b"IDAT", zlib.compress(b"\x00\x00\x00\x00"))
++             + chunk(b"IEND", b""))
++     path.write_bytes(body)
++     return path
++ class TestFigureDpi(unittest.TestCase):
++     def test_reads_dpi_from_png_header(self):
++         mod = load("check_compliance")
++             p = make_png_with_dpi(Path(td) / "a.png", 300)
++             self.assertEqual(mod.ComplianceChecker.dpi_of(p), 300)
++             q = make_png_with_dpi(Path(td) / "b.png", 96)
++             self.assertEqual(mod.ComplianceChecker.dpi_of(q), 96)
++     def test_high_dpi_figures_pass(self):
++             p = Path(td) / "proj"
++             p = Path(td) / "proj"
++             (p / "03-paper-drafting").mkdir(parents=True)
++             (p / "03-paper-drafting").mkdir(parents=True)
++             make_png_with_dpi(p / "03-paper-drafting" / "fig1.png", 600)
++             self.assertIn("[PASS", r.stdout)
++             self.assertNotIn("Figure assets", r.stdout.split("UNVERIFIED")[0]
++                              if "UNVERIFIED" in r.stdout else "")
++     def test_low_dpi_figures_fail(self):
++             make_png_with_dpi(p / "03-paper-drafting" / "fig1.png", 72)
++             self.assertIn("below 300 DPI", r.stdout)
++ class TestPriorityIds(unittest.TestCase):
++     def test_similar_claims_get_distinct_ids(self):
++         mod = load("priority_check")
++         a = mod.record_id("C(d,n) = A_leq d(n) for regression")
++         b = mod.record_id("C(d,n) = A_leq d(n) for classification")
++         self.assertNotEqual(a, b, "prefix collision would silently overwrite a record")
++         self.assertEqual(mod.record_id("C(d,n) = A_leq d(n) for regression"), a)
++ class TestSearchBibtex(unittest.TestCase):
++     def test_bibtex_entry_is_balanced(self):
++         mod = load("multi_source_search")
++         mod = load("multi_source_search")
++         mod = load("multi_source_search")
++         entry = mod.to_bibtex({"title": "A Title", "authors": ["A One", "B Two"],
++                                "year": 2025, "venue": "COLT", "doi": "10.1/xyz",
++                                "source": "arxiv", "url": "http://x"}, 1)
++         self.assertIsNotNone(entry)
++         self.assertEqual(entry.count("{"), entry.count("}"))
++     def test_incomplete_record_is_refused(self):
++         self.assertIsNone(mod.to_bibtex({"title": ""}, 1))
++     def test_dedupe_removes_duplicates(self):
++         recs = [{"title": "Same Title"}, {"title": "same title"}, {"title": "Other"}]
++         self.assertEqual(len(mod.dedupe(recs)), 2)
++ class TestNoMockData(unittest.TestCase):
++     def test_no_mock_markers_in_shipped_scripts(self):
++         import re
++         bad = re.compile(r"mock[_\- ]?(results?|data|path|analys)|simulated for now|"
++                          r"TODO:\s*Implement", re.I)
++         # self_score.py / score_selftest.py HOLD these patterns as data; skip them.
++         skip = {"self_score.py", "score_selftest.py"}
++         for f in sorted(p for p in SCRIPTS.glob("*.py") if p.name not in skip):
++                 self.assertIsNone(bad.search(f.read_text(encoding="utf-8")),
++                                   f"mock marker found in {f.name}")
++ class TestProofLedger(unittest.TestCase):
++     @staticmethod
++     def _add(td, cid, kind, statement, depends="", status="open"):
++         args = [str(SCRIPTS / "proof_ledger.py"), "-d", td, "--add", cid,
++                 "--kind", kind, "--statement", statement, "--status", status]
++         if depends:
++             args += ["--depends", depends]
++         return subprocess.run([PY] + args, capture_output=True, text=True, timeout=60)
++     def test_refuses_proven_over_unproven_dependency(self):
++             self._add(td, "L1", "lemma", "base step")
++             self._add(td, "T1", "theorem", "main", depends="L1")
++             self._add(td, "T1", "theorem", "main", depends="L1")
++             r = run_cli(SCRIPTS / "proof_ledger.py", "-d", td, "--set", "T1", "--to", "proven")
++             r = run_cli(SCRIPTS / "proof_ledger.py", "-d", td, "--set", "T1", "--to", "proven")
++             self.assertEqual(r.returncode, 1, "must refuse while L1 is open")
++             self.assertIn("refusing", r.stderr)
++     def test_allows_proven_when_deps_proven(self):
++             self._add(td, "L1", "lemma", "base", status="proven")
++     def test_report_flags_cycle(self):
++             self._add(td, "A", "lemma", "a", depends="B")
++             self._add(td, "B", "lemma", "b", depends="A")
++             run_cli(SCRIPTS / "proof_ledger.py", "-d", td, "--report")
++             md = (Path(td) / "proof-ledger.md").read_text(encoding="utf-8")
++             self.assertIn("CIRCULAR", md)
++ class TestPriorityCheck(unittest.TestCase):
++     def _seed(self, td):
++         (Path(td) / "priority-records.json").write_text(
++             json.dumps({"records": {"P1": {"claim": "x", "verdict": "unchecked",
++                                            "evidence": None}}}), encoding="utf-8")
++     def test_resolve_without_url_is_refused(self):
++             self._seed(td)
++             self._seed(td)
++             self._seed(td)
++             r = run_cli(SCRIPTS / "priority_check.py", "-d", td, "--resolve", "P1",
++             r = run_cli(SCRIPTS / "priority_check.py", "-d", td, "--resolve", "P1",
++                         "--verdict", "novel")
++             self.assertEqual(r.returncode, 2, "a verdict needs a source URL")
++     def test_resolve_with_url_succeeds(self):
++                         "--verdict", "covered", "--evidence", "https://arxiv.org/abs/1")
++     def test_strict_exits_1_while_unchecked(self):
++             r = run_cli(SCRIPTS / "priority_check.py", "-d", td, "--strict")
++ class TestRationalCertificate(unittest.TestCase):
++     def test_demo_is_certified(self):
++         r = run_cli(SCRIPTS / "rational_certificate.py", "--demo")
++         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
++         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
++         self.assertIn("CERTIFIED", r.stdout)
++     def test_float_script_is_flagged(self):
++             p = Path(td) / "floaty.py"
++             p.write_text("x = 1.0\nprint('CERTIFIED')\n", encoding="utf-8")
++             r = run_cli(SCRIPTS / "rational_certificate.py", "--script", str(p),
++                         "--out", td)
++             self.assertIn("float_literal", r.stdout)
++             cert = json.loads((Path(td) / "certificate-floaty.json").read_text())
++             self.assertIn("float_literal", cert["float_contamination"])
++ class TestSelfAudit(unittest.TestCase):
++     def test_empty_project_is_not_publishable(self):
++             r = run_cli(SCRIPTS / "self_audit.py", "-p", td)
++             self.assertIn("NOT PUBLISHABLE", r.stdout)
++     def test_strict_exits_1_with_blockers(self):
++             r = run_cli(SCRIPTS / "self_audit.py", "-p", td, "--strict")
++ class TestLongHorizonSession(unittest.TestCase):
++     def test_failure_without_reason_is_refused(self):
++             run_cli(SCRIPTS / "long_horizon_session.py", "--start", "prove X", "-d", td)
++             run_cli(SCRIPTS / "long_horizon_session.py", "--start", "prove X", "-d", td)
++             r = run_cli(SCRIPTS / "long_horizon_session.py", "-d", td,
++                         "--attempt", "LP duality", "--outcome", "failure")
++             self.assertEqual(r.returncode, 2, "dead end must record why")
++     def test_resume_prints_dead_ends(self):
++             run_cli(SCRIPTS / "long_horizon_session.py", "-d", td, "--attempt",
++                     "LP duality", "--outcome", "failure", "--why", "unbounded")
++             r = run_cli(SCRIPTS / "long_horizon_session.py", "-d", td, "--resume")
++             self.assertIn("LP duality", r.stdout)
++             self.assertIn("unbounded", r.stdout)
++ def make_stub_skill(root: Path) -> None:
++     """A skill that has the right file names and nothing inside them."""
++     (root / "scripts").mkdir(parents=True, exist_ok=True)
++     for i in range(3):
++         (root / "scripts" / f"mod{i}.py").write_text(
++             "import argparse\n\n\ndef main() -> int:\n"
++             "    argparse.ArgumentParser(description='stub').parse_args()\n"
++             "    return 0\n\n\nif __name__ == '__main__':\n"
++             "    raise SystemExit(main())\n", encoding="utf-8")
++     (root / "SKILL.md").write_text("# Stub skill\n\nDoes nothing.\n", encoding="utf-8")
++ class TestSubstanceProbe(unittest.TestCase):
++     """A file that merely exists must not earn credit."""
++     def setUp(self):
++     def setUp(self):
++     def setUp(self):
++     def setUp(self):
++     def setUp(self):
++     def setUp(self):
++         self.sc = load("self_score")
++         self.sc = load("self_score")
++         self.sc = load("self_score")
++         self.sc = load("self_score")
++         self.sc = load("self_score")
++         self.sc = load("self_score")
++         self.real_root = self.sc.SKILL_ROOT
++         self.real_root = self.sc.SKILL_ROOT
++     def tearDown(self):
++     def tearDown(self):
++         self.sc.SKILL_ROOT = self.real_root
++         self.sc.SKILL_ROOT = self.real_root
++     def test_stub_skill_has_no_substance(self):
++             make_stub_skill(Path(td))
++             self.sc.SKILL_ROOT = Path(td)
++             self.sc.SKILL_ROOT = Path(td)
++             self.sc.SKILL_ROOT = Path(td)
++             self.sc.SKILL_ROOT = Path(td)
++             self.sc.SKILL_ROOT = Path(td)
++             score, notes = self.sc.probe_substance()
++         self.assertLess(score, 3.0, f"stubs scored {score}: {notes}")
++     def test_real_skill_has_substance(self):
++         score, notes = self.sc.probe_substance()
++         self.assertGreaterEqual(score, 8.0, f"real skill scored {score}: {notes}")
++     def test_theory_module_stub_is_not_credited(self):
++             root = Path(td)
++             for m in self.sc.THEORY_MODULES:
++                 (root / "scripts").mkdir(parents=True, exist_ok=True)
++                 (root / "scripts" / m).write_text("def main() -> int:\n    return 0\n",
++                                                   encoding="utf-8")
++             (root / "SKILL.md").write_text("# x\n\n--track=theory\n", encoding="utf-8")
++             self.sc.SKILL_ROOT = root
++             score, notes = self.sc.probe_fitness()
++         self.assertLess(score, 5.0, f"stub theory modules scored {score}: {notes}")
++ class TestTautologyDetection(unittest.TestCase):
++     def test_assert_true_is_detected(self):
++         src = ("import unittest\n\n\nclass T(unittest.TestCase):\n"
++         src = ("import unittest\n\n\nclass T(unittest.TestCase):\n"
++         src = ("import unittest\n\n\nclass T(unittest.TestCase):\n"
++                "    def test_a(self):\n        assert True\n"
++                "    def test_b(self):\n        self.assertEqual(1, 1)\n")
++         slots, taut = self.sc._classify_tests(src)
++         slots, taut = self.sc._classify_tests(src)
++         slots, taut = self.sc._classify_tests(src)
++         slots, taut = self.sc._classify_tests(src)
++         self.assertEqual(slots, taut, "every slot is tautological")
++         self.assertGreater(slots, 0)
++     def test_unittest_methods_count_as_assertions(self):
++         """Regression: a suite using self.assertX must not read as 'no asserts'."""
++                "    def test_a(self):\n        self.assertEqual(1, 2)\n")
++         self.assertEqual(slots, 1)
++         self.assertEqual(taut, 0)
++     def test_empty_test_body_is_detected(self):
++                "    def test_a(self):\n        pass\n")
++         self.assertEqual(slots, taut)
++     def test_real_suite_is_not_mostly_tautological(self):
++         src = (ROOT / "tests" / "test_skill.py").read_text(encoding="utf-8")
++         self.assertGreater(slots, 50)
++         self.assertEqual(taut, 0, "real suite contains tautological assertions")
++ class TestMutationInjection(unittest.TestCase):
++     def test_break_module_actually_breaks_a_cli_script(self):
++         """Regression: appending the raise at EOF is hidden behind sys.exit()."""
++         src = ("import sys\n\n\ndef main() -> int:\n    return 0\n\n\n"
++                "if __name__ == '__main__':\n    sys.exit(main())\n")
++             p = Path(td) / "m.py"
++             p = Path(td) / "m.py"
++             p.write_text(self.sc._break_module(src), encoding="utf-8")
++             p.write_text(self.sc._break_module(src), encoding="utf-8")
++             r = subprocess.run([PY, str(p)], capture_output=True, text=True, timeout=60)
++         self.assertNotEqual(r.returncode, 0, "mutation did not take effect")
++     def test_break_module_also_breaks_import(self):
++         src = "import sys\n\n\ndef main() -> int:\n    return 0\n"
++             r = subprocess.run([PY, "-c", f"import sys; sys.path.insert(0, {str(td)!r}); import m"],
++                                capture_output=True, text=True, timeout=60)
++         self.assertNotEqual(r.returncode, 0)
++ class TestScoreCaps(unittest.TestCase):
++     """One collapsed dimension must cap the total, not just lose its weight."""
++     def _res(self, **dims):
++         return {"total": 100.0,
++                 "dimensions": {k: {"score": v} for k, v in dims.items()}}
++     def test_broken_suite_caps_total(self):
++         out = self.sc.apply_caps(self._res(test_integrity=3.5, substance=10.0,
++                                            authenticity=10.0))
++                                            authenticity=10.0))
++                                            authenticity=10.0))
++         self.assertEqual(out["total"], 60.0)
++         self.assertTrue(out["caps"])
++     def test_no_substance_caps_total(self):
++         out = self.sc.apply_caps(self._res(test_integrity=10.0, substance=1.95,
++         self.assertEqual(out["total"], 50.0)
++     def test_healthy_scores_are_not_capped(self):
++         out = self.sc.apply_caps(self._res(test_integrity=10.0, substance=10.0,
++         self.assertEqual(out["total"], 100.0)
++         self.assertEqual(out["total"], 100.0)
++         self.assertEqual(out["caps"], [])
++         self.assertEqual(out["caps"], [])
++     def test_unmeasured_dimension_is_not_capped(self):
++         """--only runs must not cap on dimensions they never measured."""
++         out = self.sc.apply_caps(self._res(test_integrity=10.0))
++ def run_entry(*args, cwd=None):
++     """Invoke `python run.py ...` with an explicit cwd."""
++     return subprocess.run([PY, str(ROOT / "run.py"), *args], capture_output=True,
++                           text=True, timeout=180, cwd=str(cwd or ROOT))
++ class TestRunPyCwd(unittest.TestCase):
++     """Regression: run.py used to pin cwd to the install directory, so every
++     command with a relative default output wrote INTO the skill folder."""
++     def test_output_lands_in_caller_cwd_not_skill_dir(self):
++         leaked = ROOT / "math-notation-check.md"
++         self.assertFalse(leaked.exists(), "pre-existing leak in skill dir")
++             self.assertEqual(run_entry("template", "-j", "article", "-o", td).returncode, 0)
++             self.assertEqual(run_entry("math", "-i", "main.tex", cwd=td).returncode, 0,
++                              "math must run against the generated main.tex")
++             self.assertTrue((Path(td) / "math-notation-check.md").is_file(),
++                             "report must land in the caller's directory")
++         self.assertFalse(leaked.exists(), "run.py wrote its output into the skill dir")
++ class TestTrackAwareCompliance(unittest.TestCase):
++     """A theory paper is not graded on experiments it will never run."""
++     def _audit(self, track):
++             proj = Path(td) / "proj"
++             proj = Path(td) / "proj"
++             r = run_cli(ROOT / "init_research_project.py", "-d", "x", "-j", "JMLR",
++                         "--track", track, "-o", str(proj))
++             out = Path(td) / "c.json"
++             run_cli(SCRIPTS / "check_compliance.py", "-p", str(proj), "--json", str(out))
++             return json.loads(out.read_text(encoding="utf-8"))
++     def test_theory_track_skips_experiment_checks(self):
++         checks = self._audit("theory")
++         for key in ("baselines", "ablations", "robustness"):
++         for key in ("baselines", "ablations", "robustness"):
++             self.assertEqual(checks[key]["status"], "n/a",
++                              f"{key} must be not-applicable for a theory project")
++         self.assertIn("theory_artifacts", checks)
++     def test_empirical_track_still_runs_experiment_checks(self):
++         checks = self._audit("empirical")
++             self.assertEqual(checks[key]["status"], "evaluated",
++                              f"{key} must still be graded for an empirical project")
++         self.assertEqual(checks["theory_artifacts"]["status"], "n/a")
++     def test_experiment_rows_never_count_as_failures_for_theory(self):
++             run_cli(ROOT / "init_research_project.py", "-d", "x", "--track", "theory",
++                     "-o", str(proj))
++             # An empty project is genuinely not ready; what matters is WHICH
++             # rows fail. The experiment rows must not be among them.
++             r = run_cli(SCRIPTS / "check_compliance.py", "-p", str(proj), "--strict")
++             failed = [l for l in r.stdout.splitlines() if l.strip().startswith("[FAIL")]
++             for key in ("Baseline comparison", "Ablation study", "Robustness"):
++                 self.assertFalse(any(key in l for l in failed),
++                                  f"{key} must not fail a theory project: {failed}")
++             self.assertTrue(any("N/A" in l and "Baseline" in l for l in r.stdout.splitlines()))
++ class TestCliAliases(unittest.TestCase):
++     """Same concept, same flag. -p for project dir, -o for output."""
++     def test_ledger_accepts_p(self):
++             self.assertEqual(run_cli(SCRIPTS / "proof_ledger.py", "-p", td,
++                                      "--init").returncode, 0)
++     def test_ledger_accepts_deps_alias(self):
++             run_cli(SCRIPTS / "proof_ledger.py", "-d", td, "--init")
++             self.assertEqual(run_cli(SCRIPTS / "proof_ledger.py", "-d", td, "--add", "L1",
++                                      "--kind", "lemma", "--statement", "s").returncode, 0)
++             self.assertEqual(run_cli(SCRIPTS / "proof_ledger.py", "-d", td, "--add", "T1",
++                                      "--kind", "theorem", "--statement", "s",
++                                      "--deps", "L1").returncode, 0)
++     def test_session_accepts_p(self):
++             self.assertEqual(run_cli(SCRIPTS / "long_horizon_session.py", "-p", td,
++                                      "--start", "prove X").returncode, 0)
++     def test_certify_accepts_o(self):
++             self.assertEqual(run_cli(SCRIPTS / "rational_certificate.py", "--demo",
++                                      "-o", td).returncode, 0)
++                                      "-o", td).returncode, 0)
++                                      "-o", td).returncode, 0)
++ class TestDocumentedFlags(unittest.TestCase):
++     """Documented invocations must actually be runnable."""
++     def test_short_flag_is_not_matched_inside_a_long_flag(self):
++         self.assertTrue(self.sc._flag_in_help("-p", "-p DIR, --dir DIR"))
++         self.assertFalse(self.sc._flag_in_help("-p", "--proof PROOF"),
++                          "'-p' must not match inside '--proof'")
++         self.assertFalse(self.sc._flag_in_help("--out", "--output OUTPUT"))
++     def test_backslash_continuations_are_joined(self):
++         md = 'python run.py ledger -d ./p \\\n    --statement "s" --kind lemma\n'
++         pairs = self.sc._documented_flags(md)
++         self.assertIn(("ledger", "--kind"), pairs)
++         self.assertIn(("ledger", "-d"), pairs)
++     def test_every_documented_flag_exists(self):
++         notes: list[str] = []
++         ratio = self.sc.probe_documented_flags(notes)
++         self.assertEqual(ratio, 1.0, f"docs show flags that do not exist: {notes}")
++ class TestNoStrayArtifacts(unittest.TestCase):
++     def test_skill_dir_is_clean(self):
++         self.assertEqual(self.sc._stray_artifacts(), [])
++     def test_leaked_report_is_detected(self):
++             (Path(td) / "math-notation-check.md").write_text("x", encoding="utf-8")
++             self.assertEqual(self.sc._stray_artifacts(), ["math-notation-check.md"])
++     def test_leak_in_a_subdirectory_is_detected(self):
++         """Regression: the guard used to scan only the skill root, so
++         `07-audit-trail/certificate-*.json` leaked silently. A leak is a leak
++         wherever it lands inside the installation."""
++             sub = Path(td) / "07-audit-trail"
++             sub.mkdir()
++             (sub / "certificate-check_bound.json").write_text("{}", encoding="utf-8")
++             self.assertEqual(self.sc._stray_artifacts(),
++                              ["07-audit-trail/certificate-check_bound.json"])
++     def test_source_dirs_are_not_flagged(self):
++         """scripts/ and tests/ legitimately contain same-prefix names."""
++             for d in ("scripts", "tests"):
++                 (Path(td) / d).mkdir()
++                 (Path(td) / d / "claims.json").write_text("{}", encoding="utf-8")
++                 (Path(td) / d / "__pycache__").mkdir()
++                 (Path(td) / d / "__pycache__" / "x.pyc").write_bytes(b"\0")
++             self.assertEqual(self.sc._stray_artifacts(), [])
++             self.assertEqual(self.sc._stray_artifacts(), [])
++     def test_scorer_reports_are_sanctioned(self):
++             for n in self.sc.SANCTIONED_IN_ROOT:
++                 (Path(td) / n).write_text("x", encoding="utf-8")
++ class TestForgivingFlags(unittest.TestCase):
++     """The spelling people actually type must work."""
++     def test_baseline_is_an_alias_for_comparison(self):
++             r = run_cli(SCRIPTS / "create_experiment_design.py", "--type", "baseline",
++                         "--dataset", "spindly", "--baseline", "gd", "-o", td)
++             made = [p.name for p in Path(td).glob("*comparison*")]
++             self.assertTrue(made, "a baseline design must still be a comparison config "
++                                   "or check_compliance cannot find it")
++     def test_singular_dataset_and_ablations(self):
++             self.assertEqual(run_cli(SCRIPTS / "create_experiment_design.py", "--type",
++             self.assertEqual(run_cli(SCRIPTS / "create_experiment_design.py", "--type",
++                                      "comparison", "--dataset", "a", "--baselines", "x",
++                                      "ablation", "--ablations", "c1,c2",
++     def test_revision_add_alias(self):
++             r = run_cli(SCRIPTS / "revision_tracker.py", "--action", "add", "-r", "1",
++                         "-d", td, "-i", "issue one", "-x", "fixed")
++             hist = json.loads((Path(td) / "revision-history.json").read_text(encoding="utf-8"))
++             self.assertEqual(len(hist["rounds"]), 1)
++ class TestPackageReadiness(unittest.TestCase):
++     """What a publishing platform will actually validate."""
++     def test_frontmatter_is_valid(self):
++         src = (ROOT / "SKILL.md").read_text(encoding="utf-8")
++         self.assertTrue(src.startswith("---\n"), "SKILL.md must open with frontmatter")
++         fm = src.split("---", 2)[1]
++         keys = dict(re.findall(r"^(\w[\w-]*):\s*(.+)$", fm, re.M))
++         for required in ("name", "description"):
++             self.assertIn(required, keys, f"frontmatter missing {required}")
++         self.assertRegex(keys["name"], r"^[a-z0-9]+(-[a-z0-9]+)*$")
++         self.assertLessEqual(len(keys["name"]), 64)
++         self.assertLessEqual(len(keys["description"]), 1024,
++                              "platform description limit is 1024 chars")
++     def test_licence_is_declared(self):
++         self.assertTrue((ROOT / "LICENSE").is_file(), "a publishable skill needs a licence")
++         self.assertIn("MIT", (ROOT / "LICENSE").read_text(encoding="utf-8"))
++     def test_package_script_produces_a_valid_zip(self):
++         pack = load("package_skill")
++             zip_path = Path(td) / "out.zip"
++             report = pack.build_zip(Path(zip_path), include_reports=False)
++             self.assertTrue(zip_path.is_file(), "package_skill wrote nothing")
++             self.assertEqual(report["problems"], [],
++                              f"package not clean: {report['problems']}")
++             names = report["names"]
++             self.assertIn("phd-research-companion/SKILL.md", names)
++             self.assertIn("phd-research-companion/run.py", names)
++             self.assertIn("phd-research-companion/LICENSE", names)
++             self.assertIn("phd-research-companion/MANIFEST.txt", names)
++             self.assertFalse([n for n in names if "__pycache__" in n])
++             self.assertFalse([n for n in names if n.endswith("_skillhub_meta.json")],
++                              "local install state must not be published")
++             self.assertFalse([n for n in names if "score-history" in n])
++             self.assertEqual(len(names), len(set(names)), "duplicate zip entries")
++             with zipfile.ZipFile(zip_path) as z:
++                 self.assertIsNone(z.testzip(), "corrupt archive")
++ class TestOptionalCommandsDegradeGracefully(unittest.TestCase):
++     """A trimmed build (Coze export) drops score/selftest. run.py must degrade
++     them with a clear message and rc=2, not a bare 'missing script' traceback.
++     Regression: run.py used to reference those modules unconditionally, so the
++     Coze artifact would have failed on the first call. The export validator
++     caught it; this test keeps it caught.
++     """
++     def test_required_table_excludes_optional_scripts(self):
++         import importlib.util
++         import importlib.util
++         spec = importlib.util.spec_from_file_location("_run_mod", ROOT / "run.py")
++         mod = importlib.util.module_from_spec(spec)
++         mod = importlib.util.module_from_spec(spec)
++         spec.loader.exec_module(mod)
++         spec.loader.exec_module(mod)
++         required = {Path(p[0]).name for p in mod.COMMANDS.values()}
++         optional = {Path(p[0]).name for p in mod.OPTIONAL_COMMANDS.values()}
++         self.assertFalse(required & optional, "a command cannot be both required and optional")
++         for name in optional:
++             self.assertNotIn(name, required)
++         # every optional module is allowed to be absent at runtime
++         present, absent = mod._available()
++         self.assertEqual(set(present) | set(absent), set(mod.COMMANDS) | set(mod.OPTIONAL_COMMANDS))
++         self.assertFalse(set(present) & set(absent))
++     def test_help_reports_shipped_and_unshipped(self):
++         r = run_entry("help")
++         self.assertIn("self-check:", r.stdout)
++     def test_unknown_command_still_rc2(self):
++         self.assertEqual(run_entry("definitely-not-a-command").returncode, 2)
++ class TestCozeExport(unittest.TestCase):
++     """The Coze artifact is generated, not hand-copied; these guard the export."""
++     EXPORTER = ROOT / "scripts" / "export_coze.py"
++     def test_check_only_passes(self):
++         r = run_cli(self.EXPORTER, "--check-only")
++     def test_store_metadata_respects_coze_limits(self):
++         spec = importlib.util.spec_from_file_location("_exp", self.EXPORTER)
++         self.assertLessEqual(len(mod.COZE_STORE_NAME), 20, "Coze caps the name at 20 chars")
++         self.assertLessEqual(len(mod.COZE_STORE_DESC), 200, "Coze caps the description at 200")
++         self.assertRegex(mod.COZE_SKILL_ID, r"\A[a-z0-9_]+\Z", "skill_id must be slug-shaped")
++     def test_dropped_modules_are_not_required_commands(self):
++         for rel in ("scripts/self_score.py", "scripts/score_selftest.py",
++                     "scripts/package_skill.py"):
++             self.assertIn(rel, _coze_drop(), f"{rel} should be excluded from the Coze build")
++ def _coze_drop():
++     import importlib.util
++     spec = importlib.util.spec_from_file_location("_exp2", ROOT / "scripts" / "export_coze.py")
++     return mod.COZE_DROP
++ if __name__ == "__main__":
++     unittest.main(verbosity=2)

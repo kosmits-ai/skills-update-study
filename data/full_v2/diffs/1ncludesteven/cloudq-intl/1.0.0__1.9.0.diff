@@ -341,6 +341,50 @@ change_type: instructions+code   changelog: cloudq-intl 1.9.0  - Removed scripts
 -             policy_warnings = ensure_role_policies(
 -                 os.environ.get("TENCENTCLOUD_ROLE_NAME", ADVISOR_ROLE_NAME)
 -             if policy_warnings:
+-                 for w in policy_warnings:
+-                     log_warn(w)
+-                 log_ok(T("角色策略检查通过"))
+-             log_section(T("7. 验证角色扮演"))
+-                 login_url_path = SCRIPT_DIR / "login_url.py"
+-                 import subprocess
+-                 test_result = subprocess.run(
+-                     [sys.executable, str(login_url_path),
+-                      "https://console.cloud.tencent.com/advisor"],
+-                     capture_output=True, text=True, timeout=30,
+-                     result_data = json.loads(test_result.stdout)
+-                     if result_data.get("success"):
+-                         log_ok(T("角色扮演验证通过，免密登录功能正常"))
+-                     else:
+-                         err_msg = result_data.get("error", {}).get("message", T("未知错误"))
+-                         log_warn(T("角色扮演验证失败: {message}", message=err_msg))
+-                 except json.JSONDecodeError:
+-                     log_warn(T("角色扮演验证返回格式异常"))
+-             except Exception as e:
+-                 log_warn(T("角色扮演验证异常: {error}", error=e))
+-     if using_connector:
+-         cred_mode = T("Connector 临时密钥")
+-     elif using_oauth:
+-         cred_mode = T("OAuth 凭证")
+-         cred_mode = T("AK/SK 密钥")
+-     if EDITION == "intl" and advisor_authorized:
+-         # 国际站汇总：无免密登录维度，就绪即全绿
+-         log_info(f"  [OK] Python {py_ver.major}.{py_ver.minor} ({platform.system()})")
+-         log_info(f"  [OK] Python {py_ver.major}.{py_ver.minor} ({platform.system()})")
+-         log_info("  [OK] " + T("{cred_mode}验证通过", cred_mode=cred_mode))
+-         log_info("  [OK] " + T("{cred_mode}验证通过", cred_mode=cred_mode))
+-         log_info("  [OK] " + T("智能顾问已开通"))
+-         log_info("  [OK] " + T("智能顾问已开通"))
+-         sys.exit(0)
+-         sys.exit(0)
+-     elif advisor_authorized and role_configured:
+-         log_ok(T("环境就绪，所有功能可用（智能顾问已开通 + API 查询 + 免密登录）"))
+-         log_info("  [OK] " + T("免密登录角色已配置"))
+-     elif advisor_authorized and not role_configured:
+-         log_ok(T("环境基本就绪（智能顾问已开通，API 查询可用）"))
+-         log_warn(T("免密登录角色未配置（仅影响免密登录链接生成，不影响 CloudQ 基本功能）"))
+-         log_info("  [WARN] " + T("免密登录角色未配置"))
+-         log_info("  " + T("可选：执行角色创建步骤以启用免密登录功能"))
+-         log_info(f"  python3 {SCRIPT_DIR}/create_role.py")
 + 功能：检测 Python 版本、Skill 版本更新（含 changelog）、AK/SK 凭证、智能顾问开通状态，输出检测结果
 +       国际站仅支持 AK/SK 环境变量鉴权
 +     2 - 凭证未配置或无效（AK/SK 环境变量）
@@ -922,6 +966,131 @@ change_type: instructions+code   changelog: cloudq-intl 1.9.0  - Removed scripts
 -         "createdAt": cred_data.get("createdAt", datetime.now(timezone.utc).isoformat()),
 -     _atomic_write_json(CREDENTIAL_FILE, data)
 -     _atomic_write_json(CREDENTIAL_FILE, data)
+- def save_credential(cred: dict, oauth_info: dict):
+-     保存 OAuth 凭证到本地文件（原子写入 + 权限保护）
+-         cred: {"secretId", "secretKey", "token", "expiresAt"}
+-         oauth_info: {"accessToken", "refreshToken", "userOpenId", "expiresAt", "site"}
+-         "secretId": cred["secretId"],
+-         "secretKey": cred["secretKey"],
+-         "token": cred["token"],
+-         "expiresAt": cred["expiresAt"],
+-             "accessToken": oauth_info["accessToken"],
+-             "refreshToken": oauth_info["refreshToken"],
+-             "expiresAt": oauth_info["expiresAt"],
+-         "createdAt": datetime.now(timezone.utc).isoformat(),
+-     """读取本地凭证文件，支持 oauth 和 connector 两种类型，不存在或格式错误返回 None"""
+-     """清除凭证文件（OAuth 和 Connector 均适用）"""
+- # ============== 核心：自动刷新 ==============
+- def maybe_refresh_credential(force: bool = False):
+-     检查凭证是否快过期，自动刷新。
+-     OAuth 凭证：accessToken 快过期时用 refreshToken 刷新，再用新 accessToken 换临时密钥。
+-     Connector 凭证：**不刷新**，凭证由 Agent 侧通过 MCP Tool 获取后重新写入 credential.json。
+-         force: 强制刷新，忽略有效期检查（用户主动刷新时传 True）
+-     刷新逻辑（仅 OAuth）：
+-     1. 临时密钥剩余 > 5 分钟且非强制 → 不刷新
+-     2. accessToken 剩余 < 5 分钟 → 用 refreshToken + userOpenId 刷新
+-     3. 用 accessToken 换取新的临时密钥
+-     4. 写回文件
+-     cred_data = load_credential()
+-     if cred_data is None:
+-         return
+-         return
+-         return
+-         return
+-     # Connector 凭证由 Agent 侧管理，程序不负责刷新
+-     if cred_data.get("type") == "connector":
+-     now = time.time()
+-     expires_at = cred_data.get("expiresAt", 0)
+-     # 临时密钥还有效且非强制刷新，不刷新
+-     if not force and expires_at - now > _CRED_REFRESH_SAFE_DUR:
+-     oauth_info = cred_data.get("oauth", {})
+-     access_token = oauth_info.get("accessToken", "")
+-     refresh_token = oauth_info.get("refreshToken", "")
+-     user_open_id = oauth_info.get("userOpenId", "")
+-     access_expires = oauth_info.get("expiresAt", 0)
+-     site = oauth_info.get("site", "cn")
+-     if not access_token or not refresh_token:
+-     # accessToken 快过期 → 用 refreshToken + userOpenId 刷新
+-     if access_expires - now < _ACCESS_REFRESH_SAFE_DUR:
+-         new_token_info = refresh_access_token(refresh_token, user_open_id, site)
+-         oauth_info["accessToken"] = new_token_info["user_access_token"]
+-         oauth_info["expiresAt"] = new_token_info["expires_at"]
+-         access_token = new_token_info["user_access_token"]
+-         # 先持久化新的 oauth_info，防止下一步 get_tmp_cred 失败导致新 accessToken 丢失
+-         _save_oauth_info_only(cred_data, oauth_info)
+-     # 用 accessToken 换取新的临时密钥
+-     new_cred = get_tmp_cred(access_token, site)
+-     save_credential(new_cred, oauth_info)
+- # ============== 核心：获取凭证 ==============
+-     获取可用凭证，支持 OAuth、Connector 和 AK/SK 三种模式。
+-     优先级：
+-     1. credential.json（type="oauth"）
+-     2. credential.json（type="connector"）
+-     3. 环境变量 AK/SK
+-             "secretId": "...",
+-             "secretKey": "...",
+-             "token": "...",
+-             "source": "oauth" | "connector" | "env",
+-             "auditJwt": "..."  # 仅 Connector 模式返回
+-         CredentialNotFoundError: 无任何可用凭证
+-         CredentialExpiredError: OAuth/Connector 凭证已过期且无法刷新
+-     # 1. credential.json（优先 OAuth，其次 Connector）
+-     #    国际站仅支持 AK/SK：跳过文件凭证（规范规则7），
+-     #    防止残留 OAuth/Connector credential.json 遮蔽环境变量并引导不可用的重授权流程
+-     if EDITION == "intl":
+-         if load_credential() is not None:
+-             sys.stderr.write(
+-                 "[cloudq-intl] ignoring local credential file — "
+-                 "the international site supports AK/SK only\n")
+-         cred_data = None
+-     else:
+-         cred_data = load_credential()
+-     if cred_data is not None:
+-         cred_type = cred_data.get("type", "")
+-         # 1.1 OAuth 凭证（自动刷新）
+-         if cred_type == "oauth":
+-             try:
+-                 maybe_refresh_credential()
+-                 cred_data = load_credential()
+-             except CredentialExpiredError:
+-                 raise
+-             except Exception:
+-                 pass  # 刷新失败，下面会检查凭证是否仍然有效
+-             if cred_data:
+-                 now = time.time()
+-                 if cred_data.get("expiresAt", 0) < now:
+-                     raise CredentialExpiredError(
+-                         T("OAuth 临时密钥已过期且自动刷新失败，请重新授权登录。")
+-                     )
+-                 return {
+-                     "secretId": cred_data["secretId"],
+-                     "secretKey": cred_data["secretKey"],
+-                     "token": cred_data.get("token", ""),
+-                     "source": "oauth",
+-                 }
+-         # 1.2 Connector 凭证（由 Agent 侧通过 MCP Tool 写入）
+-         if cred_type == "connector":
+-             now = time.time()
+-             if cred_data.get("expiresAt", 0) < now:
+-                 raise CredentialExpiredError(
+-                     T("Connector 临时密钥（OneId 方案）已过期，请通过 "
+-                       "CloudQConnector_get_available_tmp_secret 重新获取。")
+-                 )
+-             result = {
+-                 "secretId": cred_data["secretId"],
+-                 "secretKey": cred_data["secretKey"],
+-                 "token": cred_data.get("token", ""),
+-                 "source": "connector",
+-             }
+-             # Connector 模式下附带 auditJwt
+-             audit_jwt = cred_data.get("auditJwt", "")
+-             if audit_jwt:
+-                 result["auditJwt"] = audit_jwt
+-             return result
+-     # 2. 环境变量 AK/SK
+-     # 无凭证
+-     raise CredentialNotFoundError(
+-         "NEED_AUTH"
 + """凭证管理（国际站：仅 AK/SK 环境变量）
 + 国际站凭证只从环境变量读取 AK/SK。若检测到本地 credential.json
 + （如其他版本残留），输出忽略提示后照常使用环境变量（防止残留文件遮蔽 AK/SK）。
@@ -1532,6 +1701,21 @@ change_type: instructions+code   changelog: cloudq-intl 1.9.0  - Removed scripts
 -         sys.exit(cmd_refresh())
 -     if "--help" in args or "-h" in args:
 -         print(T("CloudQ OAuth 登录"))
+-         print(T("非交互式子命令（供 Agent 调用）："))
+-         print(T("  python3 login.py --authorize-url              # 获取授权 URL"))
+-         print(T("  python3 login.py --save '<授权码>'             # 用授权码换取凭证"))
+-         print(T("  python3 login.py --status                      # 查看凭证状态"))
+-         print(T("  python3 login.py --refresh                     # 主动刷新凭证"))
+-         print(T("交互式登录（仅供终端手动使用）："))
+-         print(T("  python3 login.py                               # 打开浏览器授权"))
+-         print(T("  python3 login.py --no-browser                  # 手动模式"))
+-         print(T("  python3 login.py --site=intl                   # 国际站"))
+-         return
+-     # 默认：交互式登录（终端手动使用）
+-     open_browser = "--no-browser" not in args and "--manual" not in args
+-     _interactive_login(open_browser=open_browser, site=site)
+- if __name__ == "__main__":
+-     main()
 
 ### scripts/login_url.py  [code]
 - #!/usr/bin/env python3
@@ -1834,6 +2018,55 @@ change_type: instructions+code   changelog: cloudq-intl 1.9.0  - Removed scripts
 -         sys.exit(1)
 -     target_url = sys.argv[1]
 -     # ============== 密钥检查 ==============
+-     secret_id = os.environ.get("TENCENTCLOUD_SECRET_ID", "")
+-     secret_key = os.environ.get("TENCENTCLOUD_SECRET_KEY", "")
+-     token = os.environ.get("TENCENTCLOUD_TOKEN", "")
+-     if not secret_id or not secret_key:
+-     if not secret_id or not secret_key:
+-         # 尝试通过 credential_manager 获取凭证
+-             from credential_manager import get_credential
+-             cred = get_credential()
+-             secret_id = cred["secretId"]
+-             secret_key = cred["secretKey"]
+-             token = cred.get("token", "")
+-         except ImportError:
+-         except Exception:
+-         print(output_error("MissingCredentials",
+-                            T("缺少凭证。请通过 OAuth 登录、配置 AK/SK 环境变量，或通过 Connector 获取临时密钥。")))
+-     # ============== 获取 RoleArn ==============
+-     role_arn = _get_role_arn(secret_id, secret_key)
+-     if not role_arn:
+-             "MissingRoleConfiguration",
+-             T("未配置角色信息。请选择以下方式之一:\\n\\n"
+-               "方式一: 设置角色名称（推荐）\\n"
+-               "  export TENCENTCLOUD_ROLE_NAME=\\\"AdvisorRole\\\"\\n\\n"
+-               "方式二: 设置完整 ARN\\n"
+-               "  export TENCENTCLOUD_ROLE_ARN=\\\"qcs::cam::uin/您的账号UIN:roleName/角色名\\\"\\n\\n"
+-               "方式三: 运行角色创建脚本（首次使用推荐）\\n"
+-               "  python3 scripts/create_role.py\\n\\n"
+-               "提示: 您可以在 CAM 控制台查看可用角色:\\n"
+-               "  https://console.cloud.tencent.com/cam/role")
+-     # ============== 配置参数 ==============
+-     role_session = os.environ.get("TENCENTCLOUD_ROLE_SESSION", "advisor-session")
+-     duration = int(os.environ.get("TENCENTCLOUD_STS_DURATION", "3600"))
+-     # ============== 第一步：STS AssumeRole ==============
+-         sts_result = sts_assume_role(secret_id, secret_key, role_arn, role_session, duration, token)
+-     except Exception as e:
+-         print(output_error("STSError", T("STS AssumeRole 请求异常: {error}", error=e)))
+-     if sts_result.get("error"):
+-             sts_result.get("code", "STSError"),
+-             sts_result.get("message", T("STS AssumeRole 失败")),
+-             sts_result.get("requestId", ""),
+-     # ============== 第二步：生成免密登录 URL ==============
+-     login_url = generate_login_url(
+-         sts_result["TmpSecretId"],
+-         sts_result["TmpSecretKey"],
+-         sts_result["Token"],
+-         target_url,
+-     # ============== 输出结果 ==============
+-     print(output_success(login_url, target_url, duration, sts_result["RequestId"]))
+- if __name__ == "__main__":
+-     main()
 
 ### scripts/logout.py  [code]
 - #!/usr/bin/env python3

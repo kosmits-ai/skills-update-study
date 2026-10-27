@@ -526,3 +526,80 @@ change_type: instructions   changelog: Updated mession template
 + - `lockedBy`, `lockedAt`
 + **Rule:** When polling for completion, poll the **mission** (`status === 'completed'`) — not each subtask. The mission status reflects the rollup.
 + ## 12. Coordinator agent
++ Each mission has an optional **coordinator agent** (`mission.coordinatorAgentId`):
++ - Runs auto-decompose (when no `agentId` is passed).
++ - Reviews final output when all subtasks complete; sets `coordinatorReviewedAt`.
++ - Defaults to the company's CEO agent.
++ You generally don't manipulate the coordinator unless the user asks ("use agent X to plan this mission" → set `coordinatorAgentId`).
++ ## 13. Error handling
++ | HTTP | Meaning                                                              | What to do                                                    |
++ | ---- | -------------------------------------------------------------------- | ------------------------------------------------------------- |
++ | 400  | `companyId required` or missing field                                | Add the missing field and retry                               |
++ | 401  | `Invalid or missing ThinkForce API key`                              | Stop. Tell the user their key is bad/missing                  |
++ | 404  | `Mission not found` / `Subtask not found`                            | Re-list to find correct id; don't guess                       |
++ | 409  | `Dependencies not satisfied` (`{ pendingDeps: [...] }`)              | Either run the upstream first or remove the dep               |
++ | 409  | `Subtask already in_progress` (lock active)                          | Wait + poll; don't double-dispatch                            |
++ | 5xx  | Server error                                                         | Retry once with backoff; surface to user if it persists       |
++ **Rule:** Never swallow errors silently. If a run fails, fetch `lastError` from the subtask and surface it to the user verbatim.
++ ## 14. Decision rules (your operating contract)
++ Apply these rules before every action:
++ 1. **Bootstrap first.** At session start, call `GET /api/companies` to resolve the user's `companyId`. Cache it. Pass it on every subsequent request. Never ask the user for it.
++ 2. **Read before writing.** Always GET the mission + subtasks before deciding. State changes async (other agents, the user, schedulers).
++ 3. **Don't invent IDs.** Subtask, mission, agent, and company IDs come from server responses. If you don't have one, GET the list and pick.
++ 4. **Assign before running.** Every subtask needs `assignedAgentId` (active agent) before `/run`. Decompose does NOT auto-assign — you must PATCH each subtask. Match agents by `agentRole` + `workstationKey` + `tools`, never by guessing. CEO is the always-available fallback. See section 1.5.
++ 5. **Respect the DAG.** Before calling `/run`, check `dependsOn` are all `done`. If not, either run the upstream first or tell the user why you can't proceed.
++ 6. **Pick the right tool for "attach":**
++    - LLM context → Skill
++    - Capability → Tool
++    - External data → Connector
++    - File → linked attachment
++ 7. **Don't double-run.** Check `status === 'in_progress'` and `lockedBy` before POST `/run`. Stale lock = `lastHeartbeatAt` older than 15 min.
++ 8. **Wire both halves of the DAG.** When adding a dep, PATCH both the new step's `dependsOn` and the upstream's `nextSubtaskIds`.
++ 9. **Auto-chain handles fan-out.** You only need to run the DAG's root(s). Don't run every step manually.
++ 10. **Failures cascade.** When you see `blocked_upstream`, the fix is upstream — never re-run a blocked step directly. Fix the failed parent, then re-run the parent (auto-chain unblocks descendants).
++ 11. **Budget guard.** If the mission has `tokenBudget` set and `totalTokens` is near the cap, warn the user before starting new runs.
++ 12. **Surface costs.** When reporting progress, include `totalCostUsd` and per-step `estimatedCostUsd` so the user knows what the run cost.
++ 13. **Re-decompose carefully.** It creates a new plan snapshot but doesn't delete prior subtasks. If the user wants a clean re-plan, delete the old subtasks first.
++ 14. **Confirm destructive actions.** Always ask before `DELETE` on a mission, revoking a member, or cancelling an in-flight run.
++ ## 15. End-to-end recipe (copy this pattern)
++ User says: *"Set up a mission to launch the Tesla Roadster — concept, copy, hero image, 15s teaser. Run the design + copy in parallel after concept."*
++ You execute:
++ 1. POST /api/missions {
++      companyId, title: "Launch Tesla Roadster campaign",
++      description: "Concept, copy, hero image, 15s teaser video",
++      priority: "high"
++    } → mission M1
++ 2. POST /api/missions/M1/decompose { companyId }
++    → returns subtasks S1 (concept), S2 (copy), S3 (hero image), S4 (teaser)
++      Note: all UNASSIGNED. workstationKey hints at the agent role to pick.
++ 3. POST /api/agents { action:"list", companyId } → agents[]
++    → e.g. CEO, Copywriter, Designer, Video Editor (all status:"active")
++ 4. GET /api/missions/M1/subtasks → confirm IDs + workstationKeys
++ 5. Assign agents to each subtask:
++    PATCH S1 { assignedAgentId: ceo.id }            // concept → CEO (planning)
++    PATCH S2 { assignedAgentId: copywriter.id }     // copy → Copywriter
++    PATCH S3 { assignedAgentId: designer.id }       // hero image → Designer
++    PATCH S4 { assignedAgentId: videoEditor.id }    // teaser → Video Editor
++    (Fall back to CEO for any subtask with no obvious match.)
++ 6. Wire the DAG:
++    PATCH S2.dependsOn=[S1], S1.nextSubtaskIds=[S2,S3]
++    PATCH S3.dependsOn=[S1]
++    PATCH S4.dependsOn=[S2,S3], S2.nextSubtaskIds=[S4], S3.nextSubtaskIds=[S4]
++    (S2+S3 run in parallel after S1; S4 waits for both)
++ 7. (Optional) Attach a Design_Agent tool to S3 + S4 to narrow scope:
++    PATCH S3.attachedToolNames=["Design_Agent"]
++    PATCH S4.attachedToolNames=["Design_Agent","Video_Generation"]
++ 8. POST /api/missions/M1/subtasks/S1/run { companyId }
++    (only the root; auto-chain handles S2/S3/S4)
++ 9. Poll GET /api/missions/M1 every ~10s until status === 'completed'
++    Surface progress + totalCostUsd to the user.
++ 10. On completion, GET /api/missions/M1/subtasks, summarize S4.output
++     (the final teaser) and the cost roll-up.
++ ## 16. What NOT to do
++ - ❌ Don't run `/run` in a loop polling — runs are async; use status polling instead.
++ - ❌ Don't create subtasks without an `assignedAgentId` then immediately run them (you'll get HTTP 400).
++ - ❌ Don't manually flip a subtask to `done` to "skip" it — the auto-chain reads outputs, and a fake `done` produces empty context for downstream steps.
++ - ❌ Don't share or invite without explicit user consent — both are public surfaces.
++ - ❌ Don't delete `planSnapshots` thinking they're cruft — they're the audit trail.
++ - ❌ Don't ignore `blocked_upstream` — investigate the upstream `failed` step's `lastError`.
++ If anything in this document conflicts with what you observe in the live API, **trust the API** and tell the user what you saw. This skill is a guide, not a contract.

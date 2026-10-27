@@ -80,7 +80,11 @@ except ImportError:
 csv.field_size_limit(sys.maxsize)
 
 MAX_FILE_BYTES = 2_000_000      # skip larger files (data dumps, minified bundles)
-MAX_DIFF_FILE_BYTES = 200_000   # cap each saved .diff file
+# Limits of the readable .diff files. They are generous on purpose: the .diff is what the
+# LLM reads, and llm_label.py trims it again (with visible markers) to fit its prompt.
+# Whatever is cut here is marked in the file, so a cut is never silent.
+MAX_DIFF_LINES_PER_FILE = 3_000   # removed lines and added lines kept per file (each)
+MAX_DIFF_FILE_CHARS = 1_000_000   # cap each saved .diff file
 
 # Everything this script writes, inside --data.
 DIFFS_DIR = "diffs"
@@ -344,7 +348,12 @@ def compare(old_files, new_files):
 
         if added or removed:
             block = [f"### {name}  [{group}]"]
-            block += [f"- {l}" for l in removed[:300]] + [f"+ {l}" for l in added[:300]]
+            block += [f"- {l}" for l in removed[:MAX_DIFF_LINES_PER_FILE]]
+            if len(removed) > MAX_DIFF_LINES_PER_FILE:
+                block.append(f"…[{len(removed) - MAX_DIFF_LINES_PER_FILE} more removed lines of this file not shown]")
+            block += [f"+ {l}" for l in added[:MAX_DIFF_LINES_PER_FILE]]
+            if len(added) > MAX_DIFF_LINES_PER_FILE:
+                block.append(f"…[{len(added) - MAX_DIFF_LINES_PER_FILE} more added lines of this file not shown]")
             diff_blocks.append("\n".join(block))
 
     def bare(domain):
@@ -417,7 +426,11 @@ def analyse_update(u, get, data, save_diffs):
         path.parent.mkdir(parents=True, exist_ok=True)
         header = (f"{owner}/{slug}  {u['from_version']} -> {u['to_version']}\n"
                   f"change_type: {u['change_type']}   changelog: {u.get('to_changelog', '')}\n\n")
-        path.write_text((header + "\n\n".join(blocks))[:MAX_DIFF_FILE_BYTES], encoding="utf-8")
+        text = header + "\n\n".join(blocks)
+        if len(text) > MAX_DIFF_FILE_CHARS:
+            text = (text[:MAX_DIFF_FILE_CHARS]
+                    + f"\n…[diff cut at {MAX_DIFF_FILE_CHARS:,} characters; {len(text) - MAX_DIFF_FILE_CHARS:,} more not shown]")
+        path.write_text(text, encoding="utf-8")
     return row
 
 

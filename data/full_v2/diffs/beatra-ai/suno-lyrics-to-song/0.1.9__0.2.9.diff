@@ -759,6 +759,628 @@ change_type: instructions+docs+code   changelog: New icon. The shared helper kee
 +                 # Unreadable (a helper died mid-write, or another tool's file):
 +                 # stale once older than any helper ever held a lock, so it
 +                 # cannot block every future authorization.
++                 if not _unreadable_lock_abandoned(path, now=wall_time()):
++                     raise _AuthorizationInProgress(AUTH_IN_PROGRESS_MESSAGE) from exc
++                     raise _AuthorizationInProgress(AUTH_IN_PROGRESS_MESSAGE) from exc
++                 with suppress(OSError):
++                     path.unlink()
++                 if attempt == 1:
++                 continue
++                 continue
++             payload, identity, touched_at = existing
++             if not _lock_abandoned(payload, touched_at=touched_at, now=wall_time()) or not _same_file_identity(
++                 path, identity
++             ):
++                 raise _AuthorizationInProgress(AUTH_IN_PROGRESS_MESSAGE) from exc
++                 raise _AuthorizationInProgress(AUTH_IN_PROGRESS_MESSAGE) from exc
++             with suppress(OSError):
++             with suppress(OSError):
++                 path.unlink()
++     if descriptor < 0 or owned_identity is None:
++         raise _AuthorizationInProgress(AUTH_IN_PROGRESS_MESSAGE)
++         created_at = wall_time()
++                     "created_at": created_at,
++                     "heartbeat": True,
++         _touch_lock(path, created_at)
++     except BaseException:
++         if _same_file_identity(path, owned_identity):
++         raise
++     return owned_identity, created_at
++     state_dir: Path,
++     state_dir: Path,
++     lock_nonce: Callable[[], str],
++     lock_nonce: Callable[[], str],
++     # A stop between creating the lock file and writing it would leave an
++     # empty lock that older helpers treat as busy: it waits until written.
++     with _SIGNALS.deferred():
++     with _SIGNALS.deferred():
++         owned_identity, _created_at = _create_lock(path, owner_nonce=owner_nonce, wall_time=wall_time)
++         if _SIGNALS.requested:
++             _SIGNALS.requested = False
++             raise _Stopped()
++             raise _Stopped()
++         stopped = threading.Event()
++         def heartbeat() -> None:
++             while not stopped.wait(AUTH_LOCK_HEARTBEAT_SECONDS):
++                 if _same_file_identity(path, owned_identity):
++                     _touch_lock(path, wall_time())
++         beater = threading.Thread(target=heartbeat, name="beatra-authorize-heartbeat", daemon=True)
++         beater.start()
++             yield
++             yield
++         finally:
++         finally:
++             stopped.set()
++             beater.join(timeout=1)
++         with _SIGNALS.deferred():
++             if _same_file_identity(path, owned_identity):
++                 existing = _read_authorization_lock(path)
++                 if existing is None or existing[0]["owner_nonce"] == owner_nonce:
++                     with suppress(OSError):
++                         path.unlink()
++     """
++         _atomic_json(state_dir / "host.json", payload)
++             return
++             return
++             return
++             {
++ def _pending_path(state_dir: Path) -> Path:
++     return state_dir / PENDING_AUTHORIZATION_FILE
++ def _discard_pending(state_dir: Path, *, device_code: str | None = None) -> None:
++     """Remove the saved approval; with a device code, only when it is still the
++     one saved, so a helper never deletes an approval another run opened."""
++     path = _pending_path(state_dir)
++     path = _pending_path(state_dir)
++     if device_code is not None:
++             saved = json.loads(path.read_text(encoding="utf-8"))
++         except (OSError, TypeError, json.JSONDecodeError):
++         if not isinstance(saved, dict) or saved.get("device_code") != device_code:
++         path.unlink(missing_ok=True)
++ def _save_pending(state_dir: Path, pending: dict[str, Any]) -> None:
++     """Remember the open approval so a helper the agent stopped can be rerun
++     and finish it, instead of asking the user to approve a second time.
++     One file, readable by every helper since 09-23: their fields keep their
++     meaning (`expires_at` is when the approval page closes) and the fields this
++     helper adds beside them are carried along untouched by the older ones. The
++     device code is protected exactly like the credential."""
++         _pending_path(state_dir),
++         {"schema_version": 1, **{key: value for key, value in pending.items() if key != "schema_version"}},
++ def _collect_until(value: dict[str, Any]) -> float:
++     """Until when the saved approval can still be collected. Beatra keeps an
++     approval for its collect window after Allow; a code saved without one (an
++     older helper, or the window off) lapses with its page as before."""
++     page_closes = float(value["expires_at"]) + REDEEM_GRACE_SECONDS
++     collect_until = value.get("collect_until")
++     if isinstance(collect_until, bool) or not isinstance(collect_until, (int, float)):
++         return page_closes
++     return max(page_closes, float(collect_until))
++ def _load_pending(state_dir: Path, *, wall_time: Callable[[], float]) -> tuple[dict[str, Any] | None, bool]:
++     """The saved approval this run should continue, and whether one lapsed
++     moments ago (then a replacement page is shown, not opened, so repeated
++     runs never keep opening new tabs)."""
++             return None, False
++         return None, False
++         return None, False
++         # Every Beatra Skill package shares ~/.beatra and the one credential, so
++         # an approval opened by another package's helper is finished as is,
++         # polling with the client id it was created for.
++         if (
++         if (
++             not isinstance(value, dict)
++             or value.get("schema_version") != 1
++             or not isinstance(value.get("client_id"), str)
++             or not _CLIENT_ID_VALUE.fullmatch(value["client_id"])
++             or not isinstance(value.get("device_code"), str)
++             or not value["device_code"]
++             or isinstance(value.get("interval"), bool)
++             or not isinstance(value.get("interval"), int)
++             or value["interval"] <= 0
++             or isinstance(value.get("expires_at"), bool)
++             or not isinstance(value.get("expires_at"), (int, float))
++         ):
++         ):
++             raise ValueError("pending authorization is invalid")
++         _validate_verification_url(
++             str(value.get("verification_uri_complete")),
++             user_code=str(value.get("user_code")),
++     except (RuntimeError, ValueError):
++         _discard_pending(state_dir)
++     now = wall_time()
++     now = wall_time()
++     if now >= _collect_until(value):
++         _discard_pending(state_dir, device_code=str(value["device_code"]))
++         return None, now < float(value["expires_at"]) + EXPIRED_NOTICE_SECONDS
++     return value, False
++ def _policy_int(policy: Any, name: str, *, maximum: int) -> int | None:
++     value = policy.get(name) if isinstance(policy, dict) else None
++     if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= maximum:
++ def _start_authorization(
++     host_platform: str,
++     host_platform: str,
++     device_name: str | None,
++     device_name: str | None,
++     post_form: PostForm,
++     post_form: PostForm,
++ ) -> dict[str, Any]:
++         # This helper keeps checking an approval for up to MAX_WAIT_SECONDS;
++         # Beatra keeps it open that long only when told so.
++         "max_poll_seconds": str(MAX_WAIT_SECONDS),
++         "client_features": CLIENT_FEATURES,
++     }
++     status, created = post_form(_authorization_url(state_dir, DEVICE_AUTHORIZATION_PATH), form)
++     server_lifetime = _positive_int(created, "expires_in", DEFAULT_APPROVAL_SECONDS)
++     expires_at = now + min(server_lifetime, MAX_WAIT_SECONDS)
++     pending: dict[str, Any] = {
++         "user_code": user_code,
++         "verification_uri_complete": verification_url,
++         "interval": interval,
++         "expires_at": expires_at,
++         "created_at": now,
++     policy = created.get("beatra_wait_policy")
++     run_seconds = _policy_int(policy, "run_seconds", maximum=WAIT_SECONDS_MAX)
++     if run_seconds:
++         pending["run_seconds"] = max(WAIT_SECONDS_MIN, run_seconds)
++         early = _policy_int(policy, "early_return_seconds", maximum=WAIT_SECONDS_MAX)
++         pending["early_return_seconds"] = early or 0
++         window = _policy_int(policy, "collect_window_seconds", maximum=90 * 24 * 60 * 60)
++         if window:
++             # Beatra keeps an approval collectable this long after Allow; Allow
++             # is possible until the page closes.
++             pending["collect_until"] = expires_at + REDEEM_GRACE_SECONDS + window
++     if created.get("beatra_approved") is True:
++         # This device already approved moments ago and nothing collected it:
++         # Beatra carried that approval over to this code. Nothing to open.
++         pending["opened"] = True
++         pending["opened"] = True
++         pending["approved_on_create"] = True
++     _save_pending(state_dir, pending)
++     return pending
++ def _mark_opened(state_dir: Path, pending: dict[str, Any]) -> None:
++     if not pending.get("opened"):
++         _save_pending(state_dir, pending)
++ def _say(text: str) -> None:
++     """Print for the agent; output trouble never stops the approval.
++     A host that closed the pipe (or cannot encode) loses the text, not the
++     run: output goes to the null device from then on and polling continues."""
++         print(text, flush=True)
++     except (OSError, ValueError):
++     except (OSError, ValueError):
++     except (OSError, ValueError):
++         _silence_stdout()
++         _silence_stdout()
++ def _silence_stdout() -> None:
++     with suppress(OSError, ValueError):
++         sys.stdout = open(os.devnull, "w", encoding="utf-8")  # noqa: SIM115 -- replaces stdout for the process
++ def _announce(
++     verification_url: str,
++     open_browser: Callable[[str], bool],
++     open_page: bool = True,
++ ) -> bool:
++     """Show the link; open the page when asked. False when a page was meant to
++     open and could not, so the agent must show the link right away."""
++     _say(f"Open this Beatra approval page: {verification_url}")
++     _say(
++     _say("Beatra detects Allow by itself - no chat confirmation is needed from the user.")
++     if not open_page:
++         return bool(open_browser(verification_url))
++ class _SignalGuard:
++     """Delays a stop request while the credential is being written."""
++     def __init__(self) -> None:
++         self.deferring = False
++         self.requested = False
++     def handle(self, _signum: int, _frame: Any) -> None:
++         if self.deferring:
++             self.requested = True
++         raise _Stopped()
++     @contextmanager
++     def deferred(self, *, then_stop: bool = False) -> Iterator[None]:
++         """Hold a stop request until the block is done; with `then_stop`,
++         honour it right after (a stop during a credential write is dropped:
++         the credential is saved, and the run finishes in seconds)."""
++         self.deferring = True
++             self.deferring = False
++         if then_stop and self.requested:
++             self.requested = False
++ _SIGNALS = _SignalGuard()
++ def _install_signal_handlers(handler: Any = None) -> None:
++     for name in ("SIGINT", "SIGTERM", "SIGHUP"):
++         number = getattr(signal, name, None)
++         if number is None:
++             continue
++         with suppress(OSError, ValueError, RuntimeError):
++             signal.signal(number, handler or _SIGNALS.handle)
++ def _save_credential(state_dir: Path, polled: dict[str, Any]) -> Path:
++     """Write the credential Beatra issued, in the format every helper reads."""
++     access_token = _required_string(polled, "access_token")
++     if polled.get("token_type") != "Bearer":
++         raise RuntimeError("Beatra authorization returned an unsupported token type")
++     scope = _required_string(polled, "scope")
++     if set(scope.split()) != set(SCOPE.split()):
++         raise RuntimeError("Beatra authorization returned an unsupported scope")
++     credential_path = state_dir / "credentials.json"
++         _atomic_json(
++             credential_path,
++                 "schema_version": 1,
++                 "mcp_url": MCP_URL,
++                 "token_type": "Bearer",
++                 "access_token": access_token,
++                 "credential_id": _required_string(polled, "credential_id"),
++                 "installation_id": _required_string(polled, "installation_id"),
++                 "scope": scope,
++                 "authorized_at": datetime.now(_UTC).isoformat(),
++                 "idle_expires_in": _positive_int(polled, "idle_expires_in", 15 * 24 * 60 * 60),
++             },
++     return credential_path
++     return credential_path
++ def _poll_fields(pending: dict[str, Any]) -> dict[str, str]:
++     return {
++         "device_code": str(pending["device_code"]),
++         "client_id": str(pending["client_id"]),
++ def _classify_poll(status: int, polled: dict[str, Any], unreachable: bool) -> str:
++     """token / pending / slow_down / denied / expired / transient / failed:<code>."""
++     if status == 200:
++         return "token"
++     error = polled.get("error") if isinstance(polled.get("error"), str) else None
++     if unreachable or status >= 500 or (status == 429 and error != "slow_down") or error in _TRANSIENT_POLL_ERRORS:
++         return "transient"
++     if error == "authorization_pending":
++         return "pending"
++     if error == "slow_down":
++         return "slow_down"
++     if error == "access_denied":
++         return "denied"
++     if error == "expired_token":
++         return "expired"
++     return f"failed:{_safe_protocol_error(error, _TERMINAL_POLL_ERRORS)}"
++ def _minutes_left(pending: dict[str, Any], wall_time: Callable[[], float]) -> int:
++     return max(1, int(float(pending["expires_at"]) - wall_time() + 59) // 60)
++ def _fresh_credential(state_dir: Path, *, since: float) -> Path | None:
++     """A credential another process (mcp_client, another run) saved during
++     this run: the approval was collected elsewhere."""
++     credential_path = _existing_credential(state_dir)
++     if credential_path is None:
++         if os.stat(credential_path).st_mtime < since:
++ def _obtain_pending(
++     sleep: Callable[[float], None],
++     monotonic: Callable[[], float],
++     renew: bool = False,
++ ) -> tuple[dict[str, Any], bool]:
++     """(approval, resumed). The lock is held only while an approval is
++     created, never while waiting for Allow: any number of runs may poll the
++     same saved code, which Beatra answers consistently.
++     A saved approval whose page closed moments ago without Allow is reported
++     instead of replaced (the user may have walked away; a new page opens when
++     the command is run again). `renew` skips that check for a code this run
++     already found over."""
++     pending, lapsed = _load_pending(state_dir, wall_time=wall_time)
++     if pending is not None:
++         return pending, True
++     if lapsed and not renew:
++         raise RuntimeError(EXPIRED_MESSAGE)
++     give_up = monotonic() + LOCK_WAIT_SECONDS
++     while True:
++     while True:
++             with _device_authorization_lock(state_dir, wall_time=wall_time, lock_nonce=lock_nonce):
++                 pending, _ = _load_pending(state_dir, wall_time=wall_time)
++                 if pending is not None:
++                     return pending, True
++                 created = _start_authorization(
++                     state_dir=state_dir,
++                     state_dir=state_dir,
++                     host_platform=host_platform,
++                     host_platform=host_platform,
++                     device_name=device_name,
++                     device_name=device_name,
++                     post_form=post_form,
++                     post_form=post_form,
++                     wall_time=wall_time,
++                     wall_time=wall_time,
++                 return created, False
++         except _AuthorizationInProgress:
++             pending, _ = _load_pending(state_dir, wall_time=wall_time)
++             if pending is not None:
++                 return pending, True
++             if monotonic() >= give_up:
++                 raise
++             sleep(2)
++ def _wait_for_credential(
++     pending: dict[str, Any],
++     resumed: bool,
++     force: bool,
++     wait_seconds: float | None,
++     global _CURRENT_LINK
++     token_url = _authorization_url(state_dir, TOKEN_PATH)
++     token_url = _authorization_url(state_dir, TOKEN_PATH)
++     legacy = wait_seconds is not None
++     started_mono = monotonic()
++     started_wall = wall_time()
++     # Credential files carry real modification times, whatever clock is injected.
++     started_real = time.time()
++     rejected_credential_at: float | None = None
++     renewed = False
++     def budget_for(current: dict[str, Any]) -> float:
++         if legacy:
++         if legacy:
++             return float(wait_seconds or 0)
++         run_seconds = current.get("run_seconds")
++         if isinstance(run_seconds, bool) or not isinstance(run_seconds, int) or run_seconds <= 0:
++             return float(DEFAULT_RUN_SECONDS)
++         return float(run_seconds)
++     def early_return_for(current: dict[str, Any]) -> float | None:
++         early = current.get("early_return_seconds")
++         if "run_seconds" not in current:
++             return float(DEFAULT_EARLY_RETURN_SECONDS)
++         if isinstance(early, bool) or not isinstance(early, int) or early <= 0:
++         return float(early)
++     def connects_later(current: dict[str, Any]) -> bool:
++         return _collect_until(current) > float(current["expires_at"]) + REDEEM_GRACE_SECONDS
++     def show_new(current: dict[str, Any]) -> bool:
++         """A code this run created: print its link at once and open its page.
++         False when no page could open, so the agent must show the link now."""
++         global _CURRENT_LINK
++         global _CURRENT_LINK
++         _CURRENT_LINK = _shown_link(str(current["verification_uri_complete"]), state_dir)
++         _CURRENT_LINK = _shown_link(str(current["verification_uri_complete"]), state_dir)
++         if current.get("approved_on_create"):
++             _say("This computer's earlier approval carries over; connecting now.")
++             return True
++         opened = _announce(_CURRENT_LINK, open_browser, open_page=True)
++         _mark_opened(state_dir, current)
++         return opened
++     def show_resumed(current: dict[str, Any]) -> None:
++         """A saved code still waiting for Allow: its link again, and its page
++         if no run managed to open it yet."""
++         _say("Continuing the Beatra approval that is already open.")
++         open_page = not current.get("opened")
++         _announce(_CURRENT_LINK, open_browser, open_page=open_page)
++         if open_page:
++             _mark_opened(state_dir, current)
++     if resumed:
++         # Checked before anything is shown: it may already be approved (then
++         # no page is needed at all) or over.
++         _CURRENT_LINK = _shown_link(str(pending["verification_uri_complete"]), state_dir)
++         browser_ok = True
++         early_after: float | None = None
++         wait_first = False
++     else:
++         browser_ok = show_new(pending)
++         early_after = early_return_for(pending)
++         # A code approved at creation is collected at once.
++         wait_first = not pending.get("approved_on_create")
++     budget = budget_for(pending)
++     interval = int(pending["interval"])
++     answered = False
++     announced = not resumed
++     page_opened: bool | None = None
++     next_progress = started_mono + PROGRESS_SECONDS
++     # When Beatra last answered this run: a run that cannot reach it (offline,
++     # a sandbox without network) says so within a minute instead of waiting.
++     last_answer = started_mono
++     def pending_error(current: dict[str, Any]) -> _ApprovalPending:
++         return _ApprovalPending(
++             _shown_link(str(current["verification_uri_complete"]), state_dir),
++             answered=answered,
++             minutes_left=_minutes_left(current, wall_time),
++             # Short runs (the 09-23 shape, or Beatra's fallback switch) need the
++             # agent to rerun at once, exactly as the 09-23 instructions said.
++             legacy=legacy or budget_for(current) <= SHORT_RUN_SECONDS,
++             connects_later=connects_later(current),
++             unopened=page_opened is False,
++         if wait_first:
++             sleep(min(float(interval), max(0.0, budget - (monotonic() - started_mono))))
++             wait_first = False
++         elapsed = max(monotonic() - started_mono, wall_time() - started_wall)
++         # Never start a poll that could outlast the run: the host's own timeout
++         # sits just past it.
++         if budget - elapsed < POLL_TIMEOUT_SECONDS:
++             raise pending_error(pending)
++             raise pending_error(pending)
++             raise pending_error(pending)
++             raise pending_error(pending)
++         if not force and (collected := _fresh_credential(state_dir, since=started_real)):
++             written_at = collected.stat().st_mtime
++             if written_at != rejected_credential_at:
++                 _say("Beatra authorization was completed by another Beatra command.")
++                 if probe_credential(collected):
++                     _discard_pending(state_dir, device_code=str(pending["device_code"]))
++                     _say("Beatra is ready.")
++                     return collected
++                 rejected_credential_at = written_at
++             status, polled = post_form(token_url, _poll_fields(pending))
++             unreachable = False
++         except _TransientAuthorizationError:
++             # The poll may have reached the server and its answer been lost;
++             # the next poll inside the re-delivery window recovers the token.
++             status, polled, unreachable = 0, {}, True
++         outcome = _classify_poll(status, polled, unreachable)
++         if outcome == "token":
++             credential_path = _save_credential(state_dir, polled)
++             _discard_pending(state_dir, device_code=str(pending["device_code"]))
++             _discard_pending(state_dir, device_code=str(pending["device_code"]))
++             _discard_pending(state_dir, device_code=str(pending["device_code"]))
++             _discard_pending(state_dir, device_code=str(pending["device_code"]))
++             _say("Beatra authorization saved to the private credential file.")
++             _say("Beatra is ready.")
++         if outcome != "transient":
++             answered = True
++             last_answer = monotonic()
++         elif not legacy and monotonic() - last_answer >= UNREACHABLE_HAND_BACK_SECONDS:
++             answered = False
++         if outcome == "denied":
++             # A decline ends the run: the user may have meant it, so a new
++             # page opens only when the command is run again.
++             raise RuntimeError(DECLINED_MESSAGE)
++         if outcome == "expired" or outcome.startswith("failed:"):
++             lapsed_long_ago = wall_time() >= float(pending["expires_at"]) + EXPIRED_NOTICE_SECONDS
++             if resumed and not renewed and (outcome != "expired" or lapsed_long_ago):
++                 # The saved code can no longer finish: it lapsed long ago (the
++                 # user is back for a new session) or cannot finish for another
++                 # reason. One fresh approval, opened as any new one.
++                 renewed = True
++                 pending, resumed = _obtain_pending(
++                     sleep=sleep,
++                     monotonic=monotonic,
++                     lock_nonce=lock_nonce,
++                     renew=True,
++                 if resumed:
++                     announced = False
++                     browser_ok, early_after, wait_first = True, None, False
++                 else:
++                     announced = True
++                     browser_ok = show_new(pending)
++                     early_after = early_return_for(pending)
++                     wait_first = not pending.get("approved_on_create")
++                 interval = int(pending["interval"])
++                 page_opened = None
++             if outcome == "expired":
++                 # Lapsed moments ago without Allow: say so; running the command
++                 # again opens a new page.
++                 raise RuntimeError(EXPIRED_MESSAGE)
++             raise RuntimeError(f"Beatra authorization stopped ({outcome.split(':', 1)[1]})")
++         if outcome in {"pending", "slow_down"} and not announced:
++             show_resumed(pending)
++             announced = True
++         if outcome == "pending" and isinstance(polled.get("page_opened"), bool):
++             page_opened = bool(polled["page_opened"])
++         if outcome == "slow_down":
++             # Another command may be checking the same code; back off, but not
++             # so far that an approval waits long to be noticed.
++             interval = min(max(interval + 5, _positive_int(polled, "interval", interval)), MAX_POLL_INTERVAL_SECONDS)
++         # The approval page was never opened: the agent must show the link, and
++         # some hosts show nothing until the command ends. Hand it back now —
++         # at once when no browser could open, after a minute otherwise.
++             early_after
++             and page_opened is not True
++             and (not browser_ok or monotonic() - started_mono >= float(early_after))
++         if monotonic() >= next_progress and not legacy:
++             next_progress += PROGRESS_SECONDS
++             _say(
++             _say(
++                 "Still waiting for Allow on the approval page "
++                 f"(about {_minutes_left(pending, wall_time)} more minutes): "
++                 f"{_shown_link(str(pending['verification_uri_complete']), state_dir)}"
++         if wall_time() >= float(pending["expires_at"]) + REDEEM_GRACE_SECONDS and outcome in {"pending", "slow_down"}:
++             raise RuntimeError(EXPIRED_MESSAGE)
++         remaining = budget - max(monotonic() - started_mono, wall_time() - started_wall)
++         if remaining < POLL_TIMEOUT_SECONDS:
++         sleep(min(float(interval), remaining))
++ def collect_saved_approval(
++     state_dir: Path | None = None,
++     post_form: PostForm | None = None,
++     wall_time: Callable[[], float] = time.time,
++ ) -> tuple[str, str | None]:
++     """One check of the approval this computer is waiting for, for mcp_client
++     to run before a Beatra call that has no working credential.
++     ("collected", None): the approval was given; the credential is saved.
++     ("pending", link): still waiting for Allow on that page.
++     ("unreachable", link): Beatra could not be asked; nothing changed.
++     ("none", None): nothing to collect (none saved, declined, or lapsed).
++     state_dir = (state_dir or Path.home() / ".beatra").expanduser()
++     pending, _ = _load_pending(state_dir, wall_time=wall_time)
++     if pending is None:
++         return "none", None
++     link = _shown_link(str(pending["verification_uri_complete"]), state_dir)
++         status, polled = (post_form or _collect_post_form)(token_url, _poll_fields(pending))
++     except _TransientAuthorizationError:
++         return "unreachable", link
++         return "unreachable", link
++     outcome = _classify_poll(status, polled, False)
++     if outcome == "token":
++         _save_credential(state_dir, polled)
++         _discard_pending(state_dir, device_code=str(pending["device_code"]))
++         return "collected", None
++     if outcome in {"pending", "slow_down"}:
++         return "pending", link
++     if outcome == "transient":
++     _discard_pending(state_dir, device_code=str(pending["device_code"]))
++     return "none", None
++ def _collect_post_form(url: str, fields: dict[str, str]) -> tuple[int, dict[str, Any]]:
++     return _default_post_form(url, fields, timeout=5)
++     wait_seconds: float | None = None,
++             _say("Beatra is ready with the existing private credential.")
++     pending, resumed = _obtain_pending(
++         state_dir=state_dir,
++         state_dir=state_dir,
++         host_platform=host_platform,
++         host_platform=host_platform,
++         device_name=device_name,
++         device_name=device_name,
++         post_form=post_form,
++         post_form=post_form,
++         sleep=sleep,
++         sleep=sleep,
++         monotonic=monotonic,
++         monotonic=monotonic,
++         wall_time=wall_time,
++         lock_nonce=lock_nonce,
++     return _wait_for_credential(
++         pending,
++         resumed=resumed,
++         force=force,
++         probe_credential=probe_credential,
++         open_browser=open_browser,
++         wait_seconds=wait_seconds,
++ #: The approval link this process last showed, for the message a stopped run prints.
++ _CURRENT_LINK: str | None = None
++     parser.add_argument(
++     parser.add_argument(
++         default=None,
++         default=None,
++         help=(
++         help=(
++         ),
++         ),
++         "--wait-seconds",
++         type=int,
++             "Return within about this many seconds while the approval is still "
++             f"pending ({WAIT_SECONDS_MIN}-{WAIT_SECONDS_MAX}); running the same command "
++             "again continues the same approval."
++         "--approval-link",
++         choices=("ai", "auto"),
++             "Show approval links on Beatra's international site (ai), for sign-in "
++             "methods such as Google, or follow this computer's network again (auto)."
++     if args.wait_seconds is not None and not WAIT_SECONDS_MIN <= args.wait_seconds <= WAIT_SECONDS_MAX:
++         parser.error(f"--wait-seconds must be between {WAIT_SECONDS_MIN} and {WAIT_SECONDS_MAX}")
++     # Agents read this output through a pipe, where Python would otherwise hold
++     # the approval link in a buffer until exit and drop it if the run is killed.
++     with suppress(AttributeError, ValueError):
++         sys.stdout.reconfigure(line_buffering=True)
++     _install_signal_handlers()
++         # Inside the try: a stop during the route check is reported like any
++         # other stop before an approval page was ready.
++         state_dir = Path.home() / ".beatra"
++         _resolve_route(state_dir)
++         if args.approval_link is not None:
++                 _runtime().set_approval_link_preference(state_dir, args.approval_link)
++             except OSError as exc:
++                 raise RuntimeError(f"Could not save the approval-link choice: {exc}") from exc
++         authorize(platform=args.platform, force=args.force, wait_seconds=args.wait_seconds)
++         code = 0
++     except _ApprovalPending as pending:
++         _say(pending.instructions())
++         code = EXIT_PENDING
++         code = EXIT_PENDING
++         code = EXIT_PENDING
++     except _AuthorizationInProgress:
++         _say(AUTH_IN_PROGRESS_MESSAGE)
++     except (_Stopped, KeyboardInterrupt):
++         # A second stop request while reporting must not turn into a traceback.
++         _install_signal_handlers(signal.SIG_IGN)
++         if _CURRENT_LINK:
++             _say(_ApprovalPending(_CURRENT_LINK, stopped=True).instructions())
++         else:
++                 f"{AUTH_PENDING_CODE}: This run was stopped before an approval page was "
++                 "ready. Run this same command again."
++         with suppress(OSError, ValueError):
++         with suppress(OSError, ValueError):
++             print(str(exc), file=sys.stderr, flush=True)
++         code = 1
++     # A host that already closed the pipe must not turn the exit status into
++     # a flush error.
++         sys.stdout.flush()
++         sys.stderr.flush()
++             sys.stderr = open(os.devnull, "w", encoding="utf-8")  # noqa: SIM115 -- replaces stderr for the process
++     return code
 
 ### scripts/mcp_client.py  [code]
 - import io
@@ -1061,6 +1683,344 @@ change_type: instructions+docs+code   changelog: New icon. The shared helper kee
 -         _remove_tree(transaction)
 -         return
 -         journal = json.loads(journal_path.read_text(encoding="utf-8"))
+-     except (OSError, json.JSONDecodeError) as exc:
+-         raise RuntimeError("Beatra update recovery journal is invalid") from exc
+-         not isinstance(journal, dict)
+-         or journal.get("schema_version") != 1
+-         or journal.get("install_root") != str(install_root)
+-         or not isinstance(journal.get("nonce"), str)
+-         or re.fullmatch(r"[0-9a-f]{16}", journal["nonce"]) is None
+-         or not isinstance(journal.get("entries"), list)
+-     for entry in reversed(journal["entries"]):
+-         if not isinstance(entry, dict) or not isinstance(entry.get("path"), str):
+-             raise RuntimeError("Beatra update recovery journal is invalid")
+-         destination = _safe_destination(install_root, entry["path"])
+-         temporary = _transaction_temporary(destination, journal["nonce"])
+-         if entry.get("existed") is True:
+-             backup = transaction / "backup" / entry["path"]
+-             if not backup.is_file():
+-                 raise RuntimeError("Beatra update recovery backup is missing")
+-             destination.parent.mkdir(parents=True, exist_ok=True)
+-             _copy_to_destination(
+-             _copy_to_destination(
+-                 backup.read_bytes(),
+-                 destination,
+-                 destination,
+-                 mode=int(entry.get("mode", 0o644)),
+-                 temporary=temporary,
+-         elif destination.exists():
+-             destination.unlink()
+-     created = journal.get("created_dirs")
+-     if isinstance(created, list):
+-         for relative in reversed(created):
+-             if not isinstance(relative, str):
+-                 continue
+-                 continue
+-                 continue
+-             directory = install_root / relative
+-             with suppress(OSError):
+-                 directory.rmdir()
+-     _remove_tree(transaction)
+-     _remove_tree(transaction)
+- def recover_update(
+-     if (update_home / "transaction").exists():
+-         _rollback_transaction(update_home, resolved_root)
+- def _lock_update(update_home: Path, *, now: float) -> str | None:
+-     path = update_home / "update.lock"
+-     path = update_home / "update.lock"
+-     nonce = os.urandom(16).hex()
+-     for attempt in range(2):
+-         descriptor = -1
+-             descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+-             with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+-                 descriptor = -1
+-                 json.dump(
+-                     {"schema_version": 1, "nonce": nonce, "created_at": now},
+-                     handle,
+-                     separators=(",", ":"),
+-                 handle.write("\n")
+-             return nonce
+-         except FileExistsError:
+-                 current = json.loads(path.read_text(encoding="utf-8"))
+-                 created = float(current["created_at"])
+-             except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+-                     created = path.stat().st_mtime
+-                 except OSError:
+-                     created = now
+-             if attempt == 0 and now - created > UPDATE_LOCK_MAX_AGE_SECONDS:
+-                 path.unlink(missing_ok=True)
+-         finally:
+-             if descriptor >= 0:
+-                 os.close(descriptor)
+- def _unlock_update(update_home: Path, nonce: str) -> None:
+-         if value.get("nonce") == nonce:
+-     except (OSError, AttributeError, json.JSONDecodeError):
+- def _ensure_owned_baseline(
+-     update_home: Path,
+-     update_home: Path,
+-     if isinstance(state.get("owned_files"), dict):
+-     version = PACKAGE_VERSION
+-     archive = f"{PACKAGE_SLUG}-skill-{version}.zip"
+-     base_url = PACKAGE_CDN_BASE_TEMPLATE.format(version=version)
+-         f"{base_url}/skill-manifest.json",
+-     manifest = _json_object(manifest_content, "Beatra installed package manifest")
+-     archive_sha256 = manifest.get("archive_sha256")
+-     if not isinstance(archive_sha256, str) or _SHA256.fullmatch(archive_sha256) is None:
+-         raise RuntimeError("Beatra installed package manifest is invalid")
+-     manifest_files = _manifest_files(
+-         manifest,
+-         discovery={
+-             "version": version,
+-             "archive": archive,
+-             "archive_sha256": archive_sha256,
+-             "channel": PACKAGE_CHANNEL,
+-             "locale": PACKAGE_LOCALE,
+-     owned: dict[str, dict[str, Any]] = {}
+-     for relative, metadata in manifest_files.items():
+-         destination = _safe_destination(install_root, relative)
+-         destination = _safe_destination(install_root, relative)
+-         if not destination.is_file():
+-             continue
+-             continue
+-             continue
+-             if _sha256(destination.read_bytes()) == metadata["sha256"]:
+-                 owned[relative] = metadata
+-         except OSError:
+-     state["installed_version"] = version
+-     state["owned_files"] = owned
+-     state["owned_files"] = owned
+- def _apply_update(
+-     new_files: dict[str, bytes],
+-     previous_owned = state.get("owned_files")
+-     previous = previous_owned if isinstance(previous_owned, dict) else {}
+-     previous_paths = {
+-         relative
+-         relative
+-         for relative, metadata in previous.items()
+-         if isinstance(relative, str)
+-         and isinstance(metadata, dict)
+-         and isinstance(metadata.get("sha256"), str)
+-         and _SHA256.fullmatch(metadata["sha256"]) is not None
+-     obsolete: list[str] = []
+-     for relative, metadata in previous.items():
+-         if relative in new_files or not isinstance(relative, str) or not isinstance(metadata, dict):
+-         digest = metadata.get("sha256")
+-         if destination.is_file() and isinstance(digest, str):
+-                 if _sha256(destination.read_bytes()) == digest:
+-                     obsolete.append(relative)
+-             except OSError:
+-     ordered_new = sorted(
+-         new_files,
+-         key=lambda path: (path == "scripts/mcp_client.py", path),
+-     touched = [*ordered_new, *sorted(obsolete)]
+-     destinations = {relative: _safe_destination(install_root, relative) for relative in touched}
+-     collisions = [
+-         for relative in ordered_new
+-         if destinations[relative].exists() and relative not in previous_paths
+-     ]
+-     if collisions:
+-             "Beatra update refused to replace an unowned installation file: "
+-             f"{collisions[0]}"
+-     for directory in {_nearest_existing_parent(destination, install_root) for destination in destinations.values()}:
+-         _write_probe(directory)
+-     existing_bytes = sum(destination.stat().st_size for destination in destinations.values() if destination.exists())
+-     required_bytes = sum(len(content) for content in new_files.values()) + existing_bytes + 1024 * 1024
+-         if shutil.disk_usage(install_root).free < required_bytes:
+-             raise RuntimeError("Beatra package installation has insufficient free space")
+-         raise RuntimeError("Beatra package free space could not be verified") from exc
+-     if transaction.exists():
+-         raise RuntimeError("Beatra update recovery is still pending")
+-     backup_root = transaction / "backup"
+-     _ensure_private_directory(backup_root)
+-     transaction_nonce = os.urandom(8).hex()
+-     entries: list[dict[str, Any]] = []
+-     created_dirs: set[str] = set()
+-         for relative in touched:
+-             destination = destinations[relative]
+-             destination = destinations[relative]
+-             existed = destination.exists()
+-             mode = stat.S_IMODE(os.lstat(destination).st_mode) if existed else 0o644
+-             entries.append({"path": relative, "existed": existed, "mode": mode})
+-             if existed:
+-                 backup = backup_root / relative
+-                 backup.parent.mkdir(parents=True, exist_ok=True)
+-                 shutil.copyfile(destination, backup)
+-             parent = destination.parent
+-             while parent != install_root and not parent.exists():
+-                 created_dirs.add(parent.relative_to(install_root).as_posix())
+-                 parent = parent.parent
+-         journal = {
+-             "install_root": str(install_root),
+-             "nonce": transaction_nonce,
+-             "from_version": PACKAGE_VERSION,
+-             "to_version": discovery["version"],
+-             "entries": entries,
+-             "created_dirs": sorted(created_dirs, key=lambda value: (value.count("/"), value)),
+-         _write_private_json(transaction / "journal.json", journal)
+-         for relative in journal["created_dirs"]:
+-             (install_root / relative).mkdir(exist_ok=True)
+-         for relative in ordered_new:
+-                 new_files[relative],
+-                 temporary=_transaction_temporary(destination, transaction_nonce),
+-         for relative in obsolete:
+-             destinations[relative].unlink(missing_ok=True)
+-             _rollback_transaction(update_home, install_root)
+-         except Exception as recovery_exc:
+-             raise RuntimeError("Beatra update failed and requires recovery on the next start") from recovery_exc
+-         if isinstance(exc, RuntimeError):
+-         raise RuntimeError("Beatra update could not replace the package safely") from exc
+-     files = manifest.get("files")
+-     owned = {
+-         str(item["path"])[len(PACKAGE_SLUG) + 1 :]: {
+-             "bytes": item["bytes"],
+-             "sha256": item["sha256"],
+-         for item in files
+-         if isinstance(item, dict) and isinstance(item.get("path"), str)
+-     state["installed_version"] = discovery["version"]
+-     with suppress(OSError):
+-         # Package bytes are already committed and independently verifiable.
+-         # Losing this local cache only means obsolete files are preserved on a
+-         # future update; it must not turn a successful update into a rollback.
+- def update_package(
+-     if not resolved_root.is_dir():
+-         raise RuntimeError("Beatra package installation path is invalid")
+-     nonce = _lock_update(update_home, now=time.time())
+-     if nonce is None:
+-         raise RuntimeError("Another Beatra package update is already running")
+-         recover_update(state_dir=resolved_state, install_root=resolved_root)
+-         checked = check_update(get_bytes=get_bytes)
+-         if not checked["update_available"]:
+-             return checked
+-         _ensure_owned_baseline(
+-             install_root=resolved_root,
+-             install_root=resolved_root,
+-             update_home=update_home,
+-             update_home=update_home,
+-         discovery = checked["discovery"]
+-         manifest, new_files = download_update(discovery, get_bytes=get_bytes)
+-         _apply_update(
+-             discovery=discovery,
+-             manifest=manifest,
+-             new_files=new_files,
+-         return checked
+-         _unlock_update(update_home, nonce)
+- def maybe_auto_update(
+-     """Best-effort silent update. Never block the requested MCP command."""
+-         observed_at = time.time() if now is None else now
+-         nonce = _lock_update(update_home, now=observed_at)
+-         if nonce is None:
+-             return False
+-             recover_update(state_dir=resolved_state, install_root=resolved_root)
+-             state = _read_update_state(update_home)
+-             if state.get("auto_update", True) is False:
+-                 return False
+-                 return False
+-                 return False
+-             last_checked = state.get("last_checked_at")
+-             if (
+-                 isinstance(last_checked, (int, float))
+-                 and observed_at - float(last_checked) < UPDATE_CHECK_MAX_AGE_SECONDS
+-             ):
+-             state["last_checked_at"] = observed_at
+-             _write_private_json(update_home / "state.json", state)
+-             checked = check_update(get_bytes=get_bytes)
+-             if not checked["update_available"]:
+-             _ensure_owned_baseline(
+-                 install_root=resolved_root,
+-                 install_root=resolved_root,
+-                 update_home=update_home,
+-                 update_home=update_home,
+-                 get_bytes=get_bytes,
+-             discovery = checked["discovery"]
+-             manifest, new_files = download_update(discovery, get_bytes=get_bytes)
+-             _apply_update(
+-                 discovery=discovery,
+-                 manifest=manifest,
+-                 new_files=new_files,
+-             return True
+-             _unlock_update(update_home, nonce)
+-         raise RuntimeError("Beatra credentials are missing; run scripts/authorize.py") from exc
+-         raise RuntimeError("Beatra credential file is invalid; authorize again")
+-         self.url, token = _credentials(state_dir)
+-                 },
+- def _registration_is_fresh(state_dir: Path, *, now: float) -> bool:
+-         value = json.loads((state_dir / "registrations.json").read_text(encoding="utf-8"))
+-         entry = value["packages"][PACKAGE_SLUG]
+-             entry["package_version"] == PACKAGE_VERSION
+-             and entry.get("platform") == host_platform(state_dir)
+-             and isinstance(entry["registered_at"], (int, float))
+-             and now - float(entry["registered_at"]) < REGISTRATION_MAX_AGE_SECONDS
+-     except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+-     path = state_dir / "registrations.json"
+-         value = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+-         value = {}
+-         value = {}
+-     packages = value.get("packages")
+-     if not isinstance(packages, dict):
+-         packages = {}
+-     packages[PACKAGE_SLUG] = {
+-         "registered_at": now,
+-         "recognized": recognized,
+-     value = {"schema_version": 1, "packages": packages}
+-     temporary = state_dir / f".registrations.{os.getpid()}.tmp"
+-         temporary.write_text(
+-             json.dumps(value, ensure_ascii=False, separators=(",", ":")) + "\n",
+-             encoding="utf-8",
+-     """Best-effort package telemetry; never block the requested creative operation."""
+-     if _registration_is_fresh(state_dir, now=observed_at):
+-                 "name": "beatra.installations.register",
+-                 "arguments": {
+-                     "package_slug": PACKAGE_SLUG,
+-                     "package_version": PACKAGE_VERSION,
+-                     "platform": host_platform(state_dir),
+-                     "external_installation_ref": _registration_reference(state_dir),
+-             # Pure telemetry does not get the business-call time budget: a
+-         _write_registration_cache(
+-             state_dir,
+-             now=observed_at,
+-             recognized=recognized if isinstance(recognized, bool) else None,
+-         # Installation telemetry is deliberately best effort. No registration
+-         # transport, protocol, cache, or future client error may block the
+-         # creative tool call that follows.
+-         2,
+-         "tools/call",
+- def _run_command(command: str, tool_name: str | None = None) -> dict[str, Any]:
+-     session = _session_with_registration(
+-     return session.request(
+-         {"name": tool_name, "arguments": arguments},
+-         help="Check, install, or configure Beatra package self-updates",
+-     update.add_argument(
+-         help="Check the official discovery document without changing files",
+-         "--auto",
+-         choices=("on", "off"),
+-         help="Enable or disable automatic silent updates for this installation",
+-             if args.check and args.auto is not None:
+-                 raise RuntimeError("Use either --check or --auto, not both")
+-             if args.auto is not None:
+-                 enabled = args.auto == "on"
+-                 set_auto_update(enabled)
+-                 print(f"Automatic Beatra package updates are {'enabled' if enabled else 'disabled'}.")
+-             elif args.check:
+-                 checked = check_update()
+-                 if checked["update_available"]:
+-                 if checked["update_available"]:
+-                     print(
+-                     print(
+-                         "Beatra package update available: "
+-                         f"{checked['current_version']} -> {checked['available_version']}."
+-                     )
+-                     )
+-                 else:
+-                 else:
+-                     print(f"Beatra package is current at {checked['current_version']}.")
+-                     print(f"Beatra package is current at {checked['current_version']}.")
+-                 checked = update_package()
+-                         "Beatra package updated to "
+-                         f"{checked['available_version']}; the next process will use it."
+-             maybe_auto_update()
+-             verify()
+-             result = upload(args.path, mime_type=args.mime_type)
+-             result = _run_command(args.command, getattr(args, "tool_name", None))
 + import http.client
 + import locale
 + import math
@@ -1361,6 +2321,936 @@ change_type: instructions+docs+code   changelog: New icon. The shared helper kee
 +         or isinstance(ttl, bool)
 +         or not isinstance(ttl, int)
 +     return {
++         "route": route,
++         "country_code": country,
++         "country_source": value["country_source"],
++         "ttl_seconds": ttl,
++     }
++     }
++ def _default_route_probe(route: str) -> object:
++     """GET /skill-route on one network. It carries no credential, package or
++     installation identity: only its own fixed User-Agent (spec §5.2, D1)."""
++         f"{route_api_origin(route)}{ROUTE_PROBE_PATH}",
++         headers={"Accept": "application/json", "User-Agent": ROUTE_PROBE_USER_AGENT},
++     opener = urllib.request.build_opener(_RejectRedirectHandler("Beatra route check"))
++         with opener.open(request, timeout=ROUTE_PROBE_DEADLINE_SECONDS) as response:
++                 return None
++                 return None
++             raw = response.read(MAX_ROUTE_ANSWER_BYTES + 1)
++         if len(raw) > MAX_ROUTE_ANSWER_BYTES:
++             return None
++             return None
++             return None
++             return None
++             return None
++         return json.loads(raw.decode("utf-8"))
++         return json.loads(raw.decode("utf-8"))
++     except (OSError, ValueError, RuntimeError, http.client.HTTPException):
++ def _probe_routes(
++     probe: RouteProbe,
++     cn_after_seconds: float,
++     deadline_seconds: float,
++ ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
++     """Ask .ai first, and .cn at once when .ai says cn, fails, or is still
++     silent after `cn_after_seconds`; stop as soon as the result cannot change,
++     and never later than the hard deadline (spec §5.2, §5.8). Each probe runs
++     in a daemon thread because getaddrinfo ignores urllib's timeout."""
++     answers: dict[str, dict[str, Any] | None] = {}
++     changed = threading.Condition()
++     def ask(route: str) -> None:
++             reply = _route_answer(probe(route))
++         except Exception:  # a probe that raised gave no answer
++             reply = None
++         with changed:
++             answers[route] = reply
++             changed.notify_all()
++     def launch(route: str) -> None:
++         threading.Thread(target=ask, args=(route,), name=f"beatra-route-{route}", daemon=True).start()
++     started = time.monotonic()
++     cn_asked = False
++     launch("ai")
++     with changed:
++         while True:
++             elapsed = time.monotonic() - started
++             ai_known = "ai" in answers
++             if ai_known and (answers["ai"] or {}).get("route") == "ai":
++                 break
++                 break
++                 break
++             if not cn_asked and (ai_known or elapsed >= cn_after_seconds):
++                 cn_asked = True
++                 launch("cn")
++             if ai_known and "cn" in answers:
++             remaining = deadline_seconds - elapsed
++             if remaining <= 0:
++             wait = remaining if cn_asked else min(remaining, cn_after_seconds - elapsed)
++             changed.wait(max(wait, 0.001))
++         return answers.get("ai"), answers.get("cn")
++ def _clamp_ttl(value: int) -> int:
++     return max(ROUTE_MIN_TTL_SECONDS, min(ROUTE_MAX_TTL_SECONDS, value))
++ def decide_route(
++     ai: dict[str, Any] | None,
++     cn: dict[str, Any] | None,
++     previous: str | None,
++     """The §5.2 table. Only a mainland verdict with a reachable .cn switches to
++     cn; with no usable answer the computer keeps the route it had, so a relay
++     blip never pushes a blocked mainland computer back to .ai."""
++     def decided(route: str, basis: str, reply: dict[str, Any] | None, lifetime: int) -> dict[str, Any]:
++         return {
++         return {
++         return {
++             "route": route,
++             "basis": basis,
++             "country_code": reply["country_code"] if reply else None,
++             "country_source": reply["country_source"] if reply else "unknown",
++             "lifetime": lifetime,
++         }
++     if ai is not None and ai["route"] == "cn":
++         if cn is not None:
++             return decided("cn", "server", ai, _clamp_ttl(ai["ttl_seconds"]))
++         return decided("ai", "cn_unreachable", ai, ROUTE_SHORT_TTL_SECONDS)
++     if ai is not None and ai["route"] == "ai":
++         return decided("ai", "server", ai, _clamp_ttl(ai["ttl_seconds"]))
++     if cn is not None and cn["route"] in ROUTE_HOSTS:
++         return decided(cn["route"], "cn_geoip", cn, _clamp_ttl(cn["ttl_seconds"]))
++     fallback = previous if previous in ROUTE_HOSTS else "ai"
++     return decided(fallback, "undecided", None, ROUTE_SHORT_TTL_SECONDS)
++ def _still_valid(record: dict[str, Any], now: float) -> bool:
++     expires_at = record.get("expires_at")
++     return isinstance(expires_at, (int, float)) and not isinstance(expires_at, bool) and now < expires_at
++ def _update_network(
++     state_dir: Path,
++     state_dir: Path,
++     state_dir: Path,
++     state_dir: Path,
++     state_dir: Path,
++     state_dir: Path,
++     state_dir: Path,
++     changes: dict[str, Any],
++     remove: tuple[str, ...] = (),
++     """Read-modify-write `network.json`, keeping `approval_link` and any key a
++     newer helper added. Concurrent processes: the last writer wins."""
++     record = _read_network(state_dir)
++     record = _read_network(state_dir)
++     record = _read_network(state_dir)
++     record.update(changes)
++     for key in remove:
++         record.pop(key, None)
++     record["schema_version"] = NETWORK_SCHEMA_VERSION
++     _write_private_json(state_dir.expanduser() / NETWORK_FILE, record)
++ def resolve_route(
++     state_dir: Path | None = None,
++     now: float | None = None,
++     now: float | None = None,
++     now: float | None = None,
++     now: float | None = None,
++     probe: RouteProbe | None = None,
++     probe: RouteProbe | None = None,
++     cn_after_seconds: float = ROUTE_PROBE_CN_AFTER_SECONDS,
++     deadline_seconds: float = ROUTE_PROBE_DEADLINE_SECONDS,
++     deadline_seconds: float = ROUTE_PROBE_DEADLINE_SECONDS,
++ ) -> str:
++ ) -> str:
++ ) -> str:
++     """Decide once per process which network this computer uses (spec §5.2).
++     Only `auto` builds decide; the cn channel is fixed and never asks. Every
++     outcome is recorded so an offline computer does not ask on every command,
++     and nothing here can fail the command that follows.
++     """
++     """
++     global _ACTIVE_ROUTE, _ROUTE_STATE_DIR
++         _ACTIVE_ROUTE = policy
++     resolved = (state_dir or Path.home() / ".beatra").expanduser()
++     _ROUTE_STATE_DIR = resolved
++     observed = time.time() if now is None else now
++     observed = time.time() if now is None else now
++     observed = time.time() if now is None else now
++     observed = time.time() if now is None else now
++     observed = time.time() if now is None else now
++     record = _read_network(resolved)
++     recorded = record.get("route")
++     # A route another helper wrote may be any JSON value: only a known name counts.
++     previous = recorded if isinstance(recorded, str) and recorded in ROUTE_HOSTS else None
++     if previous is not None and (record.get("pinned") is True or _still_valid(record, observed)):
++         _ACTIVE_ROUTE = previous
++         return previous
++         ai, cn = _probe_routes(
++             probe or _default_route_probe,
++             cn_after_seconds=cn_after_seconds,
++             deadline_seconds=deadline_seconds,
++         )
++         decision = decide_route(ai, cn, previous=previous)
++     except Exception:
++     except Exception:
++     except Exception:
++     except Exception:
++     except Exception:
++         decision = decide_route(None, None, previous=previous)
++     _ACTIVE_ROUTE = decision["route"]
++     with suppress(Exception):
++     with suppress(Exception):
++     with suppress(Exception):
++     with suppress(Exception):
++     with suppress(Exception):
++     with suppress(Exception):
++     with suppress(Exception):
++     with suppress(Exception):
++         _update_network(
++             resolved,
++                 "route": decision["route"],
++                 "basis": decision["basis"],
++                 "pinned": False,
++                 "country_code": decision["country_code"],
++                 "country_source": decision["country_source"],
++                 "decided_at": int(observed),
++                 "expires_at": int(observed) + decision["lifetime"],
++                 "last_probe_at": int(observed),
++                 "policy_version": ROUTE_POLICY_VERSION,
++     return decision["route"]
++ def note_route_failure(state_dir: Path | None = None, *, now: float | None = None) -> None:
++     """A connection failure or gateway error on this computer's route: let the
++     next process decide again (spec §5.5), at most once every two minutes and
++     never for a route the user pinned. The failed request itself is never
++     resent; it returns the error it always did."""
++     if route_policy() != "auto":
++     if route_policy() != "auto":
++     resolved = state_dir or _ROUTE_STATE_DIR
++     if resolved is None:
++         record = _read_network(resolved)
++         if record.get("route") not in ROUTE_HOSTS or record.get("pinned") is True:
++             return
++             return
++             return
++             return
++             return
++         expires = record.get("expires_at")
++         if isinstance(expires, (int, float)) and not isinstance(expires, bool) and expires <= observed:
++             return  # already due for a new decision; later failures add nothing
++         last = record.get("last_probe_at")
++             isinstance(last, (int, float))
++             isinstance(last, (int, float))
++             and not isinstance(last, bool)
++             and not isinstance(last, bool)
++             and observed - last < ROUTE_REPROBE_INTERVAL_SECONDS
++         _update_network(resolved, {"expires_at": int(observed)})
++ _ROUTE_NAMES = {"ai": "the international network", "cn": "the mainland China network"}
++ def approval_link_preference(state_dir: Path) -> str:
++     """`ai` when the user chose to open approval links on Beatra's international
++     site (`authorize.py --approval-link ai`), else `auto` (spec §5.7)."""
++     return "ai" if _read_network(state_dir).get("approval_link") == "ai" else "auto"
++ def set_approval_link_preference(state_dir: Path, choice: str) -> None:
++     if choice == "ai":
++         _update_network(state_dir, {"approval_link": "ai"})
++     elif choice == "auto":
++         _update_network(state_dir, {}, remove=("approval_link",))
++     else:
++         raise RuntimeError("Choose ai or auto for the approval link")
++ def _probe_one(probe: RouteProbe, route: str, *, deadline_seconds: float) -> dict[str, Any] | None:
++     replies: list[dict[str, Any] | None] = []
++     done = threading.Event()
++     def ask() -> None:
++             replies.append(_route_answer(probe(route)))
++             replies.append(None)
++             done.set()
++     threading.Thread(target=ask, name=f"beatra-route-{route}", daemon=True).start()
++     done.wait(deadline_seconds)
++     return replies[0] if replies else None
++ def pin_route(
++     choice: str,
++     """`network --use`: keep one network until `--use auto` (spec §5.4). A
++     network that does not answer right now is refused, so a computer is never
++     locked onto a route it cannot reach."""
++     global _ACTIVE_ROUTE
++         raise RuntimeError("This installation always uses the mainland China network; its network cannot be changed.")
++     if choice == "auto":
++     if choice == "auto":
++         _update_network(state_dir, {"pinned": False, "expires_at": 0})
++         _ACTIVE_ROUTE = None
++         return resolve_route(state_dir, now=observed, probe=probe)
++     if choice not in ROUTE_HOSTS:
++         raise RuntimeError("Choose cn, ai or auto")
++     reply = _probe_one(probe or _default_route_probe, choice, deadline_seconds=deadline_seconds)
++     if reply is None:
++             f"Beatra did not answer over {_ROUTE_NAMES[choice]} just now, so it was not selected. "
++             "Check the connection and try again."
++     _update_network(
++         state_dir,
++         {
++         {
++             "route": choice,
++             "basis": "pinned",
++             "pinned": True,
++             "country_code": reply["country_code"],
++             "country_source": reply["country_source"],
++             "decided_at": int(observed),
++             "expires_at": None,
++             "last_probe_at": int(observed),
++             "policy_version": ROUTE_POLICY_VERSION,
++     _ACTIVE_ROUTE = choice
++     return choice
++ def network_status(state_dir: Path) -> dict[str, Any]:
++     status: dict[str, Any] = {
++         "policy": policy,
++         "route": current_route(state_dir),
++         "approval_link": approval_link_preference(state_dir),
++         status["basis"] = "channel"
++         return status
++     if record.get("route") in ROUTE_HOSTS:
++         for key in ("basis", "pinned", "country_code", "expires_at"):
++             if key in record:
++                 status[key] = record[key]
++     return status
++ def _network_command(choice: str | None, state_dir: Path) -> None:
++         route = pin_route(choice, state_dir) if choice is not None else None
++         raise RuntimeError(f"Could not save the network choice: {exc}") from exc
++         print(f"Beatra chooses this computer's network automatically again; it now uses {_ROUTE_NAMES[route]}.")
++     elif choice is not None:
++         print(
++             f"Beatra will use {_ROUTE_NAMES[route]} until you run "
++             "`python3 scripts/mcp_client.py network --use auto`."
++     print(json.dumps(network_status(state_dir), ensure_ascii=False, separators=(",", ":")))
++ def _sources_url() -> str:
++     """The package's version list beside its discovery document, on the same
++     official site host (no host literal here: cn builds rewrite the discovery)."""
++     parts = urllib.parse.urlsplit(_discovery_url())
++     return urllib.parse.urlunsplit((parts.scheme, parts.netloc, f"/skills/{PACKAGE_SLUG}/sources.json", "", ""))
++ def fetch_sources(*, get_bytes: GetBytes = _default_get_bytes, route: str | None = None) -> dict[str, Any]:
++     document = _json_object(
++         _update_get(
++             _sources_url(),
++             _site_url,
++             route=route,
++             timeout=UPDATE_DISCOVERY_TIMEOUT_SECONDS,
++             limit=MAX_SOURCES_BYTES,
++         "Beatra version list",
++         document.get("schema_version") != 1
++         or document.get("package") != PACKAGE_SLUG
++         or not isinstance(document.get("sources"), dict)
++         raise RuntimeError("Beatra version list is invalid")
++     return document
++ def _source_version(document: dict[str, Any], source: str) -> str | None:
++     value = document["sources"].get(source)
++     return value if isinstance(value, str) and _SEMVER.fullmatch(value) else None
++ def _shell_quote(value: str) -> str:
++     """Quote a path for a POSIX shell (single quotes) or Windows (double quotes).
++     Plain characters stay bare. A backslash is plain only on Windows.
++     windows = os.name == "nt"
++     if (_PLAIN_WINDOWS if windows else _PLAIN_POSIX).fullmatch(value):
++         return value
++         return value
++     if windows:
++         return '"' + value.replace('"', '\\"') + '"'
++     return "'" + value.replace("'", "'\"'\"'") + "'"
++ def _locked_entry(path: Path, *, minimum: int) -> dict[str, Any] | None:
++     value = _small_regular_json(path, MAX_LOCK_BYTES)
++     version = value.get("version")
++     if not isinstance(version, int) or isinstance(version, bool) or version < minimum:
++     skills = value.get("skills")
++     entry = skills.get(PACKAGE_SLUG) if isinstance(skills, dict) else None
++     return entry if isinstance(entry, dict) else None
++ def _skills_cli_source(entry: dict[str, Any]) -> str | None:
++     source = entry.get("source")
++     if not isinstance(source, str):
++     if source.startswith("beatra-ai/"):
++         return "github"
++     if source == "modelscope.cn":
++         return "modelscope"
++     return None
++     return None
++     return None
++     return None
++     return None
++     return None
++ def _has_github_metadata(install_root: Path) -> bool:
++         with (install_root / "SKILL.md").open("r", encoding="utf-8") as handle:
++             head = handle.read(16 * 1024)
++     except (OSError, UnicodeDecodeError):
++         return False
++         return False
++         return False
++         return False
++         return False
++         return False
++     matched = re.match(r"\A---\n(.*?)\n---\n", head, re.DOTALL)
++     return matched is not None and _GH_REPO_LINE.search(matched.group(1)) is not None
++ def _install_page_url() -> str:
++     discovery = _discovery_url()
++     return discovery[: -len("install.json")] + "install.md" if discovery.endswith("/install.json") else discovery
++ def detect_installer(
++     install_root: Path,
++     home: Path | None = None,
++     home: Path | None = None,
++     home: Path | None = None,
++ ) -> dict[str, str] | None:
++     """Which store or tool installed this copy, read only from local records,
++     and the command that updates it there (spec 2026-10-14 §4.3). None when no
++     record identifies one: such a copy gets no notice."""
++     home = home or Path.home()
++     slug = PACKAGE_SLUG
++     origin = _clawhub_origin(install_root)
++     origin = _clawhub_origin(install_root)
++     if origin is not None:
++         if origin.get("sourceKind") == "skills-sh":
++         store_slug = origin["slug"] if _STORE_SLUG.fullmatch(origin["slug"]) else slug
++             "source": "clawhub",
++             "command": (
++                 f"clawhub update {store_slug} --workdir {_shell_quote(str(install_root.parent.parent))}"
++                 f" --dir {_shell_quote(install_root.parent.name)}"
++             ),
++             "hint": "add --force if it reports local changes",
++     if _locked_entry(install_root.parent / SKILLHUB_LOCK_FILE, minimum=1) is not None:
++             "source": "skillhub",
++             "command": f"skillhub install {slug} --force --dir {_shell_quote(str(install_root.parent))}",
++     parents = install_root.parents
++     project = parents[2] if len(parents) > 2 else None
++     if _has_github_metadata(install_root):
++         command = f"gh skill update {slug}"
++         if project is not None and project != home:
++             command = f"{command} (run in {_shell_quote(str(project))})"
++         return {"source": "github", "command": command}
++     for directory in list(parents)[1:5]:
++         entry = _locked_entry(directory / SKILLS_CLI_PROJECT_LOCK, minimum=1)
++         if entry is not None:
++         if entry is not None:
++             source = _skills_cli_source(entry)
++             source = _skills_cli_source(entry)
++             if source is None:
++             return {
++                 "source": source,
++                 "command": f"npx skills update {slug} -p -y (run in {_shell_quote(str(directory))})",
++             }
++             }
++     if project == home:
++         # The skills CLI's global lock. Its XDG_STATE_HOME location is not read:
++         # the helpers read the process environment only for host detection.
++         entry = _locked_entry(home / ".agents" / SKILLS_CLI_GLOBAL_LOCK, minimum=3)
++             return None if source is None else {"source": source, "command": f"npx skills update {slug} -g -y"}
++     stamped = _stamped_source(install_root)
++     stamped = _stamped_source(install_root)
++     if stamped == "workbuddy":
++         return {"source": "workbuddy", "command": "open this Skill in WorkBuddy and update it there"}
++     if stamped == "website" and globals().get("PACKAGE_CHANNEL") == "canonical":
++         return {"source": "website", "command": f"reinstall from {_install_page_url()}"}
++ def version_notice(installed: dict[str, str], document: dict[str, Any]) -> str | None:
++     available = _source_version(document, installed["source"])
++     if available is None or _semver(available) <= _semver(PACKAGE_VERSION):
++     hint = f" ({installed['hint']})" if installed.get("hint") else ""
++         f"Beatra notice: {PACKAGE_SLUG} {available} is available from "
++         f"{SOURCE_LABELS[installed['source']]} (installed: {PACKAGE_VERSION}). "
++         f"Update with: {installed['command']}{hint}"
++ def _has_version_list() -> bool:
++     """A rendered package names its version list; an unrendered build (the
++     WorkBuddy connector keeps placeholders) has none and never asks for one."""
++     if not _STORE_SLUG.fullmatch(PACKAGE_SLUG):
++         parts = urllib.parse.urlsplit(_discovery_url())
++     except ValueError:
++     return parts.scheme == "https" and bool(parts.hostname)
++ def maybe_notify_update(
++     stream: Any = None,
++ ) -> str | None:
++     """Once a day at most, say on stderr when the place this copy came from
++     has a newer version. Reads only, never changes the installation, and any
++     failure is silent: the user's command always runs as asked."""
++         if not _has_version_list():
++             return None  # an unrendered build has no list
++         resolved_state = state_dir or Path.home() / ".beatra"
++         # Throttle before reading install locks, so an unidentified copy parses
++         # them at most once a day.
++         state = _read_update_state(update_home)
++         observed = time.time() if now is None else now
++         last = state.get("last_checked_at")
++             and 0 <= observed - float(last) < VERSION_CHECK_MAX_AGE_SECONDS
++         state["last_checked_at"] = observed
++         installed = detect_installer(resolved_root, home=home)
++         if installed is None:
++         notice = version_notice(installed, fetch_sources(get_bytes=get_bytes, route=current_route(resolved_state)))
++         if notice is not None:
++             print(notice, file=stream or sys.stderr)
++         return notice
++ def update_status(
++     """`update` / `update --check`: report what the install source offers now; never install."""
++     if not _has_version_list():
++         return f"{PACKAGE_SLUG} {PACKAGE_VERSION} is installed. Update it the way you installed it."
++     installed = detect_installer(resolved_root, home=home)
++     if installed is None:
++             f"{PACKAGE_SLUG} {PACKAGE_VERSION} is installed. This copy does not show which store or tool "
++             "installed it; update it the way you installed it."
++         document = fetch_sources(get_bytes=get_bytes, route=current_route(resolved_state))
++         raise RuntimeError("Beatra version list is unavailable") from exc
++     return version_notice(installed, document) or (
++         f"No newer {PACKAGE_SLUG} version is available from "
++         f"{SOURCE_LABELS[installed['source']]} (installed: {PACKAGE_VERSION})."
++         return {"schema_version": 1}
++         return {"schema_version": 1}
++     if not path.is_file():
++         # Not connected yet (or the file is gone): the caller may still find
++         # an approval waiting to be collected.
++         raise CredentialsMissing(f"Beatra credentials are missing. {RECONNECT_GUIDANCE}")
++         raise CredentialsMissing(f"Beatra credentials are missing. {RECONNECT_GUIDANCE}") from exc
++         raise CredentialsMissing("Beatra credential file is invalid; authorize again")
++     return result
++         _identity_url, token = _credentials(state_dir)
++         _identity_url, token = _credentials(state_dir)
++         self.url = route_mcp_url(current_route(state_dir))
++ def _small_regular_json(path: Path, limit: int) -> Any:
++     """The JSON value of a regular file no larger than `limit` bytes, else None.
++     Symbolic links, directories, oversized or undecodable files are ignored."""
++         info = os.lstat(path)
++         if not stat.S_ISREG(info.st_mode) or info.st_size > limit:
++         with path.open("rb") as handle:
++             raw = handle.read(limit + 1)
++     except OSError:
++     if len(raw) > limit:
++     except (ValueError, RecursionError):
++ def _channel_identity() -> tuple[str, str] | None:
++     """The channel and locale fixed at build time, when this build has a real
++     one (the WorkBuddy connector keeps placeholders and reports none)."""
++     channel = globals().get("PACKAGE_CHANNEL")
++     locale_name = globals().get("PACKAGE_LOCALE")
++         isinstance(channel, str)
++         and isinstance(locale_name, str)
++         and _CHANNEL_VALUE.fullmatch(channel)
++         and _LOCALE_TAG.fullmatch(locale_name)
++         return channel, locale_name
++ def _route_report(state_dir: Path) -> tuple[str, str] | None:
++         return policy, "channel"
++     route = record.get("route")
++     if route not in ROUTE_HOSTS:
++     if record.get("pinned") is True:
++         return route, "pinned"
++     basis = record.get("basis")
++     return (route, basis) if basis in _ROUTE_BASES else None
++ def _os_release(system: str | None) -> str | None:
++     if system == "darwin":
++         # macOS only. On Windows the platform module may query WMI or start a
++         # shell, which endpoint security reads as reconnaissance (spec §7).
++         import platform
++         return platform.mac_ver()[0] or None
++     if system == "windows":
++         version = sys.getwindowsversion()
++         return f"{version.major}.{version.minor}.{version.build}"
++     if system == "linux":
++         return os.uname().release
++ def _environment() -> dict[str, Any]:
++     """Coarse runtime facts for distribution analytics (spec §7): no user name,
++     path, environment variable or address. A fact outside the shape Beatra
++     records is left out rather than sent."""
++     facts: dict[str, Any] = {}
++     system = _OS_NAMES.get(sys.platform) or ("linux" if sys.platform.startswith("linux") else None)
++     if system is not None:
++         facts["os"] = system
++         release = _os_release(system)
++         if isinstance(release, str) and _OS_VERSION.fullmatch(release):
++             facts["os_version"] = release
++         arch = sysconfig.get_platform().lower()
++         if _ARCH_VALUE.fullmatch(arch):
++             facts["arch"] = arch
++     facts["python"] = ".".join(str(part) for part in sys.version_info[:3])
++         language = locale.getlocale()[0]
++         if isinstance(language, str):
++             tag = language.replace("_", "-")
++             if _LOCALE_TAG.fullmatch(tag):
++                 facts["locale"] = tag
++         offset = datetime.now().astimezone().utcoffset()
++         if offset is not None:
++             minutes = int(offset.total_seconds() // 60)
++             if -720 <= minutes <= 840:
++                 facts["tz_offset_minutes"] = minutes
++     return facts
++     return facts
++ def _own_install_root() -> Path | None:
++         return _current_install_root()
++ def _stamped_source(install_root: Path) -> str | None:
++     """The `install-source.json` Beatra adds to a copy it hands to a store or
++     site (spec §6.1). It is in no manifest, so updates leave it in place."""
++     value = _small_regular_json(install_root / INSTALL_SOURCE_FILE, MAX_INSTALL_SOURCE_BYTES)
++     if isinstance(value, dict) and value.get("schema_version") == 1 and value.get("source") in INSTALL_SOURCES:
++         return value["source"]
++ def _clawhub_origin(install_root: Path) -> dict[str, Any] | None:
++     """The ClawHub CLI's own record of this install (`readSkillOrigin`, clawhub
++     0.23.3 dist/skills.js), when it parses; the legacy directory name comes second."""
++     for relative in _CLAWHUB_ORIGINS:
++         value = _small_regular_json(install_root / relative, MAX_LOCAL_RECORD_BYTES)
++         if value is None:
++             continue  # unreadable or unparsable: the CLI tries the legacy name
++         # A file that parses decides, as in the CLI's `readSkillOrigin`.
++         if not isinstance(value, dict) or value.get("version") != 1:
++         installed_at = value.get("installedAt")
++             all(isinstance(value.get(key), str) and value[key] for key in ("registry", "slug", "installedVersion"))
++             and isinstance(installed_at, (int, float))
++             and not isinstance(installed_at, bool)
++             and math.isfinite(installed_at)
++             return value
++ def _store_marker_source(install_root: Path) -> str | None:
++     """A store client's own record inside this installation, for the stores
++     whose record format is verified (spec §6.3: ClawHub only)."""
++     if origin is None:
++     return "github" if origin.get("sourceKind") == "skills-sh" else "clawhub"
++ def _read_source_record(update_home: Path) -> dict[str, Any] | None:
++     value = _small_regular_json(update_home / SOURCE_RECORD_FILE, MAX_LOCAL_RECORD_BYTES)
++     basis, source = value.get("basis"), value.get("value")
++     if not isinstance(basis, str) or not isinstance(source, str) or basis not in _SOURCE_BASIS_RANK:
++     if source in INSTALL_SOURCES or (source == "other" and basis == "inferred"):
++ def record_install_source(value: str, basis: str, *, update_home: Path, now: float) -> dict[str, Any]:
++     """Keep the strongest evidence (spec §6.3): a stamp always wins because the
++     file is the current fact; otherwise only a stronger basis replaces."""
++     stored = _read_source_record(update_home)
++     if stored is not None:
++         same = stored["value"] == value and stored["basis"] == basis
++         not_stronger = _SOURCE_BASIS_RANK[basis] <= _SOURCE_BASIS_RANK[stored["basis"]]
++         if same or (basis != "stamp" and not_stronger):
++             return stored
++     record = {"value": value, "basis": basis, "recorded_at": int(now)}
++     _write_private_json(update_home / SOURCE_RECORD_FILE, record)
++     return record
++ def _install_source(state_dir: Path, install_root: Path, *, now: float) -> tuple[str, str] | None:
++     # Evidence in the installation decides, even when the state directory is
++     # read-only; saving the record is best effort (spec §6.3).
++     marker = None if stamped is not None else _store_marker_source(install_root)
++     found = (stamped, "stamp") if stamped is not None else (marker, "store_marker") if marker is not None else None
++     if found is not None:
++         with suppress(Exception):
++         with suppress(Exception):
++             kept = record_install_source(found[0], found[1], update_home=_update_home(state_dir, install_root), now=now)
++             return kept["value"], kept["basis"]
++         return found
++     record = _read_source_record(_update_home(state_dir, install_root))
++     return (record["value"], record["basis"]) if record else None
++ def guess_install_source(
++     value: str,
++     """`install-source --guess`: the agent's reading of how this Skill was
++     installed, from the conversation. It never replaces a stamp or a store
++     record (spec §6.3)."""
++     if value not in GUESSABLE_SOURCES:
++         raise RuntimeError("Unknown install source")
++     root = (install_root or _current_install_root()).resolve()
++     return record_install_source(value, "inferred", update_home=_update_home(resolved_state, root), now=observed)
++ def _registration_arguments(
++     install_root: Path | None,
++     now: float,
++     now: float,
++     now: float,
++     arguments: dict[str, Any] = {
++         "package_slug": PACKAGE_SLUG,
++         "external_installation_ref": _registration_reference(state_dir),
++     identity = _channel_identity()
++     if identity is not None:
++         arguments["channel"], arguments["channel_locale"] = identity
++         route = _route_report(state_dir)
++         if route is not None:
++             arguments["route"], arguments["route_basis"] = route
++     if install_root is not None:
++             source = _install_source(state_dir, install_root, now=now)
++             if source is not None:
++                 arguments["install_source"], arguments["install_source_basis"] = source
++         environment = _environment()
++         if environment:
++             arguments["environment"] = environment
++     return arguments
++     return arguments
++ def _registration_key(arguments: dict[str, Any]) -> dict[str, Any]:
++     return {key: arguments.get(key) for key in _REGISTRATION_KEY}
++ def _registration_is_fresh(
++     arguments: dict[str, Any],
++     arguments: dict[str, Any],
++     arguments: dict[str, Any],
++     value = _small_regular_json(
++         _update_home(state_dir, install_root) / REGISTRATION_CACHE_FILE, MAX_LOCAL_RECORD_BYTES
++     registered_at = value.get("registered_at")
++         value.get("key") == _registration_key(arguments)
++         and isinstance(registered_at, (int, float))
++         and not isinstance(registered_at, bool)
++         and now - float(registered_at) < REGISTRATION_MAX_AGE_SECONDS
++     _write_private_json(
++         _update_home(state_dir, install_root) / REGISTRATION_CACHE_FILE,
++             "key": _registration_key(arguments),
++             "registered_at": now,
++             "recognized": recognized,
++     """Best-effort registration of this installation (spec 2026-10-09 §7), the
++     one report the Skill sends: package, channel, network route, install source
++     and coarse runtime facts. It never blocks the requested creative operation."""
++         root = install_root or _own_install_root()
++         arguments = _registration_arguments(state_dir, root, now=observed_at)
++         cached = dict(arguments)
++         fresh = False
++         if root is not None:
++         if root is not None:
++             # An unreadable or unwritable state directory means "not fresh":
++             # the registration is still sent.
++             with suppress(Exception):
++             with suppress(Exception):
++                 fresh = _registration_is_fresh(state_dir, root, cached, now=observed_at)
++         if fresh:
++             {"name": "beatra.installations.register", "arguments": arguments},
++             # Registration does not get the business-call time budget: a
++             # The cache is best effort; its failure never undoes a sent registration.
++                 _write_registration_cache(
++                     state_dir,
++                     root,
++                     cached,
++                     now=observed_at,
++                     recognized=recognized if isinstance(recognized, bool) else None,
++         # Registration is deliberately best effort. No transport, protocol,
++         # cache, or future client error may block the creative call that follows.
++     post_json: PostJson = _default_post_json,
++     resolved_state_dir = state_dir or Path.home() / ".beatra"
++     session = _session_with_registration(state_dir=resolved_state_dir, post_json=post_json)
++ def _balance_hold_key(state_dir: Path) -> str | None:
++     """Holds belong to one credential, so a second account signed in on this
++     computer is never held by the first one's refusal. Never the token itself."""
++     return hashlib.sha256(token.encode("utf-8")).hexdigest()[:32]
++ def _credits(value: object) -> Decimal | None:
++         amount = Decimal(value)
++     except InvalidOperation:
++     return amount if amount.is_finite() else None
++ def _hold_is_live(hold: object, now: float) -> bool:
++     if not isinstance(hold, dict):
++     held_at = hold.get("held_at")
++     if isinstance(held_at, bool) or not isinstance(held_at, (int, float)):
++         age = now - float(held_at)
++     except OverflowError:
++     # A clock set back reads as expired: a hold may end early, never late.
++         math.isfinite(age)
++         and 0 <= age < BALANCE_HOLD_SECONDS
++         and isinstance(hold.get("message"), str)
++         and isinstance(hold.get("top_up_url"), str)
++ def _read_balance_holds(state_dir: Path, now: float) -> dict[str, dict[str, dict[str, Any]]]:
++     """Live holds by credential and tool. Anything unreadable reads as none:
++     a damaged record must never stop a call."""
++     value = _small_regular_json(state_dir.expanduser() / BALANCE_HOLD_FILE, MAX_BALANCE_HOLD_BYTES)
++     if not isinstance(value, dict) or value.get("schema_version") != BALANCE_HOLD_SCHEMA_VERSION:
++     holds = value.get("holds")
++     if not isinstance(holds, dict):
++     live: dict[str, dict[str, dict[str, Any]]] = {}
++     for key, tools in holds.items():
++         if isinstance(key, str) and isinstance(tools, dict):
++             kept = {tool: hold for tool, hold in tools.items() if isinstance(tool, str) and _hold_is_live(hold, now)}
++             if kept:
++                 live[key] = kept
++     return live
++ def _balance_refusal(result: dict[str, Any]) -> dict[str, Any] | None:
++     """The facts of an insufficient-credit refusal that waits for a top-up.
++     A refusal with another way forward (the free first video: change the
++     request and it runs at no charge) is never held."""
++     error = structured.get("error") if isinstance(structured, dict) else None
++     if result.get("isError") is not True or not isinstance(error, dict):
++     details = details if isinstance(details, dict) else {}
++     top_up_url = details.get("top_up_url")
++         error.get("code") != "insufficient_balance"
++         or details.get("retry_policy", WAIT_FOR_TOP_UP) != WAIT_FOR_TOP_UP
++         or "offer" in details
++         or not isinstance(message, str)
++         or not message
++         or not isinstance(top_up_url, str)
++         or not top_up_url
++     facts: dict[str, Any] = {"message": message, "top_up_url": top_up_url}
++     for name in ("required_credits", "balance_credits"):
++     for name in ("required_credits", "balance_credits"):
++         if _credits(details.get(name)) is not None:
++             facts[name] = details[name]
++ def _balance_covers(hold: dict[str, Any], balance: Decimal) -> bool:
++     required = _credits(hold.get("required_credits"))
++     return balance >= required if required is not None else balance > 0
++ def _steps_down(refusal: dict[str, Any], previous: dict[str, Any] | None) -> bool:
++     """A refused recheck that asked for less than the hold it rechecked: someone
++     choosing cheaper requests keeps one more recheck. A loop at one price never
++     steps down, so it stays held."""
++     if previous is None:
++     asked = _credits(refusal.get("required_credits"))
++     held = _credits(previous.get("required_credits"))
++     return asked is not None and held is not None and asked < held
++ def _note_balance_outcome(
++     key: str,
++     tool_name: str,
++     tool_name: str,
++     rechecked: bool,
++     """Hold the tool after a refusal; lift holds the balance now covers; lift
++     the tool's hold after it succeeds. Best effort: never fails the call."""
++         holds = _read_balance_holds(state_dir, now)
++         before = json.dumps(holds, sort_keys=True)
++         mine = dict(holds.get(key, {}))
++         refusal = _balance_refusal(result)
++         if refusal is not None:
++             spent = rechecked and not _steps_down(refusal, mine.get(tool_name))
++             mine[tool_name] = {**refusal, "held_at": now, "rechecked": spent}
++         elif _tool_failure_message(result) is not None:
++         elif tool_name == "beatra.wallet.get":
++             structured = result.get("structuredContent")
++             balance = _credits(structured.get("balance_credits") if isinstance(structured, dict) else None)
++             if balance is None:
++                 return
++             mine = {tool: hold for tool, hold in mine.items() if not _balance_covers(hold, balance)}
++         else:
++         else:
++         else:
++             mine.pop(tool_name, None)
++         if mine:
++             holds[key] = mine
++             holds.pop(key, None)
++         # Untouched holds mean no write: an ordinary success never rewrites,
++         # and a record this version cannot read is left alone.
++         if json.dumps(holds, sort_keys=True) == before:
++         path = state_dir.expanduser() / BALANCE_HOLD_FILE
++         if holds:
++             _write_private_json(path, {"schema_version": BALANCE_HOLD_SCHEMA_VERSION, "holds": holds})
++ def _utc(timestamp: float) -> str:
++     return datetime.fromtimestamp(timestamp, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")  # noqa: UP017
++ def _held_result(tool_name: str, hold: dict[str, Any]) -> dict[str, Any]:
++     """The refusal Beatra gave, repeated without sending anything. Same shape and
++     exit status as the refusal itself: the text a user may be shown is Beatra's
++     own message, and what ends the hold is in details.agent_note, as on the
++     server's refusal."""
++     required = hold.get("required_credits")
++     lifts = (
++         f"the hold lifts once the balance covers {required} credits"
++         if required is not None
++         else "the hold lifts once the balance is above zero"
++     rechecked = hold.get("rechecked") is True
++     expires_at = _utc(hold["held_at"] + BALANCE_HOLD_SECONDS)
++     last = (
++         f"A recheck was already refused, so the hold stays until then or until {expires_at}."
++         if rechecked
++         else "If the user chose a cheaper request instead, run that cheaper call once with --recheck-balance."
++     note = (
++         f"Not sent: Beatra refused {tool_name} for insufficient credits at {_utc(hold['held_at'])}, "
++         f"so this computer is holding further {tool_name} calls. Stop the remaining paid work, "
++         "including the rest of any batch or script, and tell the user to top up. After the user "
++         f"says they have topped up, call beatra.wallet.get; {lifts}. {last}"
++     details: dict[str, Any] = {
++         "top_up_url": hold["top_up_url"],
++         "retry_policy": WAIT_FOR_TOP_UP,
++         "agent_note": note,
++         if name in hold:
++             details[name] = hold[name]
++     details["local_hold"] = {
++         "tool": tool_name,
++         "held_at": _utc(hold["held_at"]),
++         "expires_at": expires_at,
++         "recheck_available": not rechecked,
++         "isError": True,
++         "content": [{"type": "text", "text": hold["message"]}],
++         "structuredContent": {
++             "error": {
++                 "code": "insufficient_balance",
++                 "type": "billing_error",
++                 "retryable": False,
++                 "message": hold["message"],
++                 "details": details,
++ def call_tool(
++     recheck_balance: bool = False,
++     recheck_balance: bool = False,
++     """Call one tool, unless Beatra recently refused it for insufficient
++     credits: then answer from the hold on this computer and send nothing, so a
++     batch loop stops reaching Beatra after its first refusal."""
++     key = _balance_hold_key(resolved_state_dir)
++         hold = _read_balance_holds(resolved_state_dir, observed).get(key, {}).get(tool_name) if key else None
++         # A record nobody can read is no hold: it must never stop a call.
++         hold = None
++     if hold is not None and (not recheck_balance or hold.get("rechecked") is True):
++         return _held_result(tool_name, hold)
++     result = session.request(2, "tools/call", {"name": tool_name, "arguments": arguments})
++     if key:
++         _note_balance_outcome(
++             resolved_state_dir, key, tool_name, result, rechecked=hold is not None, now=observed
++ def _read_tool_arguments() -> dict[str, Any]:
++ def _run_command(
++     command: str,
++     tool_name: str | None = None,
++     arguments: dict[str, Any] | None = None,
++         session = _session_with_registration(
++             state_dir=Path.home() / ".beatra",
++             post_json=_default_post_json,
++     if arguments is None:
++         arguments = _read_tool_arguments()
++     return call_tool(
++         tool_name,
++         arguments,
++         recheck_balance=recheck_balance,
++ CollectApproval = Callable[[Path], tuple[str, str | None]]
++ def _default_collect_approval(state_dir: Path) -> tuple[str, str | None]:
++     """The helper's one-check collection, when this package has it."""
++     import authorize  # the package's own helper, beside this file
++     collect = getattr(authorize, "collect_saved_approval", None)
++     if collect is None:
++         return "none", None
++         return "none", None
++         return "none", None
++     return collect(state_dir)
++ def _connect_waiting_approval(
++     collect: CollectApproval | None = None,
++     collect: CollectApproval | None = None,
++ ) -> tuple[str, str | None]:
++     """Before giving up on a call with no working credential: an approval the
++     user already gave on this computer may be waiting to be collected (the
++     agent was stopped while they selected Allow). One quick check; anything
++     unexpected reads as nothing waiting, so the call fails as it always did."""
++         outcome, link = (collect or _default_collect_approval)(state_dir)
++     if outcome not in {"collected", "pending", "unreachable", "none"}:
++     return outcome, link
++ def _with_waiting_approval(
++     operation: Callable[[], T],
++ ) -> T:
++     """Run one command; if it has no working credential, collect an approval
++     that is waiting and run it once more."""
++         return operation()
++     except (AuthenticationRequired, CredentialsMissing) as exc:
++         outcome, link = _connect_waiting_approval(state_dir, collect)
++         if outcome == "collected":
++             return operation()
++         if outcome == "pending" and link:
++             raise AuthenticationRequired(
++                 f"{AUTH_REQUIRED_CODE}: Beatra is waiting for the user to select Allow on "
++                 f"the approval page: {link}\nShow this link to the user if you have not "
++                 "already, then run `python3 scripts/authorize.py`: it continues this same "
++                 "approval and waits for Allow."
++             ) from exc
++     call.add_argument(
++         "--recheck-balance",
++         action="store_true",
++         help="Send this call once although Beatra recently refused this tool for insufficient credits",
++         help="Show whether the store or tool you installed from has a newer version",
++         help="Same as update: report only; this client never changes its own files",
++     network = subparsers.add_parser("network", help="Show or choose the Beatra network this computer uses")
++     network.add_argument(
++         "--use",
++         choices=("cn", "ai", "auto"),
++         help="Keep the mainland China (cn) or international (ai) network until --use auto",
++     source = subparsers.add_parser(
++         "install-source",
++         help="Record where this Skill was installed from, when the conversation shows it",
++     source.add_argument("--guess", required=True, choices=GUESSABLE_SOURCES)
++         state_dir = Path.home() / ".beatra"
++         # One route decision per process, before the version check and any
++         # request (spec §5.2).
++         resolve_route(state_dir)
++             print(update_status(state_dir=state_dir))
++         elif args.command == "network":
++             _network_command(args.use, state_dir)
++         elif args.command == "install-source":
++                 recorded = guess_install_source(args.guess, state_dir=state_dir)
++                 raise RuntimeError(f"Could not save the install source: {exc}") from exc
++             if (recorded["value"], recorded["basis"]) == (args.guess, "inferred"):
++                 print(f"Recorded where this Skill was installed from: {args.guess}.")
++                 print(f"Kept the recorded install source: {recorded['value']} ({recorded['basis']}).")
++             maybe_notify_update(state_dir=state_dir)
++             _with_waiting_approval(verify, state_dir=state_dir)
++             result = _with_waiting_approval(
++             result = _with_waiting_approval(
++                 lambda: upload(args.path, mime_type=args.mime_type),
++                 state_dir=state_dir,
++                 state_dir=state_dir,
++             # Read once: a call retried after collecting an approval reuses them.
++             arguments = _read_tool_arguments() if args.command == "call" else None
++                 lambda: _run_command(
++                     args.command,
++                     getattr(args, "tool_name", None),
++                     arguments,
++                     recheck_balance=getattr(args, "recheck_balance", False),
++                 ),
++     # authorize.py's `import mcp_client` must get this running module, not run
++     # a second copy that cannot see the route this process decided (one host
++     # per process, spec §5.5).
++     os.sys.modules["mcp_client"] = os.sys.modules[__name__]
 
 ### scripts/uninstall.py  [code]
 - AUTHORIZATION_ORIGIN = "https://api.beatra.ai"

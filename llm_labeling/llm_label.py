@@ -69,6 +69,10 @@ SCREEN_COLUMNS = ["screen_order"] + [c for c in OUT_COLUMNS
 SCREEN_COLUMNS[SCREEN_COLUMNS.index("changelog_kind") + 1:
                SCREEN_COLUMNS.index("changelog_kind") + 1] = ["changelog_accuracy", "patterns",
                                                               "pattern_evidence"]
+# How much of the diff the model saw (screening mode): diff_trim is none, lines_shortened
+# (only overlong lines cut) or content_dropped (lines or files not shown, here or already
+# in the .diff file written by diff_analysis.py).
+SCREEN_COLUMNS += ["diff_trim", "diff_chars", "diff_chars_shown"]
 
 # Pattern names allowed in screening mode, taken from the schema so both stay in sync.
 PATTERNS = set(json.loads((HERE / "screen_schema.json").read_text(encoding="utf-8"))
@@ -121,7 +125,7 @@ def load_examples(features_csv):
     return examples
 
 
-def trim_diff(text, max_chars, max_line=400):
+def trim_diff(text, max_chars, max_line=2000):
     """Shorten a .diff file to roughly max_chars, keeping the most useful parts.
 
     The file is a header followed by one block per changed file
@@ -278,9 +282,12 @@ def label_one(row, args, system_prompt, schema, examples, workdir):
     if not row.get("diff_file") or not diff_path.exists():
         out.update(llm_status="no_diff", llm_error=f"missing {row.get('diff_file')}")
         return out, 0.0
-    diff_text, truncated = trim_diff(diff_path.read_text(encoding="utf-8", errors="replace"),
-                                     args.max_diff_chars)
-    out["diff_truncated"] = int(truncated)
+    full_text = diff_path.read_text(encoding="utf-8", errors="replace")
+    diff_text, truncated = trim_diff(full_text, args.max_diff_chars, args.max_line_chars)
+    dropped = "not shown]" in diff_text or "diff cut at" in diff_text
+    out.update(diff_truncated=int(truncated or dropped),
+               diff_trim="content_dropped" if dropped else "lines_shortened" if truncated else "none",
+               diff_chars=len(full_text), diff_chars_shown=len(diff_text))
     key = (row["owner"], row["slug"], row["from_version"], row["to_version"])
     prompt = build_prompt(row, diff_text, examples.get(key, {}), show_detector=not screen)
 
@@ -350,10 +357,13 @@ def main():
     p.add_argument("--workers", type=int, default=3, help="parallel calls (default: 3)")
     p.add_argument("--budget-usd", type=float, default=None,
                    help="stop starting new rows once this much has been spent in this run")
-    p.add_argument("--max-diff-chars", type=int, default=24000,
-                   help="trim each diff to about this many characters (default: 24000)")
+    p.add_argument("--max-diff-chars", type=int, default=200000,
+                   help="trim each diff to about this many characters (default: 200000, "
+                        "~90k tokens; chosen so that <5%% of the 800 English updates are trimmed)")
+    p.add_argument("--max-line-chars", type=int, default=2000,
+                   help="shorten single lines longer than this (default: 2000)")
     p.add_argument("--retries", type=int, default=1, help="extra attempts after an invalid answer")
-    p.add_argument("--timeout", type=int, default=300, help="seconds per call (default: 300)")
+    p.add_argument("--timeout", type=int, default=600, help="seconds per call (default: 600)")
     p.add_argument("--redo-failed", action="store_true", help="also retry rows that failed before")
     p.add_argument("--dry-run", action="store_true", help="print the prompt for the first row and stop")
     p.add_argument("--allow-api-key", action="store_true",
@@ -369,6 +379,16 @@ def main():
     if os.environ.get("ANTHROPIC_API_KEY") and not args.allow_api_key and not args.dry_run:
         sys.exit("ANTHROPIC_API_KEY is set, so these calls would be billed to the API. "
                  "Unset it (or pass --allow-api-key if that is what you want).")
+
+    # Refuse to continue a results file written with other columns (an older version of
+    # this script): its finished rows would be skipped and new rows would be misaligned.
+    columns = SCREEN_COLUMNS if screen else OUT_COLUMNS
+    if out_path.exists() and not args.dry_run:
+        with open(out_path, newline="", encoding="utf-8") as fh:
+            existing = next(csv.reader(fh), [])
+        if existing != columns:
+            sys.exit(f"{out_path} has different columns (written by an older version of this script). "
+                     "Rename that file or choose a new --out.")
 
     rows = read_csv(sheet)
     if not rows:
@@ -390,7 +410,7 @@ def main():
     if args.dry_run:
         r = todo[0] if todo else rows[0]
         diff_text, _ = trim_diff((args.data / r["diff_file"]).read_text(encoding="utf-8", errors="replace"),
-                                 args.max_diff_chars)
+                                 args.max_diff_chars, args.max_line_chars)
         key = (r["owner"], r["slug"], r["from_version"], r["to_version"])
         print(build_prompt(r, diff_text, examples.get(key, {}), show_detector=not screen))
         return
@@ -406,8 +426,7 @@ def main():
     workdir = tempfile.mkdtemp(prefix="llm_label_")  # empty folder: no project files or CLAUDE.md
 
     with open(out_path, "a", newline="", encoding="utf-8") as fh:
-        writer = csv.DictWriter(fh, fieldnames=SCREEN_COLUMNS if screen else OUT_COLUMNS,
-                                extrasaction="ignore")
+        writer = csv.DictWriter(fh, fieldnames=columns, extrasaction="ignore")
         if new_file:
             writer.writeheader()
 
