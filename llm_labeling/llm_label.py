@@ -129,9 +129,12 @@ def trim_diff(text, max_chars, max_line=2000):
     """Shorten a .diff file to roughly max_chars, keeping the most useful parts.
 
     The file is a header followed by one block per changed file
-    ('### path  [group]', then '- ' and '+ ' lines). Blocks are ordered
-    instructions -> docs -> code, very long lines are cut, and each block
-    gets a share of the budget. Returns (text, was_truncated)."""
+    ('### path  [group]', then '- ' and '+ ' lines). Very long lines are cut,
+    and the character budget is shared out by "water-filling": small files are
+    kept whole first, and whatever is left is split evenly among the larger ones.
+    So a diff that fits within max_chars is never cut, and one huge file cannot
+    crowd out the others. Blocks are then shown in the order
+    instructions -> docs -> code. Returns (text, was_truncated)."""
     head, _, rest = text.partition("\n\n### ")
     blocks = [("### " + b) for b in rest.split("\n\n### ")] if rest else []
 
@@ -140,28 +143,44 @@ def trim_diff(text, max_chars, max_line=2000):
         return GROUP_ORDER.get(m.group(1) if m else "", 3)
 
     blocks.sort(key=group_of)
-    out, used, truncated = [head.strip()], len(head), False
-    for i, block in enumerate(blocks):
-        lines = [l if len(l) <= max_line else l[:max_line] + " …[line cut]"
-                 for l in block.splitlines()]
-        truncated |= any(l.endswith("…[line cut]") for l in lines)
-        remaining_blocks = len(blocks) - i
-        budget = max(600, (max_chars - used) // remaining_blocks)
+    lines_of = [[l if len(l) <= max_line else l[:max_line] + " …[line cut]"
+                 for l in b.splitlines()] for b in blocks]
+    truncated = any(l.endswith("…[line cut]") for lines in lines_of for l in lines)
+    sizes = [sum(len(l) + 1 for l in lines) for lines in lines_of]
+
+    # Water-filling: smallest blocks first, each gets min(its size, an even share
+    # of what is left, but at least 600 characters). Once fewer than 600 characters
+    # are left, the remaining files are not shown at all (and counted as such).
+    budget, alloc = max_chars - len(head), {}
+    for n_done, i in enumerate(sorted(range(len(blocks)), key=lambda i: sizes[i])):
+        if budget < 600 and budget < sizes[i]:
+            alloc[i] = 0
+            continue
+        share = max(budget // (len(blocks) - n_done), 600)
+        alloc[i] = min(sizes[i], share, budget)
+        budget -= alloc[i]
+
+    out, omitted = [head.strip()], 0
+    for i, lines in enumerate(lines_of):
+        if alloc[i] == 0:
+            omitted += 1
+            continue
         kept, size = [], 0
         for l in lines:
-            if size + len(l) + 1 > budget:
+            if size + len(l) + 1 > alloc[i]:
+                room = alloc[i] - size - 20
+                if room >= 100:  # show the start of the line that does not fit
+                    kept.append(l[:room] + " …[line cut]")
                 break
             kept.append(l)
             size += len(l) + 1
-        if len(kept) < len(lines):
-            truncated = True
+        if len(kept) < len(lines) or (kept and kept[-1].endswith("…[line cut]")
+                                      and not lines[len(kept) - 1].endswith("…[line cut]")):
             kept.append(f"…[{len(lines) - len(kept)} more lines of this file not shown]")
         out.append("\n".join(kept))
-        used += size
-        if used >= max_chars and i + 1 < len(blocks):
-            truncated = True
-            out.append(f"…[{len(blocks) - i - 1} more changed files not shown]")
-            break
+    if omitted:
+        out.append(f"…[{omitted} more changed files not shown]")
+    truncated |= any(alloc[i] < sizes[i] for i in alloc)
     return "\n\n".join(out), truncated
 
 
@@ -365,6 +384,9 @@ def main():
     p.add_argument("--retries", type=int, default=1, help="extra attempts after an invalid answer")
     p.add_argument("--timeout", type=int, default=600, help="seconds per call (default: 600)")
     p.add_argument("--redo-failed", action="store_true", help="also retry rows that failed before")
+    p.add_argument("--redo-trimmed", action="store_true",
+                   help="screen mode: relabel rows of --out whose diff was trimmed, if the current limits "
+                        "show more of it, and replace them in --out (old versions go to <out>_replaced.csv)")
     p.add_argument("--dry-run", action="store_true", help="print the prompt for the first row and stop")
     p.add_argument("--allow-api-key", action="store_true",
                    help="run even if ANTHROPIC_API_KEY is set (that bills the API, not your plan)")
@@ -398,9 +420,32 @@ def main():
     schema = json.dumps(json.loads((HERE / schema_file).read_text(encoding="utf-8")))
     examples = {} if screen else load_examples(features_csv)  # only label mode shows hits
 
-    done = {r["label_id"] for r in read_csv(out_path)
-            if r.get("llm_status") == "ok" or (r.get("llm_status") == "failed" and not args.redo_failed)}
-    todo = [r for r in rows if r["label_id"] not in done]
+    write_path = out_path
+    if args.redo_trimmed:
+        if not screen:
+            sys.exit("--redo-trimmed works in screen mode only.")
+        # Results go to a side file first and are merged into --out at the end,
+        # so an interrupted redo never leaves --out half-replaced.
+        write_path = redo_path(out_path)
+        existing = {r["label_id"]: r for r in read_csv(out_path) if r.get("llm_status") == "ok"}
+        done = {r["label_id"] for r in read_csv(write_path) if r.get("llm_status") == "ok"}
+        todo, no_gain = [], 0
+        for r in rows:
+            old = existing.get(r["label_id"])
+            if not old or old.get("diff_trim", "none") == "none" or r["label_id"] in done:
+                continue
+            text = (args.data / r["diff_file"]).read_text(encoding="utf-8", errors="replace")
+            shown, _ = trim_diff(text, args.max_diff_chars, args.max_line_chars)
+            if len(shown) <= int(old.get("diff_chars_shown") or 0):
+                no_gain += 1  # the current limits would not show more of this diff
+                continue
+            todo.append(r)
+        print(f"Redo of trimmed rows: {len(todo)} would now show more of their diff, "
+              f"{no_gain} would not (skipped), {len(done)} already redone.")
+    else:
+        done = {r["label_id"] for r in read_csv(out_path)
+                if r.get("llm_status") == "ok" or (r.get("llm_status") == "failed" and not args.redo_failed)}
+        todo = [r for r in rows if r["label_id"] not in done]
     if args.rows:
         wanted = parse_rows(args.rows)
         todo = [r for r in todo if r["label_id"] in wanted]
@@ -416,16 +461,18 @@ def main():
         return
 
     print(f"{len(rows)} rows in sheet, {len(done)} already done, {len(todo)} to label "
-          f"with model '{args.model}' ({args.workers} at a time). Output: {out_path}")
+          f"with model '{args.model}' ({args.workers} at a time). Output: {write_path}")
     if not todo:
+        if args.redo_trimmed:
+            merge_redo(out_path, columns)
         return
 
-    new_file = not out_path.exists()
+    new_file = not write_path.exists()
     lock, spent, n_ok, n_bad = threading.Lock(), 0.0, 0, 0
     stop = threading.Event()
     workdir = tempfile.mkdtemp(prefix="llm_label_")  # empty folder: no project files or CLAUDE.md
 
-    with open(out_path, "a", newline="", encoding="utf-8") as fh:
+    with open(write_path, "a", newline="", encoding="utf-8") as fh:
         writer = csv.DictWriter(fh, fieldnames=columns, extrasaction="ignore")
         if new_file:
             writer.writeheader()
@@ -467,6 +514,42 @@ def main():
                     f.cancel()
 
     print(f"Done: {n_ok} labelled, {n_bad} failed or missing, ${spent:.2f} spent in this run.")
+    if args.redo_trimmed and not stop.is_set():
+        merge_redo(out_path, columns)
+    elif args.redo_trimmed:
+        print(f"Not merged yet (run stopped early); run the same command again to finish and merge.")
+
+
+def redo_path(out_path):
+    """Side file where --redo-trimmed collects new answers before merging them."""
+    return out_path.with_name(out_path.stem + "_redo.csv")
+
+
+def merge_redo(out_path, columns):
+    """Replace rows of out_path with the successful rows of the redo file. The rows
+    replaced are appended to <out>_replaced.csv, so every earlier answer is kept.
+    out_path is rewritten through a temporary file, then the redo file is removed."""
+    redo = {r["label_id"]: r for r in read_csv(redo_path(out_path)) if r.get("llm_status") == "ok"}
+    if not redo:
+        print("Nothing to merge.")
+        return
+    current = read_csv(out_path)
+    replaced_file = out_path.with_name(out_path.stem + "_replaced.csv")
+    new_replaced = not replaced_file.exists()
+    with open(replaced_file, "a", newline="", encoding="utf-8") as fh:
+        w = csv.DictWriter(fh, fieldnames=columns, extrasaction="ignore")
+        if new_replaced:
+            w.writeheader()
+        w.writerows(r for r in current if r["label_id"] in redo)
+    tmp = out_path.with_name(out_path.name + ".tmp")
+    with open(tmp, "w", newline="", encoding="utf-8") as fh:
+        w = csv.DictWriter(fh, fieldnames=columns, extrasaction="ignore")
+        w.writeheader()
+        w.writerows(redo.get(r["label_id"], r) for r in current)
+    tmp.replace(out_path)
+    redo_path(out_path).unlink()
+    print(f"Merged {len(redo)} relabelled rows into {out_path}; "
+          f"their previous answers were added to {replaced_file}.")
 
 
 if __name__ == "__main__":
